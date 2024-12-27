@@ -1,0 +1,7 @@
+OP_LOADI Ra 1        ; a = 1
+OP_LOADA Ri $ARGV0   ; i = n (input argument)
+OP_LOADI Rb 1          ;
+OP_FORPREP Ri Rb 3  ; prepare for   
+OP_ADD Ra Ra Ri ; a = a + i
+OP_FORLOOP Ri Rb 1     ; if Ri > Rb then Ri--;jmp pc-1 else pc++
+OP_RET Ra               ; return a

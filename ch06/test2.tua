@@ -1,0 +1,7 @@
+func fib(n:number) number {
+	let a = 1
+	for(let i=n; i>0; i--) {
+		a = a * i
+	}
+	return a
+}
