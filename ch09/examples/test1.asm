@@ -1,0 +1,8 @@
+; 使用寄存器实现
+OP_LOADI Ra 0        ; a = 0
+OP_LOADA Rc $ARGV0 ; i = n (input argument)
+OP_LOADI Rb 0          ;
+OP_FORPREP Rc Rb 3 ; prepare for Rc = Rc - Rb if Rc>0 then  
+OP_ADD Ra Ra Rc ; a = a + i
+OP_FORLOOP Rc 1     ; if Ri > 0 then Ri--;jmp pc-1 else pc++
+OP_RET Ra               ; return a
