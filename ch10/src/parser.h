@@ -18,7 +18,8 @@ typedef enum {
     EXPR_VARIABLE,
     EXPR_GROUPING,
     EXPR_CALL,
-    EXPR_POSTFIX
+    EXPR_POSTFIX,
+    EXPR_ASSIGN
 } ExprType;
 
 typedef enum {
@@ -26,6 +27,7 @@ typedef enum {
     STMT_VAR,
     STMT_IF,
     STMT_FOR,
+    STMT_FOR_IN,
     STMT_FUNC,
     STMT_RETURN,
     STMT_BLOCK
@@ -105,6 +107,18 @@ typedef struct {
     Token operator;
 } PostfixExpr;
 
+typedef struct {
+    Expr base;
+    Token name;
+    Expr* value;
+} AssignExpr;
+
+typedef struct {
+    Expr base;
+    Expr* callee;
+    List* arguments;
+} CallExpr;
+
 // Variable statement structure
 typedef struct {
     Stmt base;
@@ -142,6 +156,12 @@ typedef struct {
 
 typedef struct {
     Stmt base;
+    Token loopVar;
+    Expr* range;
+    Stmt* body;
+} ForInStmt;
+typedef struct {
+    Stmt base;
     Expr* value;
     Token keyword;
 } ReturnStmt;
@@ -171,6 +191,9 @@ static Stmt* parseBlockStatement(Parser* parser);
 static Stmt* parseReturnStatement(Parser* parser);
 static Stmt* parseExpressionStatement(Parser* parser);
 
+static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+static Stmt* parseFunctionDeclaration(Parser* parser);
+
 static Type* parseType(Parser* parser);
 static Expr* parseUnaryExpr(Parser* parser);
 static Expr* parseBinaryExpr(Parser* parser, int minPrec);
@@ -184,6 +207,7 @@ static Expr* newLiteralExpr(Token value);
 static Expr* newVariableExpr(Token value);
 static Expr* newGroupingExpr(Expr* expression);
 static Expr* newPostfixExpr(Expr* operand, Token operator);
+static Expr* finishCall(Parser* parser, Expr* callee);
 
 static Stmt* newExpressionStmt(Expr* expression);
 static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
@@ -194,7 +218,7 @@ static Stmt* newBlockStmt(List* statements);
 static Stmt* newReturnStmt(Token keyword, Expr* value);
 
 static void errorAt(Parser* parser,Token* token, const char* message);
-void error(const char* message);
+static void errorPrint(Parser* parser,const char* message);
 void errorAtCurrent(Parser* parser, const char* message);
 static Token consume(Parser* parser, TokenType type, const char* message);
 // List operations

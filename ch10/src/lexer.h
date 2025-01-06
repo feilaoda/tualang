@@ -14,6 +14,7 @@ typedef enum {
     TOKEN_FOR,
     TOKEN_FUNC,
     TOKEN_RETURN,
+    TOKEN_IN,
     // Types
     TOKEN_INT,
     TOKEN_STRING,

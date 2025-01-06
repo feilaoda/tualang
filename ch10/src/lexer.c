@@ -10,6 +10,7 @@ static const char* TokenNames[] = {
     "FOR", 
     "FUNC",
     "RETURN",
+    "IN",
     "INT",
     "STRING",
     "ASSIGN",
@@ -120,6 +121,14 @@ static Token errorToken(Lexer* lexer, const char* message) {
     return token;
 }
 
+static bool checkEqWord(Lexer* lexer, int start, int length, const char* rest) {
+    if (lexer->current - lexer->start == start + length &&
+        memcmp(lexer->start + start, rest, length) == 0) {
+        return true;
+    }
+    return false;
+}
+
 static TokenType checkKeyword(Lexer* lexer, int start, int length, const char* rest, TokenType type) {
     if (lexer->current - lexer->start == start + length &&
         memcmp(lexer->start + start, rest, length) == 0) {
@@ -142,11 +151,20 @@ static TokenType identifierType(Lexer* lexer) {
             break;
         case 'i': ;
           if (lexer->current - lexer->start > 1) {
-                
-                if (memcmp(lexer->start, "int", 3) == 0) {
-                    return TOKEN_INT;
+                switch (lexer->start[1]) {
+                    case 'n': {
+                        if (lexer->current - lexer->start > 2) {
+                            if (memcmp(lexer->start, "int", 3) == 0) {
+                                return TOKEN_INT;
+                            }
+                            
+                        }
+                        if (checkEqWord(lexer, 1, 1, "n")) {
+                            return TOKEN_IN;
+                        }
+                    }
+                    case 'f': return checkKeyword(lexer, 1, 1, "f", TOKEN_IF);
                 }
-                return checkKeyword(lexer, 1, 1, "f", TOKEN_IF);
           }
         case 'l': return checkKeyword(lexer, 1, 2, "et", TOKEN_LET);
         case 'c': return checkKeyword(lexer, 1, 4, "onst", TOKEN_CONST);

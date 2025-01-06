@@ -4,24 +4,45 @@
 #include <stdlib.h>
 #include "debug.h"
 
+// Debug trace helpers
 int traceId = 0;
-#define parserDebugStart(x) traceId++;for(int a=0;a<traceId;a++){ printf("===="); } fprintf(stdout," <%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start), debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
-#define parserDebugEnd(x) for(int a=0;a<traceId;a++) {printf("====");} traceId--; fprintf(stdout," />%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start), debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
+#define parserDebugStart(x) traceId++;for(int a=0;a<traceId;a++){ printf("===="); } fprintf(stdout," <%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start); debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
+#define parserDebugEnd(x) for(int a=0;a<traceId;a++) {printf("====");} traceId--; fprintf(stdout," />%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start); debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
 #define parserDebug(...) for(int a=0;a<traceId;a++) {printf("====");} printf(" "); debug(__VA_ARGS__)
+#define error(p,msg) fprintf(stderr,"ERROR: %d", __LINE__); errorPrint(p,msg)
 
+// Parser initialization
+void initParser(Parser* parser, Lexer* lexer) {
+    parser->lexer = lexer;
+    parser->hadError = false;
+    parser->panicMode = false;
+    parser->previous.type = TOKEN_ERROR;
+    parser->current.type = TOKEN_ERROR;
+}
 
+// Error handling
 void errorAtCurrent(Parser* parser, const char* message) {
     if (parser->panicMode) return;
     parser->panicMode = true;
-    
     fprintf(stderr, "[line %d] Error at '%.*s': %s\n",
             parser->current.line,
             parser->current.length,
             parser->current.start,
             message);
-            
     parser->hadError = true;
 }
+
+
+
+static void errorPrint(Parser* parser, const char* message) {
+    if (parser->panicMode) return;
+    parser->panicMode = true;
+    fprintf(stderr, "***********[line %d]******** Error: %s\n", 
+            parser->current.line, message);
+    parser->hadError = true;
+}
+
+// Basic parser functions
 static void advance(Parser* parser) {
     parser->previous = parser->current;
     parser->current = scanToken(parser->lexer);
@@ -31,9 +52,7 @@ static void advance(Parser* parser) {
     }
 }
 
-
 static bool check(Parser* parser, TokenType type) {
-    // printf("check curr:%d, %s\n", parser->current.line, tokenToString(parser->current.type));
     return parser->current.type == type;
 }
 
@@ -43,78 +62,36 @@ static bool match(Parser* parser, TokenType type) {
     return true;
 }
 
-
-static void errorAt(Parser* parser, Token* token, const char* message) {
-    if (parser->panicMode) return;
-    parser->panicMode = true;
-    fprintf(stderr, "[line %d] Error", token->line);
-    
-    if (token->type == TOKEN_EOF) {
-        fprintf(stderr, " at end");
-    } else if (token->type == TOKEN_ERROR) {
-        // Nothing
-    } else {
-        fprintf(stderr, " at '%.*s' type(%s)", token->length, token->start, tokenToString(token->type));
-    }
-    
-    fprintf(stderr, ": %s\n", message);
-    parser->hadError = true;
-}
-
-static Type* parseType(Parser* parser) {
-    Type* type = (Type*)malloc(sizeof(Type));
-    
-    if (match(parser, TOKEN_INT)) {
-        type->kind = TYPE_INT;
-    } else if (match(parser, TOKEN_STRING)) {
-        type->kind = TYPE_STRING;
-    } else {
-        errorAt(parser, &parser->current, "Expected type name");
-        return NULL;
-    }
-    
-    return type;
-}
-
-static Expr* parseExpression(Parser* parser) {
-    parserDebugStart("parseExpression start");
-    Expr *expr = parseBinaryExpr(parser, 0);
-    parserDebugEnd("parseExpression end");
-    return expr;
-}
-
-static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
-    parserDebugStart("parseBinaryExpr start");
-    Expr* left = parseUnaryExpr(parser);
-    parserDebug("parseBinaryExpr left end\n");
-    while (true) {
-        TokenType op = parser->current.type;
-        int prec = getOperatorPrecedence(parser->current.type);
-        parserDebug("parseBinaryExpr current op\n");
-        parserDebug("op: %s, prec:%d, minPrec:%d\n", tokenToString(op), prec, minPrec);
-        if (prec == 0 || prec < minPrec) break;
-         // Handle post-increment/decrement
-
-        if (op == TOKEN_INC || op == TOKEN_DEC) {
-            advance(parser); // consume ++ or --
-            parserDebug("parseBinaryExpr post-increment/decrement");
-            left = newUnaryExpr(parser->previous, left);
-            continue;
-        }
+static Token consume(Parser* parser, TokenType type, const char* message) {
+    if (check(parser, type)) {
         Token token = parser->current;
-        parserDebug("parseBinaryExpr token\n");
-        // debug("<> token: %s\n",tokenToString(token.type));
         advance(parser);
-        parserDebug("parseBinaryExpr right start\n");
-        Expr* right = parseBinaryExpr(parser, prec + 1);
-        parserDebug("parseBinaryExpr right end, left & right\n");
-        // debug("expr: %d %d/%s %d, %s\n" , left->token.type, token.type, tokenToString(token.type), right->token.type, tokenToString(parser->current.type));
-        left = newBinaryExpr(left, token, right);
+        return token;
     }
-    parserDebugEnd("parseBinaryExpr end");
-    return left;
+    error(parser, message);
+    return (Token){TOKEN_ERROR, NULL, 0, 0};
 }
 
+static void synchronize(Parser* parser) {
+    parser->panicMode = false;
+    while (parser->current.type != TOKEN_EOF) {
+        if (parser->previous.type == TOKEN_SEMICOLON) return;
+        
+        switch (parser->current.type) {
+            case TOKEN_FUNC:
+            case TOKEN_LET:
+            case TOKEN_CONST:
+            case TOKEN_IF:
+            case TOKEN_FOR:
+            case TOKEN_RETURN:
+                return;
+            default:
+                advance(parser);
+        }
+    }
+}
+
+// Operator precedence
 static int getOperatorPrecedence(TokenType type) {
     switch (type) {
         case TOKEN_ASSIGN: return 1;      // =
@@ -130,101 +107,11 @@ static int getOperatorPrecedence(TokenType type) {
         case TOKEN_SLASH: return 7;       // *, /
         case TOKEN_INC:
         case TOKEN_DEC: return 8;         // ++, --
-        default: return 0;                // Non-operators
+        default: return 0;
     }
 }
 
-static Expr* parseUnaryExpr(Parser* parser) {
-    parserDebugStart("parseUnaryExpr start");
-    // Handle prefix operators: ++, --, -, !
-    if (match(parser, TOKEN_INC) || 
-        match(parser, TOKEN_DEC) ||
-        match(parser, TOKEN_MINUS) || 
-        match(parser, TOKEN_NOT)) {
-        Token operator = parser->previous;
-        Expr* right = parseUnaryExpr(parser);
-        parserDebugEnd("parseUnaryExpr end ++--");
-        return newUnaryExpr(operator, right);
-    }
-    
-    // Parse primary expression
-    Expr* expr = parsePrimaryExpr(parser);
-    
-    // Handle postfix operators: ++, --
-    // if (match(parser, TOKEN_INC) || match(parser, TOKEN_DEC)) {
-    //     Token operator = parser->previous;
-    //     parserDebug("parseUnaryExpr newPostfixExpr start");
-    //     return newPostfixExpr(expr, operator);
-    // }
-    parserDebugEnd("parseUnaryExpr end");
-    return expr;
-}
-
-static Expr* parsePrimaryExpr(Parser* parser) {
-    // parserDebugStart("parsePrimaryExpr start");
-    if (match(parser, TOKEN_NUMBER)) {
-        return newLiteralExpr(parser->previous);
-    }
-    
-    if (match(parser, TOKEN_STRING_LITERAL)) {
-        return newLiteralExpr(parser->previous);
-    }
-    
-    if (match(parser, TOKEN_IDENTIFIER)) {
-        Expr* expr = newVariableExpr(parser->previous);
-        
-        // Handle postfix ++ and --
-        // if (match(parser, TOKEN_INC) || match(parser, TOKEN_DEC)) {
-        //     Token operator = parser->previous;
-        //     parserDebug("parsePrimaryExpr newPostfixExpr start");
-        //     return newPostfixExpr(expr, operator);
-        // }
-        
-        return expr;
-    }
-    
-    if (match(parser, TOKEN_LPAREN)) {
-        Expr* expr = parseExpression(parser);
-        consume(parser, TOKEN_RPAREN, "Expect ')' after expression");
-        return newGroupingExpr(expr);
-    }
-
-    // Handle prefix ++ and --
-    if (match(parser, TOKEN_INC) || match(parser, TOKEN_DEC)) {
-        Token operator = parser->previous;
-        Expr* right = parsePrimaryExpr(parser);
-        return newUnaryExpr(operator, right);
-    }
-    
-    errorAt(parser, &parser->current, "Expected expression");
-    return NULL;
-}
-
-
-// List operations
-List* listNew() {
-    List* list = malloc(sizeof(List));
-    list->head = list->tail = NULL;
-    list->length = 0;
-    return list;
-}
-
-List* listAppend(List* list, void* data) {
-    ListNode* node = malloc(sizeof(ListNode));
-    node->data = data;
-    node->next = NULL;
-    
-    if (list->tail == NULL) {
-        list->head = list->tail = node;
-    } else {
-        list->tail->next = node;
-        list->tail = node;
-    }
-    list->length++;
-    return list;
-}
-
-// AST Node constructors
+// AST Node Constructors
 static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst) {
     VarStmt* stmt = malloc(sizeof(VarStmt));
     stmt->base.type = STMT_VAR;
@@ -245,219 +132,26 @@ static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* body)
     return (Stmt*)stmt;
 }
 
-
-static Stmt* parseVarDeclaration(Parser* parser) {
-    bool isConst = parser->previous.type == TOKEN_CONST;
-    Token name = parser->current;
-    advance(parser);
-    
-    // Handle type annotation if present
-    Type* type = NULL;
-    if (match(parser, TOKEN_COLON)) {
-        type = parseType(parser);
-    }
-    
-    Expr* initializer = NULL;
-    if (match(parser, TOKEN_ASSIGN)) {
-        initializer = parseExpression(parser);
-    }
-    
-    consume(parser, TOKEN_SEMICOLON, "Expect ';' after variable declaration");
-    return newVarStmt(name, type, initializer, isConst);
-}
-
-static Stmt* parseFunctionDeclaration(Parser* parser) {
-    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect function name");
-    consume(parser, TOKEN_LPAREN, "Expect '(' after function name");
-    
-    // Parse parameters
-    List *params = listNew();
-    if (!check(parser, TOKEN_RPAREN)) {
-        do {
-            params = listAppend(params, parseFunctionParameter(parser));
-        } while (match(parser, TOKEN_COMMA));
-    }
-    printf("start parse func TOKEN_RPAREN )\n");
-
-    consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
-    
-    // Parse return type if present
-    printf("start parse func arraw->\n");
-    Type* returnType = NULL;
-    if (match(parser, TOKEN_ARROW)) {
-        returnType = parseType(parser);
-    }
-    
-    // Parse function body
-    consume(parser, TOKEN_LBRACE, "Expect '{' before function body");
-    List *body = parseBlock(parser);
-    
-    return newFuncStmt(name, params, returnType, body);
-}
-
-// Block parsing
-static List* parseBlock(Parser* parser) {
-    List* statements = listNew();
-    
-    consume(parser, TOKEN_LBRACE, "Expect '{' before block");
-    
-    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        listAppend(statements, parseStatement(parser));
-    }
-    
-    consume(parser, TOKEN_RBRACE, "Expect '}' after block");
-    return statements;
-}
-
-// Function parameter parsing
-static Parameter* parseFunctionParameter(Parser* parser) {
-    Parameter* param = malloc(sizeof(Parameter));
-    param->name = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
-    
-    consume(parser, TOKEN_COLON, "Expect ':' after parameter name");
-    param->type = parseType(parser);
-    printf("parseFunctionParameter end\n");
-    return param;
-}
-
-// Statement parsing
-static Stmt* parseStatement(Parser* parser) {
-    parserDebugStart("parseStatement start");
-    Stmt* stmt = NULL;
-    if (match(parser, TOKEN_IF)) stmt = parseIfStatement(parser);
-    else 
-    if (match(parser, TOKEN_FOR)) stmt = parseForStatement(parser);
-    else 
-
-    if (match(parser, TOKEN_RETURN)) stmt = parseReturnStatement(parser);
-    else 
-
-    if (match(parser, TOKEN_LBRACE)) stmt = parseBlockStatement(parser);
-    else 
-
-    stmt = parseExpressionStatement(parser);
-    parserDebugEnd("parseStatement end");
-    return stmt;
-}
-
-static Stmt* parseIfStatement(Parser* parser) {
-    consume(parser, TOKEN_LPAREN, "Expect '(' after 'if'");
-    Expr* condition = parseExpression(parser);
-    consume(parser, TOKEN_RPAREN, "Expect ')' after if condition");
-    
-    Stmt* thenBranch = parseStatement(parser);
-    Stmt* elseBranch = NULL;
-    
-    if (match(parser, TOKEN_ELSE)) {
-        elseBranch = parseStatement(parser);
-    }
-    
-    return newIfStmt(condition, thenBranch, elseBranch);
-}
-
-static Stmt* parseForPrepareStatement(Parser* parser) {
-    return NULL;
-}
-
-static Stmt* parseForStatement(Parser* parser) {
-    parserDebugStart("parseForStatement start");
-    bool hasParen = false;
-    if(check(parser, TOKEN_LPAREN)) {
-        consume(parser, TOKEN_LPAREN, "Expect '(' after 'for'");
-        hasParen = true;
-    }
-    Stmt* initializer;
-    if (match(parser, TOKEN_SEMICOLON)) {
-        initializer = NULL;
-    } else if (match(parser, TOKEN_LET)) {
-        initializer = parseVarDeclaration(parser);
-    } else {
-        initializer = parseExpressionStatement(parser);
-    }
-    
-    Expr* condition = NULL;
-    if (!check(parser, TOKEN_SEMICOLON)) {
-        condition = parseExpression(parser);
-    }
-    consume(parser, TOKEN_SEMICOLON, "Expect ';' after loop condition");
-    
-    Expr* increment = NULL;
-    if (!check(parser, TOKEN_RPAREN)) {
-        increment = parseExpression(parser);
-    }
-    if(hasParen) {
-        consume(parser, TOKEN_RPAREN, "Expect ')' after for clauses");
-    }
-    parserDebug("parseForBodyStatement start\n");
-    
-    Stmt* body = parseStatement(parser);
-    parserDebugEnd("parseForBodyStatement end");
-    return newForStmt(initializer, condition, increment, body);
-}
-
-static Stmt* parseReturnStatement(Parser* parser) {
-    Token keyword = parser->previous;
-    
-    Expr* value = NULL;
-    if (!check(parser, TOKEN_SEMICOLON)) {
-        value = parseExpression(parser);
-    }
-    
-    consume(parser, TOKEN_SEMICOLON, "Expect ';' after return value");
-    return newReturnStmt(keyword, value);
-}
-
-static Stmt* newReturnStmt(Token keyword, Expr* value) {
-    ReturnStmt* stmt = malloc(sizeof(ReturnStmt));
-    stmt->base.type = STMT_RETURN;
-    stmt->keyword = keyword;
-    stmt->value = value;
+static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch) {
+    IfStmt* stmt = malloc(sizeof(IfStmt));
+    stmt->base.type = STMT_IF;
+    stmt->condition = condition;
+    stmt->thenBranch = thenBranch;
+    stmt->elseBranch = elseBranch;
     return (Stmt*)stmt;
 }
 
-static Stmt* parseBlockStatement(Parser* parser) {
-    parserDebug("parseBlockStatement start");
-    List* statements = listNew();
-    
-    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        listAppend(statements, parseStatement(parser));
-    }
-    
-    consume(parser, TOKEN_RBRACE, "Expect '}' after block");
-    parserDebug("parseBlockStatement end\n");
-    return newBlockStmt(statements);
-}
-
-static Stmt* newBlockStmt(List* statements) {
-    BlockStmt* stmt = malloc(sizeof(BlockStmt));
-    stmt->base.type = STMT_BLOCK;
-    stmt->statements = statements;
-    return (Stmt*)stmt;
-}
-
-static Stmt* parseExpressionStatement(Parser* parser) {
-    parserDebugStart("parseExpressionStatement start");
-    Expr* expr = parseExpression(parser);
-    parserDebug("parseExpressionStatement ended, [%s]\n", tokenToString(parser->current.type));
-    consume(parser, TOKEN_SEMICOLON, "Expect ';' after expression");
-    parserDebug("parseExpressionStatement consume ended, [%s]\n", tokenToString(parser->current.type));
-    
-    Stmt* stmt = newExpressionStmt(expr);
-    parserDebugEnd("parseExpressionStatement end");
-    return stmt;
-}
-
-static Stmt* newExpressionStmt(Expr* expression) {
-    ExprStmt* stmt = malloc(sizeof(ExprStmt));
-    stmt->base.type = STMT_EXPR;
-    stmt->expression = expression;
-    return (Stmt*)stmt;
+static Expr* newPostfixExpr(Expr* operand, Token operator) {
+    PostfixExpr* expr = malloc(sizeof(PostfixExpr));
+    expr->base.type = EXPR_POSTFIX;
+    expr->operand = operand;
+    expr->operator = operator;
+    return (Expr*)expr;
 }
 
 static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
     BinaryExpr* expr = malloc(sizeof(BinaryExpr));
     expr->base.type = EXPR_BINARY;
-    expr->base.token = operator;
     expr->left = left;
     expr->operator = operator;
     expr->right = right;
@@ -467,7 +161,6 @@ static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
 static Expr* newUnaryExpr(Token operator, Expr* right) {
     UnaryExpr* expr = malloc(sizeof(UnaryExpr));
     expr->base.type = EXPR_UNARY;
-    expr->base.token = operator;
     expr->operator = operator;
     expr->right = right;
     return (Expr*)expr;
@@ -476,7 +169,6 @@ static Expr* newUnaryExpr(Token operator, Expr* right) {
 static Expr* newLiteralExpr(Token value) {
     LiteralExpr* expr = malloc(sizeof(LiteralExpr));
     expr->base.type = EXPR_LITERAL;
-    expr->base.token = value;
     expr->value = value;
     return (Expr*)expr;
 }
@@ -484,7 +176,6 @@ static Expr* newLiteralExpr(Token value) {
 static Expr* newVariableExpr(Token name) {
     VariableExpr* expr = malloc(sizeof(VariableExpr));
     expr->base.type = EXPR_VARIABLE;
-    expr->base.token = name;
     expr->name = name;
     return (Expr*)expr;
 }
@@ -496,114 +187,449 @@ static Expr* newGroupingExpr(Expr* expression) {
     return (Expr*)expr;
 }
 
-static Expr* newPostfixExpr(Expr* operand, Token operator) {
-    PostfixExpr* expr = malloc(sizeof(PostfixExpr));
-    expr->base.type = EXPR_POSTFIX;
-    expr->base.token = operator;
-    expr->operand = operand;
-    expr->operator = operator;
+static Expr* newAssignExpr(Token name, Expr* value) {
+    AssignExpr* expr = malloc(sizeof(AssignExpr));
+    expr->base.type = EXPR_ASSIGN;
+    expr->name = name;
+    expr->value = value;
     return (Expr*)expr;
 }
 
-static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch) {
-    IfStmt* stmt = malloc(sizeof(IfStmt));
-    stmt->base.type = STMT_IF;
-    stmt->condition = condition;
-    stmt->thenBranch = thenBranch;
-    stmt->elseBranch = elseBranch;
-    return (Stmt*)stmt;
+static Parameter* newParameter(Token name, Type* type) {
+    Parameter* param = malloc(sizeof(Parameter));
+    param->name = name;
+    param->type = type;
+    return param;
 }
-static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body) {
+
+
+
+// Expression parsing
+static Expr* parseExpression(Parser* parser) {
+    parserDebugStart("parseExpression");
+    
+    Expr* expr = parseBinaryExpr(parser, 0);
+    
+    if (match(parser, TOKEN_ASSIGN)) {
+        Token equals = parser->previous;
+        Expr* value = parseExpression(parser);
+        
+        if (expr->type == EXPR_VARIABLE) {
+            return newAssignExpr(((VariableExpr*)expr)->name, value);
+        }
+        
+        error(parser, "Invalid assignment target.");
+    }
+    
+    parserDebugEnd("parseExpression");
+    return expr;
+}
+
+static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
+    parserDebugStart("parseBinaryExpr start");
+    Expr* left = parseUnaryExpr(parser);
+    
+    while (true) {
+        TokenType op = parser->current.type;
+        int prec = getOperatorPrecedence(op);
+        
+        if (prec == 0 || prec < minPrec) break;
+        
+        if (match(parser, TOKEN_LPAREN)) {
+            left = finishCall(parser, left);
+            continue;
+        }
+        
+        if ((op == TOKEN_INC || op == TOKEN_DEC) && prec >= minPrec) {
+            advance(parser);
+            left = newPostfixExpr(left, parser->previous);
+            continue;
+        }
+        
+        Token operator = parser->current;
+        advance(parser);
+        Expr* right = parseBinaryExpr(parser, prec + 1);
+        left = newBinaryExpr(left, operator, right);
+    }
+    parserDebugEnd("parseBinaryExpr");
+    return left;
+}
+
+static Expr* parseUnaryExpr(Parser* parser) {
+    parserDebugStart("parseUnaryExpr");
+    
+    if (match(parser, TOKEN_INC) || 
+        match(parser, TOKEN_DEC) ||
+        match(parser, TOKEN_MINUS) || 
+        match(parser, TOKEN_NOT)) {
+        Token operator = parser->previous;
+        Expr* right = parseUnaryExpr(parser);
+        parserDebugEnd("parseUnaryExpr");
+        return newUnaryExpr(operator, right);
+    }
+    
+    Expr* expr = parsePrimaryExpr(parser);
+    parserDebugEnd("parseUnaryExpr");
+    return expr;
+}
+
+static Expr* parsePrimaryExpr(Parser* parser) {
+    parserDebugStart("parsePrimaryExpr");
+    
+    if (match(parser, TOKEN_NUMBER) || 
+        match(parser, TOKEN_STRING_LITERAL)) {
+        Expr* expr = newLiteralExpr(parser->previous);
+        parserDebugEnd("parsePrimaryExpr");
+        return expr;
+    }
+    
+    if (match(parser, TOKEN_IDENTIFIER)) {
+        Expr* expr = newVariableExpr(parser->previous);
+        
+        if (match(parser, TOKEN_LPAREN)) {
+            expr = finishCall(parser, expr);
+        }
+        
+        parserDebugEnd("parsePrimaryExpr");
+        return expr;
+    }
+    
+    if (match(parser, TOKEN_LPAREN)) {
+        Expr* expr = parseExpression(parser);
+        consume(parser, TOKEN_RPAREN, "Expect ')' after expression");
+        parserDebugEnd("parsePrimaryExpr");
+        return newGroupingExpr(expr);
+    }
+    
+    error(parser, "Expected expression");
+    parserDebugEnd("parsePrimaryExpr");
+    return NULL;
+}
+
+static Expr* finishCall(Parser* parser, Expr* callee) {
+    parserDebugStart("finishCall");
+    List* arguments = listNew();
+    
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            listAppend(arguments, parseExpression(parser));
+        } while (match(parser, TOKEN_COMMA));
+    }
+    
+    consume(parser, TOKEN_RPAREN, "Expect ')' after arguments");
+    
+    CallExpr* expr = malloc(sizeof(CallExpr));
+    expr->base.type = EXPR_CALL;
+    expr->callee = callee;
+    expr->arguments = arguments;
+    parserDebugEnd("finishCall");
+    return (Expr*)expr;
+}
+
+static Stmt* parseStatement(Parser* parser) {
+    parserDebugStart("parseStatement");
+    Stmt* stmt = NULL;
+    
+    if (match(parser, TOKEN_IF)) {
+        stmt = parseIfStatement(parser);
+    } else if (match(parser, TOKEN_FOR)) {
+        stmt = parseForStatement(parser);
+    } else if (match(parser, TOKEN_RETURN)) {
+        stmt = parseReturnStatement(parser);
+    } else if (match(parser, TOKEN_LBRACE)) {
+        stmt = parseBlockStatement(parser);
+    } else {
+        stmt = parseExpressionStatement(parser);
+    }
+    
+    parserDebugEnd("parseStatement");
+    return stmt;
+}
+
+static Stmt* parseIfStatement(Parser* parser) {
+    consume(parser, TOKEN_LPAREN, "Expect '(' after 'if'");
+    Expr* condition = parseExpression(parser);
+    consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+    
+    Stmt* thenBranch = parseStatement(parser);
+    Stmt* elseBranch = NULL;
+    
+    if (match(parser, TOKEN_ELSE)) {
+        elseBranch = parseStatement(parser);
+    }
+    
+    return newIfStmt(condition, thenBranch, elseBranch);
+}
+
+static Stmt* parseForStatement(Parser* parser) {
+    parserDebugStart("parseForStatement");
+    bool hasParen = false;
+    
+    if (check(parser, TOKEN_LPAREN)) {
+        consume(parser, TOKEN_LPAREN, "Expect '(' after 'for'");
+        hasParen = true;
+    }
+    
+    Stmt* initializer = NULL;
+    Expr* rangeExpr = NULL;
+    
+    if (match(parser, TOKEN_SEMICOLON)) {
+        initializer = NULL;
+    } else if (match(parser, TOKEN_LET)) {
+        initializer = parseVarDeclaration(parser, false);
+    } else {
+        if (check(parser, TOKEN_IDENTIFIER)) {
+            Token current = parser->current;
+            advance(parser);
+            parserDebug("parseForStatement0: in [%.*s],[%s]\n", parser->current.length,parser->current.start, tokenToString(parser->current.type));
+            
+            if (check(parser, TOKEN_COLON)) {
+                initializer = parseVarDeclaration(parser, true);
+            } else if (check(parser, TOKEN_IN)) {
+                parserDebug("parseForStatement1: in [%s]\n", tokenToString(parser->current.type));
+                advance(parser); // consume 'in'
+                parserDebug("parseForStatement2: in [%s]\n", tokenToString(parser->current.type));
+                rangeExpr = parseExpression(parser);
+                
+                if (hasParen) {
+                    consume(parser, TOKEN_RPAREN, "Expect ')' after range");
+                }
+                
+                Stmt* body = parseStatement(parser);
+                ForInStmt* stmt = malloc(sizeof(ForInStmt));
+                stmt->base.type = STMT_FOR_IN;
+                stmt->loopVar = current;
+                stmt->range = rangeExpr;
+                stmt->body = body;
+                
+                parserDebugEnd("parseForStatement");
+                return (Stmt*)stmt;
+            } else {
+                parser->current = current;
+                initializer = parseExpressionStatement(parser);
+            }
+        } else {
+            initializer = parseExpressionStatement(parser);
+        }
+    }
+    
+    // Standard for loop
+    Expr* condition = NULL;
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        condition = parseExpression(parser);
+    }
+    consume(parser, TOKEN_SEMICOLON, "Expect ';' after loop condition");
+    
+    Expr* increment = NULL;
+    if (!check(parser, TOKEN_RPAREN) && !check(parser, TOKEN_LBRACE)) {
+        increment = parseExpression(parser);
+    }
+    
+    if (hasParen) {
+        consume(parser, TOKEN_RPAREN, "Expect ')' after for clauses");
+    }
+    
+    Stmt* body = parseStatement(parser);
+    
     ForStmt* stmt = malloc(sizeof(ForStmt));
     stmt->base.type = STMT_FOR;
     stmt->initializer = initializer;
     stmt->condition = condition;
     stmt->increment = increment;
     stmt->body = body;
+    
+    parserDebugEnd("parseForStatement");
     return (Stmt*)stmt;
 }
 
+static Stmt* parseBlockStatement(Parser* parser) {
+    List* statements = listNew();
+    
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        listAppend(statements, parseStatement(parser));
+    }
+    
+    consume(parser, TOKEN_RBRACE, "Expect '}' after block");
+    
+    BlockStmt* stmt = malloc(sizeof(BlockStmt));
+    stmt->base.type = STMT_BLOCK;
+    stmt->statements = statements;
+    return (Stmt*)stmt;
+}
 
+static Stmt* parseReturnStatement(Parser* parser) {
+    Token keyword = parser->previous;
+    Expr* value = NULL;
+    
+    if (!check(parser, TOKEN_SEMICOLON)) {
+        value = parseExpression(parser);
+    }
+    
+    consume(parser, TOKEN_SEMICOLON, "Expect ';' after return value");
+    
+    ReturnStmt* stmt = malloc(sizeof(ReturnStmt));
+    stmt->base.type = STMT_RETURN;
+    stmt->keyword = keyword;
+    stmt->value = value;
+    return (Stmt*)stmt;
+}
 
+static Stmt* parseExpressionStatement(Parser* parser) {
+    Expr* expr = parseExpression(parser);
+    consume(parser, TOKEN_SEMICOLON, "Expect ';' after expression");
+    
+    ExprStmt* stmt = malloc(sizeof(ExprStmt));
+    stmt->base.type = STMT_EXPR;
+    stmt->expression = expr;
+    return (Stmt*)stmt;
+}
+static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed) {
+    parserDebugStart("parseVarDeclaration");
+    bool isConst = parser->previous.type == TOKEN_CONST;
+    bool hasLet = parser->previous.type == TOKEN_LET;
+    
+    Token name;
+    if (identifierConsumed) {
+        name = parser->previous;
+    } else {
+        name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+    }
+    
+    Type* type = NULL;
+    if (match(parser, TOKEN_COLON)) {
+        type = parseType(parser);
+    }
+    
+    Expr* initializer = NULL;
+    if (match(parser, TOKEN_ASSIGN)) {
+        initializer = parseExpression(parser);
+    }
+    
+    consume(parser, TOKEN_SEMICOLON, "Expect ';' after variable declaration");
+    
+    parserDebugEnd("parseVarDeclaration");
+    return newVarStmt(name, type, initializer, isConst);
+}
+// Block parsing
+static List* parseBlock(Parser* parser) {
+    List* statements = listNew();
+    
+    consume(parser, TOKEN_LBRACE, "Expect '{' before block");
+    
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        Stmt* stmt = parseStatement(parser);
+        if (stmt != NULL) {
+            listAppend(statements, stmt);
+        }
+    }
+    
+    consume(parser, TOKEN_RBRACE, "Expect '}' after block");
+    return statements;
+}
 
-
-
-
+static Stmt* parseFunctionDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect function name");
+    consume(parser, TOKEN_LPAREN, "Expect '(' after function name");
+    
+    List* parameters = listNew();
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
+            Type* type = NULL;
+            if (match(parser, TOKEN_COLON)) {
+                type = parseType(parser);
+            }
+            listAppend(parameters, newParameter(param, type));
+        } while (match(parser, TOKEN_COMMA));
+    }
+    consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
+    
+    Type* returnType = NULL;
+    if (match(parser, TOKEN_ARROW)) {
+        returnType = parseType(parser);
+    }
+    
+    consume(parser, TOKEN_LBRACE, "Expect '{' before function body");
+    List* body = parseBlock(parser);
+    
+    return newFuncStmt(name, parameters, returnType, body);
+}
+static Type* parseType(Parser* parser) {
+    if (match(parser, TOKEN_INT)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_INT;
+        return type;
+    }
+    if (match(parser, TOKEN_STRING)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_STRING;
+        return type;
+    }
+    error(parser, "Expect type name");
+    return NULL;
+}
 
 static Stmt* declaration(Parser* parser) {
     if (match(parser, TOKEN_FUNC)) {
         return parseFunctionDeclaration(parser);
-    } else if (match(parser, TOKEN_LET) || match(parser, TOKEN_CONST)) {
-        return parseVarDeclaration(parser);
-    } else {
-        return parseStatement(parser);
     }
-}
-static void synchronize(Parser* parser) {
-    printf("synchronize start\n");
-    parser->panicMode = false;
     
-    while (parser->current.type != TOKEN_EOF) {
-        if (parser->previous.type == TOKEN_SEMICOLON) return;
+    if (match(parser, TOKEN_LET) || match(parser, TOKEN_CONST)) {
+        return parseVarDeclaration(parser, false);
+    }
+    
+    if (check(parser, TOKEN_IDENTIFIER)) {
+        Token current = parser->current;
+        advance(parser);
         
-        switch (parser->current.type) {
-            case TOKEN_FUNC:
-            case TOKEN_LET:
-            case TOKEN_CONST:
-            case TOKEN_IF:
-            case TOKEN_FOR:
-            case TOKEN_RETURN:
-                return;
-            default: ; // Do nothing
+        if (check(parser, TOKEN_COLON)) {
+            return parseVarDeclaration(parser, true);
         }
         
-        advance(parser);
+        parser->current = current;
     }
+    
+    return parseStatement(parser);
 }
 
 bool parse(Parser* parser, List** statements) {
     parser->hadError = false;
     parser->panicMode = false;
-    
-    // Create list to store statements
     *statements = listNew();
     
-    // Prime the parser with first token
     advance(parser);
-    
-    // Parse declarations until EOF
     while (!match(parser, TOKEN_EOF)) {
-        printf("parse start, current:%d line:%d\n", parser->current.type, parser->current.line);
         Stmt* stmt = declaration(parser);
         if (stmt != NULL) {
             listAppend(*statements, stmt);
         }
         
-        // Error recovery
         if (parser->panicMode) {
             synchronize(parser);
         }
-        printf("parse end, line:%d\n", parser->current.line);
     }
     
     return !parser->hadError;
 }
 
-static Token consume(Parser* parser, TokenType type, const char* message) {
-    if (parser->current.type == type) {
-        parserDebug("consume current type:%d, %s-%s\n", parser->current.type, tokenToString(parser->current.type),tokenToString(type));
-        Token token = parser->current;
-        advance(parser);
-        return token;
-    }
-    
-    errorAt(parser, &parser->current, message);
-    return (Token){TOKEN_ERROR, NULL, 0, 0};
+List* listNew() {
+    List* list = malloc(sizeof(List));
+    list->head = list->tail = NULL;
+    list->length = 0;
+    return list;
 }
-void initParser(Parser* parser, Lexer *lexer) {
-    parser->lexer = lexer;
-    parser->hadError = false;
-    parser->panicMode = false;
-    parser->previous.type = TOKEN_ERROR;
-    parser->current.type = TOKEN_ERROR;
+
+List* listAppend(List* list, void* data) {
+    ListNode* node = malloc(sizeof(ListNode));
+    node->data = data;
+    node->next = NULL;
+    
+    if (list->tail == NULL) {
+        list->head = list->tail = node;
+    } else {
+        list->tail->next = node;
+        list->tail = node;
+    }
+    list->length++;
+    return list;
 }
