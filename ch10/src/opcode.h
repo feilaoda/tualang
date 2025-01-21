@@ -1,4 +1,5 @@
-
+#ifndef OPCODE_H
+#define OPCODE_H
 typedef enum {
     OP_INIT,
     OP_MOV,
@@ -7,6 +8,15 @@ typedef enum {
     OP_MUL,
     OP_DIV,
     OP_MOD,
+    OP_EQ,
+    OP_NEQ,
+    OP_LT,
+    OP_LE,
+    OP_GT,
+    OP_GE,
+    OP_NEG,
+    OP_NOT,
+
     OP_RETURN,
     OP_RETURN0,
     OP_RETURN1,
@@ -38,9 +48,19 @@ typedef enum {
     OP_PRINT,
     OP_GOTO,
 
+    OP_LOAD,
+    OP_STORE,
+    OP_CONST,
+    OP_POP,
+    OP_CLOSURE,
+    OP_NIL,
+    OP_CONSTANT,
     OP_UNKNOWN
 } OpCode ;
 
 
 OpCode str_to_opcode(const char* op);
 const char* opcode_tostr(OpCode op);
+
+
+#endif

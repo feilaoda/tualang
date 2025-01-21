@@ -2,6 +2,7 @@
 #define PARSER_H
 
 #include "lexer.h"
+#include "list.h"
 typedef struct {
     Lexer* lexer;
     Token current;
@@ -12,13 +13,14 @@ typedef struct {
 
 
 typedef enum {
-    EXPR_BINARY,
+    EXPR_BINARY=0,
     EXPR_UNARY,
     EXPR_LITERAL,
     EXPR_VARIABLE,
     EXPR_GROUPING,
     EXPR_CALL,
     EXPR_POSTFIX,
+    EXPR_PREFIX,
     EXPR_ASSIGN
 } ExprType;
 
@@ -38,8 +40,12 @@ typedef enum {
 // Type definitions
 typedef enum {
     TYPE_INT,
+    TYPE_LONG,
+    TYPE_DOUBLE,
+    TYPE_BOOL,
     TYPE_STRING,
-    TYPE_VOID
+    TYPE_VOID,
+    TYPE_ANY
 } TypeKind;
 
 typedef struct Type {
@@ -47,16 +53,6 @@ typedef struct Type {
 } Type;
 
 // List structure for parameters and blocks
-typedef struct ListNode {
-    void* data;
-    struct ListNode* next;
-} ListNode;
-
-typedef struct List {
-    ListNode* head;
-    ListNode* tail;
-    int length;
-} List;
 
 // Statement base structure
 typedef struct Stmt {
@@ -106,6 +102,11 @@ typedef struct {
     Expr* operand;
     Token operator;
 } PostfixExpr;
+typedef struct {
+    Expr base;
+    Expr* operand;
+    Token operator;
+} PrefixExpr;
 
 typedef struct {
     Expr base;
@@ -209,6 +210,7 @@ static Expr* newGroupingExpr(Expr* expression);
 static Expr* newPostfixExpr(Expr* operand, Token operator);
 static Expr* finishCall(Parser* parser, Expr* callee);
 
+
 static Stmt* newExpressionStmt(Expr* expression);
 static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
 static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* body);
@@ -221,9 +223,6 @@ static void errorAt(Parser* parser,Token* token, const char* message);
 static void errorPrint(Parser* parser,const char* message);
 void errorAtCurrent(Parser* parser, const char* message);
 static Token consume(Parser* parser, TokenType type, const char* message);
-// List operations
-List* listNew(void);
-List* listAppend(List* list, void* data);
-void listFree(List* list);
+
 
 #endif

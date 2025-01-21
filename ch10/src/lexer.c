@@ -2,16 +2,21 @@
 #include <string.h>
 #include <stdio.h>
 #include "lexer.h"
+
 static const char* TokenNames[] = {
     "LET",
     "CONST",
-    "IF",
+    "IF", 
     "ELSE",
-    "FOR", 
+    "FOR",
     "FUNC",
     "RETURN",
     "IN",
     "INT",
+    "LONG",
+    "TRUE",
+    "FALSE",
+    "DOUBLE",
     "STRING",
     "ASSIGN",
     "PLUS",
@@ -20,6 +25,8 @@ static const char* TokenNames[] = {
     "SLASH",
     "GT",
     "LT",
+    "LE",
+    "GE",
     "OR",
     "AND",
     "ARROW",
@@ -29,15 +36,17 @@ static const char* TokenNames[] = {
     "INC",
     "DEC",
     "LPAREN",
-    "RPAREN",
+    "RPAREN", 
     "LBRACE",
-    "RBRACE", 
+    "RBRACE",
     "SEMICOLON",
     "COMMA",
+    "DOT",
     "IDENTIFIER",
-    "NUMBER",
     "STRING_LITERAL",
     "NOT",
+    "PRINTLN",
+    "PRINT",
     "EOF",
     "ERROR"
 };
@@ -143,11 +152,13 @@ static TokenType identifierType(Lexer* lexer) {
         case 'e': return checkKeyword(lexer, 1, 3, "lse", TOKEN_ELSE);
         case 'f':
             if (lexer->current - lexer->start > 1) {
+                
                 switch (lexer->start[1]) {
                     case 'o': return checkKeyword(lexer, 2, 1, "r", TOKEN_FOR);
                     case 'u': return checkKeyword(lexer, 2, 2, "nc", TOKEN_FUNC);
                 }
             }
+            
             break;
         case 'i': ;
           if (lexer->current - lexer->start > 1) {
@@ -178,6 +189,20 @@ static TokenType identifierType(Lexer* lexer) {
                 }
             }
             break;
+        case 't': return checkKeyword(lexer, 1, 3, "rue", TOKEN_TRUE);
+
+        case 'p':
+            if (lexer->current - lexer->start > 5) {
+                if (memcmp(lexer->start, "println", 7) == 0) {
+                    return TOKEN_PRINTLN;
+                }
+            }
+            if (lexer->current - lexer->start > 3) {
+                if (memcmp(lexer->start, "print", 5) == 0) {
+                    return TOKEN_PRINT;
+                }
+            }
+            break;
         default:
           return TOKEN_IDENTIFIER;
     }
@@ -189,13 +214,47 @@ static Token identifier(Lexer* lexer) {
     return makeToken(lexer, identifierType(lexer));
 }
 
+// static Token number(Lexer* lexer) {
+//     while (isDigit(peek(lexer))) advance(lexer);
+//     if (peek(lexer) == '.' && isDigit(peekNext(lexer))) {
+//         advance(lexer);
+//         while (isDigit(peek(lexer))) advance(lexer);
+//     }
+//     return makeToken(lexer, TOKEN_NUMBER);
+// }
+
 static Token number(Lexer* lexer) {
+    TokenType type = TOKEN_INT;  // Default to int
+    
+    // Parse integer part
     while (isDigit(peek(lexer))) advance(lexer);
+    
+    // Look for decimal point
     if (peek(lexer) == '.' && isDigit(peekNext(lexer))) {
-        advance(lexer);
+        type = TOKEN_DOUBLE;
+        advance(lexer); // consume '.'
+        
+        // Parse decimal part
         while (isDigit(peek(lexer))) advance(lexer);
+        
+        // Parse exponent if present
+        if (peek(lexer) == 'e' || peek(lexer) == 'E') {
+            advance(lexer);
+            if (peek(lexer) == '+' || peek(lexer) == '-') advance(lexer);
+            if (!isDigit(peek(lexer))) {
+                return errorToken(lexer, "Invalid number format.");
+            }
+            while (isDigit(peek(lexer))) advance(lexer);
+        }
+    } else {
+        // Check for long suffix
+        if (peek(lexer) == 'l' || peek(lexer) == 'L') {
+            type = TOKEN_LONG;
+            advance(lexer);
+        }
     }
-    return makeToken(lexer, TOKEN_NUMBER);
+    
+    return makeToken(lexer, type);
 }
 
 static Token string(Lexer* lexer) {
@@ -286,8 +345,17 @@ Token scanToken(Lexer* lexer) {
         
         // Multi-character tokens
         case '=': return makeToken(lexer, TOKEN_ASSIGN);
-        case '<': return makeToken(lexer, TOKEN_LT);
-        case '>': return makeToken(lexer, TOKEN_GT);
+        case '<': 
+        {
+            if (match(lexer, '=')) return makeToken(lexer, TOKEN_LE);
+            return makeToken(lexer, TOKEN_LT);
+            break;
+        }
+        case '>': {
+            if (match(lexer, '=')) return makeToken(lexer, TOKEN_GE);
+            return makeToken(lexer, TOKEN_GT);
+            break;
+        }
         case '&':
             if (match(lexer, '&')) return makeToken(lexer, TOKEN_AND);
             break;

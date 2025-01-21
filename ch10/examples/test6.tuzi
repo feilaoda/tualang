@@ -1,0 +1,60 @@
+
+let a = 0;
+
+let a = 0
+let i:int = 0
+var a = 0
+var a:int = 0
+var a:long = 0
+var a = "hello"
+var a:string
+
+
+for i=0; i<100; i++ {
+    a = a+i
+}
+
+println(a);
+
+a = if true -> 'a' else 'b'
+a = if device_type == "cpu" -> something else elsething
+a = something if device_type == "cpu" else otherthing
+
+a = if true ? a: b
+
+a?.saySomething()
+a.saySomething()
+
+
+for v,index in list -> println(v,index)
+for v in list {
+    println(v)
+}
+
+
+name = a match {
+    case 'b' -> {
+
+    }
+    case c -> helo()
+    case d -> 
+        hello()
+    case _ -> 
+        nothing()
+}
+
+fn move(dx:int, dy:int) int -> x = x + dx,y += dy
+fn move(dx:int = 0, dy:int) int,error {
+    x += dx
+    y += dy
+    return x+y, _
+}
+
+move(dy:10, dx:1)
+
+fn position(s:Shape) (x,y) -> s.x,s.y
+fn position(s:Shape) (x,y) {
+    (s.x, s.y)
+    return s.x,s.y
+}
+

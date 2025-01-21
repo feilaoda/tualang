@@ -17,7 +17,11 @@ typedef enum {
     TOKEN_IN,
     // Types
     TOKEN_INT,
+    TOKEN_DOUBLE,
+    TOKEN_LONG,
     TOKEN_STRING,
+    TOKEN_TRUE,
+    TOKEN_FALSE,
     // Operators
     TOKEN_ASSIGN,    // =
     TOKEN_PLUS,      // +
@@ -26,6 +30,8 @@ typedef enum {
     TOKEN_SLASH,     // /
     TOKEN_GT,        // >
     TOKEN_LT,        // <
+    TOKEN_LE,        // <=
+    TOKEN_GE,        // >=
     TOKEN_OR,        // ||
     TOKEN_AND,       // &&
     TOKEN_ARROW,     // ->
@@ -46,6 +52,8 @@ typedef enum {
     TOKEN_NUMBER,
     TOKEN_STRING_LITERAL,
     TOKEN_NOT,
+    TOKEN_PRINTLN,
+    TOKEN_PRINT,
     TOKEN_EOF,
     TOKEN_ERROR
 } TokenType;
