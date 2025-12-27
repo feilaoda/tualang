@@ -117,6 +117,9 @@ void initCompiler(Compiler* compiler) {
     compiler->currentModulePrefix = NULL;
     compiler->currentModulePrefixLen = 0;
     compiler->currentAliases = NULL;
+
+    compiler->multiReturns = listNew();
+    compiler->wantMultiValue = 0;
     
     // Debug information
     compiler->hadError = false;
@@ -167,6 +170,38 @@ char* compilerQualifyToken(Compiler* compiler, const Token* name, int* outLen) {
     s[len] = '\0';
     if (outLen) *outLen = len;
     return s;
+}
+
+int compilerMultiReturnCount(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler || !compiler->multiReturns || !name) return 0;
+    for (int i = 0; i < compiler->multiReturns->length; i++) {
+        MultiReturnInfo* info = listGet(compiler->multiReturns, i);
+        if (!info) continue;
+        if (info->nameLen != nameLen) continue;
+        if (memcmp(info->name, name, (size_t)nameLen) == 0) return info->count;
+    }
+    return 0;
+}
+
+void compilerRegisterMultiReturn(Compiler* compiler, const char* name, int nameLen, int count) {
+    if (!compiler || !compiler->multiReturns || !name) return;
+    if (count <= 1) return;
+    for (int i = 0; i < compiler->multiReturns->length; i++) {
+        MultiReturnInfo* info = listGet(compiler->multiReturns, i);
+        if (!info) continue;
+        if (info->nameLen != nameLen) continue;
+        if (memcmp(info->name, name, (size_t)nameLen) == 0) {
+            info->count = count;
+            return;
+        }
+    }
+    MultiReturnInfo* info = malloc(sizeof(MultiReturnInfo));
+    info->name = malloc((size_t)nameLen + 1);
+    memcpy(info->name, name, (size_t)nameLen);
+    info->name[nameLen] = '\0';
+    info->nameLen = nameLen;
+    info->count = count;
+    listAppend(compiler->multiReturns, info);
 }
 
 StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name) {
@@ -444,6 +479,27 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
     return NULL;
 }
 
+LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr) {
+    if (!compiler || !expr) return NULL;
+
+    // Multi-values only matter for direct call expressions. Everything else
+    // keeps the default "first value" rule for nested calls.
+    Expr* target = expr;
+    if (target->type == EXPR_GROUPING) {
+        target = ((GroupingExpr*)target)->expression;
+        if (!target) return NULL;
+    }
+    if (target->type != EXPR_CALL) {
+        return compileExpr(compiler, expr);
+    }
+
+    int saved = compiler->wantMultiValue;
+    compiler->wantMultiValue = 1;
+    LLVMValueRef v = compileExpr(compiler, expr);
+    compiler->wantMultiValue = saved;
+    return v;
+}
+
 void compileStmt(Compiler* compiler, Stmt* stmt) {
     compilerDebug("Compiling statement %s\n", stmtTypeToString(stmt->type));
 #ifdef DEBUG
@@ -496,6 +552,9 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
             break;
         case STMT_VAR:
             compileVarStmt(compiler, (VarStmt*)stmt);
+            break;
+        case STMT_DESTRUCTURE:
+            compileDestructureStmt(compiler, (DestructureStmt*)stmt);
             break;
         case STMT_FUNC:
             compileFuncStmt(compiler, (FuncStmt*)stmt);
@@ -608,8 +667,51 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
         return;
     }
 
+    const char* fnName = LLVMGetValueName(compiler->current->func);
+    int fnNameLen = fnName ? (int)strlen(fnName) : 0;
+    int multiCount = compilerMultiReturnCount(compiler, fnName, fnNameLen);
+
+    if (multiCount > 1 && LLVMGetTypeKind(returnType) == LLVMStructTypeKind) {
+        // Special-case `return f()` forwarding.
+        if (stmt->values && stmt->values->length == 1) {
+            Expr* only = (Expr*)stmt->values->head->data;
+            LLVMValueRef mv = compileExprMulti(compiler, only);
+            if (mv && LLVMTypeOf(mv) == returnType) {
+                LLVMBuildRet(builder, mv);
+                return;
+            }
+        }
+
+        unsigned elementCount = LLVMCountStructElementTypes(returnType);
+        LLVMValueRef out = LLVMGetUndef(returnType);
+        unsigned provided = stmt->values ? (unsigned)stmt->values->length : (stmt->value ? 1u : 0u);
+        ListNode* node = stmt->values ? stmt->values->head : NULL;
+
+        for (unsigned i = 0; i < elementCount; i++) {
+            LLVMValueRef v = NULL;
+            if (node && i < provided) {
+                v = compileExpr(compiler, (Expr*)node->data);
+                node = node->next;
+                LLVMTypeRef want = LLVMStructGetTypeAtIndex(returnType, i);
+                v = castValueToType(compiler, v, want);
+            }
+            if (!v) {
+                LLVMTypeRef t = LLVMStructGetTypeAtIndex(returnType, i);
+                v = LLVMConstNull(t);
+            }
+            out = LLVMBuildInsertValue(builder, out, v, i, "mvr");
+        }
+        LLVMBuildRet(builder, out);
+        return;
+    }
+
     LLVMValueRef returnValue = NULL;
-    if (stmt->value != NULL) {
+    if (stmt->values && stmt->values->length > 0) {
+        if (stmt->values->length > 1) {
+            error("Function returns single value, but return has multiple expressions\n");
+        }
+        returnValue = compileExpr(compiler, (Expr*)stmt->values->head->data);
+    } else if (stmt->value != NULL) {
         returnValue = compileExpr(compiler, stmt->value);
     }
     if (returnValue == NULL) {
@@ -676,6 +778,103 @@ void compileVarStmt(Compiler* compiler, VarStmt* stmt) {
     emitVarStmt(compiler, stmt);
 }
 
+static const char* llvmStructNameOrNull(LLVMTypeRef t) {
+    if (!t) return NULL;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return NULL;
+    return LLVMGetStructName(t);
+}
+
+void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
+    if (!compiler || !stmt) return;
+    if (!stmt->names || stmt->names->length <= 0) return;
+    if (!stmt->value) {
+        error("Destructuring requires a RHS expression\n");
+        return;
+    }
+
+    LLVMValueRef rhs = compileExprMulti(compiler, stmt->value);
+    if (!rhs) {
+        error("Failed to compile RHS of destructuring\n");
+        return;
+    }
+
+    LLVMTypeRef rhsType = LLVMTypeOf(rhs);
+    if (LLVMGetTypeKind(rhsType) != LLVMStructTypeKind) {
+        error("Destructuring RHS must return multiple values\n");
+        return;
+    }
+
+    unsigned rhsCount = LLVMCountStructElementTypes(rhsType);
+    if ((int)rhsCount != stmt->names->length) {
+        error("Destructuring arity mismatch: want %d values, got %u\n", stmt->names->length, rhsCount);
+    }
+    unsigned useCount = rhsCount;
+    if ((int)useCount > stmt->names->length) useCount = (unsigned)stmt->names->length;
+
+    if (stmt->isDeclaration) {
+        for (unsigned i = 0; i < useCount; i++) {
+            Token* nameTok = (Token*)listGet(stmt->names, (int)i);
+            Type* declaredType = stmt->types ? (Type*)listGet(stmt->types, (int)i) : NULL;
+            if (!nameTok) continue;
+
+            LLVMValueRef v = LLVMBuildExtractValue(compiler->builder, rhs, i, "mv");
+            LLVMTypeRef targetType = declaredType ? typeToLLVMType(compiler, declaredType, false)
+                                                  : LLVMStructGetTypeAtIndex(rhsType, i);
+            v = castValueToType(compiler, v, targetType);
+
+            char* varName = malloc((size_t)nameTok->length + 1);
+            memcpy(varName, nameTok->start, (size_t)nameTok->length);
+            varName[nameTok->length] = '\0';
+
+            LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, targetType, varName);
+            if (v) LLVMBuildStore(compiler->builder, v, slot);
+
+            VariableRef* variable = malloc(sizeof(VariableRef));
+            variable->name = varName;
+            variable->length = nameTok->length;
+            variable->value = slot;
+            variable->type = targetType;
+
+            const char* typeName = llvmStructNameOrNull(targetType);
+            if (typeName) {
+                variable->typeName = typeName;
+                variable->typeNameLength = (int)strlen(typeName);
+            } else {
+                variable->typeName = NULL;
+                variable->typeNameLength = 0;
+            }
+
+            variable->isConst = stmt->isConst ? 1 : 0;
+            variable->isGlobal = 0;
+            listAppend(compiler->current->variables, variable);
+        }
+    } else {
+        for (unsigned i = 0; i < useCount; i++) {
+            Token* nameTok = (Token*)listGet(stmt->names, (int)i);
+            if (!nameTok) continue;
+
+            VariableExpr ve;
+            memset(&ve, 0, sizeof(ve));
+            ve.base.type = EXPR_VARIABLE;
+            ve.name = *nameTok;
+
+            VariableRef var = findVariableExpr(compiler, (Expr*)&ve);
+            if (!var.value) {
+                error("Undefined variable in destructuring assignment: %.*s\n", nameTok->length, nameTok->start);
+                continue;
+            }
+            if (var.isConst) {
+                error("Cannot assign to const in destructuring assignment: %.*s\n", nameTok->length, nameTok->start);
+                continue;
+            }
+
+            LLVMValueRef v = LLVMBuildExtractValue(compiler->builder, rhs, i, "mv");
+            v = castValueToType(compiler, v, var.type);
+            if (v) LLVMBuildStore(compiler->builder, v, var.value);
+        }
+    }
+}
+
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compilerDebug("Compiling function statement %.*s\n", stmt->name.length, stmt->name.start);
 
@@ -693,7 +892,20 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         }
     }
 
-    LLVMTypeRef retType = typeToLLVMType(compiler, stmt->returnType, true);
+    LLVMTypeRef retType = LLVMVoidTypeInContext(compiler->context);
+    if (stmt->returnTypes && stmt->returnTypes->length > 1) {
+        int rc = stmt->returnTypes->length;
+        LLVMTypeRef* rts = malloc(sizeof(LLVMTypeRef) * (size_t)rc);
+        for (int i = 0; i < rc; i++) {
+            Type* t = listGet(stmt->returnTypes, i);
+            rts[i] = typeToLLVMType(compiler, t, false);
+        }
+        retType = LLVMStructTypeInContext(compiler->context, rts, (unsigned)rc, 0);
+        compilerRegisterMultiReturn(compiler, funcName, stmt->name.length, rc);
+        free(rts);
+    } else {
+        retType = typeToLLVMType(compiler, stmt->returnType, true);
+    }
     LLVMTypeRef funcType = LLVMFunctionType(retType, paramTypes, (unsigned)paramCount, 0);
     LLVMValueRef func = LLVMAddFunction(compiler->module, funcName, funcType);
 

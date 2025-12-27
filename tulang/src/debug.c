@@ -8,9 +8,22 @@ static const char* StmtTypeNames[] = {
     "IF",
     "FOR",
     "FOR_IN",
+    "WHILE",
+    "DO_WHILE",
+    "BREAK",
+    "CONTINUE",
+    "LABEL",
+    "GOTO",
+    "IMPORT",
+    "FROM_IMPORT",
+    "PRIVATE",
     "FUNC",
     "RETURN",
-    "BLOCK"
+    "BLOCK",
+    "STRUCT",
+    "OBJECT",
+    "ENUM",
+    "DESTRUCTURE"
 };
 
 const char* stmtTypeToString(StmtType type) {

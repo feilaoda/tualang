@@ -69,7 +69,17 @@ typedef struct Compiler{
     const char* currentModulePrefix;
     int currentModulePrefixLen;
     List* currentAliases; // List<SymbolAlias*>
+
+    // Multi-return function tracking (LLVM JIT path)
+    List* multiReturns; // List<MultiReturnInfo*>
+    int wantMultiValue; // when true, calls return full tuple value
 } Compiler;
+
+typedef struct MultiReturnInfo {
+    char* name;
+    int nameLen;
+    int count;
+} MultiReturnInfo;
 
 typedef struct LoopTarget {
     LLVMBasicBlockRef breakTarget;
@@ -105,6 +115,9 @@ SymbolAlias* compilerFindAlias(Compiler* compiler, const char* local, int localL
 StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name);
 EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name);
 char* compilerQualifyToken(Compiler* compiler, const Token* name, int* outLen);
+
+int compilerMultiReturnCount(Compiler* compiler, const char* name, int nameLen);
+void compilerRegisterMultiReturn(Compiler* compiler, const char* name, int nameLen, int count);
 
 typedef struct StructInfo {
     char* name;
@@ -241,6 +254,7 @@ typedef struct {
 } IRLine;
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr);
+LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr);
 
 // Function to compile statements
 void compileStmt(Compiler* compiler, Stmt* stmt);
@@ -257,6 +271,7 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt);
 void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt);
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt);
 void compileVarStmt(Compiler* compiler, VarStmt* stmt);
+void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt);
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt);
 void compileStructStmt(Compiler* compiler, StructStmt* stmt);
 void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);

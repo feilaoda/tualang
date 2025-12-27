@@ -64,8 +64,13 @@
 - 返回：
   - `return expr`
   - `return`（void）
-- 多返回值（Status: Planned）：
-  - 语法与解构规则待定（会影响赋值与参数传递）
+- 多返回值（Status: Implemented）：
+  - 函数返回类型可写成列表：`fn f() -> int, string { ... }`
+  - `return` 支持多表达式：`return a, b`
+  - 解构声明：`let a, b = f()` / `const a, b = f()`
+  - 解构赋值：`a, b = f()`
+  - 表达式上下文规则：当 `f()` 返回多个值时，在普通表达式上下文会自动取第一个值（例如 `let x = f()`）
+  - `return f()` 转发规则：当当前函数是多返回值函数时，`return f()` 会直接转发 `f()` 的多返回结果
 - 闭包/upvalue（Status: Planned）：
   - 需要引入函数值与捕获环境（Analyze + Runtime）
 - 内建函数（Status: Implemented）：

@@ -154,12 +154,13 @@ static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst)
     return (Stmt*)stmt;
 }
 
-static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* body) {
+static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body) {
     FuncStmt* stmt = malloc(sizeof(FuncStmt));
     stmt->base.type = STMT_FUNC;
     stmt->name = name;
     stmt->params = params;
     stmt->returnType = returnType;
+    stmt->returnTypes = returnTypes;
     stmt->body = body;
     return (Stmt*)stmt;
 }
@@ -512,6 +513,51 @@ static Stmt* parseStatement(Parser* parser) {
     } else if (match(parser, TOKEN_LBRACE)) {
         stmt = parseBlockStatement(parser);
     } else {
+        // Try destructuring assignment: `a,b = expr`
+        if (check(parser, TOKEN_IDENTIFIER)) {
+            Parser snap = *parser;
+            Lexer lexSnap = *parser->lexer;
+
+            advance(parser); // consume first identifier
+            Token firstName = parser->previous;
+
+            if (match(parser, TOKEN_COMMA)) {
+                List* names = listNew();
+                List* types = listNew();
+
+                Token* t0 = malloc(sizeof(Token));
+                *t0 = firstName;
+                listAppend(names, t0);
+                listAppend(types, NULL);
+
+                do {
+                    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect identifier in destructuring assignment");
+                    Token* tp = malloc(sizeof(Token));
+                    *tp = name;
+                    listAppend(names, tp);
+                    listAppend(types, NULL);
+                } while (match(parser, TOKEN_COMMA));
+
+                consume(parser, TOKEN_ASSIGN, "Expect '=' after destructuring targets");
+                Expr* value = parseExpression(parser);
+                if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after destructuring assignment");
+
+                DestructureStmt* ds = malloc(sizeof(DestructureStmt));
+                ds->base.type = STMT_DESTRUCTURE;
+                ds->keyword = (Token){TOKEN_ERROR, NULL, 0, firstName.line, 0};
+                ds->names = names;
+                ds->types = types;
+                ds->value = value;
+                ds->isConst = false;
+                ds->isDeclaration = false;
+                parserDebugEnd("parseStatement");
+                return (Stmt*)ds;
+            }
+
+            // Not destructuring assignment: restore and parse as expression statement.
+            *parser = snap;
+            *parser->lexer = lexSnap;
+        }
         stmt = parseExpressionStatement(parser);
     }
     
@@ -738,20 +784,28 @@ static Stmt* parseBlockStatement(Parser* parser) {
 
 static Stmt* parseReturnStatement(Parser* parser) {
     Token keyword = parser->previous;
+
     Expr* value = NULL;
-    
+    List* values = NULL;
     if (!check(parser, TOKEN_SEMICOLON)) {
+        values = listNew();
         value = parseExpression(parser);
+        listAppend(values, value);
+        while (match(parser, TOKEN_COMMA)) {
+            Expr* v = parseExpression(parser);
+            listAppend(values, v);
+        }
     }
-    
+
     if (check(parser, TOKEN_SEMICOLON)) {
-        consume(parser, TOKEN_SEMICOLON, "Expect ';' after return value");
+        consume(parser, TOKEN_SEMICOLON, "Expect statement separator after return");
     }
-    
+
     ReturnStmt* stmt = malloc(sizeof(ReturnStmt));
     stmt->base.type = STMT_RETURN;
     stmt->keyword = keyword;
     stmt->value = value;
+    stmt->values = values;
     return (Stmt*)stmt;
 }
 
@@ -797,75 +851,129 @@ static Stmt* parseExpressionStatement(Parser* parser) {
 // }
 static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed) {
     parserDebugStart("parseVarDeclaration");
-    
-    // Create list for multiple declarations
-    List* declarations = listNew();
-    bool isConst = parser->previous.type == TOKEN_CONST;
-    bool hasVar = parser->previous.type == TOKEN_VAR;
 
-    bool first = true;
-    do {
-        // Parse variable name
-        Token name;
-        if (first && identifierConsumed) {
-            name = parser->previous;
-        } else {
-            name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
-        }
-        first = false;
-        
-        bool hasType = false;
-        // Parse optional type annotation
+    Token declKeyword = parser->previous;
+    bool isConst = (!identifierConsumed) && (declKeyword.type == TOKEN_CONST);
+
+    // Identifier-consumed form: `name: Type = expr`
+    if (identifierConsumed) {
+        Token name = parser->previous;
         Type* type = NULL;
         if (match(parser, TOKEN_COLON)) {
             type = parseType(parser);
-            hasType = true;
         }
-        
-        // Parse initializer if present
         Expr* initializer = NULL;
         if (match(parser, TOKEN_ASSIGN)) {
             initializer = parseExpression(parser);
-            hasType = true;
+        }
+        if (check(parser, TOKEN_SEMICOLON)) {
+            consume(parser, TOKEN_SEMICOLON, "Expect statement separator after variable declaration");
+        }
+        parserDebugEnd("parseVarDeclaration");
+        return newVarStmt(name, type, initializer, 0);
+    }
+
+    // Normal `let/const` form.
+    Token firstName = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+    Type* firstType = NULL;
+    if (match(parser, TOKEN_COLON)) {
+        firstType = parseType(parser);
+    }
+
+    // If we have `let a,b,...` and no per-binding initializer, treat as:
+    // - `let a,b = expr` destructuring declaration, OR
+    // - `let a,b` multiple declarations without initializers.
+    if (check(parser, TOKEN_COMMA)) {
+        List* names = listNew();
+        List* types = listNew();
+
+        Token* t0 = malloc(sizeof(Token));
+        *t0 = firstName;
+        listAppend(names, t0);
+        listAppend(types, firstType);
+
+        while (match(parser, TOKEN_COMMA)) {
+            Token name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+            Type* type = NULL;
+            if (match(parser, TOKEN_COLON)) {
+                type = parseType(parser);
+            }
+            Token* tp = malloc(sizeof(Token));
+            *tp = name;
+            listAppend(names, tp);
+            listAppend(types, type);
         }
 
-        if (hasType == false)
-        {
-            /* throw error */
+        if (match(parser, TOKEN_ASSIGN)) {
+            Expr* rhs = parseExpression(parser);
+            if (check(parser, TOKEN_SEMICOLON)) {
+                consume(parser, TOKEN_SEMICOLON, "Expect statement separator after destructuring declaration");
+            }
+
+            DestructureStmt* ds = malloc(sizeof(DestructureStmt));
+            ds->base.type = STMT_DESTRUCTURE;
+            ds->keyword = declKeyword;
+            ds->names = names;
+            ds->types = types;
+            ds->value = rhs;
+            ds->isConst = isConst;
+            ds->isDeclaration = true;
+            parserDebugEnd("parseVarDeclaration");
+            return (Stmt*)ds;
         }
-        
-        
-        // Create var statement
-        Stmt* varStmt = newVarStmt(name, type, initializer, isConst);
-        // VarStmt* varStmt = malloc(sizeof(VarStmt));
-        // varStmt->base.type = STMT_VAR;
-        // varStmt->name = name;
-        // varStmt->type = type;
-        // varStmt->initializer = initializer;
-        // varStmt->isConst = isConst;
-        
-        // Add to declarations list
-        listAppend(declarations, varStmt);
-        
-    } while (match(parser, TOKEN_COMMA));
-    
-    if(check(parser, TOKEN_SEMICOLON)){
-        consume(parser, TOKEN_SEMICOLON, "Expect ';' after variable declaration");
+
+        // No `=`: treat as multiple declarations without initializers.
+        if (check(parser, TOKEN_SEMICOLON)) {
+            consume(parser, TOKEN_SEMICOLON, "Expect statement separator after variable declaration");
+        }
+        List* decls = listNew();
+        for (ListNode* n = names->head, *t = types->head; n != NULL && t != NULL; n = n->next, t = t->next) {
+            Token* nt = (Token*)n->data;
+            Type* ty = (Type*)t->data;
+            listAppend(decls, newVarStmt(*nt, ty, NULL, isConst));
+        }
+        BlockStmt* block = malloc(sizeof(BlockStmt));
+        block->base.type = STMT_BLOCK;
+        block->statements = decls;
+        parserDebugEnd("parseVarDeclaration");
+        return (Stmt*)block;
     }
-    
-    // If only one declaration, return it directly
+
+    // Per-binding initializer form: `let a[:T] = expr, b[:U] = expr ...`
+    List* declarations = listNew();
+    Expr* firstInit = NULL;
+    if (match(parser, TOKEN_ASSIGN)) {
+        firstInit = parseExpression(parser);
+    }
+    listAppend(declarations, newVarStmt(firstName, firstType, firstInit, isConst));
+
+    while (match(parser, TOKEN_COMMA)) {
+        Token name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+        Type* type = NULL;
+        if (match(parser, TOKEN_COLON)) {
+            type = parseType(parser);
+        }
+        Expr* init = NULL;
+        if (match(parser, TOKEN_ASSIGN)) {
+            init = parseExpression(parser);
+        }
+        listAppend(declarations, newVarStmt(name, type, init, isConst));
+    }
+
+    if (check(parser, TOKEN_SEMICOLON)) {
+        consume(parser, TOKEN_SEMICOLON, "Expect statement separator after variable declaration");
+    }
+
     if (declarations->length == 1) {
         VarStmt* stmt = (VarStmt*)declarations->head->data;
         free(declarations);
         parserDebugEnd("parseVarDeclaration");
         return (Stmt*)stmt;
     }
-    
-    // Create block statement for multiple declarations
+
     BlockStmt* block = malloc(sizeof(BlockStmt));
     block->base.type = STMT_BLOCK;
     block->statements = declarations;
-    
     parserDebugEnd("parseVarDeclaration");
     return (Stmt*)block;
 }
@@ -907,20 +1015,33 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
     
     Type* returnType = NULL;
+    List* returnTypes = NULL;
     if (match(parser, TOKEN_ARROW)) {
+        returnTypes = listNew();
         returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
     } else if (check(parser, TOKEN_INT) ||
                check(parser, TOKEN_LONG) ||
                check(parser, TOKEN_DOUBLE) ||
                check(parser, TOKEN_STRING) ||
                check(parser, TOKEN_BOOL)) {
         // Support `fn demo(...) int {}` in addition to `fn demo(...) -> int {}`
+        returnTypes = listNew();
         returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
     }
     
     List* body = parseBlock(parser);
     
-    return newFuncStmt(name, parameters, returnType, body);
+    return newFuncStmt(name, parameters, returnType, returnTypes, body);
 }
 
 static Stmt* parseStructDeclaration(Parser* parser) {
@@ -968,12 +1089,19 @@ static Stmt* parseStructDeclaration(Parser* parser) {
             consume(parser, TOKEN_RPAREN, "Expect ')' after init/deinit");
 
             Type* returnType = NULL;
+            List* returnTypes = NULL;
             if (match(parser, TOKEN_ARROW)) {
+                returnTypes = listNew();
                 returnType = parseType(parser);
+                listAppend(returnTypes, returnType);
+                while (match(parser, TOKEN_COMMA)) {
+                    Type* t = parseType(parser);
+                    listAppend(returnTypes, t);
+                }
             }
 
             List* body = parseBlock(parser);
-            FuncStmt* method = (FuncStmt*)newFuncStmt(nameToken, listNew(), returnType, body);
+            FuncStmt* method = (FuncStmt*)newFuncStmt(nameToken, listNew(), returnType, returnTypes, body);
             listAppend(methods, method);
             continue;
         }

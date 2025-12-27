@@ -585,6 +585,35 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
                 continue;
             }
         }
+        if (stmt->type == STMT_DESTRUCTURE) {
+            DestructureStmt* d = (DestructureStmt*)stmt;
+            if (d->isDeclaration && d->names) {
+                DestructureStmt tmp = *d;
+                List* names = listNew();
+                for (ListNode* n = d->names->head; n != NULL; n = n->next) {
+                    Token* tok = (Token*)n->data;
+                    if (!tok) continue;
+                    int ql = 0;
+                    char* q = compilerQualifyToken(compiler, tok, &ql);
+                    if (!q) continue;
+                    Token* qt = malloc(sizeof(Token));
+                    *qt = *tok;
+                    qt->start = q;
+                    qt->length = ql;
+                    listAppend(names, qt);
+                }
+                tmp.names = names;
+                compileDestructureStmt(compiler, &tmp);
+                for (ListNode* n = names->head; n != NULL; n = n->next) {
+                    Token* tok = (Token*)n->data;
+                    if (!tok) continue;
+                    free((char*)tok->start);
+                    free(tok);
+                }
+                listFree(names);
+                continue;
+            }
+        }
 
         compileStmt(compiler, stmt);
     }

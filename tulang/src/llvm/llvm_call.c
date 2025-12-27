@@ -263,10 +263,27 @@ LLVMTypeRef buildMethodType() {
 
 
 
+static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef func, LLVMValueRef call) {
+    if (!compiler || !func || !call) return call;
+    if (compiler->wantMultiValue) return call;
+    const char* name = LLVMGetValueName(func);
+    int len = name ? (int)strlen(name) : 0;
+    int cnt = compilerMultiReturnCount(compiler, name, len);
+    if (cnt > 1) {
+        return LLVMBuildExtractValue(compiler->builder, call, 0, "mv0");
+    }
+    return call;
+}
+
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     emitDebug("emitCallExpr\n");
 
     if (!expr || !expr->callee) return NULL;
+
+    // Multi-return selection is only for the current call's return value.
+    // Nested calls (arguments) should keep the default "first value" rule.
+    int wantMultiForThisCall = compiler ? compiler->wantMultiValue : 0;
+    if (compiler) compiler->wantMultiValue = 0;
 
     // Member call:
     // - Instance: p.method(...) -> Struct__method(p, ...)
@@ -275,6 +292,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         GetExpr* get = (GetExpr*)expr->callee;
         if (!get->object || get->object->type != EXPR_VARIABLE) {
             emitDebug("Unsupported member call receiver\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
 
@@ -310,6 +328,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
         if (!func) {
             emitDebug("Undefined object method\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
 
@@ -318,6 +337,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if ((!isInstance && expected != got) || (isInstance && expected != got + 1)) {
             emitDebug("Argument count mismatch\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
 
@@ -356,11 +376,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
         if (paramTypes) free(paramTypes);
         if (args) free(args);
-        return call;
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        LLVMValueRef out = collapseMultiReturnIfNeeded(compiler, func, call);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
     }
 
     if (expr->callee->type != EXPR_VARIABLE) {
         emitDebug("Only simple calls are supported for now\n");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
 
@@ -389,9 +413,12 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
             free(name);
             if (info) {
-                return emitStructConstructor(compiler, info, expr);
+                LLVMValueRef out = emitStructConstructor(compiler, info, expr);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
             }
             emitDebug("Undefined function\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
         free(name);
@@ -401,6 +428,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (expected != got) {
             emitDebug("Argument count mismatch\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
 
@@ -425,11 +453,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
         if (paramTypes) free(paramTypes);
         if (args) free(args);
-        return call;
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        LLVMValueRef out = collapseMultiReturnIfNeeded(compiler, func, call);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
     }
 
     if (!expr->arguments || expr->arguments->length != 1) {
         emitDebug("print/println expects exactly 1 argument for now\n");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
 
@@ -440,13 +472,16 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     const char* fmt = formatForValue(argValue, isPrintln);
     if (!fmt) {
         emitDebug("Unsupported print argument type\n");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
     argValue = castForPrintf(compiler, argValue);
 
     LLVMValueRef formatStr = LLVMBuildGlobalStringPtr(compiler->builder, fmt, "fmt");
     LLVMValueRef args[] = { formatStr, argValue };
-    return LLVMBuildCall2(compiler->builder, printfType, printfFunc, args, 2, "");
+    LLVMValueRef out = LLVMBuildCall2(compiler->builder, printfType, printfFunc, args, 2, "");
+    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+    return out;
     // LLVMBuilderRef builder = compiler->builder;
     // Block* block = compiler->current;
 

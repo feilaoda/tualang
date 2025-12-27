@@ -46,7 +46,8 @@ typedef enum {
     STMT_BLOCK,
     STMT_STRUCT,
     STMT_OBJECT,
-    STMT_ENUM
+    STMT_ENUM,
+    STMT_DESTRUCTURE
 } StmtType;
 
 
@@ -167,6 +168,7 @@ typedef struct {
     Token name;
     List* params;
     Type* returnType;
+    List* returnTypes; // List<Type*>, NULL or empty => void
     List* body;
 } FuncStmt;
 
@@ -196,8 +198,22 @@ typedef struct {
 typedef struct {
     Stmt base;
     Expr* value;
+    List* values; // List<Expr*>, if NULL treat as single value
     Token keyword;
 } ReturnStmt;
+
+// Destructuring statement:
+// - Declaration: `let a,b = f()` / `const a,b = f()`
+// - Assignment:  `a,b = f()`
+typedef struct {
+    Stmt base;
+    Token keyword;  // TOKEN_VAR / TOKEN_CONST for declaration, TOKEN_ERROR for assignment
+    List* names;    // List<Token*>
+    List* types;    // List<Type*> (may contain NULL entries)
+    Expr* value;    // RHS expression
+    bool isConst;
+    bool isDeclaration;
+} DestructureStmt;
 typedef struct {
     Stmt base;
     List* statements;
@@ -336,11 +352,11 @@ static Expr* finishCall(Parser* parser, Expr* callee);
 
 static Stmt* newExpressionStmt(Expr* expression);
 static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
-static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* body);
+static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
 static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
 static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
 static Stmt* newBlockStmt(List* statements);
-static Stmt* newReturnStmt(Token keyword, Expr* value);
+static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
 
 static void errorAt(Parser* parser,Token* token, const char* message);
 static void errorPrint(Parser* parser,const char* message);
