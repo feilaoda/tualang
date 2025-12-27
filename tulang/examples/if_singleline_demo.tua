@@ -1,11 +1,10 @@
-let a:int = 1;
+let a:int = 1
 
-if a == 1 println(1); else println(0);
+if a == 1 println(1) else println(0)
 
 if a == 2
-    println(2);
+    println(2)
 else if a == 1
-    println(3);
+    println(3)
 else
-    println(4);
-
+    println(4)

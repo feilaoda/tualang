@@ -3,8 +3,11 @@ source_filename = "tua_module"
 
 @str = private unnamed_addr constant [12 x i8] c"hello world\00", align 1
 @fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@fmt.1 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.1 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 @fmt.2 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.3 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
+@fmt.4 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.5 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 
 define i32 @main() {
 entry:
@@ -19,10 +22,14 @@ entry:
 if.then:                                          ; preds = %entry
   %load1 = load i32, ptr %a, align 4
   %0 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %load1)
+  %load2 = load ptr, ptr %s, align 8
+  %1 = call i32 (ptr, ...) @printf(ptr @fmt.1, ptr %load2)
   br label %if.end
 
 if.else:                                          ; preds = %entry
-  %1 = call i32 (ptr, ...) @printf(ptr @fmt.1, i32 0)
+  %2 = call i32 (ptr, ...) @printf(ptr @fmt.2, i32 0)
+  %load3 = load ptr, ptr %s, align 8
+  %3 = call i32 (ptr, ...) @printf(ptr @fmt.3, ptr %load3)
   br label %if.end
 
 if.end:                                           ; preds = %if.else, %if.then
@@ -31,14 +38,14 @@ if.end:                                           ; preds = %if.else, %if.then
   br label %loop.cond
 
 loop.cond:                                        ; preds = %loop.inc, %if.end
-  %load2 = load i32, ptr %i, align 4
-  %icmp_lt = icmp slt i32 %load2, 3
+  %load4 = load i32, ptr %i, align 4
+  %icmp_lt = icmp slt i32 %load4, 3
   br i1 %icmp_lt, label %loop.body, label %loop.end
 
 loop.body:                                        ; preds = %loop.cond
-  %load3 = load i32, ptr %a, align 4
-  %load4 = load i32, ptr %i, align 4
-  %add = add i32 %load3, %load4
+  %load5 = load i32, ptr %a, align 4
+  %load6 = load i32, ptr %i, align 4
+  %add = add i32 %load5, %load6
   store i32 %add, ptr %a, align 4
   br label %loop.inc
 
@@ -49,8 +56,10 @@ loop.inc:                                         ; preds = %loop.body
   br label %loop.cond
 
 loop.end:                                         ; preds = %loop.cond
-  %load5 = load i32, ptr %a, align 4
-  %2 = call i32 (ptr, ...) @printf(ptr @fmt.2, i32 %load5)
+  %load7 = load i32, ptr %a, align 4
+  %4 = call i32 (ptr, ...) @printf(ptr @fmt.4, i32 %load7)
+  %load8 = load ptr, ptr %s, align 8
+  %5 = call i32 (ptr, ...) @printf(ptr @fmt.5, ptr %load8)
   ret i32 0
 }
 

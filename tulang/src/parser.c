@@ -391,6 +391,10 @@ static Expr* finishCall(Parser* parser, Expr* callee) {
 static Stmt* parseStatement(Parser* parser) {
     parserDebugStart("parseStatement");
     Stmt* stmt = NULL;
+
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // skip statement separators (explicit ';' or newline)
+    }
     
     if (match(parser, TOKEN_IF)) {
         stmt = parseIfStatement(parser);
@@ -421,6 +425,9 @@ static Stmt* parseIfStatement(Parser* parser) {
     Stmt* thenBranch = parseStatement(parser);
     Stmt* elseBranch = NULL;
     
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // allow newline(s) before else / else-if
+    }
     if (match(parser, TOKEN_ELSE)) {
         elseBranch = parseStatement(parser);
     }
@@ -538,6 +545,9 @@ static Stmt* parseForStatement(Parser* parser) {
             if (hasParen) {
                 consume(parser, TOKEN_RPAREN, "Expect ')' after range");
             }
+            while (match(parser, TOKEN_SEMICOLON)) {
+                // allow newline before '{'
+            }
             consume(parser, TOKEN_LBRACE, "Expect '{' before loop body");
             Stmt* body = parseBlockStatement(parser);
             
@@ -584,6 +594,9 @@ static Stmt* parseForStatement(Parser* parser) {
         consume(parser, TOKEN_RPAREN, "Expect ')' after for clauses");
     }
     
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // allow newline before '{'
+    }
     consume(parser, TOKEN_LBRACE, "Expect '{' before loop body");
     Stmt* body = parseBlockStatement(parser);
     
@@ -602,7 +615,10 @@ static Stmt* parseBlockStatement(Parser* parser) {
     List* statements = listNew();
     
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        listAppend(statements, declaration(parser));
+        Stmt* stmt = declaration(parser);
+        if (stmt != NULL) {
+            listAppend(statements, stmt);
+        }
     }
     
     consume(parser, TOKEN_RBRACE, "Expect '}' after block");
@@ -750,6 +766,9 @@ static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed) {
 static List* parseBlock(Parser* parser) {
     List* statements = listNew();
     
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // allow newline before '{'
+    }
     consume(parser, TOKEN_LBRACE, "Expect '{' before block");
     
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
@@ -804,6 +823,9 @@ static Stmt* parseStructDeclaration(Parser* parser) {
     Token name = consume(parser, TOKEN_IDENTIFIER, "Expect struct name");
     
     // Parse opening brace
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // allow newline before '{'
+    }
     consume(parser, TOKEN_LBRACE, "Expect '{' before struct body");
     
     // Create lists for fields and methods
@@ -876,6 +898,11 @@ static Type* parseType(Parser* parser) {
 }
 
 static Stmt* declaration(Parser* parser) {
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // skip statement separators (explicit ';' or newline)
+    }
+    if (check(parser, TOKEN_EOF) || check(parser, TOKEN_RBRACE)) return NULL;
+
     if (match(parser, TOKEN_FUNC)) {
         return parseFunctionDeclaration(parser);
     }

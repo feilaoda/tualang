@@ -1,4 +1,4 @@
-let a:int = 10;
+let a:int = 10
 const s = "hello world"
 
 if a > 5 {

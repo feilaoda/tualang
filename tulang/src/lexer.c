@@ -164,10 +164,6 @@ static void skipWhitespace(Lexer* lexer) {
             case '\v':
                 advance(lexer);
                 break;
-            case '\n':
-                lexer->line++;
-                advance(lexer);
-                break;
             default:
                 return;
         }
@@ -409,6 +405,12 @@ Token scanToken(Lexer* lexer) {
 
     }
 
+    // Treat newline as statement separator
+    if (peek(lexer) == '\n') {
+        advance(lexer);
+        lexer->line++;
+        return makeToken(lexer, TOKEN_SEMICOLON);
+    }
     
     char c = advance(lexer);
     // printf("scantoken c, %c %d\n", c, c);
