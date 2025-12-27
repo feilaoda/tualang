@@ -18,5 +18,6 @@ List* listNew(void);
 List* listAppend(List* list, void* data);
 void listFree(List* list);
 void * listGet(List* list, int index);
+void * listPop(List* list);
 
 #endif

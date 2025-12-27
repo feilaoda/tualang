@@ -1,0 +1,10 @@
+let i = 0
+
+::start::
+i++
+if i < 3 {
+    goto start
+}
+
+println(i)
+

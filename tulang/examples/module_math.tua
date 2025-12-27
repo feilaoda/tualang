@@ -1,0 +1,14 @@
+private fn secret() int {
+    return 42
+}
+
+fn add(a:int, b:int) int {
+    return a + b
+}
+
+object MathUtils {
+    fn mul(a:int, b:int) int {
+        return a * b
+    }
+}
+

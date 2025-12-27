@@ -54,7 +54,7 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
-            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
                 memcpy(tn, type->name.start, (size_t)type->name.length);
@@ -289,7 +289,20 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         if (isInstance) {
             mangled = mangleRawAndToken(recvVar.typeName, recvVar.typeNameLength, &get->name, &mangledLen);
         } else {
-            mangled = mangleRawAndToken(recvNameExpr->name.start, recvNameExpr->name.length, &get->name, &mangledLen);
+            SymbolAlias* a = compilerFindAlias(compiler, recvNameExpr->name.start, recvNameExpr->name.length);
+            if (a && (a->kind == ALIAS_OBJECT || a->kind == ALIAS_ENUM || a->kind == ALIAS_STRUCT)) {
+                mangled = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &mangledLen);
+            } else if (compiler->currentModulePrefix) {
+                int ql = 0;
+                char* q = compilerQualifyToken(compiler, &recvNameExpr->name, &ql);
+                if (q) {
+                    mangled = mangleRawAndToken(q, ql, &get->name, &mangledLen);
+                    free(q);
+                }
+            }
+            if (!mangled) {
+                mangled = mangleRawAndToken(recvNameExpr->name.start, recvNameExpr->name.length, &get->name, &mangledLen);
+            }
         }
 
         LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
@@ -359,7 +372,21 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         char* name = tokenToCString(&callee->name);
         LLVMValueRef func = LLVMGetNamedFunction(compiler->module, name);
         if (!func) {
-            StructInfo* info = compilerFindStruct(compiler, callee->name.start, callee->name.length);
+            SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+            if (a && a->kind == ALIAS_FUNC) {
+                func = LLVMGetNamedFunction(compiler->module, a->qualified);
+            }
+        }
+        if (!func && compiler->currentModulePrefix) {
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+            if (q) {
+                func = LLVMGetNamedFunction(compiler->module, q);
+                free(q);
+            }
+        }
+        if (!func) {
+            StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
             free(name);
             if (info) {
                 return emitStructConstructor(compiler, info, expr);

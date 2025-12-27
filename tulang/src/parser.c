@@ -439,11 +439,74 @@ static Stmt* parseStatement(Parser* parser) {
     while (match(parser, TOKEN_SEMICOLON)) {
         // skip statement separators (explicit ';' or newline)
     }
+
+    // Lua-style label: ::name::
+    if (match(parser, TOKEN_COLON)) {
+        consume(parser, TOKEN_COLON, "Expect ':' in label syntax '::name::'");
+        Token name = consume(parser, TOKEN_IDENTIFIER, "Expect label name");
+        consume(parser, TOKEN_COLON, "Expect ':' after label name");
+        consume(parser, TOKEN_COLON, "Expect ':' after label name");
+        LabelStmt* l = malloc(sizeof(LabelStmt));
+        l->base.type = STMT_LABEL;
+        l->name = name;
+        parserDebugEnd("parseStatement");
+        return (Stmt*)l;
+    }
     
     if (match(parser, TOKEN_IF)) {
         stmt = parseIfStatement(parser);
     } else if (match(parser, TOKEN_FOR)) {
         stmt = parseForStatement(parser);
+    } else if (match(parser, TOKEN_WHILE)) {
+        bool hasParen = false;
+        if (match(parser, TOKEN_LPAREN)) hasParen = true;
+        Expr* condition = parseExpression(parser);
+        if (hasParen) consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+        Stmt* body = parseStatement(parser);
+
+        WhileStmt* w = malloc(sizeof(WhileStmt));
+        w->base.type = STMT_WHILE;
+        w->condition = condition;
+        w->body = body;
+        stmt = (Stmt*)w;
+    } else if (match(parser, TOKEN_DO)) {
+        // do { ... } while cond
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        Stmt* body = parseStatement(parser);
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        consume(parser, TOKEN_WHILE, "Expect 'while' after 'do' body");
+        bool hasParen = false;
+        if (match(parser, TOKEN_LPAREN)) hasParen = true;
+        Expr* condition = parseExpression(parser);
+        if (hasParen) consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after do-while");
+
+        DoWhileStmt* dw = malloc(sizeof(DoWhileStmt));
+        dw->base.type = STMT_DO_WHILE;
+        dw->condition = condition;
+        dw->body = body;
+        stmt = (Stmt*)dw;
+    } else if (match(parser, TOKEN_BREAK)) {
+        BreakStmt* b = malloc(sizeof(BreakStmt));
+        b->base.type = STMT_BREAK;
+        b->keyword = parser->previous;
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after break");
+        stmt = (Stmt*)b;
+    } else if (match(parser, TOKEN_CONTINUE)) {
+        ContinueStmt* c = malloc(sizeof(ContinueStmt));
+        c->base.type = STMT_CONTINUE;
+        c->keyword = parser->previous;
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after continue");
+        stmt = (Stmt*)c;
+    } else if (match(parser, TOKEN_GOTO)) {
+        Token keyword = parser->previous;
+        Token name = consume(parser, TOKEN_IDENTIFIER, "Expect label name after 'goto'");
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after goto");
+        GotoStmt* g = malloc(sizeof(GotoStmt));
+        g->base.type = STMT_GOTO;
+        g->keyword = keyword;
+        g->name = name;
+        stmt = (Stmt*)g;
     } else if (match(parser, TOKEN_RETURN)) {
         stmt = parseReturnStatement(parser);
     } else if (match(parser, TOKEN_LBRACE)) {
@@ -1086,6 +1149,49 @@ static Stmt* declaration(Parser* parser) {
         // skip statement separators (explicit ';' or newline)
     }
     if (check(parser, TOKEN_EOF) || check(parser, TOKEN_RBRACE)) return NULL;
+
+    if (match(parser, TOKEN_IMPORT)) {
+        ImportStmt* stmt = malloc(sizeof(ImportStmt));
+        stmt->base.type = STMT_IMPORT;
+        stmt->keyword = parser->previous;
+        stmt->path = consume(parser, TOKEN_STRING_LITERAL, "Expect module path string after 'import'");
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after import");
+        return (Stmt*)stmt;
+    }
+
+    if (match(parser, TOKEN_FROM)) {
+        FromImportStmt* stmt = malloc(sizeof(FromImportStmt));
+        stmt->base.type = STMT_FROM_IMPORT;
+        stmt->keywordFrom = parser->previous;
+        stmt->path = consume(parser, TOKEN_STRING_LITERAL, "Expect module path string after 'from'");
+        stmt->keywordImport = consume(parser, TOKEN_IMPORT, "Expect 'import' after module path");
+
+        List* names = listNew();
+        do {
+            Token name = consume(parser, TOKEN_IDENTIFIER, "Expect imported name");
+            Token* np = malloc(sizeof(Token));
+            *np = name;
+            listAppend(names, np);
+        } while (match(parser, TOKEN_COMMA));
+        stmt->names = names;
+
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after from-import");
+        return (Stmt*)stmt;
+    }
+
+    if (match(parser, TOKEN_PRIVATE)) {
+        Token kw = parser->previous;
+        Stmt* inner = declaration(parser);
+        if (!inner) {
+            errorAtCurrent(parser, "Expect declaration after 'private'");
+            return NULL;
+        }
+        PrivateStmt* stmt = malloc(sizeof(PrivateStmt));
+        stmt->base.type = STMT_PRIVATE;
+        stmt->keyword = kw;
+        stmt->inner = inner;
+        return (Stmt*)stmt;
+    }
 
     if (match(parser, TOKEN_FUNC)) {
         return parseFunctionDeclaration(parser);

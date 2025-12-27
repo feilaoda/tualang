@@ -44,10 +44,10 @@
 - [ ] 体验与工程化：统一诊断格式、补 examples 覆盖边界、脚本批量跑 examples
 
 ### 8. Lua 能力对齐（如果目标是“具备 Lua 的所有能力”）
-- [ ] 控制流：`while/do/for`、`break/goto/continue`
+- [x] 控制流：`while/do/for`、`break/goto/continue`
 - [ ] 函数：闭包（upvalue）、多返回值
-- [ ] 模块与加载器：`import` / `from xx import yy`（TypeScript 风格）
-- [ ] 模块系统细节：默认全部导出；`private fn/struct/...` 不导出；模块作用域/命名空间；相对/绝对路径与扩展名；循环依赖顺序；模块缓存（同一模块只执行一次）
+- [x] 模块与加载器：`import` / `from xx import yy`（TypeScript 风格）
+- [x] 模块系统细节：默认全部导出；`private fn/struct/...` 不导出；模块作用域/命名空间；相对/绝对路径与扩展名；循环依赖顺序；模块缓存（同一模块只执行一次）
 - [ ] 作用域与绑定：块级作用域；闭包捕获语义（按值/按引用）；多返回值在赋值/参数传递中的解构规则
 - [ ] 数据结构：优先实现 `map`（键值容器），后续再补数组
 - [ ] 基础类型：把 `string` 做成真正的运行时基础类型（而不是仅 `i8*`/printf 直出）

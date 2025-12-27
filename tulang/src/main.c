@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <limits.h>
 
 #include "lexer.h"
 #include "parser.h"
@@ -15,6 +16,44 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+
+typedef enum {
+    EXPORT_FUNC = 0,
+    EXPORT_STRUCT,
+    EXPORT_ENUM,
+    EXPORT_OBJECT
+} ExportKind;
+
+typedef struct ExportSymbol {
+    ExportKind kind;
+    char* name;
+    int nameLen;
+    char* qualified;
+    int qualifiedLen;
+    int isPrivate;
+} ExportSymbol;
+
+typedef enum {
+    MODULE_LOADING = 0,
+    MODULE_LOADED
+} ModuleState;
+
+typedef struct ModuleInfo {
+    char* path;
+    char* dir;
+    char* prefix;
+    int prefixLen;
+    char* source;
+    List* statements; // AST statements
+    List* exports;    // List<ExportSymbol*>
+    List* aliases;    // List<SymbolAlias*>
+    ModuleState state;
+} ModuleInfo;
+
+typedef struct ModuleSystem {
+    List* modules; // List<ModuleInfo*>
+    List* order;   // List<ModuleInfo*>
+} ModuleSystem;
 
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
@@ -43,6 +82,276 @@ static char* readFile(const char* path) {
 
     fclose(file);
     return buffer;
+}
+
+static char* dupCStringN(const char* s, int n) {
+    char* out = malloc((size_t)n + 1);
+    memcpy(out, s, (size_t)n);
+    out[n] = '\0';
+    return out;
+}
+
+static char* canonicalizePath(const char* path) {
+    // realpath() canonicalizes paths and eliminates ./../ to improve module cache hits.
+    // When it fails (e.g. missing file), fall back to the original string so callers
+    // still get a stable key for diagnostics.
+    char* resolved = realpath(path, NULL);
+    if (resolved) return resolved;
+    return dupCStringN(path, (int)strlen(path));
+}
+
+static char* stripQuotesToken(Token tok) {
+    // TOKEN_STRING_LITERAL includes quotes
+    int len = tok.length >= 2 ? tok.length - 2 : 0;
+    if (len < 0) len = 0;
+    char* s = malloc((size_t)len + 1);
+    if (len > 0) memcpy(s, tok.start + 1, (size_t)len);
+    s[len] = '\0';
+    return s;
+}
+
+static char* dirOfPath(const char* path) {
+    const char* lastSlash = strrchr(path, '/');
+    if (!lastSlash) return dupCStringN(".", 1);
+    return dupCStringN(path, (int)(lastSlash - path));
+}
+
+static int endsWith(const char* s, const char* suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    if (n < m) return 0;
+    return memcmp(s + (n - m), suffix, m) == 0;
+}
+
+static char* joinPath(const char* dir, const char* rel) {
+    if (!rel || rel[0] == '\0') return dupCStringN(dir, (int)strlen(dir));
+    if (rel[0] == '/') return dupCStringN(rel, (int)strlen(rel));
+    int dl = (int)strlen(dir);
+    int rl = (int)strlen(rel);
+    int needSlash = dl > 0 && dir[dl - 1] != '/';
+    int len = dl + (needSlash ? 1 : 0) + rl;
+    char* out = malloc((size_t)len + 1);
+    memcpy(out, dir, (size_t)dl);
+    if (needSlash) out[dl] = '/';
+    memcpy(out + dl + (needSlash ? 1 : 0), rel, (size_t)rl);
+    out[len] = '\0';
+    return out;
+}
+
+static char* ensureTuaExt(char* path) {
+    if (endsWith(path, ".tua")) return path;
+    int n = (int)strlen(path);
+    char* out = malloc((size_t)n + 5);
+    memcpy(out, path, (size_t)n);
+    memcpy(out + n, ".tua", 5);
+    free(path);
+    return out;
+}
+
+static char* sanitizeModulePrefix(const char* path, int* outLen) {
+    int n = (int)strlen(path);
+    char* out = malloc((size_t)n + 2);
+    int j = 0;
+    for (int i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)path[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            out[j++] = (char)c;
+        } else {
+            out[j++] = '_';
+        }
+    }
+    if (j == 0) out[j++] = '_';
+    if (out[0] >= '0' && out[0] <= '9') {
+        memmove(out + 1, out, (size_t)j);
+        out[0] = '_';
+        j++;
+    }
+    out[j] = '\0';
+    if (outLen) *outLen = j;
+    return out;
+}
+
+static ModuleInfo* moduleFind(ModuleSystem* sys, const char* path) {
+    for (int i = 0; i < sys->modules->length; i++) {
+        ModuleInfo* m = listGet(sys->modules, i);
+        if (m && strcmp(m->path, path) == 0) return m;
+    }
+    return NULL;
+}
+
+static ExportSymbol* findExport(ModuleInfo* module, const char* name, int len) {
+    if (!module || !module->exports) return NULL;
+    for (int i = 0; i < module->exports->length; i++) {
+        ExportSymbol* e = listGet(module->exports, i);
+        if (!e) continue;
+        if (e->nameLen != len) continue;
+        if (memcmp(e->name, name, (size_t)len) == 0) return e;
+    }
+    return NULL;
+}
+
+static void moduleComputeExports(ModuleInfo* module) {
+    if (!module || !module->statements) return;
+    module->exports = listNew();
+
+    for (ListNode* node = module->statements->head; node != NULL; node = node->next) {
+        Stmt* s = (Stmt*)node->data;
+        if (!s) continue;
+        int isPrivate = 0;
+        if (s->type == STMT_PRIVATE) {
+            isPrivate = 1;
+            s = ((PrivateStmt*)s)->inner;
+            if (!s) continue;
+        }
+
+        Token nameTok = (Token){0};
+        ExportKind kind;
+        int ok = 1;
+        switch (s->type) {
+            case STMT_FUNC:
+                nameTok = ((FuncStmt*)s)->name;
+                kind = EXPORT_FUNC;
+                break;
+            case STMT_STRUCT:
+                nameTok = ((StructStmt*)s)->name;
+                kind = EXPORT_STRUCT;
+                break;
+            case STMT_ENUM:
+                nameTok = ((EnumStmt*)s)->name;
+                kind = EXPORT_ENUM;
+                break;
+            case STMT_OBJECT:
+                nameTok = ((ObjectStmt*)s)->name;
+                kind = EXPORT_OBJECT;
+                break;
+            default:
+                ok = 0;
+                break;
+        }
+        if (!ok) continue;
+
+        ExportSymbol* e = malloc(sizeof(ExportSymbol));
+        e->kind = kind;
+        e->name = dupCStringN(nameTok.start, nameTok.length);
+        e->nameLen = nameTok.length;
+        e->isPrivate = isPrivate;
+
+        Token tmp = nameTok;
+        int ql = 0;
+        // module prefix is required
+        int sepLen = 2;
+        int len = module->prefixLen + sepLen + tmp.length;
+        char* q = malloc((size_t)len + 1);
+        memcpy(q, module->prefix, (size_t)module->prefixLen);
+        memcpy(q + module->prefixLen, "__", 2);
+        memcpy(q + module->prefixLen + 2, tmp.start, (size_t)tmp.length);
+        q[len] = '\0';
+        ql = len;
+
+        e->qualified = q;
+        e->qualifiedLen = ql;
+        listAppend(module->exports, e);
+    }
+}
+
+static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path);
+
+static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
+    if (!module || !module->statements) return;
+    if (!module->aliases) module->aliases = listNew();
+
+    for (ListNode* node = module->statements->head; node != NULL; node = node->next) {
+        Stmt* s = (Stmt*)node->data;
+        if (!s) continue;
+        if (s->type == STMT_IMPORT) {
+            ImportStmt* imp = (ImportStmt*)s;
+            char* raw = stripQuotesToken(imp->path);
+            char* full = ensureTuaExt(joinPath(module->dir, raw));
+            free(raw);
+            moduleLoad(sys, full);
+            free(full);
+            continue;
+        }
+        if (s->type == STMT_FROM_IMPORT) {
+            FromImportStmt* fi = (FromImportStmt*)s;
+            char* raw = stripQuotesToken(fi->path);
+            char* full = ensureTuaExt(joinPath(module->dir, raw));
+            free(raw);
+            ModuleInfo* dep = moduleLoad(sys, full);
+            free(full);
+            if (!dep) continue;
+
+            for (ListNode* nn = fi->names ? fi->names->head : NULL; nn != NULL; nn = nn->next) {
+                Token* nameTok = (Token*)nn->data;
+                if (!nameTok) continue;
+                ExportSymbol* ex = findExport(dep, nameTok->start, nameTok->length);
+                if (!ex) {
+                    error("Unknown import '%.*s' from module %s\n", nameTok->length, nameTok->start, dep->path);
+                    continue;
+                }
+                if (ex->isPrivate) {
+                    error("Cannot import private symbol '%.*s' from module %s\n", nameTok->length, nameTok->start, dep->path);
+                    continue;
+                }
+
+                SymbolAlias* a = malloc(sizeof(SymbolAlias));
+                a->local = dupCStringN(nameTok->start, nameTok->length);
+                a->localLen = nameTok->length;
+                a->qualified = dupCStringN(ex->qualified, ex->qualifiedLen);
+                a->qualifiedLen = ex->qualifiedLen;
+                switch (ex->kind) {
+                    case EXPORT_FUNC: a->kind = ALIAS_FUNC; break;
+                    case EXPORT_STRUCT: a->kind = ALIAS_STRUCT; break;
+                    case EXPORT_ENUM: a->kind = ALIAS_ENUM; break;
+                    case EXPORT_OBJECT: a->kind = ALIAS_OBJECT; break;
+                }
+                listAppend(module->aliases, a);
+            }
+            continue;
+        }
+    }
+}
+
+static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path) {
+    char* canonical = canonicalizePath(path);
+    ModuleInfo* existing = moduleFind(sys, canonical);
+    if (existing) {
+        free(canonical);
+        return existing;
+    }
+
+    ModuleInfo* module = malloc(sizeof(ModuleInfo));
+    memset(module, 0, sizeof(ModuleInfo));
+    module->path = canonical;
+    module->dir = dirOfPath(canonical);
+    module->source = readFile(canonical);
+    module->aliases = listNew();
+    module->state = MODULE_LOADING;
+
+    int prefixLen = 0;
+    module->prefix = sanitizeModulePrefix(canonical, &prefixLen);
+    module->prefixLen = prefixLen;
+
+    Lexer lexer;
+    initLexer(&lexer, module->source);
+    Parser parser;
+    initParser(&parser, &lexer);
+
+    List* statements = NULL;
+    if (!parse(&parser, &statements)) {
+        fprintf(stderr, "Parsing failed for module: %s\n", path);
+        module->statements = listNew();
+    } else {
+        module->statements = statements;
+    }
+
+    moduleComputeExports(module);
+    listAppend(sys->modules, module);
+
+    moduleScanImports(sys, module);
+
+    module->state = MODULE_LOADED;
+    listAppend(sys->order, module);
+    return module;
 }
 
 void initLLVM(Compiler* compiler) {
@@ -80,6 +389,7 @@ void initLLVM(Compiler* compiler) {
     block->parent = NULL;
     block->func = mainFunc;
     block->variables = listNew();
+    block->labels = listNew();
     compiler->current = block;
 }
 
@@ -186,43 +496,124 @@ void endLLVM(Compiler* compiler) {
 
 }
 
+static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
+    compiler->currentModulePrefix = module->prefix;
+    compiler->currentModulePrefixLen = module->prefixLen;
+    compiler->currentAliases = module->aliases;
+
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+
+        // Qualify top-level declarations to avoid cross-module name collisions.
+        if (stmt->type == STMT_FUNC) {
+            FuncStmt* f = (FuncStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &f->name, &ql);
+            if (q) {
+                FuncStmt tmp = *f;
+                Token qt = tmp.name;
+                qt.start = q;
+                qt.length = ql;
+                tmp.name = qt;
+                compileFuncStmt(compiler, &tmp);
+                free(q);
+                continue;
+            }
+        }
+        if (stmt->type == STMT_STRUCT) {
+            StructStmt* s = (StructStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &s->name, &ql);
+            if (q) {
+                Token old = s->name;
+                s->name.start = q;
+                s->name.length = ql;
+                compileStructStmt(compiler, s);
+                s->name = old;
+                free(q);
+                continue;
+            }
+        }
+        if (stmt->type == STMT_ENUM) {
+            EnumStmt* e = (EnumStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &e->name, &ql);
+            if (q) {
+                Token old = e->name;
+                e->name.start = q;
+                e->name.length = ql;
+                compileEnumStmt(compiler, e);
+                e->name = old;
+                free(q);
+                continue;
+            }
+        }
+        if (stmt->type == STMT_OBJECT) {
+            ObjectStmt* o = (ObjectStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &o->name, &ql);
+            if (q) {
+                Token old = o->name;
+                o->name.start = q;
+                o->name.length = ql;
+                compileObjectStmt(compiler, o);
+                o->name = old;
+                free(q);
+                continue;
+            }
+        }
+        if (stmt->type == STMT_VAR) {
+            // Qualify module-level variables (stored in main block) to avoid collisions.
+            VarStmt* v = (VarStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &v->name, &ql);
+            if (q) {
+                VarStmt tmp = *v;
+                Token qt = tmp.name;
+                qt.start = q;
+                qt.length = ql;
+                tmp.name = qt;
+                compileVarStmt(compiler, &tmp);
+                free(q);
+                continue;
+            }
+        }
+
+        compileStmt(compiler, stmt);
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <source file>\n", argv[0]);
         return 1;
     }
-    char* source = readFile(argv[1]);
-    Lexer lexer;
-    initLexer(&lexer, source);
-
-    Parser parser;
-    initParser(&parser, &lexer);
-    List*statements;
-    bool success = parse(&parser,&statements);
-
-    if (!success) {
-        fprintf(stderr, "Parsing failed.\n");
-        free(source);
-        return 1;
-    }
-
-#ifdef DEBUG
-    printf("Parsing succeeded.\n");
-#endif
-
     Compiler compiler;
     initCompiler(&compiler);
     initLLVM(&compiler);
-    for(int i = 0; i < statements->length; i++) {
-        Stmt* stmt = listGet(statements, i);
-#ifdef DEBUG
-        printf("stmt: %s\n", stmtTypeToString(stmt->type));
-#endif
-        compileStmt(&compiler, stmt);
+
+    ModuleSystem sys;
+    sys.modules = listNew();
+    sys.order = listNew();
+
+    char* entryPath = ensureTuaExt(dupCStringN(argv[1], (int)strlen(argv[1])));
+    moduleLoad(&sys, entryPath);
+
+    // Compile modules in dependency-first order into the single LLVM module's main.
+    for (ListNode* node = sys.order->head; node != NULL; node = node->next) {
+        ModuleInfo* m = (ModuleInfo*)node->data;
+        compileModuleIntoMain(&compiler, m);
     }
 
-    endLLVM(&compiler);
+    free(entryPath);
 
-    free(source);
+    endLLVM(&compiler);
     return 0;
 }

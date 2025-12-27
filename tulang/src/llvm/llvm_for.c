@@ -9,6 +9,7 @@ Block* newFuncBlock(Compiler *compiler, LLVMValueRef func) {
     block->parent = compiler->current;
     block->func = func;
     block->variables = listNew();
+    block->labels = listNew();
     return block;
 }
 
@@ -127,7 +128,9 @@ void emitForStmtBody(Compiler *compiler, ForBlock block, ForStmt * stmt) {
     // Loop body: a = a + i
     LLVMPositionBuilderAtEnd(builder, block.loopBody);
 
+    llvmPushLoop(compiler, block.loopEnd, block.loopInc);
     compileStmt(compiler, stmt->body);
+    llvmPopLoop(compiler);
 
     // VariableRef a = findVariable(compiler->current->variables, "a");
     // VariableRef i = findVariable(compiler->current->variables, "i");
@@ -140,7 +143,9 @@ void emitForStmtBody(Compiler *compiler, ForBlock block, ForStmt * stmt) {
     //     LLVMBuildStore(builder, sum, a.value);
     // }
     // LLVMValueRef loadIBody = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i, "i.body");
-    LLVMBuildBr(builder, block.loopInc);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        LLVMBuildBr(builder, block.loopInc);
+    }
 
 }
 

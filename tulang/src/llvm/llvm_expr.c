@@ -172,12 +172,29 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
     emitDebug("emitVariableExpr\n");
     
-    // 查找变量引用
-    VariableRef var = findVariableWithLength(
-        compiler->current->variables, 
-        expr->name.start, 
-        expr->name.length
-    );
+    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
+
+    // Resolve in current block chain
+    Block* block = compiler->current;
+    while (block != NULL) {
+        var = findVariableWithLength(block->variables, expr->name.start, expr->name.length);
+        if (var.value) break;
+        block = block->parent;
+    }
+
+    if (!var.value && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &expr->name, &ql);
+        if (q) {
+            block = compiler->current;
+            while (block != NULL) {
+                var = findVariableWithLength(block->variables, q, ql);
+                if (var.value) break;
+                block = block->parent;
+            }
+            free(q);
+        }
+    }
     
     if (!var.value) {
         error("Undefined variable, name: %.*s\n", expr->name.length, expr->name.start);
@@ -239,7 +256,26 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
     emitDebug("emitAssignExpr\n");
     
     // Find variable reference
-    VariableRef var = findVariableWithLength(compiler->current->variables, expr->name.start, expr->name.length);
+    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
+    Block* block = compiler->current;
+    while (block != NULL) {
+        var = findVariableWithLength(block->variables, expr->name.start, expr->name.length);
+        if (var.value) break;
+        block = block->parent;
+    }
+    if (!var.value && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &expr->name, &ql);
+        if (q) {
+            block = compiler->current;
+            while (block != NULL) {
+                var = findVariableWithLength(block->variables, q, ql);
+                if (var.value) break;
+                block = block->parent;
+            }
+            free(q);
+        }
+    }
     if (!var.value) {
         error("Undefined variable\n");
         return NULL;
@@ -408,7 +444,7 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
     VariableRef recvVar = findVariableExpr(compiler, expr->object);
     if (!recvVar.value) {
         // Support enum variant access: `Enum.Variant`
-        EnumInfo* enumInfo = compilerFindEnum(compiler, recv->name.start, recv->name.length);
+        EnumInfo* enumInfo = compilerResolveEnumByToken(compiler, &recv->name);
         if (!enumInfo) {
             error("Undefined receiver\n");
             return NULL;
@@ -580,22 +616,21 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr) {
     
     // 处理变量表达式
     if (expr->operand->type == EXPR_VARIABLE) {
-        VariableExpr* varExpr = (VariableExpr*)expr->operand;
-        VariableRef var = findVariableWithLength(
-            compiler->current->variables,
-            varExpr->name.start,
-            varExpr->name.length
-        );
+        VariableRef var = findVariableExpr(compiler, expr->operand);
         
         if (!var.value) {
             error("Undefined variable in postfix expression");
+            return NULL;
+        }
+        if (!var.type) {
+            error("Missing variable type in postfix expression");
             return NULL;
         }
         
         // 加载当前值
         LLVMValueRef currentValue = LLVMBuildLoad2(
             builder,
-            LLVMInt32TypeInContext(compiler->context),
+            var.type,
             var.value,
             "load"
         );
@@ -605,12 +640,12 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr) {
         switch (expr->operator.type) {
             case TOKEN_INC:
                 newValue = LLVMBuildAdd(builder, currentValue, 
-                    LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 1, 0),
+                    LLVMConstInt(var.type, 1, 0),
                     "inc");
                 break;
             case TOKEN_DEC:
                 newValue = LLVMBuildSub(builder, currentValue,
-                    LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 1, 0),
+                    LLVMConstInt(var.type, 1, 0),
                     "dec");
                 break;
             default:
@@ -636,22 +671,21 @@ LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr) {
     
     // 处理变量表达式
     if (expr->operand->type == EXPR_VARIABLE) {
-        VariableExpr* varExpr = (VariableExpr*)expr->operand;
-        VariableRef var = findVariableWithLength(
-            compiler->current->variables,
-            varExpr->name.start,
-            varExpr->name.length
-        );
+        VariableRef var = findVariableExpr(compiler, expr->operand);
         
         if (!var.value) {
             error("Undefined variable in prefix expression");
+            return NULL;
+        }
+        if (!var.type) {
+            error("Missing variable type in prefix expression");
             return NULL;
         }
         
         // 加载当前值
         LLVMValueRef currentValue = LLVMBuildLoad2(
             builder,
-            LLVMInt32TypeInContext(compiler->context),
+            var.type,
             var.value,
             "load"
         );
@@ -661,12 +695,12 @@ LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr) {
         switch (expr->operator.type) {
             case TOKEN_INC:
                 newValue = LLVMBuildAdd(builder, currentValue,
-                    LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 1, 0),
+                    LLVMConstInt(var.type, 1, 0),
                     "inc");
                 break;
             case TOKEN_DEC:
                 newValue = LLVMBuildSub(builder, currentValue,
-                    LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 1, 0),
+                    LLVMConstInt(var.type, 1, 0),
                     "dec");
                 break;
             default:

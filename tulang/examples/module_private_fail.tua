@@ -1,0 +1,4 @@
+from "module_math.tua" import secret
+
+println(1)
+

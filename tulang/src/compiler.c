@@ -112,6 +112,11 @@ void initCompiler(Compiler* compiler) {
 
     compiler->structs = listNew();
     compiler->enums = listNew();
+    compiler->loopStack = listNew();
+
+    compiler->currentModulePrefix = NULL;
+    compiler->currentModulePrefixLen = 0;
+    compiler->currentAliases = NULL;
     
     // Debug information
     compiler->hadError = false;
@@ -138,6 +143,66 @@ EnumInfo* compilerFindEnum(Compiler* compiler, const char* name, int length) {
         if (memcmp(info->name, name, (size_t)length) == 0) return info;
     }
     return NULL;
+}
+
+SymbolAlias* compilerFindAlias(Compiler* compiler, const char* local, int localLen) {
+    if (!compiler || !compiler->currentAliases) return NULL;
+    for (int i = 0; i < compiler->currentAliases->length; i++) {
+        SymbolAlias* a = listGet(compiler->currentAliases, i);
+        if (!a) continue;
+        if (a->localLen != localLen) continue;
+        if (memcmp(a->local, local, (size_t)localLen) == 0) return a;
+    }
+    return NULL;
+}
+
+char* compilerQualifyToken(Compiler* compiler, const Token* name, int* outLen) {
+    if (!compiler || !compiler->currentModulePrefix || compiler->currentModulePrefixLen == 0) return NULL;
+    const int sepLen = 2;
+    int len = compiler->currentModulePrefixLen + sepLen + name->length;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, compiler->currentModulePrefix, (size_t)compiler->currentModulePrefixLen);
+    memcpy(s + compiler->currentModulePrefixLen, "__", (size_t)sepLen);
+    memcpy(s + compiler->currentModulePrefixLen + sepLen, name->start, (size_t)name->length);
+    s[len] = '\0';
+    if (outLen) *outLen = len;
+    return s;
+}
+
+StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name) {
+    if (!compiler || !name) return NULL;
+    SymbolAlias* a = compilerFindAlias(compiler, name->start, name->length);
+    if (a && a->kind == ALIAS_STRUCT) {
+        return compilerFindStruct(compiler, a->qualified, a->qualifiedLen);
+    }
+    if (compiler && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, name, &ql);
+        if (q) {
+            StructInfo* info = compilerFindStruct(compiler, q, ql);
+            free(q);
+            if (info) return info;
+        }
+    }
+    return compilerFindStruct(compiler, name->start, name->length);
+}
+
+EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name) {
+    if (!compiler || !name) return NULL;
+    SymbolAlias* a = compilerFindAlias(compiler, name->start, name->length);
+    if (a && a->kind == ALIAS_ENUM) {
+        return compilerFindEnum(compiler, a->qualified, a->qualifiedLen);
+    }
+    if (compiler && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, name, &ql);
+        if (q) {
+            EnumInfo* info = compilerFindEnum(compiler, q, ql);
+            free(q);
+            if (info) return info;
+        }
+    }
+    return compilerFindEnum(compiler, name->start, name->length);
 }
 
 void convertTokenToValue(Token token, Value *value) {
@@ -274,7 +339,7 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
-            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 // Best-effort: create/lookup an opaque named struct type.
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -395,6 +460,31 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
         case STMT_FOR_IN:
             compileForInStmt(compiler, (ForInStmt*)stmt);
             break;
+        case STMT_WHILE:
+            compileWhileStmt(compiler, (WhileStmt*)stmt);
+            break;
+        case STMT_DO_WHILE:
+            compileDoWhileStmt(compiler, (DoWhileStmt*)stmt);
+            break;
+        case STMT_BREAK:
+            compileBreakStmt(compiler, (BreakStmt*)stmt);
+            break;
+        case STMT_CONTINUE:
+            compileContinueStmt(compiler, (ContinueStmt*)stmt);
+            break;
+        case STMT_LABEL:
+            compileLabelStmt(compiler, (LabelStmt*)stmt);
+            break;
+        case STMT_GOTO:
+            compileGotoStmt(compiler, (GotoStmt*)stmt);
+            break;
+        case STMT_IMPORT:
+        case STMT_FROM_IMPORT:
+            // handled by module loader
+            break;
+        case STMT_PRIVATE:
+            compileStmt(compiler, ((PrivateStmt*)stmt)->inner);
+            break;
         case STMT_BLOCK:
             compileBlockStmt(compiler, (BlockStmt*)stmt);
             break;
@@ -429,6 +519,32 @@ void compileIfStmt(Compiler* compiler, IfStmt* stmt) {
 void compileForStmt(Compiler* compiler, ForStmt* stmt) {
     emitForStmt(compiler, stmt);
     
+}
+
+void compileWhileStmt(Compiler* compiler, WhileStmt* stmt) {
+    emitWhileStmt(compiler, stmt);
+}
+
+void compileDoWhileStmt(Compiler* compiler, DoWhileStmt* stmt) {
+    emitDoWhileStmt(compiler, stmt);
+}
+
+void compileBreakStmt(Compiler* compiler, BreakStmt* stmt) {
+    (void)stmt;
+    emitBreakStmt(compiler);
+}
+
+void compileContinueStmt(Compiler* compiler, ContinueStmt* stmt) {
+    (void)stmt;
+    emitContinueStmt(compiler);
+}
+
+void compileLabelStmt(Compiler* compiler, LabelStmt* stmt) {
+    emitLabelStmt(compiler, stmt);
+}
+
+void compileGotoStmt(Compiler* compiler, GotoStmt* stmt) {
+    emitGotoStmt(compiler, stmt);
 }
 
 void compileForInStmt(Compiler* compiler, ForInStmt* stmt) {
@@ -468,6 +584,7 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
     // 编译代码块中的每个语句
     ListNode* node = stmt->statements->head;
     while (node != NULL) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) break;
         compileStmt(compiler, (Stmt*)node->data);
         node = node->next;
     }
@@ -592,6 +709,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     funcBlock->parent = savedCurrent; // allow lookup of globals (no closures yet)
     funcBlock->func = func;
     funcBlock->variables = listNew();
+    funcBlock->labels = listNew();
     compiler->current = funcBlock;
 
     // Bind parameters into local allocas
@@ -612,11 +730,23 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->value = slot;
         variable->type = paramTypes[i];
         if (p->type && p->type->kind == TYPE_NAMED) {
-            variable->typeName = p->type->name.start;
-            variable->typeNameLength = p->type->name.length;
+            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->name);
+            if (info) {
+                variable->typeName = info->name;
+                variable->typeNameLength = info->nameLength;
+            } else {
+                variable->typeName = p->type->name.start;
+                variable->typeNameLength = p->type->name.length;
+            }
         } else if (p->type && p->type->kind == TYPE_REF && p->type->inner && p->type->inner->kind == TYPE_NAMED) {
-            variable->typeName = p->type->inner->name.start;
-            variable->typeNameLength = p->type->inner->name.length;
+            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->inner->name);
+            if (info) {
+                variable->typeName = info->name;
+                variable->typeNameLength = info->nameLength;
+            } else {
+                variable->typeName = p->type->inner->name.start;
+                variable->typeNameLength = p->type->inner->name.length;
+            }
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;

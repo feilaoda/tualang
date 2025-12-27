@@ -19,6 +19,7 @@ typedef struct Block {
     struct Block* parent;
     LLVMValueRef func;
     List* variables;
+    List* labels; // List<LabelInfo*>
 }Block;
 
 typedef struct ForBlock {
@@ -62,7 +63,48 @@ typedef struct Compiler{
 
     List* structs; // List<StructInfo*>
     List* enums;   // List<EnumInfo*>
+
+    List* loopStack; // List<LoopTarget*>
+
+    const char* currentModulePrefix;
+    int currentModulePrefixLen;
+    List* currentAliases; // List<SymbolAlias*>
 } Compiler;
+
+typedef struct LoopTarget {
+    LLVMBasicBlockRef breakTarget;
+    LLVMBasicBlockRef continueTarget;
+} LoopTarget;
+
+typedef struct LabelInfo {
+    char* name;
+    int length;
+    LLVMBasicBlockRef block;
+    int isDefined;
+} LabelInfo;
+
+typedef enum SymbolAliasKind {
+    ALIAS_FUNC = 0,
+    ALIAS_STRUCT,
+    ALIAS_ENUM,
+    ALIAS_OBJECT
+} SymbolAliasKind;
+
+typedef struct SymbolAlias {
+    char* local;
+    int localLen;
+    char* qualified;
+    int qualifiedLen;
+    SymbolAliasKind kind;
+} SymbolAlias;
+
+typedef struct StructInfo StructInfo;
+typedef struct EnumInfo EnumInfo;
+
+SymbolAlias* compilerFindAlias(Compiler* compiler, const char* local, int localLen);
+StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name);
+EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name);
+char* compilerQualifyToken(Compiler* compiler, const Token* name, int* outLen);
 
 typedef struct StructInfo {
     char* name;
@@ -205,6 +247,12 @@ void compileStmt(Compiler* compiler, Stmt* stmt);
 void compileIfStmt(Compiler* compiler, IfStmt* stmt);
 void compileForStmt(Compiler* compiler, ForStmt* stmt);
 void compileForInStmt(Compiler* compiler, ForInStmt* stmt);
+void compileWhileStmt(Compiler* compiler, WhileStmt* stmt);
+void compileDoWhileStmt(Compiler* compiler, DoWhileStmt* stmt);
+void compileBreakStmt(Compiler* compiler, BreakStmt* stmt);
+void compileContinueStmt(Compiler* compiler, ContinueStmt* stmt);
+void compileLabelStmt(Compiler* compiler, LabelStmt* stmt);
+void compileGotoStmt(Compiler* compiler, GotoStmt* stmt);
 void compileBlockStmt(Compiler* compiler, BlockStmt* stmt);
 void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt);
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt);

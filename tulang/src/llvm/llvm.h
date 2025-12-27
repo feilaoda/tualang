@@ -32,6 +32,14 @@ LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value);
 
 void emitVarStmt(Compiler* compiler, VarStmt* stmt);
 void emitForStmt(Compiler* compiler, ForStmt* stmt);
+void emitWhileStmt(Compiler* compiler, WhileStmt* stmt);
+void emitDoWhileStmt(Compiler* compiler, DoWhileStmt* stmt);
+void emitBreakStmt(Compiler* compiler);
+void emitContinueStmt(Compiler* compiler);
+void llvmPushLoop(Compiler* compiler, LLVMBasicBlockRef breakTarget, LLVMBasicBlockRef continueTarget);
+void llvmPopLoop(Compiler* compiler);
+void emitLabelStmt(Compiler* compiler, LabelStmt* stmt);
+void emitGotoStmt(Compiler* compiler, GotoStmt* stmt);
 void emitIfStmt(Compiler* compiler, IfStmt* stmt);
 // LLVMValueRef emitExpr(Compiler* compiler, Expr* expr);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);

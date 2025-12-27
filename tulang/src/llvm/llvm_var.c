@@ -17,7 +17,7 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
-            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
                 memcpy(tn, type->name.start, (size_t)type->name.length);
@@ -50,7 +50,7 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         CallExpr* call = (CallExpr*)initializer;
         if (call->callee && call->callee->type == EXPR_VARIABLE) {
             VariableExpr* callee = (VariableExpr*)call->callee;
-            StructInfo* info = compilerFindStruct(compiler, callee->name.start, callee->name.length);
+            StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
             if (info) {
                 return info->type;
             }
@@ -71,7 +71,7 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         GetExpr* get = (GetExpr*)initializer;
         if (get->object && get->object->type == EXPR_VARIABLE) {
             VariableExpr* recv = (VariableExpr*)get->object;
-            EnumInfo* info = compilerFindEnum(compiler, recv->name.start, recv->name.length);
+            EnumInfo* info = compilerResolveEnumByToken(compiler, &recv->name);
             if (info) {
                 if (info->isStringTag) {
                     return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
@@ -149,18 +149,31 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->value = slot;
     variable->type = allocaType;
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
-        variable->typeName = stmt->type->name.start;
-        variable->typeNameLength = stmt->type->name.length;
+        StructInfo* info = compilerResolveStructByToken(compiler, &stmt->type->name);
+        if (info) {
+            variable->typeName = info->name;
+            variable->typeNameLength = info->nameLength;
+        } else {
+            variable->typeName = stmt->type->name.start;
+            variable->typeNameLength = stmt->type->name.length;
+        }
     } else if (stmt->type && stmt->type->kind == TYPE_REF && stmt->type->inner && stmt->type->inner->kind == TYPE_NAMED) {
-        variable->typeName = stmt->type->inner->name.start;
-        variable->typeNameLength = stmt->type->inner->name.length;
+        StructInfo* info = compilerResolveStructByToken(compiler, &stmt->type->inner->name);
+        if (info) {
+            variable->typeName = info->name;
+            variable->typeNameLength = info->nameLength;
+        } else {
+            variable->typeName = stmt->type->inner->name.start;
+            variable->typeNameLength = stmt->type->inner->name.length;
+        }
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
         CallExpr* call = (CallExpr*)stmt->initializer;
         if (call->callee && call->callee->type == EXPR_VARIABLE) {
             VariableExpr* callee = (VariableExpr*)call->callee;
-            if (compilerFindStruct(compiler, callee->name.start, callee->name.length)) {
-                variable->typeName = callee->name.start;
-                variable->typeNameLength = callee->name.length;
+            StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
+            if (info) {
+                variable->typeName = info->name;
+                variable->typeNameLength = info->nameLength;
             } else {
                 variable->typeName = NULL;
                 variable->typeNameLength = 0;

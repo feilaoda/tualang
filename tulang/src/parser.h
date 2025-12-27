@@ -32,6 +32,15 @@ typedef enum {
     STMT_IF,
     STMT_FOR,
     STMT_FOR_IN,
+    STMT_WHILE,
+    STMT_DO_WHILE,
+    STMT_BREAK,
+    STMT_CONTINUE,
+    STMT_LABEL,
+    STMT_GOTO,
+    STMT_IMPORT,
+    STMT_FROM_IMPORT,
+    STMT_PRIVATE,
     STMT_FUNC,
     STMT_RETURN,
     STMT_BLOCK,
@@ -193,6 +202,59 @@ typedef struct {
     Stmt base;
     List* statements;
 } BlockStmt;
+
+typedef struct {
+    Stmt base;
+    Expr* condition;
+    Stmt* body;
+} WhileStmt;
+
+typedef struct {
+    Stmt base;
+    Expr* condition;
+    Stmt* body;
+} DoWhileStmt;
+
+typedef struct {
+    Stmt base;
+    Token keyword;
+} BreakStmt;
+
+typedef struct {
+    Stmt base;
+    Token keyword;
+} ContinueStmt;
+
+typedef struct {
+    Stmt base;
+    Token name;
+} LabelStmt;
+
+typedef struct {
+    Stmt base;
+    Token name;
+    Token keyword;
+} GotoStmt;
+
+typedef struct {
+    Stmt base;
+    Token path; // string literal token
+    Token keyword;
+} ImportStmt;
+
+typedef struct {
+    Stmt base;
+    Token path; // string literal token
+    List* names; // List<Token*>
+    Token keywordFrom;
+    Token keywordImport;
+} FromImportStmt;
+
+typedef struct {
+    Stmt base;
+    Stmt* inner;
+    Token keyword;
+} PrivateStmt;
 
 typedef struct StructStmt {
     Stmt base;

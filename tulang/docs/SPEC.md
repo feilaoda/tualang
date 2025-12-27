@@ -26,7 +26,8 @@
   - `name = expr`
   - `obj.field = expr`
 - `private` 修饰符：
-  - `struct`/`object` 中的 `private fn` 已支持解析；导出规则（模块）见后续模块规范（Status: Planned）
+  - `struct`/`object` 中的 `private fn` 已支持解析
+  - 模块导出：默认导出全部顶层符号；`private fn/struct/object/enum` 不导出（Status: Implemented）
 
 ### 4. 表达式（Status: Implemented）
 - 字面量：整数/长整数/浮点/字符串/`true`/`false`
@@ -36,7 +37,7 @@
 - 调用：`f(a,b)`、成员访问/调用：`obj.field`、`obj.method(a,b)`
 - 分组：`(expr)`
 
-### 5. 控制流（Status: Partial）
+### 5. 控制流（Status: Implemented）
 - 条件：
   - `if cond { ... } else if cond { ... } else { ... }`（支持链式 `else if`）
   - 条件也支持括号：`if (cond) { ... }`
@@ -47,8 +48,13 @@
 - `for-in`（Status: Implemented）：
   - `for i in expr { ... }`
 - 规划能力（Status: Planned）：
-  - `while/do`
-  - `break/goto/continue`
+已实现（Status: Implemented）：
+- `while cond { ... }`
+- `do { ... } while cond`
+- `break` / `continue`（在 `for/while/do-while` 内）
+- `goto` / label（Lua 风格）：
+  - label：`::name::`
+  - 跳转：`goto name`
 
 ### 6. 函数（Status: Partial）
 - 定义：
@@ -107,13 +113,19 @@
   - `E.A` 返回 **string tag**（若显式 `"raw"` 则用 raw；否则用 variant 名字）
   - 自动生成：`E.toString(tag:string) string`（identity）
 
-### 8. 模块（Status: Planned）
-- 默认全部导出；声明前加 `private` 则不导出（`private fn/struct/...`）
+### 8. 模块（Status: Implemented）
+- 默认全部导出；声明前加 `private` 则不导出（`private fn/struct/object/enum`）
 - 语法：
-  - `import "path"`
-  - `from "path" import name`
+  - `import "relative/or/absolute/path.tua"`：仅执行模块（副作用导入），不引入名字
+  - `from "path.tua" import A,B,C`：把导出的符号引入到当前模块作用域
 - 规则：
-  - 模块作用域/命名空间、相对/绝对路径与扩展名、循环依赖顺序、模块缓存（同一模块只执行一次）
+  - 相对路径以当前文件所在目录为基准
+  - 若省略后缀，会自动补 `.tua`
+  - 模块缓存：同一模块只会被加载/执行一次（顶层语句只会在 `main` 中生成一次）
+  - 循环依赖：允许；按依赖优先的加载顺序进行一次性执行（后续可补更精确的初始化时序定义）
+- 当前限制：
+  - 只支持字符串字面量路径（不支持表达式路径）
+  - 仅支持导入 `fn/struct/object/enum`；不支持导入模块级变量
 
 ### 9. 数据结构与空值（Status: Planned）
 - `null`：空值语义（比较/打印/条件判断/赋值）

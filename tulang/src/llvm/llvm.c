@@ -55,6 +55,24 @@ VariableRef findVariableExpr(Compiler* compiler, Expr* expr) {
         block = block->parent;
     }
 
+    // Module-level name fallback: try `Module__name`
+    if (compiler && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &var->name, &ql);
+        if (q) {
+            block = compiler->current;
+            while (block != NULL) {
+                VariableRef ref = findVariableWithLength(block->variables, q, ql);
+                if (ref.value != NULL) {
+                    free(q);
+                    return ref;
+                }
+                block = block->parent;
+            }
+            free(q);
+        }
+    }
+
     return (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
 }
 

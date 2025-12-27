@@ -64,6 +64,13 @@ const char* tokenToString(TokenType type) {
         case TOKEN_IF: return "if";
         case TOKEN_ELSE: return "else";
         case TOKEN_FOR: return "for";
+        case TOKEN_WHILE: return "while";
+        case TOKEN_DO: return "do";
+        case TOKEN_BREAK: return "break";
+        case TOKEN_CONTINUE: return "continue";
+        case TOKEN_GOTO: return "goto";
+        case TOKEN_IMPORT: return "import";
+        case TOKEN_FROM: return "from";
         case TOKEN_FUNC: return "func/fn";
         case TOKEN_RETURN: return "return";
         case TOKEN_IN: return "in";
@@ -221,7 +228,15 @@ static TokenType identifierType(Lexer* lexer) {
                 return TOKEN_ENUM;
             }
             return checkKeyword(lexer, 1, 3, "lse", TOKEN_ELSE);
+        case 'w':
+            if (lexer->current - lexer->start > 4 && memcmp(lexer->start, "while", 5) == 0) {
+                return TOKEN_WHILE;
+            }
+            break;
         case 'f':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "from", 4) == 0) {
+                return TOKEN_FROM;
+            }
             if (lexer->current - lexer->start > 1) {
                 
                 switch (lexer->start[1]) {
@@ -239,6 +254,9 @@ static TokenType identifierType(Lexer* lexer) {
             
             break;
         case 'd':
+            if (lexer->current - lexer->start > 1 && memcmp(lexer->start, "do", 2) == 0) {
+                return TOKEN_DO;
+            }
             if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "deinit", 6) == 0) {
                 return TOKEN_DEINIT;
             }
@@ -247,6 +265,9 @@ static TokenType identifierType(Lexer* lexer) {
             }
             break;
         case 'i': ;
+          if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "import", 6) == 0) {
+              return TOKEN_IMPORT;
+          }
           if (lexer->current - lexer->start > 1) {
                 switch (lexer->start[1]) {
                     case 'n': {
@@ -267,7 +288,11 @@ static TokenType identifierType(Lexer* lexer) {
                 }
           }
         case 'v': return checkKeyword(lexer, 1, 2, "ar", TOKEN_VAR);
-        case 'c': return checkKeyword(lexer, 1, 4, "onst", TOKEN_CONST);
+        case 'c':
+            if (lexer->current - lexer->start > 7 && memcmp(lexer->start, "continue", 8) == 0) {
+                return TOKEN_CONTINUE;
+            }
+            return checkKeyword(lexer, 1, 4, "onst", TOKEN_CONST);
         case 'l':
             if (lexer->current - lexer->start > 2 && memcmp(lexer->start, "let", 3) == 0) {
                 return TOKEN_VAR;
@@ -277,6 +302,9 @@ static TokenType identifierType(Lexer* lexer) {
             }
             break;
         case 'b':
+            if (lexer->current - lexer->start > 4 && memcmp(lexer->start, "break", 5) == 0) {
+                return TOKEN_BREAK;
+            }
             if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "bool", 4) == 0) {
                 return TOKEN_BOOL;
             }
@@ -320,6 +348,11 @@ static TokenType identifierType(Lexer* lexer) {
                 if (memcmp(lexer->start, "print", 5) == 0) {
                     return TOKEN_PRINT;
                 }
+            }
+            break;
+        case 'g':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "goto", 4) == 0) {
+                return TOKEN_GOTO;
             }
             break;
         default:
