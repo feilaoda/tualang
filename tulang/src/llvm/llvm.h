@@ -15,7 +15,8 @@
 typedef struct VariableRef {
     const char* name;
     int length;
-    LLVMValueRef value; 
+    LLVMValueRef value;
+    LLVMTypeRef type;
     int isConst;
     int isGlobal;
 }VariableRef;
@@ -27,8 +28,8 @@ VariableRef findVariableWithLength(List* variables, const char* name, int length
 
 void emitVarStmt(Compiler* compiler, VarStmt* stmt);
 void emitForStmt(Compiler* compiler, ForStmt* stmt);
+void emitIfStmt(Compiler* compiler, IfStmt* stmt);
 // LLVMValueRef emitExpr(Compiler* compiler, Expr* expr);
-LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
 LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr);
 LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr);

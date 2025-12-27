@@ -122,6 +122,24 @@ switch (token.type) {
             value->as.i = strtoi(token.start,token.length);
             break;
         }
+        case TOKEN_LONG: {
+            value->type = VAL_LONG;
+            char* tmp = malloc((size_t)token.length + 1);
+            memcpy(tmp, token.start, (size_t)token.length);
+            tmp[token.length] = '\0';
+            value->as.l = strtoll(tmp, NULL, 10);
+            free(tmp);
+            break;
+        }
+        case TOKEN_DOUBLE: {
+            value->type = VAL_DOUBLE;
+            char* tmp = malloc((size_t)token.length + 1);
+            memcpy(tmp, token.start, (size_t)token.length);
+            tmp[token.length] = '\0';
+            value->as.d = strtod(tmp, NULL);
+            free(tmp);
+            break;
+        }
         case TOKEN_STRING_LITERAL: {
             value->type = VAL_STRING;
             // Copy string without quotes
@@ -130,6 +148,16 @@ switch (token.type) {
             memcpy(string, token.start + 1, length);
             string[length] = '\0';
             value->as.string = string;
+            break;
+        }
+        case TOKEN_TRUE: {
+            value->type = VAL_BOOL;
+            value->as.boolean = true;
+            break;
+        }
+        case TOKEN_FALSE: {
+            value->type = VAL_BOOL;
+            value->as.boolean = false;
             break;
         }
         default: {
@@ -203,6 +231,58 @@ static void endScope(Compiler* compiler) {
     }
 }
 
+static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
+    if (type == NULL) {
+        return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
+                             : LLVMInt32TypeInContext(compiler->context);
+    }
+
+    switch (type->kind) {
+        case TYPE_INT:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL:
+            return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_VOID:
+            return LLVMVoidTypeInContext(compiler->context);
+        default:
+            return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
+                                 : LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
+    if (!value) return NULL;
+    LLVMTypeRef srcType = LLVMTypeOf(value);
+    if (srcType == targetType) return value;
+
+    LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
+    LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
+        unsigned srcBits = LLVMGetIntTypeWidth(srcType);
+        unsigned dstBits = LLVMGetIntTypeWidth(targetType);
+        if (srcBits < dstBits) return LLVMBuildSExt(compiler->builder, value, targetType, "sext");
+        if (srcBits > dstBits) return LLVMBuildTrunc(compiler->builder, value, targetType, "trunc");
+        return value;
+    }
+
+    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMDoubleTypeKind) {
+        return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
+    }
+
+    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMIntegerTypeKind) {
+        return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
+    }
+
+    return value;
+}
+
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
     compilerDebug("Compiling expression type:%s\n", exprTypeToString(expr->type));
@@ -211,7 +291,7 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
             return emitBinaryExpr(compiler, (BinaryExpr*)expr);
             break;
         case EXPR_UNARY:
-            // compileUnaryExpr(compiler, (UnaryExpr*)expr);
+            return emitUnaryExpr(compiler, (UnaryExpr*)expr);
             break;
         case EXPR_LITERAL:
             return emitLiteralExpr(compiler, (LiteralExpr*)expr);
@@ -226,7 +306,7 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
             return emitCallExpr(compiler, (CallExpr*)expr);
             break;
         case EXPR_GROUPING:
-            // compileExpr(compiler, ((GroupingExpr*)expr)->expression);
+            return compileExpr(compiler, ((GroupingExpr*)expr)->expression);
             break;
         case EXPR_POSTFIX:
             //i++
@@ -244,7 +324,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
 
 void compileStmt(Compiler* compiler, Stmt* stmt) {
     compilerDebug("Compiling statement %s\n", stmtTypeToString(stmt->type));
+#ifdef DEBUG
     printStmt(stmt, 0);
+#endif
 
     switch (stmt->type) {
         case STMT_IF:
@@ -278,28 +360,7 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
 }
 
 void compileIfStmt(Compiler* compiler, IfStmt* stmt) {
-    // Compile condition
-    // compileExpr(compiler, stmt->condition);
-    
-    // // Jump if false to else branch or end
-    // int thenJump = emitJump(compiler, OP_JNE);
-    
-    // // Compile then branch
-    // compileStmt(compiler, stmt->thenBranch);
-    
-    // // Jump over else branch
-    // int elseJump = emitJump(compiler, OP_JMP);
-    
-    // // Patch then jump
-    // patchJump(compiler, thenJump);
-    
-    // // Compile else branch if present
-    // if (stmt->elseBranch != NULL) {
-    //     compileStmt(compiler, stmt->elseBranch);
-    // }
-    
-    // // Patch else jump
-    // patchJump(compiler, elseJump);
+    emitIfStmt(compiler, stmt);
 }
 
 void compileForStmt(Compiler* compiler, ForStmt* stmt) {
@@ -353,7 +414,29 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
     compilerDebug("Compiled block statement end\n");
 }
 void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
+    compilerDebug("Compiling return statement\n");
+    LLVMBuilderRef builder = compiler->builder;
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        return;
+    }
 
+    LLVMTypeRef funcType = LLVMGlobalGetValueType(compiler->current->func);
+    LLVMTypeRef returnType = LLVMGetReturnType(funcType);
+
+    if (LLVMGetTypeKind(returnType) == LLVMVoidTypeKind) {
+        LLVMBuildRetVoid(builder);
+        return;
+    }
+
+    LLVMValueRef returnValue = NULL;
+    if (stmt->value != NULL) {
+        returnValue = compileExpr(compiler, stmt->value);
+    }
+    if (returnValue == NULL) {
+        returnValue = LLVMConstNull(returnType);
+    }
+    returnValue = castValueToType(compiler, returnValue, returnType);
+    LLVMBuildRet(builder, returnValue);
 }
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt){
     compilerDebug("Compiling Expr statement\n");
@@ -402,53 +485,81 @@ void compileVarStmt(Compiler* compiler, VarStmt* stmt) {
 }
 
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
-    // Save current compiler state
-    // Compiler funcCompiler;
-    // funcCompiler.enclosing = compiler;
-    // funcCompiler.function = NULL;
-    // funcCompiler.scopeDepth = 0;
-    // funcCompiler.localCount = 0;
-    // funcCompiler.code = listNew();
-    // funcCompiler.constants = listNew();
+    compilerDebug("Compiling function statement %.*s\n", stmt->name.length, stmt->name.start);
 
-    // // Initialize function object
-    // emitByte(compiler, OP_CLOSURE);
-    // int constant = addConstant(compiler, stmt->name);
-    // emitByte(compiler, constant);
+    char* funcName = malloc((size_t)stmt->name.length + 1);
+    memcpy(funcName, stmt->name.start, (size_t)stmt->name.length);
+    funcName[stmt->name.length] = '\0';
 
-    // // Compile parameters
-    // ListNode* param = stmt->params->head;
-    // int paramCount = 0;
-    // beginScope(&funcCompiler);
-    
-    // while (param != NULL) {
-    //     Parameter* parameter = (Parameter*)param->data;
-    //     int slot = addLocal(&funcCompiler, parameter->name);
-    //     paramCount++;
-    //     param = param->next;
-    // }
-    // emitByte(compiler, paramCount);
+    int paramCount = stmt->params ? stmt->params->length : 0;
+    LLVMTypeRef* paramTypes = NULL;
+    if (paramCount > 0) {
+        paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
+        for (int i = 0; i < paramCount; i++) {
+            Parameter* p = listGet(stmt->params, i);
+            paramTypes[i] = typeToLLVMType(compiler, p->type, false);
+        }
+    }
 
-    // // Compile function body
-    // ListNode* node = stmt->body->head;
-    // while (node != NULL) {
-    //     compileStmt(&funcCompiler, (Stmt*)node->data);
-    //     node = node->next;
-    // }
+    LLVMTypeRef retType = typeToLLVMType(compiler, stmt->returnType, true);
+    LLVMTypeRef funcType = LLVMFunctionType(retType, paramTypes, (unsigned)paramCount, 0);
+    LLVMValueRef func = LLVMAddFunction(compiler->module, funcName, funcType);
 
-    // // Add implicit return if needed
-    // if (!hasReturn(&funcCompiler)) {
-    //     emitByte(&funcCompiler, OP_NIL);
-    //     emitByte(&funcCompiler, OP_RETURN);
-    // }
+    // Save current insertion point (main)
+    LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+    Block* savedCurrent = compiler->current;
 
-    // endScope(&funcCompiler);
+    // Create function entry
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(func, "entry");
+    LLVMPositionBuilderAtEnd(compiler->builder, entry);
 
-    // // Create function object
-    // ObjFunction* function = newFunction(stmt->name, paramCount);
-    // function->code = funcCompiler.code;
-    // function->constants = funcCompiler.constants;
+    Block* funcBlock = malloc(sizeof(Block));
+    funcBlock->parent = savedCurrent; // allow lookup of globals (no closures yet)
+    funcBlock->func = func;
+    funcBlock->variables = listNew();
+    compiler->current = funcBlock;
 
-    // // Store function in constant pool
-    // emitBytes(compiler, OP_CONSTANT, addConstantObj(compiler, (Obj*)function));
+    // Bind parameters into local allocas
+    for (int i = 0; i < paramCount; i++) {
+        Parameter* p = listGet(stmt->params, i);
+        LLVMValueRef arg = LLVMGetParam(func, (unsigned)i);
+
+        char* paramName = malloc((size_t)p->name.length + 1);
+        memcpy(paramName, p->name.start, (size_t)p->name.length);
+        paramName[p->name.length] = '\0';
+
+        LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, paramTypes[i], paramName);
+        LLVMBuildStore(compiler->builder, arg, slot);
+
+        VariableRef* variable = malloc(sizeof(VariableRef));
+        variable->name = paramName;
+        variable->length = p->name.length;
+        variable->value = slot;
+        variable->type = paramTypes[i];
+        variable->isConst = 0;
+        variable->isGlobal = 0;
+        listAppend(funcBlock->variables, variable);
+    }
+
+    // Compile function body
+    for (ListNode* node = stmt->body ? stmt->body->head : NULL; node != NULL; node = node->next) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) break;
+        compileStmt(compiler, (Stmt*)node->data);
+    }
+
+    // Implicit return
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) {
+        if (LLVMGetTypeKind(retType) == LLVMVoidTypeKind) {
+            LLVMBuildRetVoid(compiler->builder);
+        } else {
+            LLVMBuildRet(compiler->builder, LLVMConstNull(retType));
+        }
+    }
+
+    // Restore insertion point and compiler block
+    compiler->current = savedCurrent;
+    LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+
+    if (paramTypes) free(paramTypes);
+    free(funcName);
 }

@@ -1,0 +1,637 @@
+ src/parser.c:73 parser advance scanToken code:[let],token: [var/let]
+ src/parser.c:85 match current type:0, var/let-var/let
+ src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+ src/parser.c:87 match current type:38, identifier-var/let
+====+<parseVarDeclaration(672) [a],token:38,identifier
+==== src/parser.c:73 parser advance scanToken code:[:],token: [:]
+==== src/parser.c:85 match current type:27, :-:
+==== src/parser.c:73 parser advance scanToken code:[int],token: [int]
+==== src/parser.c:87 match current type:8, int-:
+==== src/parser.c:85 match current type:8, int-int
+==== src/parser.c:73 parser advance scanToken code:[=],token: [=]
+==== src/parser.c:87 match current type:15, =-int
+==== src/parser.c:85 match current type:15, =-=
+==== src/parser.c:73 parser advance scanToken code:[10],token: [int]
+==== src/parser.c:87 match current type:8, int-=
+========+<parseExpression(244) [10],token:8,int
+============+<parseBinaryExpr start(269) [10],token:8,int
+================+<parseUnaryExpr(312) [10],token:8,int
+====================+<parsePrimaryExpr(330) [10],token:8,int
+==================== src/parser.c:333 parsePrimaryExpr: prev1 code:[10],[=][int]
+==================== src/parser.c:85 match current type:8, int-int
+==================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+==================== src/parser.c:87 match current type:36, ;-int
+====================-/>parsePrimaryExpr(365) [;],token:36,;
+================-/>parseUnaryExpr(325) [;],token:36,;
+============ src/parser.c:271 parseBinaryExpr: left type:2
+============ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+============ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+============-/>parseBinaryExpr(307) [;],token:36,;
+======== src/parser.c:247 parseExpression first type:2
+exprType-2{LITERAL->8 10}======== src/parser.c:251 parser->current.type = ;
+======== src/parser.c:263 parseExpression end type:2
+========-/>parseExpression(264) [;],token:36,;
+==== src/parser.c:73 parser advance scanToken code:[const],token: [const]
+====-/>parseVarDeclaration(733) [const],token:1,const
+ src/parser.c:85 match current type:1, const-const
+ src/parser.c:73 parser advance scanToken code:[s],token: [identifier]
+ src/parser.c:87 match current type:38, identifier-const
+====+<parseVarDeclaration(672) [s],token:38,identifier
+==== src/parser.c:73 parser advance scanToken code:[=],token: [=]
+==== src/parser.c:85 match current type:15, =-=
+==== src/parser.c:73 parser advance scanToken code:["hello world"],token: [string_literal]
+==== src/parser.c:87 match current type:40, string_literal-=
+========+<parseExpression(244) ["hello world"],token:40,string_literal
+============+<parseBinaryExpr start(269) ["hello world"],token:40,string_literal
+================+<parseUnaryExpr(312) ["hello world"],token:40,string_literal
+====================+<parsePrimaryExpr(330) ["hello world"],token:40,string_literal
+==================== src/parser.c:333 parsePrimaryExpr: prev1 code:["hello world"],[=][string_literal]
+==================== src/parser.c:85 match current type:40, string_literal-string_literal
+==================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+==================== src/parser.c:87 match current type:36, ;-string_literal
+====================-/>parsePrimaryExpr(365) [;],token:36,;
+================-/>parseUnaryExpr(325) [;],token:36,;
+============ src/parser.c:271 parseBinaryExpr: left type:2
+============ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+============ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+============-/>parseBinaryExpr(307) [;],token:36,;
+======== src/parser.c:247 parseExpression first type:2
+exprType-2{LITERAL->40 "hello world"}======== src/parser.c:251 parser->current.type = ;
+======== src/parser.c:263 parseExpression end type:2
+========-/>parseExpression(264) [;],token:36,;
+==== src/parser.c:73 parser advance scanToken code:[if],token: [if]
+====-/>parseVarDeclaration(733) [if],token:2,if
+====+<parseStatement(390) [if],token:2,if
+==== src/parser.c:85 match current type:2, if-if
+==== src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+==== src/parser.c:87 match current type:38, identifier-if
+========+<parseExpression(244) [a],token:38,identifier
+============+<parseBinaryExpr start(269) [a],token:38,identifier
+================+<parseUnaryExpr(312) [a],token:38,identifier
+====================+<parsePrimaryExpr(330) [a],token:38,identifier
+==================== src/parser.c:333 parsePrimaryExpr: prev1 code:[a],[if][identifier]
+==================== src/parser.c:85 match current type:38, identifier-identifier
+==================== src/parser.c:73 parser advance scanToken code:[>],token: [>]
+==================== src/parser.c:87 match current type:20, >-identifier
+==================== src/parser.c:343 parsePrimaryExpr: current code:[>],[identifier]
+====================-/>parsePrimaryExpr(365) [>],token:20,>
+================-/>parseUnaryExpr(325) [>],token:20,>
+============ src/parser.c:271 parseBinaryExpr: left type:3
+============ src/parser.c:276 parseBinaryExpr: current token: >/20, prec: 5, minPrec: 0
+============ src/parser.c:73 parser advance scanToken code:[5],token: [int]
+============ src/parser.c:301 parseBinaryExpr: parse right expr start, op type:20
+================+<parseBinaryExpr start(269) [5],token:8,int
+====================+<parseUnaryExpr(312) [5],token:8,int
+========================+<parsePrimaryExpr(330) [5],token:8,int
+======================== src/parser.c:333 parsePrimaryExpr: prev1 code:[5],[>][int]
+======================== src/parser.c:85 match current type:8, int-int
+======================== src/parser.c:73 parser advance scanToken code:[{],token: [{]
+======================== src/parser.c:87 match current type:34, {-int
+========================-/>parsePrimaryExpr(365) [{],token:34,{
+====================-/>parseUnaryExpr(325) [{],token:34,{
+================ src/parser.c:271 parseBinaryExpr: left type:2
+================ src/parser.c:276 parseBinaryExpr: current token: {/34, prec: 0, minPrec: 6
+================ src/parser.c:284 parseBinaryExpr: breaking with current token: {
+================-/>parseBinaryExpr(307) [{],token:34,{
+============ src/parser.c:305 parseBinaryExpr last: left type:0, operator:>/> right type:2, parser current token:{/34
+============ src/parser.c:276 parseBinaryExpr: current token: {/34, prec: 0, minPrec: 0
+============ src/parser.c:284 parseBinaryExpr: breaking with current token: {
+============-/>parseBinaryExpr(307) [{],token:34,{
+======== src/parser.c:247 parseExpression first type:0
+exprType-0{(exprType-3{a} > exprType-2{LITERAL->8 5})}======== src/parser.c:251 parser->current.type = {
+======== src/parser.c:263 parseExpression end type:0
+========-/>parseExpression(264) [{],token:34,{
+========+<parseStatement(390) [{],token:34,{
+======== src/parser.c:85 match current type:34, {-{
+======== src/parser.c:73 parser advance scanToken code:[println],token: [println]
+======== src/parser.c:87 match current type:42, println-{
+============+<parseStatement(390) [println],token:42,println
+================+<parseExpressionStatement(632) [println],token:42,println
+====================+<parseExpression(244) [println],token:42,println
+========================+<parseBinaryExpr start(269) [println],token:42,println
+============================+<parseUnaryExpr(312) [println],token:42,println
+================================+<parsePrimaryExpr(330) [println],token:42,println
+================================ src/parser.c:333 parsePrimaryExpr: prev1 code:[println],[{][println]
+================================ src/parser.c:85 match current type:42, println-println
+================================ src/parser.c:73 parser advance scanToken code:[(],token: [(]
+================================ src/parser.c:87 match current type:32, (-println
+================================ src/parser.c:85 match current type:32, (-(
+================================ src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+================================ src/parser.c:87 match current type:38, identifier-(
+====================================+<finishCall(370) [a],token:38,identifier
+========================================+<parseExpression(244) [a],token:38,identifier
+============================================+<parseBinaryExpr start(269) [a],token:38,identifier
+================================================+<parseUnaryExpr(312) [a],token:38,identifier
+====================================================+<parsePrimaryExpr(330) [a],token:38,identifier
+==================================================== src/parser.c:333 parsePrimaryExpr: prev1 code:[a],[(][identifier]
+==================================================== src/parser.c:85 match current type:38, identifier-identifier
+==================================================== src/parser.c:73 parser advance scanToken code:[)],token: [)]
+==================================================== src/parser.c:87 match current type:33, )-identifier
+==================================================== src/parser.c:343 parsePrimaryExpr: current code:[)],[identifier]
+====================================================-/>parsePrimaryExpr(365) [)],token:33,)
+================================================-/>parseUnaryExpr(325) [)],token:33,)
+============================================ src/parser.c:271 parseBinaryExpr: left type:3
+============================================ src/parser.c:276 parseBinaryExpr: current token: )/33, prec: 0, minPrec: 0
+============================================ src/parser.c:284 parseBinaryExpr: breaking with current token: )
+============================================-/>parseBinaryExpr(307) [)],token:33,)
+======================================== src/parser.c:247 parseExpression first type:3
+exprType-3{a}======================================== src/parser.c:251 parser->current.type = )
+======================================== src/parser.c:263 parseExpression end type:3
+========================================-/>parseExpression(264) [)],token:33,)
+==================================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+====================================-/>finishCall(385) [;],token:36,;
+================================-/>parsePrimaryExpr(365) [;],token:36,;
+============================-/>parseUnaryExpr(325) [;],token:36,;
+======================== src/parser.c:271 parseBinaryExpr: left type:5
+======================== src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+======================== src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+========================-/>parseBinaryExpr(307) [;],token:36,;
+==================== src/parser.c:247 parseExpression first type:5
+exprType-5{exprType-3{println}(exprType-3{a})}==================== src/parser.c:251 parser->current.type = ;
+==================== src/parser.c:263 parseExpression end type:5
+====================-/>parseExpression(264) [;],token:36,;
+================ src/parser.c:634 expr type: [5]
+================ src/parser.c:73 parser advance scanToken code:[}],token: [}]
+================-/>parseExpressionStatement(641) [}],token:35,}
+============-/>parseStatement(405) [}],token:35,}
+======== src/parser.c:73 parser advance scanToken code:[else],token: [else]
+========-/>parseStatement(405) [else],token:3,else
+==== src/parser.c:85 match current type:3, else-else
+==== src/parser.c:73 parser advance scanToken code:[{],token: [{]
+==== src/parser.c:87 match current type:34, {-else
+========+<parseStatement(390) [{],token:34,{
+======== src/parser.c:85 match current type:34, {-{
+======== src/parser.c:73 parser advance scanToken code:[println],token: [println]
+======== src/parser.c:87 match current type:42, println-{
+============+<parseStatement(390) [println],token:42,println
+================+<parseExpressionStatement(632) [println],token:42,println
+====================+<parseExpression(244) [println],token:42,println
+========================+<parseBinaryExpr start(269) [println],token:42,println
+============================+<parseUnaryExpr(312) [println],token:42,println
+================================+<parsePrimaryExpr(330) [println],token:42,println
+================================ src/parser.c:333 parsePrimaryExpr: prev1 code:[println],[{][println]
+================================ src/parser.c:85 match current type:42, println-println
+================================ src/parser.c:73 parser advance scanToken code:[(],token: [(]
+================================ src/parser.c:87 match current type:32, (-println
+================================ src/parser.c:85 match current type:32, (-(
+================================ src/parser.c:73 parser advance scanToken code:[0],token: [int]
+================================ src/parser.c:87 match current type:8, int-(
+====================================+<finishCall(370) [0],token:8,int
+========================================+<parseExpression(244) [0],token:8,int
+============================================+<parseBinaryExpr start(269) [0],token:8,int
+================================================+<parseUnaryExpr(312) [0],token:8,int
+====================================================+<parsePrimaryExpr(330) [0],token:8,int
+==================================================== src/parser.c:333 parsePrimaryExpr: prev1 code:[0],[(][int]
+==================================================== src/parser.c:85 match current type:8, int-int
+==================================================== src/parser.c:73 parser advance scanToken code:[)],token: [)]
+==================================================== src/parser.c:87 match current type:33, )-int
+====================================================-/>parsePrimaryExpr(365) [)],token:33,)
+================================================-/>parseUnaryExpr(325) [)],token:33,)
+============================================ src/parser.c:271 parseBinaryExpr: left type:2
+============================================ src/parser.c:276 parseBinaryExpr: current token: )/33, prec: 0, minPrec: 0
+============================================ src/parser.c:284 parseBinaryExpr: breaking with current token: )
+============================================-/>parseBinaryExpr(307) [)],token:33,)
+======================================== src/parser.c:247 parseExpression first type:2
+exprType-2{LITERAL->8 0}======================================== src/parser.c:251 parser->current.type = )
+======================================== src/parser.c:263 parseExpression end type:2
+========================================-/>parseExpression(264) [)],token:33,)
+==================================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+====================================-/>finishCall(385) [;],token:36,;
+================================-/>parsePrimaryExpr(365) [;],token:36,;
+============================-/>parseUnaryExpr(325) [;],token:36,;
+======================== src/parser.c:271 parseBinaryExpr: left type:5
+======================== src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+======================== src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+========================-/>parseBinaryExpr(307) [;],token:36,;
+==================== src/parser.c:247 parseExpression first type:5
+exprType-5{exprType-3{println}(exprType-2{LITERAL->8 0})}==================== src/parser.c:251 parser->current.type = ;
+==================== src/parser.c:263 parseExpression end type:5
+====================-/>parseExpression(264) [;],token:36,;
+================ src/parser.c:634 expr type: [5]
+================ src/parser.c:73 parser advance scanToken code:[}],token: [}]
+================-/>parseExpressionStatement(641) [}],token:35,}
+============-/>parseStatement(405) [}],token:35,}
+======== src/parser.c:73 parser advance scanToken code:[for],token: [for]
+========-/>parseStatement(405) [for],token:4,for
+====-/>parseStatement(405) [for],token:4,for
+====+<parseStatement(390) [for],token:4,for
+==== src/parser.c:85 match current type:4, for-for
+==== src/parser.c:73 parser advance scanToken code:[i],token: [identifier]
+==== src/parser.c:87 match current type:38, identifier-for
+========+<parseForStatement(515) [i],token:38,identifier
+======== src/parser.c:73 parser advance scanToken code:[=],token: [=]
+======== src/parser.c:73 parser advance scanToken code:[0],token: [int]
+============+<parseExpression(244) [0],token:8,int
+================+<parseBinaryExpr start(269) [0],token:8,int
+====================+<parseUnaryExpr(312) [0],token:8,int
+========================+<parsePrimaryExpr(330) [0],token:8,int
+======================== src/parser.c:333 parsePrimaryExpr: prev1 code:[0],[=][int]
+======================== src/parser.c:85 match current type:8, int-int
+======================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+======================== src/parser.c:87 match current type:36, ;-int
+========================-/>parsePrimaryExpr(365) [;],token:36,;
+====================-/>parseUnaryExpr(325) [;],token:36,;
+================ src/parser.c:271 parseBinaryExpr: left type:2
+================ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+================ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+================-/>parseBinaryExpr(307) [;],token:36,;
+============ src/parser.c:247 parseExpression first type:2
+exprType-2{LITERAL->8 0}============ src/parser.c:251 parser->current.type = ;
+============ src/parser.c:263 parseExpression end type:2
+============-/>parseExpression(264) [;],token:36,;
+======== src/parser.c:73 parser advance scanToken code:[i],token: [identifier]
+============+<parseExpression(244) [i],token:38,identifier
+================+<parseBinaryExpr start(269) [i],token:38,identifier
+====================+<parseUnaryExpr(312) [i],token:38,identifier
+========================+<parsePrimaryExpr(330) [i],token:38,identifier
+======================== src/parser.c:333 parsePrimaryExpr: prev1 code:[i],[;][identifier]
+======================== src/parser.c:85 match current type:38, identifier-identifier
+======================== src/parser.c:73 parser advance scanToken code:[<],token: [<]
+======================== src/parser.c:87 match current type:21, <-identifier
+======================== src/parser.c:343 parsePrimaryExpr: current code:[<],[identifier]
+========================-/>parsePrimaryExpr(365) [<],token:21,<
+====================-/>parseUnaryExpr(325) [<],token:21,<
+================ src/parser.c:271 parseBinaryExpr: left type:3
+================ src/parser.c:276 parseBinaryExpr: current token: </21, prec: 5, minPrec: 0
+================ src/parser.c:73 parser advance scanToken code:[3],token: [int]
+================ src/parser.c:301 parseBinaryExpr: parse right expr start, op type:21
+====================+<parseBinaryExpr start(269) [3],token:8,int
+========================+<parseUnaryExpr(312) [3],token:8,int
+============================+<parsePrimaryExpr(330) [3],token:8,int
+============================ src/parser.c:333 parsePrimaryExpr: prev1 code:[3],[<][int]
+============================ src/parser.c:85 match current type:8, int-int
+============================ src/parser.c:73 parser advance scanToken code:[;],token: [;]
+============================ src/parser.c:87 match current type:36, ;-int
+============================-/>parsePrimaryExpr(365) [;],token:36,;
+========================-/>parseUnaryExpr(325) [;],token:36,;
+==================== src/parser.c:271 parseBinaryExpr: left type:2
+==================== src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 6
+==================== src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+====================-/>parseBinaryExpr(307) [;],token:36,;
+================ src/parser.c:305 parseBinaryExpr last: left type:0, operator:</< right type:2, parser current token:;/36
+================ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+================ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+================-/>parseBinaryExpr(307) [;],token:36,;
+============ src/parser.c:247 parseExpression first type:0
+exprType-0{(exprType-3{i} < exprType-2{LITERAL->8 3})}============ src/parser.c:251 parser->current.type = ;
+============ src/parser.c:263 parseExpression end type:0
+============-/>parseExpression(264) [;],token:36,;
+======== src/parser.c:73 parser advance scanToken code:[i],token: [identifier]
+======== src/parser.c:575 parseForStatement: increment
+============+<parseExpression(244) [i],token:38,identifier
+================+<parseBinaryExpr start(269) [i],token:38,identifier
+====================+<parseUnaryExpr(312) [i],token:38,identifier
+========================+<parsePrimaryExpr(330) [i],token:38,identifier
+======================== src/parser.c:333 parsePrimaryExpr: prev1 code:[i],[;][identifier]
+======================== src/parser.c:85 match current type:38, identifier-identifier
+======================== src/parser.c:73 parser advance scanToken code:[++],token: [++]
+======================== src/parser.c:87 match current type:30, ++-identifier
+======================== src/parser.c:343 parsePrimaryExpr: current code:[++],[identifier]
+========================-/>parsePrimaryExpr(365) [++],token:30,++
+====================-/>parseUnaryExpr(325) [++],token:30,++
+================ src/parser.c:271 parseBinaryExpr: left type:3
+================ src/parser.c:276 parseBinaryExpr: current token: ++/30, prec: 8, minPrec: 0
+================ src/parser.c:73 parser advance scanToken code:[{],token: [{]
+================ src/parser.c:295 parseBinaryExpr: inc||dec left type:6
+================ src/parser.c:276 parseBinaryExpr: current token: {/34, prec: 0, minPrec: 0
+================ src/parser.c:284 parseBinaryExpr: breaking with current token: {
+================-/>parseBinaryExpr(307) [{],token:34,{
+============ src/parser.c:247 parseExpression first type:6
+exprType-6{exprType-3{i}++}============ src/parser.c:251 parser->current.type = {
+============ src/parser.c:263 parseExpression end type:6
+============-/>parseExpression(264) [{],token:34,{
+======== src/parser.c:577 parseForStatement: increment type:6
+======== src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+============+<parseStatement(390) [a],token:38,identifier
+================+<parseExpressionStatement(632) [a],token:38,identifier
+====================+<parseExpression(244) [a],token:38,identifier
+========================+<parseBinaryExpr start(269) [a],token:38,identifier
+============================+<parseUnaryExpr(312) [a],token:38,identifier
+================================+<parsePrimaryExpr(330) [a],token:38,identifier
+================================ src/parser.c:333 parsePrimaryExpr: prev1 code:[a],[{][identifier]
+================================ src/parser.c:85 match current type:38, identifier-identifier
+================================ src/parser.c:73 parser advance scanToken code:[=],token: [=]
+================================ src/parser.c:87 match current type:15, =-identifier
+================================ src/parser.c:343 parsePrimaryExpr: current code:[=],[identifier]
+================================-/>parsePrimaryExpr(365) [=],token:15,=
+============================-/>parseUnaryExpr(325) [=],token:15,=
+======================== src/parser.c:271 parseBinaryExpr: left type:3
+======================== src/parser.c:276 parseBinaryExpr: current token: =/15, prec: 1, minPrec: 0
+========================-/>parseBinaryExpr(307) [=],token:15,=
+==================== src/parser.c:247 parseExpression first type:3
+exprType-3{a}==================== src/parser.c:251 parser->current.type = =
+==================== src/parser.c:85 match current type:15, =-=
+==================== src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+==================== src/parser.c:87 match current type:38, identifier-=
+========================+<parseExpression(244) [a],token:38,identifier
+============================+<parseBinaryExpr start(269) [a],token:38,identifier
+================================+<parseUnaryExpr(312) [a],token:38,identifier
+====================================+<parsePrimaryExpr(330) [a],token:38,identifier
+==================================== src/parser.c:333 parsePrimaryExpr: prev1 code:[a],[=][identifier]
+==================================== src/parser.c:85 match current type:38, identifier-identifier
+==================================== src/parser.c:73 parser advance scanToken code:[+],token: [+]
+==================================== src/parser.c:87 match current type:16, +-identifier
+==================================== src/parser.c:343 parsePrimaryExpr: current code:[+],[identifier]
+====================================-/>parsePrimaryExpr(365) [+],token:16,+
+================================-/>parseUnaryExpr(325) [+],token:16,+
+============================ src/parser.c:271 parseBinaryExpr: left type:3
+============================ src/parser.c:276 parseBinaryExpr: current token: +/16, prec: 6, minPrec: 0
+============================ src/parser.c:73 parser advance scanToken code:[i],token: [identifier]
+============================ src/parser.c:301 parseBinaryExpr: parse right expr start, op type:16
+================================+<parseBinaryExpr start(269) [i],token:38,identifier
+====================================+<parseUnaryExpr(312) [i],token:38,identifier
+========================================+<parsePrimaryExpr(330) [i],token:38,identifier
+======================================== src/parser.c:333 parsePrimaryExpr: prev1 code:[i],[+][identifier]
+======================================== src/parser.c:85 match current type:38, identifier-identifier
+======================================== src/parser.c:73 parser advance scanToken code:[;],token: [;]
+======================================== src/parser.c:87 match current type:36, ;-identifier
+======================================== src/parser.c:343 parsePrimaryExpr: current code:[;],[identifier]
+========================================-/>parsePrimaryExpr(365) [;],token:36,;
+====================================-/>parseUnaryExpr(325) [;],token:36,;
+================================ src/parser.c:271 parseBinaryExpr: left type:3
+================================ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 7
+================================ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+================================-/>parseBinaryExpr(307) [;],token:36,;
+============================ src/parser.c:305 parseBinaryExpr last: left type:0, operator:+/+ right type:3, parser current token:;/36
+============================ src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+============================ src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+============================-/>parseBinaryExpr(307) [;],token:36,;
+======================== src/parser.c:247 parseExpression first type:0
+exprType-0{(exprType-3{a} + exprType-3{i})}======================== src/parser.c:251 parser->current.type = ;
+======================== src/parser.c:263 parseExpression end type:0
+========================-/>parseExpression(264) [;],token:36,;
+==================== src/parser.c:634 expr type: [8]
+==================== src/parser.c:73 parser advance scanToken code:[}],token: [}]
+====================-/>parseExpressionStatement(641) [}],token:35,}
+================-/>parseStatement(405) [}],token:35,}
+============ src/parser.c:73 parser advance scanToken code:[println],token: [println]
+============-/>parseForStatement(595) [println],token:42,println
+========-/>parseStatement(405) [println],token:42,println
+========+<parseStatement(390) [println],token:42,println
+============+<parseExpressionStatement(632) [println],token:42,println
+================+<parseExpression(244) [println],token:42,println
+====================+<parseBinaryExpr start(269) [println],token:42,println
+========================+<parseUnaryExpr(312) [println],token:42,println
+============================+<parsePrimaryExpr(330) [println],token:42,println
+============================ src/parser.c:333 parsePrimaryExpr: prev1 code:[println],[}][println]
+============================ src/parser.c:85 match current type:42, println-println
+============================ src/parser.c:73 parser advance scanToken code:[(],token: [(]
+============================ src/parser.c:87 match current type:32, (-println
+============================ src/parser.c:85 match current type:32, (-(
+============================ src/parser.c:73 parser advance scanToken code:[a],token: [identifier]
+============================ src/parser.c:87 match current type:38, identifier-(
+================================+<finishCall(370) [a],token:38,identifier
+====================================+<parseExpression(244) [a],token:38,identifier
+========================================+<parseBinaryExpr start(269) [a],token:38,identifier
+============================================+<parseUnaryExpr(312) [a],token:38,identifier
+================================================+<parsePrimaryExpr(330) [a],token:38,identifier
+================================================ src/parser.c:333 parsePrimaryExpr: prev1 code:[a],[(][identifier]
+================================================ src/parser.c:85 match current type:38, identifier-identifier
+================================================ src/parser.c:73 parser advance scanToken code:[)],token: [)]
+================================================ src/parser.c:87 match current type:33, )-identifier
+================================================ src/parser.c:343 parsePrimaryExpr: current code:[)],[identifier]
+================================================-/>parsePrimaryExpr(365) [)],token:33,)
+============================================-/>parseUnaryExpr(325) [)],token:33,)
+======================================== src/parser.c:271 parseBinaryExpr: left type:3
+======================================== src/parser.c:276 parseBinaryExpr: current token: )/33, prec: 0, minPrec: 0
+======================================== src/parser.c:284 parseBinaryExpr: breaking with current token: )
+========================================-/>parseBinaryExpr(307) [)],token:33,)
+==================================== src/parser.c:247 parseExpression first type:3
+exprType-3{a}==================================== src/parser.c:251 parser->current.type = )
+==================================== src/parser.c:263 parseExpression end type:3
+====================================-/>parseExpression(264) [)],token:33,)
+================================ src/parser.c:73 parser advance scanToken code:[;],token: [;]
+================================-/>finishCall(385) [;],token:36,;
+============================-/>parsePrimaryExpr(365) [;],token:36,;
+========================-/>parseUnaryExpr(325) [;],token:36,;
+==================== src/parser.c:271 parseBinaryExpr: left type:5
+==================== src/parser.c:276 parseBinaryExpr: current token: ;/36, prec: 0, minPrec: 0
+==================== src/parser.c:284 parseBinaryExpr: breaking with current token: ;
+====================-/>parseBinaryExpr(307) [;],token:36,;
+================ src/parser.c:247 parseExpression first type:5
+exprType-5{exprType-3{println}(exprType-3{a})}================ src/parser.c:251 parser->current.type = ;
+================ src/parser.c:263 parseExpression end type:5
+================-/>parseExpression(264) [;],token:36,;
+============ src/parser.c:634 expr type: [5]
+============ src/parser.c:73 parser advance scanToken code:[],token: [EOF]
+============-/>parseExpressionStatement(641) [],token:47,EOF
+========-/>parseStatement(405) [],token:47,EOF
+==== src/parser.c:85 match current type:47, EOF-EOF
+==== src/parser.c:73 parser advance scanToken code:[],token: [EOF]
+==== src/parser.c:87 match current type:47, EOF-EOF
+Parsing succeeded.
+stmt: VAR
+Compiling statement VAR
+let a:int = exprType-2{LITERAL->8 10};
+compileVarStmt: a
+emitVarStmt
+emitVarStmt var name:a
+emitVarStmt: init a type:2
+Compiling expression type:Literal
+emitLiteralExpr type:int
+Converting token to value 10, 8,40
+stmt: VAR
+Compiling statement VAR
+const s = exprType-2{LITERAL->40 "hello world"};
+compileVarStmt: s
+emitVarStmt
+emitVarStmt var name:s
+emitVarStmt: init s type:2
+Compiling expression type:Literal
+emitLiteralExpr type:string_literal
+Converting token to value "hello world", 40,40
+stmt: IF
+Compiling statement IF
+if (exprType-0{(exprType-3{a} > exprType-2{LITERAL->8 5})}) {
+  {
+    exprType-5{exprType-3{println}(exprType-3{a})};
+  }
+} else {
+  {
+    exprType-5{exprType-3{println}(exprType-2{LITERAL->8 0})};
+  }
+}
+emitIfStmt
+Compiling expression type:Binary
+emitBinaryExpr start
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=a
+Compiling expression type:Literal
+emitLiteralExpr type:int
+Converting token to value 5, 8,40
+emitBinaryExpr op type:>, isFloat:0
+Compiling statement BLOCK
+{
+  exprType-5{exprType-3{println}(exprType-3{a})};
+}
+Compiling block statement
+Compiling statement EXPR
+exprType-5{exprType-3{println}(exprType-3{a})};
+Compiling Expr statement
+Compiling expression type:Call
+emitCallExpr
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=a
+Compiled block statement end
+Compiling statement BLOCK
+{
+  exprType-5{exprType-3{println}(exprType-2{LITERAL->8 0})};
+}
+Compiling block statement
+Compiling statement EXPR
+exprType-5{exprType-3{println}(exprType-2{LITERAL->8 0})};
+Compiling Expr statement
+Compiling expression type:Call
+emitCallExpr
+Compiling expression type:Literal
+emitLiteralExpr type:int
+Converting token to value 0, 8,40
+Compiled block statement end
+stmt: FOR
+Compiling statement FOR
+for i=exprType-2{LITERAL->8 0}; exprType-0{(exprType-3{i} < exprType-2{LITERAL->8 3})}; exprType-6{exprType-3{i}++} {
+  {
+    exprType-8{a = exprType-0{(exprType-3{a} + exprType-3{i})}};
+  }
+}
+emitForStmt
+for i=exprType-2{LITERAL->8 0}; exprType-0{(exprType-3{i} < exprType-2{LITERAL->8 3})}; exprType-6{exprType-3{i}++} {
+  {
+    exprType-8{a = exprType-0{(exprType-3{a} + exprType-3{i})}};
+  }
+}
+emitForStmtInit
+emitForStmtInit init type:1
+emitVarStmt
+emitVarStmt var name:i
+emitVarStmt: init i type:2
+Compiling expression type:Literal
+emitLiteralExpr type:int
+Converting token to value 0, 8,40
+emitForStmtCond
+Compiling expression type:Binary
+emitBinaryExpr start
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=i
+findVariable s=i
+findVariable i=i
+Compiling expression type:Literal
+emitLiteralExpr type:int
+Converting token to value 3, 8,40
+emitBinaryExpr op type:<, isFloat:0
+Building < comparison
+emitForStmtBody
+Compiling statement BLOCK
+{
+  exprType-8{a = exprType-0{(exprType-3{a} + exprType-3{i})}};
+}
+Compiling block statement
+Compiling statement EXPR
+exprType-8{a = exprType-0{(exprType-3{a} + exprType-3{i})}};
+Compiling Expr statement
+Compiling expression type:Assign
+emitAssignExpr
+findVariable a=a
+Compiling expression type:Binary
+emitBinaryExpr start
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=a
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=i
+findVariable s=i
+findVariable i=i
+emitBinaryExpr op type:+, isFloat:0
+emitAssignExpr end
+Compiled block statement end
+emitForStmtInc
+emitForStmtInc expr type:6
+emitForStmtInc expr operand type:3
+emitForStmtInc variableExpr name:i
+findVariable a=i
+findVariable s=i
+findVariable i=i
+emitForStmtInc i:i, v:0x60b000000ed0
+emitForStmtEnd
+stmt: EXPR
+Compiling statement EXPR
+exprType-5{exprType-3{println}(exprType-3{a})};
+Compiling Expr statement
+Compiling expression type:Call
+emitCallExpr
+Compiling expression type:Variable
+emitVariableExpr
+findVariable a=a
+endLLVM
+call return
+call print error
+call print IR
+; ModuleID = 'tua_module'
+source_filename = "tua_module"
+
+@str = private unnamed_addr constant [12 x i8] c"hello world\00", align 1
+@fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.1 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.2 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+
+define i32 @main() {
+entry:
+  %a = alloca i32, align 4
+  store i32 10, ptr %a, align 4
+  %s = alloca ptr, align 8
+  store ptr @str, ptr %s, align 8
+  %load = load i32, ptr %a, align 4
+  %icmp_gt = icmp sgt i32 %load, 5
+  br i1 %icmp_gt, label %if.then, label %if.else
+
+if.then:                                          ; preds = %entry
+  %load1 = load i32, ptr %a, align 4
+  %0 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %load1)
+  br label %if.end
+
+if.else:                                          ; preds = %entry
+  %1 = call i32 (ptr, ...) @printf(ptr @fmt.1, i32 0)
+  br label %if.end
+
+if.end:                                           ; preds = %if.else, %if.then
+  %i = alloca i32, align 4
+  store i32 0, ptr %i, align 4
+  br label %loop.cond
+
+loop.cond:                                        ; preds = %loop.inc, %if.end
+  %load2 = load i32, ptr %i, align 4
+  %icmp_lt = icmp slt i32 %load2, 3
+  br i1 %icmp_lt, label %loop.body, label %loop.end
+
+loop.body:                                        ; preds = %loop.cond
+  %load3 = load i32, ptr %a, align 4
+  %load4 = load i32, ptr %i, align 4
+  %add = add i32 %load3, %load4
+  store i32 %add, ptr %a, align 4
+  br label %loop.inc
+
+loop.inc:                                         ; preds = %loop.body
+  %i.val = load i32, ptr %i, align 4
+  %inc = add i32 %i.val, 1
+  store i32 %inc, ptr %i, align 4
+  br label %loop.cond
+
+loop.end:                                         ; preds = %loop.cond
+  %load5 = load i32, ptr %a, align 4
+  %2 = call i32 (ptr, ...) @printf(ptr @fmt.2, i32 %load5)
+  ret i32 0
+}
+
+declare i32 @printf(ptr, ...)
+
+10
+13
+result: 0
+====result0: time: 0.104031s
+Disposing IR...
+Disposing builder...
+Disposing context...

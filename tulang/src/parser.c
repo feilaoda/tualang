@@ -6,10 +6,17 @@
 #include "list.h"
 
 // Debug trace helpers
+#ifdef DEBUG
 int traceId = 0;
 #define parserDebugStart(x) traceId++;for(int a=0;a<traceId;a++){ printf("===="); } printf("+");fprintf(stdout,"<%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start); debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
 #define parserDebugEnd(x) for(int a=0;a<traceId;a++) {printf("====");} traceId--; printf("-");fprintf(stdout,"/>%s(%d) [%.*s],",x,__LINE__,parser->current.length, parser->current.start); debug("token:%d,%s\n",parser->current.type, tokenToString(parser->current.type))
 #define parserDebug(...) for(int a=0;a<traceId;a++) {printf("====");} printf(" %s:%d ", __FILE__, __LINE__); debug(__VA_ARGS__)
+#else
+#define parserDebugStart(x) ((void)0)
+#define parserDebugEnd(x) ((void)0)
+#define parserDebug(...) ((void)0)
+#endif
+
 #define printError(p,msg) fprintf(stderr,"ERROR: %d", __LINE__); errorPrint(p,msg)
 
 
@@ -36,6 +43,8 @@ void initParser(Parser* parser, Lexer* lexer) {
     parser->previous.type = TOKEN_ERROR;
     parser->current.type = TOKEN_ERROR;
 }
+
+static Stmt* declaration(Parser* parser);
 
 // Error handling
 void errorAtCurrent(Parser* parser, const char* message) {
@@ -238,7 +247,9 @@ static Expr* parseExpression(Parser* parser) {
     
     Expr* expr = parseBinaryExpr(parser, 0);
     parserDebug("parseExpression first type:%d\n", expr->type);
+#ifdef DEBUG
     printExpr(expr);
+#endif
     parserDebug("parser->current.type = %s\n", tokenToString(parser->current.type));
     if (match(parser, TOKEN_ASSIGN)) {
         Token equals = parser->previous;
@@ -323,8 +334,12 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         
     parserDebug("parsePrimaryExpr: prev1 code:[%.*s],[%s][%s]\n", parser->current.length,parser->current.start, tokenToString(parser->previous.type), tokenToString(parser->current.type));
 
-    if (match(parser, TOKEN_INT) || 
-        match(parser, TOKEN_STRING_LITERAL)) {
+    if (match(parser, TOKEN_INT) ||
+        match(parser, TOKEN_LONG) ||
+        match(parser, TOKEN_DOUBLE) ||
+        match(parser, TOKEN_STRING_LITERAL) ||
+        match(parser, TOKEN_TRUE) ||
+        match(parser, TOKEN_FALSE)) {
         expr = newLiteralExpr(parser->previous);
     } else if (match(parser, TOKEN_IDENTIFIER)) {
         parserDebug("parsePrimaryExpr: current code:[%.*s],[%s]\n", parser->current.length,parser->current.start, tokenToString(parser->previous.type));
@@ -394,9 +409,14 @@ static Stmt* parseStatement(Parser* parser) {
 }
 
 static Stmt* parseIfStatement(Parser* parser) {
-    consume(parser, TOKEN_LPAREN, "Expect '(' after 'if'");
+    bool hasParen = false;
+    if (match(parser, TOKEN_LPAREN)) {
+        hasParen = true;
+    }
     Expr* condition = parseExpression(parser);
-    consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+    if (hasParen) {
+        consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+    }
     
     Stmt* thenBranch = parseStatement(parser);
     Stmt* elseBranch = NULL;
@@ -582,7 +602,7 @@ static Stmt* parseBlockStatement(Parser* parser) {
     List* statements = listNew();
     
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        listAppend(statements, parseStatement(parser));
+        listAppend(statements, declaration(parser));
     }
     
     consume(parser, TOKEN_RBRACE, "Expect '}' after block");
@@ -601,7 +621,9 @@ static Stmt* parseReturnStatement(Parser* parser) {
         value = parseExpression(parser);
     }
     
-    consume(parser, TOKEN_SEMICOLON, "Expect ';' after return value");
+    if (check(parser, TOKEN_SEMICOLON)) {
+        consume(parser, TOKEN_SEMICOLON, "Expect ';' after return value");
+    }
     
     ReturnStmt* stmt = malloc(sizeof(ReturnStmt));
     stmt->base.type = STMT_RETURN;
@@ -658,9 +680,16 @@ static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed) {
     bool isConst = parser->previous.type == TOKEN_CONST;
     bool hasVar = parser->previous.type == TOKEN_VAR;
 
+    bool first = true;
     do {
         // Parse variable name
-        Token name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+        Token name;
+        if (first && identifierConsumed) {
+            name = parser->previous;
+        } else {
+            name = consume(parser, TOKEN_IDENTIFIER, "Expect variable name");
+        }
+        first = false;
         
         bool hasType = false;
         // Parse optional type annotation
@@ -724,7 +753,7 @@ static List* parseBlock(Parser* parser) {
     consume(parser, TOKEN_LBRACE, "Expect '{' before block");
     
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        Stmt* stmt = parseStatement(parser);
+        Stmt* stmt = declaration(parser);
         if (stmt != NULL) {
             listAppend(statements, stmt);
         }
@@ -754,9 +783,15 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     Type* returnType = NULL;
     if (match(parser, TOKEN_ARROW)) {
         returnType = parseType(parser);
+    } else if (check(parser, TOKEN_INT) ||
+               check(parser, TOKEN_LONG) ||
+               check(parser, TOKEN_DOUBLE) ||
+               check(parser, TOKEN_STRING) ||
+               check(parser, TOKEN_BOOL)) {
+        // Support `fn demo(...) int {}` in addition to `fn demo(...) -> int {}`
+        returnType = parseType(parser);
     }
     
-    consume(parser, TOKEN_LBRACE, "Expect '{' before function body");
     List* body = parseBlock(parser);
     
     return newFuncStmt(name, parameters, returnType, body);
@@ -816,9 +851,24 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_INT;
         return type;
     }
+    if (match(parser, TOKEN_LONG)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_LONG;
+        return type;
+    }
+    if (match(parser, TOKEN_DOUBLE)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_DOUBLE;
+        return type;
+    }
     if (match(parser, TOKEN_STRING)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_STRING;
+        return type;
+    }
+    if (match(parser, TOKEN_BOOL)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_BOOL;
         return type;
     }
     printError(parser, "Expect type name");

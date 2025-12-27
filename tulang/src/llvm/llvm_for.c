@@ -199,7 +199,9 @@ void emitForStmtEnd(Compiler *compiler, ForBlock block, ForStmt * stmt) {
 
 void emitForStmt(Compiler*compiler, ForStmt*stmt) {
     emitDebug("emitForStmt\n");
+#ifdef DEBUG
     printForStmt(stmt,0);
+#endif
 
     ForBlock* block = newForStmtBlock(compiler, compiler->current->func);
     emitForStmtInit(compiler, *block, stmt);
@@ -208,4 +210,3 @@ void emitForStmt(Compiler*compiler, ForStmt*stmt) {
     emitForStmtInc(compiler, *block, stmt);
     emitForStmtEnd(compiler, *block, stmt);
 }
-

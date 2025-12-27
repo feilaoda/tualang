@@ -1,0 +1,15 @@
+let a:int = 10;
+const s = "hello world";
+
+if a > 5 {
+    println(a);
+} else {
+    println(0);
+}
+
+for i=0; i<3; i++ {
+    a = a + i;
+}
+
+println(a);
+println(s);

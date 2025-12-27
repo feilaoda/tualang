@@ -20,6 +20,7 @@ typedef enum {
     TOKEN_DOUBLE,
     TOKEN_LONG,
     TOKEN_STRING,
+    TOKEN_BOOL,
     TOKEN_TRUE,
     TOKEN_FALSE,
     // Operators

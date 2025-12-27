@@ -1,7 +1,6 @@
 #include "debug.h"
 #include <stdlib.h>
 #include <stdio.h> 
-#include "compiler.h"
 
 static const char* StmtTypeNames[] = {
     "EXPR",
@@ -277,5 +276,4 @@ void printForStmt(ForStmt* stmt, int indent) {
     printIndent(indent);
     printf("}\n");
 }
-
 

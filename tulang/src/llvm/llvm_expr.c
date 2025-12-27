@@ -106,6 +106,22 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
             return isFloat ?
                 LLVMBuildFCmp(builder, LLVMRealOGE, left, right, "fcmp_ge") :
                 LLVMBuildICmp(builder, LLVMIntSGE, left, right, "icmp_ge");
+
+        case TOKEN_AND:
+            if (LLVMGetTypeKind(LLVMTypeOf(left)) != LLVMIntegerTypeKind ||
+                LLVMGetTypeKind(LLVMTypeOf(right)) != LLVMIntegerTypeKind) {
+                error("&& operands must be integers/bools");
+                return NULL;
+            }
+            return LLVMBuildAnd(builder, left, right, "and");
+
+        case TOKEN_OR:
+            if (LLVMGetTypeKind(LLVMTypeOf(left)) != LLVMIntegerTypeKind ||
+                LLVMGetTypeKind(LLVMTypeOf(right)) != LLVMIntegerTypeKind) {
+                error("|| operands must be integers/bools");
+                return NULL;
+            }
+            return LLVMBuildOr(builder, left, right, "or");
             
         default:
             error("Unknown binary operator");
@@ -132,16 +148,13 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
     
     // 如果是局部变量，需要加载其值
     if (!var.isGlobal) {
-        LLVMTypeRef varType = LLVMTypeOf(var.value);
-        if (!varType) {
-            error("Failed to get variable type\n");
+        if (!var.type) {
+            error("Missing variable type metadata, name: %.*s\n", expr->name.length, expr->name.start);
             return NULL;
         }
-
-
         return LLVMBuildLoad2(
             compiler->builder,
-            LLVMInt32TypeInContext(compiler->context),
+            var.type,
             var.value,
             "load"
         );
@@ -159,6 +172,10 @@ LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr) {
             int value = tokenToValue(expr->value).as.i;
             return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 
                               value, 0);
+        }
+        case TOKEN_LONG: {
+            int64_t value = tokenToValue(expr->value).as.l;
+            return LLVMConstInt(LLVMInt64TypeInContext(compiler->context), (uint64_t)value, 0);
         }
         case TOKEN_DOUBLE: {
             double value = tokenToValue(expr->value).as.d;

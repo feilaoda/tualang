@@ -2,32 +2,91 @@
 #include "compiler.h"
 #include "debug.h"
 
+static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
+    if (!type) return LLVMInt32TypeInContext(compiler->context);
+
+    switch (type->kind) {
+        case TYPE_INT:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL:
+            return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        default:
+            return LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
+    if (!initializer) return LLVMInt32TypeInContext(compiler->context);
+    if (initializer->type != EXPR_LITERAL) return LLVMInt32TypeInContext(compiler->context);
+
+    LiteralExpr* literal = (LiteralExpr*)initializer;
+    switch (literal->value.type) {
+        case TOKEN_INT:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TOKEN_LONG:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TOKEN_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TOKEN_STRING_LITERAL:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TOKEN_TRUE:
+        case TOKEN_FALSE:
+            return LLVMInt1TypeInContext(compiler->context);
+        default:
+            return LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
+    if (!value) return NULL;
+    LLVMTypeRef srcType = LLVMTypeOf(value);
+    if (srcType == targetType) return value;
+
+    LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
+    LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
+        unsigned srcBits = LLVMGetIntTypeWidth(srcType);
+        unsigned dstBits = LLVMGetIntTypeWidth(targetType);
+        if (srcBits < dstBits) return LLVMBuildSExt(compiler->builder, value, targetType, "sext");
+        if (srcBits > dstBits) return LLVMBuildTrunc(compiler->builder, value, targetType, "trunc");
+        return value;
+    }
+
+    // Keep it simple for now; extend as language grows.
+    return value;
+}
 
 void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     emitDebug("emitVarStmt\n");
-    // int a = 10;
     char *var = malloc(stmt->name.length + 1);
-    // char var[255] = {0};
     memcpy(var, stmt->name.start, stmt->name.length);
     var[stmt->name.length] = '\0';
     emitDebug("emitVarStmt var name:%s\n", var);
-    LLVMValueRef a = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), var);
-    if(stmt->initializer != NULL) {
+    LLVMTypeRef allocaType = stmt->type ? toLLVMType(compiler, stmt->type) : inferLLVMTypeFromInitializer(compiler, stmt->initializer);
+    LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, allocaType, var);
+
+    if (stmt->initializer != NULL) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
-        if(stmt->initializer->type == EXPR_LITERAL) {
-            LiteralExpr * intExpr = (LiteralExpr *)stmt->initializer;
-            emitDebug("emitVarStmt LiteralExpr type:%d value:%d\n", intExpr->value.type,tokenToValue(intExpr->value).as.i);
-            if(intExpr->value.type == TOKEN_INT) {
-                emitDebug("emitVarStmt TOKEN_INT type:%d value:%d\n", intExpr->value.type,tokenToValue(intExpr->value).as.i);
-                LLVMValueRef ten = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), tokenToValue(intExpr->value).as.i, 0);
-                LLVMBuildStore(compiler->builder, ten, a);
-            }
+        LLVMValueRef initValue = compileExpr(compiler, stmt->initializer);
+        initValue = castIfNeeded(compiler, initValue, allocaType);
+        if (initValue) {
+            LLVMBuildStore(compiler->builder, initValue, slot);
         }
     }
     Block * block = compiler->current;
     VariableRef * variable = malloc(sizeof(VariableRef));
     variable->name = var;
     variable->length = stmt->name.length;
-    variable->value = a;
+    variable->value = slot;
+    variable->type = allocaType;
+    variable->isConst = stmt->isConst ? 1 : 0;
+    variable->isGlobal = 0;
     listAppend(block->variables, variable);
 }

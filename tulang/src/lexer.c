@@ -59,12 +59,12 @@ static const char* TokenNames[] = {
 const char* tokenToString(TokenType type) {
     switch (type) {
         // 关键字
-        case TOKEN_VAR: return "var";
+        case TOKEN_VAR: return "var/let";
         case TOKEN_CONST: return "const";
         case TOKEN_IF: return "if";
         case TOKEN_ELSE: return "else";
         case TOKEN_FOR: return "for";
-        case TOKEN_FUNC: return "func";
+        case TOKEN_FUNC: return "func/fn";
         case TOKEN_RETURN: return "return";
         case TOKEN_IN: return "in";
         
@@ -73,6 +73,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_DOUBLE: return "double";
         case TOKEN_LONG: return "long";
         case TOKEN_STRING: return "string";
+        case TOKEN_BOOL: return "bool";
         case TOKEN_TRUE: return "true";
         case TOKEN_FALSE: return "false";
         
@@ -217,12 +218,23 @@ static TokenType identifierType(Lexer* lexer) {
             if (lexer->current - lexer->start > 1) {
                 
                 switch (lexer->start[1]) {
+                    case 'a': {
+                        if (lexer->current - lexer->start > 4 && memcmp(lexer->start, "false", 5) == 0) {
+                            return TOKEN_FALSE;
+                        }
+                        break;
+                    }
                     case 'n': return checkKeyword(lexer, 1, 1, "n", TOKEN_FUNC);
                     case 'o': return checkKeyword(lexer, 2, 1, "r", TOKEN_FOR);
                     case 'u': return checkKeyword(lexer, 2, 2, "nc", TOKEN_FUNC);
                 }
             }
             
+            break;
+        case 'd':
+            if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "double", 6) == 0) {
+                return TOKEN_DOUBLE;
+            }
             break;
         case 'i': ;
           if (lexer->current - lexer->start > 1) {
@@ -246,6 +258,22 @@ static TokenType identifierType(Lexer* lexer) {
           }
         case 'v': return checkKeyword(lexer, 1, 2, "ar", TOKEN_VAR);
         case 'c': return checkKeyword(lexer, 1, 4, "onst", TOKEN_CONST);
+        case 'l':
+            if (lexer->current - lexer->start > 2 && memcmp(lexer->start, "let", 3) == 0) {
+                return TOKEN_VAR;
+            }
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "long", 4) == 0) {
+                return TOKEN_LONG;
+            }
+            break;
+        case 'b':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "bool", 4) == 0) {
+                return TOKEN_BOOL;
+            }
+            if (lexer->current - lexer->start > 6 && memcmp(lexer->start, "boolean", 7) == 0) {
+                return TOKEN_BOOL;
+            }
+            break;
         case 'n': return checkKeyword(lexer, 1, 2, "ot", TOKEN_NOT);
         case '|': return checkKeyword(lexer, 1, 1, "|", TOKEN_OR);
         case 'r': return checkKeyword(lexer, 1, 5, "eturn", TOKEN_RETURN);
@@ -334,7 +362,7 @@ static Token string(Lexer* lexer) {
     }
     if (isAtEnd(lexer)) return errorToken(lexer, "Unterminated string.");
     advance(lexer);
-    return makeToken(lexer, TOKEN_STRING);
+    return makeToken(lexer, TOKEN_STRING_LITERAL);
 }
 
 // Token nextToken(Lexer* lexer) {

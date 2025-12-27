@@ -104,7 +104,9 @@ int executeModule(LLVMModuleRef module) {
     // Execute main function
     int (*mainFn)(void) = (int (*)(void))LLVMGetFunctionAddress(engine, "main");
     int result = mainFn();
+#ifdef DEBUG
     printf("result: %d\n", result);
+#endif
     // Cleanup
     LLVMDisposeExecutionEngine(engine);
     return result;
@@ -112,12 +114,16 @@ int executeModule(LLVMModuleRef module) {
 
 void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef context, char* ir) {
     if (ir) {
+#ifdef DEBUG
         printf("Disposing IR...\n");
+#endif
         LLVMDisposeMessage(ir);
     }
 
     if (builder) {
+#ifdef DEBUG
         printf("Disposing builder...\n");
+#endif
         LLVMDisposeBuilder(builder);
     }
 
@@ -127,7 +133,9 @@ void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef contex
     // }
 
     if (context) {
+#ifdef DEBUG
         printf("Disposing context...\n");
+#endif
         LLVMContextDispose(context);
     }
 }
@@ -138,65 +146,43 @@ void endLLVM(Compiler* compiler) {
     LLVMBuilderRef builder = compiler->builder;
     LLVMModuleRef module = compiler->module;
 
- // Declare printf function
-    LLVMTypeRef printfParamTypes[] = { LLVMPointerType(LLVMInt8TypeInContext(context), 0) };
-    LLVMTypeRef printfType = LLVMFunctionType(LLVMInt32TypeInContext(context), 
-                                             printfParamTypes, 1, 1);
-    LLVMValueRef printfFunc = LLVMAddFunction(module, "printf", printfType);
-    VariableRef var = findVariable(compiler->current->variables, "a");
-// printf("%d", a)
-    debug("call printf\n");
-    LLVMValueRef formatStr2 = LLVMBuildGlobalStringPtr(builder, "%d\n", "fmt");
-    LLVMValueRef printVal = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), var.value, "print_val");
-    LLVMValueRef args2[] = { formatStr2, printVal };
-    LLVMBuildCall2(builder, printfType, printfFunc, args2, 2, "");
-
-
-     // Add return 0
-    debug("call return\n");
-    LLVMValueRef returnValue = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
-    LLVMBuildRet(builder, returnValue);
+    // Add implicit `return 0` for the generated `main` if needed.
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        debug("call return\n");
+        LLVMValueRef returnValue = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+        LLVMBuildRet(builder, returnValue);
+    }
 
     // Verify module
     char *error = NULL;
     debug("call print error\n");
+    if (LLVMVerifyModule(module, LLVMReturnStatusAction, &error) != 0) {
+        fprintf(stderr, "LLVMVerifyModule failed: %s\n", error ? error : "(unknown)");
+        LLVMDisposeMessage(error);
+        cleanup(module, builder, context, NULL);
+        return;
+    }
 
-    LLVMVerifyModule(module, LLVMAbortProcessAction, &error);
-
-    LLVMDisposeMessage(error);
-
+#ifdef DEBUG
     debug("call print IR\n");
-    // Print generated IR
     char *ir = LLVMPrintModuleToString(module);
     printf("%s\n", ir);
-    // Print IR to file
     if (LLVMPrintModuleToFile(module, "bin/output.ll", &error) != 0) {
         fprintf(stderr, "Error printing IR to file: %s\n", error);
         LLVMDisposeMessage(error);
+        cleanup(module, builder, context, ir);
         return;
     }
     struct timeval stop, start;
-
     gettimeofday(&start, NULL);
     executeModule(module);
-
     gettimeofday(&stop, NULL);
     printf("====result0: time: %fs\n",(float)((stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec)/1000000.0);
-   
-
-    // printf("free ir\n"); 
-    // LLVMDisposeMessage(ir);
-
-    // printf("free builder\n");
-    // // Cleanup
-    // LLVMDisposeBuilder(builder);
-    // printf("free module\n");
-    // LLVMDisposeModule(module);
-    // printf("free context\n");
-    // LLVMContextDispose(context);
-
-    // system("gcc -O3 bin/output.ll -o bin/output.bin");
     cleanup(module, builder, context, ir);
+#else
+    executeModule(module);
+    cleanup(module, builder, context, NULL);
+#endif
 
 }
 
@@ -205,13 +191,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Usage: %s <source file>\n", argv[0]);
         return 1;
     }
-    char * file = argv[1];
     char* source = readFile(argv[1]);
-    FILE* target = fopen("examples/test5.tasm", "w+");
-    if (target == NULL) {
-        fprintf(stderr, "Could not open file \"%s\".\n", "examples/test5.tasm");
-        exit(74);
-    }
     Lexer lexer;
     initLexer(&lexer, source);
 
@@ -226,21 +206,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+#ifdef DEBUG
     printf("Parsing succeeded.\n");
+#endif
 
     Compiler compiler;
     initCompiler(&compiler);
     initLLVM(&compiler);
     for(int i = 0; i < statements->length; i++) {
         Stmt* stmt = listGet(statements, i);
+#ifdef DEBUG
         printf("stmt: %s\n", stmtTypeToString(stmt->type));
+#endif
         compileStmt(&compiler, stmt);
     }
-
-    // for(int i = 0; i< compiler.ir->length; i++) {
-    //     printf("%s\n", ((IRLine*)listGet(compiler.ir, i))->text);
-    //     fwrite(((IRLine*)listGet(compiler.ir, i))->text, 1, strlen(((IRLine*)listGet(compiler.ir, i))->text), target);
-    // }
 
     endLLVM(&compiler);
 
