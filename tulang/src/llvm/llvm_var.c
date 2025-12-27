@@ -19,9 +19,19 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_NAMED: {
             StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
             if (!info) {
-                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                char* tn = malloc((size_t)type->name.length + 1);
+                memcpy(tn, type->name.start, (size_t)type->name.length);
+                tn[type->name.length] = '\0';
+                LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+                if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+                free(tn);
+                return t;
             }
-            return LLVMPointerType(info->type, 0);
+            return info->type; // value semantics
+        }
+        case TYPE_REF: {
+            LLVMTypeRef inner = toLLVMType(compiler, type->inner);
+            return LLVMPointerType(inner, 0);
         }
         default:
             return LLVMInt32TypeInContext(compiler->context);
@@ -31,13 +41,42 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
 static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
     if (!initializer) return LLVMInt32TypeInContext(compiler->context);
 
+    if (initializer->type == EXPR_VARIABLE) {
+        VariableRef ref = findVariableExpr(compiler, initializer);
+        if (ref.value && ref.type) return ref.type;
+    }
+
     if (initializer->type == EXPR_CALL) {
         CallExpr* call = (CallExpr*)initializer;
         if (call->callee && call->callee->type == EXPR_VARIABLE) {
             VariableExpr* callee = (VariableExpr*)call->callee;
             StructInfo* info = compilerFindStruct(compiler, callee->name.start, callee->name.length);
             if (info) {
-                return LLVMPointerType(info->type, 0);
+                return info->type;
+            }
+        }
+    }
+
+    if (initializer->type == EXPR_UNARY) {
+        UnaryExpr* un = (UnaryExpr*)initializer;
+        if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+            VariableRef base = findVariableExpr(compiler, un->right);
+            if (base.value && base.type) {
+                return LLVMPointerType(base.type, 0);
+            }
+        }
+    }
+
+    if (initializer->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)initializer;
+        if (get->object && get->object->type == EXPR_VARIABLE) {
+            VariableExpr* recv = (VariableExpr*)get->object;
+            EnumInfo* info = compilerFindEnum(compiler, recv->name.start, recv->name.length);
+            if (info) {
+                if (info->isStringTag) {
+                    return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                }
+                return LLVMInt32TypeInContext(compiler->context);
             }
         }
     }
@@ -112,6 +151,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
         variable->typeName = stmt->type->name.start;
         variable->typeNameLength = stmt->type->name.length;
+    } else if (stmt->type && stmt->type->kind == TYPE_REF && stmt->type->inner && stmt->type->inner->kind == TYPE_NAMED) {
+        variable->typeName = stmt->type->inner->name.start;
+        variable->typeNameLength = stmt->type->inner->name.length;
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
         CallExpr* call = (CallExpr*)stmt->initializer;
         if (call->callee && call->callee->type == EXPR_VARIABLE) {
@@ -123,6 +165,30 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->typeName = NULL;
                 variable->typeNameLength = 0;
             }
+        } else {
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
+        }
+    } else if (stmt->initializer && stmt->initializer->type == EXPR_UNARY) {
+        UnaryExpr* un = (UnaryExpr*)stmt->initializer;
+        if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+            VariableRef base = findVariableExpr(compiler, un->right);
+            if (base.value && base.typeName) {
+                variable->typeName = base.typeName;
+                variable->typeNameLength = base.typeNameLength;
+            } else {
+                variable->typeName = NULL;
+                variable->typeNameLength = 0;
+            }
+        } else {
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
+        }
+    } else if (stmt->initializer && stmt->initializer->type == EXPR_VARIABLE) {
+        VariableRef base = findVariableExpr(compiler, stmt->initializer);
+        if (base.value && base.typeName) {
+            variable->typeName = base.typeName;
+            variable->typeNameLength = base.typeNameLength;
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;

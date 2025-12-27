@@ -276,9 +276,20 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         case TYPE_NAMED: {
             StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
             if (!info) {
-                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                // Best-effort: create/lookup an opaque named struct type.
+                char* tn = malloc((size_t)type->name.length + 1);
+                memcpy(tn, type->name.start, (size_t)type->name.length);
+                tn[type->name.length] = '\0';
+                LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+                if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+                free(tn);
+                return t;
             }
-            return LLVMPointerType(info->type, 0);
+            return info->type; // value semantics
+        }
+        case TYPE_REF: {
+            LLVMTypeRef inner = typeToLLVMType(compiler, type->inner, false);
+            return LLVMPointerType(inner, 0);
         }
         case TYPE_VOID:
             return LLVMVoidTypeInContext(compiler->context);
@@ -295,6 +306,10 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMPointerTypeKind && dstKind == LLVMPointerTypeKind) {
+        return LLVMBuildBitCast(compiler->builder, value, targetType, "ptrcast");
+    }
 
     if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
         unsigned srcBits = LLVMGetIntTypeWidth(srcType);
@@ -599,6 +614,9 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         if (p->type && p->type->kind == TYPE_NAMED) {
             variable->typeName = p->type->name.start;
             variable->typeNameLength = p->type->name.length;
+        } else if (p->type && p->type->kind == TYPE_REF && p->type->inner && p->type->inner->kind == TYPE_NAMED) {
+            variable->typeName = p->type->inner->name.start;
+            variable->typeNameLength = p->type->inner->name.length;
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
@@ -684,9 +702,15 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
             // Build params: this + original params
             List* params = listNew();
             Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, 0};
+            Type* thisInner = malloc(sizeof(Type));
+            thisInner->kind = TYPE_NAMED;
+            thisInner->name = stmt->name;
+            thisInner->inner = NULL;
+
             Type* thisType = malloc(sizeof(Type));
-            thisType->kind = TYPE_NAMED;
-            thisType->name = stmt->name;
+            thisType->kind = TYPE_REF;
+            thisType->name = (Token){0};
+            thisType->inner = thisInner;
             Parameter* thisParam = malloc(sizeof(Parameter));
             thisParam->name = thisNameTok;
             thisParam->type = thisType;
@@ -714,17 +738,35 @@ void compileEnumStmt(Compiler* compiler, EnumStmt* stmt) {
     memcpy(enumName, stmt->name.start, (size_t)stmt->name.length);
     enumName[stmt->name.length] = '\0';
 
+    bool sawInt = false;
+    bool sawString = false;
+    for (ListNode* node = stmt->variants ? stmt->variants->head : NULL; node != NULL; node = node->next) {
+        EnumVariantDecl* v = (EnumVariantDecl*)node->data;
+        if (!v) continue;
+        if (v->valueKind == ENUM_VALUE_INT) sawInt = true;
+        if (v->valueKind == ENUM_VALUE_STRING) sawString = true;
+    }
+    if (sawInt && sawString) {
+        error("Enum cannot mix int and string tags: %.*s\n", stmt->name.length, stmt->name.start);
+        // keep going best-effort, default to int
+        sawString = false;
+    }
+    bool isStringTag = sawString;
+
     if (!compilerFindEnum(compiler, stmt->name.start, stmt->name.length)) {
         EnumInfo* info = malloc(sizeof(EnumInfo));
         info->name = enumName;
         info->nameLength = stmt->name.length;
         info->decl = stmt;
+        info->isStringTag = isStringTag ? 1 : 0;
         listAppend(compiler->enums, info);
     } else {
         free(enumName);
     }
 
-    // Generate enum helper: Enum__toString(value:int) string
+    // Generate enum helper:
+    // - int-tag enum:    Enum__toString(value:int) string
+    // - string-tag enum: Enum__toString(value:string) string (identity)
     int helperLen = stmt->name.length + 2 + (int)strlen("toString");
     char* helperName = malloc((size_t)helperLen + 1);
     memcpy(helperName, stmt->name.start, (size_t)stmt->name.length);
@@ -735,16 +777,25 @@ void compileEnumStmt(Compiler* compiler, EnumStmt* stmt) {
     if (!LLVMGetNamedFunction(compiler->module, helperName)) {
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
-        LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i32, 1, 0);
+        LLVMTypeRef paramType = isStringTag ? i8ptr : i32;
+        LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &paramType, 1, 0);
         LLVMValueRef fn = LLVMAddFunction(compiler->module, helperName, fnType);
 
         LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
 
         LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
-        LLVMBasicBlockRef defBlock = LLVMAppendBasicBlock(fn, "default");
         LLVMPositionBuilderAtEnd(compiler->builder, entry);
 
         LLVMValueRef valueArg = LLVMGetParam(fn, 0);
+
+        if (isStringTag) {
+            LLVMBuildRet(compiler->builder, valueArg);
+            LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+            free(helperName);
+            return;
+        }
+
+        LLVMBasicBlockRef defBlock = LLVMAppendBasicBlock(fn, "default");
         unsigned variantCount = stmt->variants ? (unsigned)stmt->variants->length : 0;
         LLVMValueRef sw = LLVMBuildSwitch(compiler->builder, valueArg, defBlock, variantCount);
 
@@ -767,25 +818,12 @@ void compileEnumStmt(Compiler* compiler, EnumStmt* stmt) {
             LLVMAddCase(sw, LLVMConstInt(i32, (uint64_t)(uint32_t)current, 0), caseBlock);
 
             LLVMPositionBuilderAtEnd(compiler->builder, caseBlock);
-            if (v->valueKind == ENUM_VALUE_STRING) {
-                int len = v->value.length - 2; // strip quotes
-                if (len < 0) len = 0;
-                char* raw = malloc((size_t)len + 1);
-                if (len > 0) {
-                    memcpy(raw, v->value.start + 1, (size_t)len);
-                }
-                raw[len] = '\0';
-                LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, raw, "enum_variant");
-                LLVMBuildRet(compiler->builder, str);
-                free(raw);
-            } else {
-                char* variantName = malloc((size_t)v->name.length + 1);
-                memcpy(variantName, v->name.start, (size_t)v->name.length);
-                variantName[v->name.length] = '\0';
-                LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, variantName, "enum_variant");
-                LLVMBuildRet(compiler->builder, str);
-                free(variantName);
-            }
+            char* variantName = malloc((size_t)v->name.length + 1);
+            memcpy(variantName, v->name.start, (size_t)v->name.length);
+            variantName[v->name.length] = '\0';
+            LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, variantName, "enum_variant");
+            LLVMBuildRet(compiler->builder, str);
+            free(variantName);
         }
 
         LLVMPositionBuilderAtEnd(compiler->builder, defBlock);

@@ -282,7 +282,7 @@ static int fieldIndexOf(StructInfo* info, const Token* fieldName) {
     return -1;
 }
 
-static int enumVariantIndexOf(EnumInfo* info, const Token* variantName) {
+static int enumVariantIntTagOf(EnumInfo* info, const Token* variantName) {
     if (!info || !info->decl || !info->decl->variants) return -1;
     int current = -1;
     for (int i = 0; i < info->decl->variants->length; i++) {
@@ -303,6 +303,35 @@ static int enumVariantIndexOf(EnumInfo* info, const Token* variantName) {
     return -1;
 }
 
+static LLVMValueRef enumVariantStringTagOf(Compiler* compiler, EnumInfo* info, const Token* variantName) {
+    if (!compiler || !info || !info->decl || !info->decl->variants) return NULL;
+    for (int i = 0; i < info->decl->variants->length; i++) {
+        EnumVariantDecl* v = listGet(info->decl->variants, i);
+        if (!v) continue;
+        if (v->name.length != variantName->length) continue;
+        if (memcmp(v->name.start, variantName->start, (size_t)variantName->length) != 0) continue;
+
+        if (v->valueKind == ENUM_VALUE_STRING) {
+            int len = v->value.length - 2; // strip quotes
+            if (len < 0) len = 0;
+            char* raw = malloc((size_t)len + 1);
+            if (len > 0) memcpy(raw, v->value.start + 1, (size_t)len);
+            raw[len] = '\0';
+            LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, raw, "enum_tag");
+            free(raw);
+            return str;
+        }
+
+        char* variantNameC = malloc((size_t)v->name.length + 1);
+        memcpy(variantNameC, v->name.start, (size_t)v->name.length);
+        variantNameC[v->name.length] = '\0';
+        LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, variantNameC, "enum_tag");
+        free(variantNameC);
+        return str;
+    }
+    return NULL;
+}
+
 static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) {
     if (!info || !info->decl || !info->decl->fields) return LLVMInt32TypeInContext(compiler->context);
     FieldDeclaration* f = listGet(info->decl->fields, idx);
@@ -317,7 +346,25 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_NAMED: {
             StructInfo* inner = compilerFindStruct(compiler, f->type->name.start, f->type->name.length);
             if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-            return LLVMPointerType(inner->type, 0);
+            return inner->type;
+        }
+        case TYPE_REF: {
+            // Pointer to inner type
+            if (!f->type->inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (f->type->inner->kind == TYPE_NAMED) {
+                StructInfo* inner = compilerFindStruct(compiler, f->type->inner->name.start, f->type->inner->name.length);
+                if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                return LLVMPointerType(inner->type, 0);
+            }
+            // Fallback for refs to primitives
+            switch (f->type->inner->kind) {
+                case TYPE_INT: return LLVMPointerType(LLVMInt32TypeInContext(compiler->context), 0);
+                case TYPE_LONG: return LLVMPointerType(LLVMInt64TypeInContext(compiler->context), 0);
+                case TYPE_DOUBLE: return LLVMPointerType(LLVMDoubleTypeInContext(compiler->context), 0);
+                case TYPE_BOOL: return LLVMPointerType(LLVMInt1TypeInContext(compiler->context), 0);
+                case TYPE_STRING: return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), 0);
+                default: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
         }
         default: return LLVMInt32TypeInContext(compiler->context);
     }
@@ -351,11 +398,6 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
     emitDebug("emitGetExpr\n");
     if (!expr || !expr->object) return NULL;
 
-    // Special-case: `this.x`
-    if (expr->object->type == EXPR_VARIABLE && tokenEqualsN(&((VariableExpr*)expr->object)->name, "this")) {
-        // look up `this` variable metadata for struct type
-    }
-
     // Only support member access on variables for now.
     if (expr->object->type != EXPR_VARIABLE) {
         error("Member access receiver must be a variable for now\n");
@@ -371,12 +413,21 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
             error("Undefined receiver\n");
             return NULL;
         }
-        int idx = enumVariantIndexOf(enumInfo, &expr->name);
-        if (idx < 0) {
-            error("Unknown enum variant\n");
-            return NULL;
+        if (enumInfo->isStringTag) {
+            LLVMValueRef tag = enumVariantStringTagOf(compiler, enumInfo, &expr->name);
+            if (!tag) {
+                error("Unknown enum variant\n");
+                return NULL;
+            }
+            return tag;
+        } else {
+            int idx = enumVariantIntTagOf(enumInfo, &expr->name);
+            if (idx < 0) {
+                error("Unknown enum variant\n");
+                return NULL;
+            }
+            return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (uint64_t)idx, 0);
         }
-        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (uint64_t)idx, 0);
     }
     if (!recvVar.typeName) {
         error("Receiver has no struct type info\n");
@@ -395,8 +446,16 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
         return NULL;
     }
 
-    LLVMValueRef recvValue = compileExpr(compiler, expr->object); // pointer to struct
-    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, recvValue, (unsigned)idx, "field_ptr");
+    LLVMValueRef structPtr = NULL;
+    if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+        // Variable holds a pointer value (e.g. `&A`), so load it.
+        structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "recv_ptr");
+    } else {
+        // Variable holds a struct value, so its alloca is already a pointer to the struct.
+        structPtr = recvVar.value;
+    }
+
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
     LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
     return LLVMBuildLoad2(compiler->builder, fType, fieldPtr, "field");
 }
@@ -433,8 +492,14 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
         return NULL;
     }
 
-    LLVMValueRef recvValue = compileExpr(compiler, expr->object); // pointer to struct
-    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, recvValue, (unsigned)idx, "field_ptr");
+    LLVMValueRef structPtr = NULL;
+    if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+        structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "recv_ptr");
+    } else {
+        structPtr = recvVar.value;
+    }
+
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
     LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
 
     LLVMValueRef rhs = compileExpr(compiler, expr->value);
@@ -445,17 +510,29 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
 
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
     // Compile right expression
-    LLVMValueRef operand = compileExpr(compiler, expr->right);
-    if (!operand) {
-        error("Failed to compile right operand");
-        return NULL;
-    }
- 
     LLVMBuilderRef builder = compiler->builder;
     
 
     switch (expr->operator.type) {
+        case TOKEN_AMP: {
+            // Address-of: currently supports variables only.
+            if (!expr->right || expr->right->type != EXPR_VARIABLE) {
+                error("Address-of expects a variable for now\n");
+                return NULL;
+            }
+            VariableRef var = findVariableExpr(compiler, expr->right);
+            if (!var.value) {
+                error("Undefined variable in address-of\n");
+                return NULL;
+            }
+            return var.value;
+        }
         case TOKEN_MINUS: {
+            LLVMValueRef operand = compileExpr(compiler, expr->right);
+            if (!operand) {
+                error("Failed to compile right operand");
+                return NULL;
+            }
             // 数值取反
             LLVMTypeRef type = LLVMTypeOf(operand);
             if (LLVMGetTypeKind(type) == LLVMIntegerTypeKind) {
@@ -468,6 +545,11 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
         }
         
         case TOKEN_NOT: {
+            LLVMValueRef operand = compileExpr(compiler, expr->right);
+            if (!operand) {
+                error("Failed to compile right operand");
+                return NULL;
+            }
             // 逻辑取反
             if (LLVMGetTypeKind(LLVMTypeOf(operand)) != LLVMIntegerTypeKind) {
                 error("Operand must be boolean for logical not");

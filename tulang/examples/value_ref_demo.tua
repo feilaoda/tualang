@@ -1,0 +1,16 @@
+struct A {
+    x: int = 0
+}
+
+let a: A = A(1)
+let b = a
+
+b.x = 2
+println(a.x)
+println(b.x)
+
+let c = &a
+c.x = 3
+println(a.x)
+println(c.x)
+

@@ -1,7 +1,13 @@
-enum RoleType {
+enum RoleTypeInt {
     Admin = 10,
     User,
     Guest = 20
+}
+
+enum RoleType {
+    Admin,
+    User,
+    Guest
 }
 
 enum RoleType2 {
@@ -10,9 +16,17 @@ enum RoleType2 {
     Guest = "guest"
 }
 
+println(RoleTypeInt.Admin)
+println(RoleTypeInt.User)
+println(RoleTypeInt.Guest)
+
 println(RoleType.Admin)
 println(RoleType.User)
 println(RoleType.Guest)
+
+println(RoleTypeInt.toString(RoleTypeInt.Admin))
+println(RoleTypeInt.toString(RoleTypeInt.User))
+println(RoleTypeInt.toString(RoleTypeInt.Guest))
 
 println(RoleType.toString(RoleType.Admin))
 println(RoleType.toString(RoleType.User))

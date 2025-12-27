@@ -1,50 +1,45 @@
 ; ModuleID = 'tua_module'
 source_filename = "tua_module"
 
-@enum_variant = private unnamed_addr constant [6 x i8] c"Admin\00", align 1
-@enum_variant.1 = private unnamed_addr constant [5 x i8] c"User\00", align 1
-@enum_variant.2 = private unnamed_addr constant [6 x i8] c"Guest\00", align 1
-@enum_unknown = private unnamed_addr constant [8 x i8] c"Unknown\00", align 1
+%A = type { i32 }
+
 @fmt = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.1 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@fmt.2 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
 @fmt.3 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@fmt.4 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@fmt.5 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@fmt.6 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
-@fmt.7 = private unnamed_addr constant [4 x i8] c"%s\0A\00", align 1
 
 define i32 @main() {
 entry:
-  %0 = call i32 (ptr, ...) @printf(ptr @fmt, i32 10)
-  %1 = call i32 (ptr, ...) @printf(ptr @fmt.3, i32 11)
-  %2 = call i32 (ptr, ...) @printf(ptr @fmt.4, i32 20)
-  %call = call ptr @RoleType__toString(i32 10)
-  %3 = call i32 (ptr, ...) @printf(ptr @fmt.5, ptr %call)
-  %call1 = call ptr @RoleType__toString(i32 11)
-  %4 = call i32 (ptr, ...) @printf(ptr @fmt.6, ptr %call1)
-  %call2 = call ptr @RoleType__toString(i32 20)
-  %5 = call i32 (ptr, ...) @printf(ptr @fmt.7, ptr %call2)
+  %a = alloca %A, align 8
+  %ctor_tmp = alloca %A, align 8
+  %field_ptr = getelementptr inbounds nuw %A, ptr %ctor_tmp, i32 0, i32 0
+  store i32 1, ptr %field_ptr, align 4
+  %ctor = load %A, ptr %ctor_tmp, align 4
+  store %A %ctor, ptr %a, align 4
+  %b = alloca %A, align 8
+  %load = load %A, ptr %a, align 4
+  store %A %load, ptr %b, align 4
+  %field_ptr1 = getelementptr inbounds nuw %A, ptr %b, i32 0, i32 0
+  store i32 2, ptr %field_ptr1, align 4
+  %field_ptr2 = getelementptr inbounds nuw %A, ptr %a, i32 0, i32 0
+  %field = load i32, ptr %field_ptr2, align 4
+  %0 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %field)
+  %field_ptr3 = getelementptr inbounds nuw %A, ptr %b, i32 0, i32 0
+  %field4 = load i32, ptr %field_ptr3, align 4
+  %1 = call i32 (ptr, ...) @printf(ptr @fmt.1, i32 %field4)
+  %c = alloca ptr, align 8
+  store ptr %a, ptr %c, align 8
+  %recv_ptr = load ptr, ptr %c, align 8
+  %field_ptr5 = getelementptr inbounds nuw %A, ptr %recv_ptr, i32 0, i32 0
+  store i32 3, ptr %field_ptr5, align 4
+  %field_ptr6 = getelementptr inbounds nuw %A, ptr %a, i32 0, i32 0
+  %field7 = load i32, ptr %field_ptr6, align 4
+  %2 = call i32 (ptr, ...) @printf(ptr @fmt.2, i32 %field7)
+  %recv_ptr8 = load ptr, ptr %c, align 8
+  %field_ptr9 = getelementptr inbounds nuw %A, ptr %recv_ptr8, i32 0, i32 0
+  %field10 = load i32, ptr %field_ptr9, align 4
+  %3 = call i32 (ptr, ...) @printf(ptr @fmt.3, i32 %field10)
   ret i32 0
-}
-
-define ptr @RoleType__toString(i32 %0) {
-entry:
-  switch i32 %0, label %default [
-    i32 10, label %case
-    i32 11, label %case1
-    i32 20, label %case2
-  ]
-
-default:                                          ; preds = %entry
-  ret ptr @enum_unknown
-
-case:                                             ; preds = %entry
-  ret ptr @enum_variant
-
-case1:                                            ; preds = %entry
-  ret ptr @enum_variant.1
-
-case2:                                            ; preds = %entry
-  ret ptr @enum_variant.2
 }
 
 declare i32 @printf(ptr, ...)

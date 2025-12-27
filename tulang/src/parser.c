@@ -348,7 +348,8 @@ static Expr* parseUnaryExpr(Parser* parser) {
     if (match(parser, TOKEN_INC) || 
         match(parser, TOKEN_DEC) ||
         match(parser, TOKEN_MINUS) || 
-        match(parser, TOKEN_NOT)) {
+        match(parser, TOKEN_NOT) ||
+        match(parser, TOKEN_AMP)) {
         Token operator = parser->previous;
         Expr* right = parseUnaryExpr(parser);
         parserDebugEnd("parseUnaryExpr");
@@ -955,35 +956,54 @@ static Stmt* parseStructDeclaration(Parser* parser) {
 }
 
 static Type* parseType(Parser* parser) {
+    if (match(parser, TOKEN_AMP)) {
+        Type* inner = parseType(parser);
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_REF;
+        type->name = (Token){0};
+        type->inner = inner;
+        return type;
+    }
     if (match(parser, TOKEN_INT)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_INT;
+        type->name = (Token){0};
+        type->inner = NULL;
         return type;
     }
     if (match(parser, TOKEN_LONG)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_LONG;
+        type->name = (Token){0};
+        type->inner = NULL;
         return type;
     }
     if (match(parser, TOKEN_DOUBLE)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_DOUBLE;
+        type->name = (Token){0};
+        type->inner = NULL;
         return type;
     }
     if (match(parser, TOKEN_STRING)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_STRING;
+        type->name = (Token){0};
+        type->inner = NULL;
         return type;
     }
     if (match(parser, TOKEN_BOOL)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_BOOL;
+        type->name = (Token){0};
+        type->inner = NULL;
         return type;
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_NAMED;
         type->name = parser->previous;
+        type->inner = NULL;
         return type;
     }
     printError(parser, "Expect type name");

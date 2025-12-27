@@ -40,6 +40,7 @@ typedef enum {
     TOKEN_GE,        // >=
     TOKEN_OR,        // ||
     TOKEN_AND,       // &&
+    TOKEN_AMP,       // &
     TOKEN_ARROW,     // ->
     TOKEN_COLON,     // :
     TOKEN_EQ,         //==

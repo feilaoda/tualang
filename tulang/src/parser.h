@@ -51,12 +51,14 @@ typedef enum {
     TYPE_STRING,
     TYPE_VOID,
     TYPE_ANY,
-    TYPE_NAMED
+    TYPE_NAMED,
+    TYPE_REF
 } TypeKind;
 
 typedef struct Type {
     TypeKind kind;
     Token name; // for TYPE_NAMED
+    struct Type* inner; // for TYPE_REF
 } Type;
 
 // List structure for parameters and blocks

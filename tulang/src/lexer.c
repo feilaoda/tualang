@@ -94,6 +94,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_GE: return ">=";
         case TOKEN_OR: return "||";
         case TOKEN_AND: return "&&";
+        case TOKEN_AMP: return "&";
         case TOKEN_ARROW: return "->";
         case TOKEN_COLON: return ":";
         case TOKEN_EQ: return "==";
@@ -510,8 +511,7 @@ Token scanToken(Lexer* lexer) {
         }
         case '&':
             if (match(lexer, '&')) return makeToken(lexer, TOKEN_AND);
-            //并
-            break;
+            return makeToken(lexer, TOKEN_AMP);
         case '|':
             if (match(lexer, '|')) return makeToken(lexer, TOKEN_OR);
             //或

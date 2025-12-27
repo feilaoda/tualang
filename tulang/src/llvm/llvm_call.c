@@ -55,27 +55,23 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
             StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
-            if (!info) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-            return LLVMPointerType(info->type, 0);
+            if (!info) {
+                char* tn = malloc((size_t)type->name.length + 1);
+                memcpy(tn, type->name.start, (size_t)type->name.length);
+                tn[type->name.length] = '\0';
+                LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+                if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+                free(tn);
+                return t;
+            }
+            return info->type; // value semantics
+        }
+        case TYPE_REF: {
+            LLVMTypeRef inner = typeToLLVMType(compiler, type->inner);
+            return LLVMPointerType(inner, 0);
         }
         default: return LLVMInt32TypeInContext(compiler->context);
     }
-}
-
-static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
-    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
-    if (existing) return existing;
-
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
-    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-    LLVMTypeRef mallocType = LLVMFunctionType(i8ptr, &i64, 1, 0);
-    return LLVMAddFunction(compiler->module, "malloc", mallocType);
-}
-
-static LLVMTypeRef getMallocType(Compiler* compiler) {
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
-    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-    return LLVMFunctionType(i8ptr, &i64, 1, 0);
 }
 
 static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
@@ -111,14 +107,9 @@ static char* mangleRawAndToken(const char* left, int leftLen, const Token* right
 static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, CallExpr* expr) {
     if (!compiler || !info) return NULL;
     int argCount = expr->arguments ? expr->arguments->length : 0;
-
-    LLVMValueRef mallocFunc = getOrCreateMalloc(compiler);
-    LLVMTypeRef mallocType = getMallocType(compiler);
-
-    LLVMValueRef sizeVal = LLVMSizeOf(info->type);
-    LLVMValueRef raw = LLVMBuildCall2(compiler->builder, mallocType, mallocFunc, &sizeVal, 1, "malloc");
-    LLVMTypeRef structPtrType = LLVMPointerType(info->type, 0);
-    LLVMValueRef obj = LLVMBuildBitCast(compiler->builder, raw, structPtrType, "obj");
+    // Value semantics: build a stack temporary and return the loaded value.
+    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, info->type, "ctor_tmp");
+    LLVMValueRef obj = tmp;
 
     // Initialize fields
     int fieldCount = info->decl && info->decl->fields ? info->decl->fields->length : 0;
@@ -147,7 +138,7 @@ static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, 
         LLVMBuildStore(compiler->builder, initVal, fieldPtr);
     }
 
-    return obj;
+    return LLVMBuildLoad2(compiler->builder, info->type, tmp, "ctor");
 }
 
 static LLVMValueRef getOrCreatePrintf(Compiler* compiler) {
@@ -331,7 +322,12 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             ListNode* node = expr->arguments ? expr->arguments->head : NULL;
 
             if (isInstance) {
-                LLVMValueRef thisArg = compileExpr(compiler, get->object);
+                LLVMValueRef thisArg = NULL;
+                if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+                    thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "this");
+                } else {
+                    thisArg = recvVar.value; // alloca already yields pointer to struct value
+                }
                 thisArg = castValueToType(compiler, thisArg, paramTypes[0]);
                 args[argIndex++] = thisArg;
             }

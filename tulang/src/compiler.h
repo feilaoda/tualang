@@ -77,6 +77,7 @@ typedef struct EnumInfo {
     char* name;
     int nameLength;
     EnumStmt* decl;
+    int isStringTag; // 0=int tag, 1=string tag
 } EnumInfo;
 
 EnumInfo* compilerFindEnum(Compiler* compiler, const char* name, int length);
