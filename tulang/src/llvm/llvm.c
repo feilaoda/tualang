@@ -16,7 +16,7 @@ VariableRef findVariable(List* variables, const char* name) {
             return *variable;
         }
     }
-    return (VariableRef){NULL, 0, NULL, NULL, 0, 0};
+    return (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
 }
 VariableRef findVariableWithLength(List* variables, const char* name, int length) {
     char var[250] ={0};
@@ -29,7 +29,7 @@ VariableRef findVariableWithLength(List* variables, const char* name, int length
             return *variable;
         }
     }
-    return (VariableRef){NULL, 0, NULL, NULL, 0, 0};
+    return (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
 }
 
 VariableRef findVariableExpr(Compiler* compiler, Expr* expr) {
@@ -37,7 +37,7 @@ VariableRef findVariableExpr(Compiler* compiler, Expr* expr) {
     
     // Must be a variable expression
     if (expr->type != EXPR_VARIABLE) {
-        return (VariableRef){NULL, 0, NULL, NULL, 0, 0};
+        return (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
     }
 
     VariableExpr* var = (VariableExpr*)expr;
@@ -55,7 +55,7 @@ VariableRef findVariableExpr(Compiler* compiler, Expr* expr) {
         block = block->parent;
     }
 
-    return (VariableRef){NULL, 0, NULL, NULL, 0, 0};
+    return (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
 }
 
 

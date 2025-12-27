@@ -67,6 +67,11 @@ const char* tokenToString(TokenType type) {
         case TOKEN_FUNC: return "func/fn";
         case TOKEN_RETURN: return "return";
         case TOKEN_IN: return "in";
+        case TOKEN_OBJECT: return "object";
+        case TOKEN_ENUM: return "enum";
+        case TOKEN_PRIVATE: return "private";
+        case TOKEN_THIS: return "this";
+        case TOKEN_DEINIT: return "deinit";
         
         // 类型
         case TOKEN_INT: return "int";
@@ -103,6 +108,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_RBRACE: return "}";
         case TOKEN_SEMICOLON: return ";";
         case TOKEN_COMMA: return ",";
+        case TOKEN_DOT: return ".";
         
         // 字面量和其他
         case TOKEN_IDENTIFIER: return "identifier";
@@ -209,7 +215,11 @@ static TokenType checkKeyword(Lexer* lexer, int start, int length, const char* r
 static TokenType identifierType(Lexer* lexer) {
     switch (lexer->start[0]) {
         case '&': return checkKeyword(lexer, 1, 1, "&", TOKEN_AND);
-        case 'e': return checkKeyword(lexer, 1, 3, "lse", TOKEN_ELSE);
+        case 'e':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "enum", 4) == 0) {
+                return TOKEN_ENUM;
+            }
+            return checkKeyword(lexer, 1, 3, "lse", TOKEN_ELSE);
         case 'f':
             if (lexer->current - lexer->start > 1) {
                 
@@ -228,6 +238,9 @@ static TokenType identifierType(Lexer* lexer) {
             
             break;
         case 'd':
+            if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "deinit", 6) == 0) {
+                return TOKEN_DEINIT;
+            }
             if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "double", 6) == 0) {
                 return TOKEN_DOUBLE;
             }
@@ -283,9 +296,20 @@ static TokenType identifierType(Lexer* lexer) {
                 }
             }
             break;
-        case 't': return checkKeyword(lexer, 1, 3, "rue", TOKEN_TRUE);
-
+        case 't':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "this", 4) == 0) {
+                return TOKEN_THIS;
+            }
+            return checkKeyword(lexer, 1, 3, "rue", TOKEN_TRUE);
+        case 'o':
+            if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "object", 6) == 0) {
+                return TOKEN_OBJECT;
+            }
+            break;
         case 'p':
+            if (lexer->current - lexer->start > 6 && memcmp(lexer->start, "private", 7) == 0) {
+                return TOKEN_PRIVATE;
+            }
             if (lexer->current - lexer->start > 5) {
                 if (memcmp(lexer->start, "println", 7) == 0) {
                     return TOKEN_PRINTLN;
@@ -453,6 +477,7 @@ Token scanToken(Lexer* lexer) {
         case '}': return makeToken(lexer, TOKEN_RBRACE);
         case ';': return makeToken(lexer, TOKEN_SEMICOLON);
         case ',': return makeToken(lexer, TOKEN_COMMA);
+        case '.': return makeToken(lexer, TOKEN_DOT);
         case ':': return makeToken(lexer, TOKEN_COLON);
         case '*': return makeToken(lexer, TOKEN_STAR); 
         case '+': {

@@ -266,6 +266,183 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
     return value;
 }
 
+static int tokenEqualsN(const Token* token, const char* s) {
+    int n = (int)strlen(s);
+    return token->length == n && memcmp(token->start, s, (size_t)n) == 0;
+}
+
+static int fieldIndexOf(StructInfo* info, const Token* fieldName) {
+    if (!info || !info->decl || !info->decl->fields) return -1;
+    for (int i = 0; i < info->decl->fields->length; i++) {
+        FieldDeclaration* f = listGet(info->decl->fields, i);
+        if (!f) continue;
+        if (f->name.length != fieldName->length) continue;
+        if (memcmp(f->name.start, fieldName->start, (size_t)fieldName->length) == 0) return i;
+    }
+    return -1;
+}
+
+static int enumVariantIndexOf(EnumInfo* info, const Token* variantName) {
+    if (!info || !info->decl || !info->decl->variants) return -1;
+    int current = -1;
+    for (int i = 0; i < info->decl->variants->length; i++) {
+        EnumVariantDecl* v = listGet(info->decl->variants, i);
+        if (!v) continue;
+        if (v->valueKind == ENUM_VALUE_INT) {
+            char* tmp = malloc((size_t)v->value.length + 1);
+            memcpy(tmp, v->value.start, (size_t)v->value.length);
+            tmp[v->value.length] = '\0';
+            current = (int)strtol(tmp, NULL, 10);
+            free(tmp);
+        } else {
+            current++;
+        }
+        if (v->name.length != variantName->length) continue;
+        if (memcmp(v->name.start, variantName->start, (size_t)variantName->length) == 0) return current;
+    }
+    return -1;
+}
+
+static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) {
+    if (!info || !info->decl || !info->decl->fields) return LLVMInt32TypeInContext(compiler->context);
+    FieldDeclaration* f = listGet(info->decl->fields, idx);
+    if (!f || !f->type) return LLVMInt32TypeInContext(compiler->context);
+    // Only primitives + named pointers are supported for now.
+    switch (f->type->kind) {
+        case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED: {
+            StructInfo* inner = compilerFindStruct(compiler, f->type->name.start, f->type->name.length);
+            if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            return LLVMPointerType(inner->type, 0);
+        }
+        default: return LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
+    if (!value) return NULL;
+    LLVMTypeRef srcType = LLVMTypeOf(value);
+    if (srcType == targetType) return value;
+
+    LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
+    LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
+        unsigned srcBits = LLVMGetIntTypeWidth(srcType);
+        unsigned dstBits = LLVMGetIntTypeWidth(targetType);
+        if (srcBits < dstBits) return LLVMBuildSExt(compiler->builder, value, targetType, "sext");
+        if (srcBits > dstBits) return LLVMBuildTrunc(compiler->builder, value, targetType, "trunc");
+        return value;
+    }
+    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMDoubleTypeKind) {
+        return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
+    }
+    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMIntegerTypeKind) {
+        return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
+    }
+    return value;
+}
+
+LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
+    emitDebug("emitGetExpr\n");
+    if (!expr || !expr->object) return NULL;
+
+    // Special-case: `this.x`
+    if (expr->object->type == EXPR_VARIABLE && tokenEqualsN(&((VariableExpr*)expr->object)->name, "this")) {
+        // look up `this` variable metadata for struct type
+    }
+
+    // Only support member access on variables for now.
+    if (expr->object->type != EXPR_VARIABLE) {
+        error("Member access receiver must be a variable for now\n");
+        return NULL;
+    }
+
+    VariableExpr* recv = (VariableExpr*)expr->object;
+    VariableRef recvVar = findVariableExpr(compiler, expr->object);
+    if (!recvVar.value) {
+        // Support enum variant access: `Enum.Variant`
+        EnumInfo* enumInfo = compilerFindEnum(compiler, recv->name.start, recv->name.length);
+        if (!enumInfo) {
+            error("Undefined receiver\n");
+            return NULL;
+        }
+        int idx = enumVariantIndexOf(enumInfo, &expr->name);
+        if (idx < 0) {
+            error("Unknown enum variant\n");
+            return NULL;
+        }
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (uint64_t)idx, 0);
+    }
+    if (!recvVar.typeName) {
+        error("Receiver has no struct type info\n");
+        return NULL;
+    }
+
+    StructInfo* info = compilerFindStruct(compiler, recvVar.typeName, recvVar.typeNameLength);
+    if (!info) {
+        error("Unknown struct type\n");
+        return NULL;
+    }
+
+    int idx = fieldIndexOf(info, &expr->name);
+    if (idx < 0) {
+        error("Unknown field\n");
+        return NULL;
+    }
+
+    LLVMValueRef recvValue = compileExpr(compiler, expr->object); // pointer to struct
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, recvValue, (unsigned)idx, "field_ptr");
+    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+    return LLVMBuildLoad2(compiler->builder, fType, fieldPtr, "field");
+}
+
+LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
+    emitDebug("emitSetExpr\n");
+    if (!expr || !expr->object) return NULL;
+
+    if (expr->object->type != EXPR_VARIABLE) {
+        error("Member assignment receiver must be a variable for now\n");
+        return NULL;
+    }
+
+    VariableExpr* recv = (VariableExpr*)expr->object;
+    VariableRef recvVar = findVariableExpr(compiler, expr->object);
+    if (!recvVar.value) {
+        error("Undefined receiver\n");
+        return NULL;
+    }
+    if (!recvVar.typeName) {
+        error("Receiver has no struct type info\n");
+        return NULL;
+    }
+
+    StructInfo* info = compilerFindStruct(compiler, recvVar.typeName, recvVar.typeNameLength);
+    if (!info) {
+        error("Unknown struct type\n");
+        return NULL;
+    }
+
+    int idx = fieldIndexOf(info, &expr->name);
+    if (idx < 0) {
+        error("Unknown field\n");
+        return NULL;
+    }
+
+    LLVMValueRef recvValue = compileExpr(compiler, expr->object); // pointer to struct
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, recvValue, (unsigned)idx, "field_ptr");
+    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+
+    LLVMValueRef rhs = compileExpr(compiler, expr->value);
+    rhs = castToType(compiler, rhs, fType);
+    LLVMBuildStore(compiler->builder, rhs, fieldPtr);
+    return rhs;
+}
+
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
     // Compile right expression
     LLVMValueRef operand = compileExpr(compiler, expr->right);

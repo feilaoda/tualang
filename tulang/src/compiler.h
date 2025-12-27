@@ -59,8 +59,27 @@ typedef struct Compiler{
     LLVMContextRef context;
     LLVMModuleRef module;
     Block *current;
+
+    List* structs; // List<StructInfo*>
+    List* enums;   // List<EnumInfo*>
 } Compiler;
 
+typedef struct StructInfo {
+    char* name;
+    int nameLength;
+    LLVMTypeRef type;
+    StructStmt* decl;
+} StructInfo;
+
+StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length);
+
+typedef struct EnumInfo {
+    char* name;
+    int nameLength;
+    EnumStmt* decl;
+} EnumInfo;
+
+EnumInfo* compilerFindEnum(Compiler* compiler, const char* name, int length);
 
 
 typedef struct {
@@ -190,6 +209,9 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt);
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt);
 void compileVarStmt(Compiler* compiler, VarStmt* stmt);
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt);
+void compileStructStmt(Compiler* compiler, StructStmt* stmt);
+void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);
+void compileEnumStmt(Compiler* compiler, EnumStmt* stmt);
 void initCompiler(Compiler* compiler);
 // Helper functions
 int makeLabel(Compiler* compiler);

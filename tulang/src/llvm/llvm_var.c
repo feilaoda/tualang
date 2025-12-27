@@ -16,6 +16,13 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED: {
+            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            if (!info) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
+            return LLVMPointerType(info->type, 0);
+        }
         default:
             return LLVMInt32TypeInContext(compiler->context);
     }
@@ -23,6 +30,18 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
 
 static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
     if (!initializer) return LLVMInt32TypeInContext(compiler->context);
+
+    if (initializer->type == EXPR_CALL) {
+        CallExpr* call = (CallExpr*)initializer;
+        if (call->callee && call->callee->type == EXPR_VARIABLE) {
+            VariableExpr* callee = (VariableExpr*)call->callee;
+            StructInfo* info = compilerFindStruct(compiler, callee->name.start, callee->name.length);
+            if (info) {
+                return LLVMPointerType(info->type, 0);
+            }
+        }
+    }
+
     if (initializer->type != EXPR_LITERAL) return LLVMInt32TypeInContext(compiler->context);
 
     LiteralExpr* literal = (LiteralExpr*)initializer;
@@ -50,6 +69,10 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
 
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMPointerTypeKind && dstKind == LLVMPointerTypeKind) {
+        return LLVMBuildBitCast(compiler->builder, value, targetType, "ptrcast");
+    }
 
     if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
         unsigned srcBits = LLVMGetIntTypeWidth(srcType);
@@ -86,6 +109,28 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->length = stmt->name.length;
     variable->value = slot;
     variable->type = allocaType;
+    if (stmt->type && stmt->type->kind == TYPE_NAMED) {
+        variable->typeName = stmt->type->name.start;
+        variable->typeNameLength = stmt->type->name.length;
+    } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
+        CallExpr* call = (CallExpr*)stmt->initializer;
+        if (call->callee && call->callee->type == EXPR_VARIABLE) {
+            VariableExpr* callee = (VariableExpr*)call->callee;
+            if (compilerFindStruct(compiler, callee->name.start, callee->name.length)) {
+                variable->typeName = callee->name.start;
+                variable->typeNameLength = callee->name.length;
+            } else {
+                variable->typeName = NULL;
+                variable->typeNameLength = 0;
+            }
+        } else {
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
+        }
+    } else {
+        variable->typeName = NULL;
+        variable->typeNameLength = 0;
+    }
     variable->isConst = stmt->isConst ? 1 : 0;
     variable->isGlobal = 0;
     listAppend(block->variables, variable);

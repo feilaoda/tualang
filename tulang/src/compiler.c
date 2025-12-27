@@ -109,10 +109,35 @@ void initCompiler(Compiler* compiler) {
     compiler->loops = listNew();
     compiler->breaks = listNew();
     compiler->labelCount = 0;
+
+    compiler->structs = listNew();
+    compiler->enums = listNew();
     
     // Debug information
     compiler->hadError = false;
     compiler->panicMode = false;
+}
+
+StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length) {
+    if (!compiler || !compiler->structs) return NULL;
+    for (int i = 0; i < compiler->structs->length; i++) {
+        StructInfo* info = listGet(compiler->structs, i);
+        if (!info) continue;
+        if (info->nameLength != length) continue;
+        if (memcmp(info->name, name, (size_t)length) == 0) return info;
+    }
+    return NULL;
+}
+
+EnumInfo* compilerFindEnum(Compiler* compiler, const char* name, int length) {
+    if (!compiler || !compiler->enums) return NULL;
+    for (int i = 0; i < compiler->enums->length; i++) {
+        EnumInfo* info = listGet(compiler->enums, i);
+        if (!info) continue;
+        if (info->nameLength != length) continue;
+        if (memcmp(info->name, name, (size_t)length) == 0) return info;
+    }
+    return NULL;
 }
 
 void convertTokenToValue(Token token, Value *value) {
@@ -248,6 +273,13 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED: {
+            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            if (!info) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
+            return LLVMPointerType(info->type, 0);
+        }
         case TYPE_VOID:
             return LLVMVoidTypeInContext(compiler->context);
         default:
@@ -312,6 +344,12 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_GROUPING:
             return compileExpr(compiler, ((GroupingExpr*)expr)->expression);
             break;
+        case EXPR_GET:
+            return emitGetExpr(compiler, (GetExpr*)expr);
+            break;
+        case EXPR_SET:
+            return emitSetExpr(compiler, (SetExpr*)expr);
+            break;
         case EXPR_POSTFIX:
             //i++
             return emitPostfixExpr(compiler, (PostfixExpr*)expr);
@@ -358,7 +396,13 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
             compileFuncStmt(compiler, (FuncStmt*)stmt);
             break;
         case STMT_STRUCT:
-            //TODO
+            compileStructStmt(compiler, (StructStmt*)stmt);
+            break;
+        case STMT_OBJECT:
+            compileObjectStmt(compiler, (ObjectStmt*)stmt);
+            break;
+        case STMT_ENUM:
+            compileEnumStmt(compiler, (EnumStmt*)stmt);
             break;
     }
 }
@@ -445,6 +489,18 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt){
     compilerDebug("Compiling Expr statement\n");
     compileExpr(compiler, stmt->expression);
+}
+
+static char* mangleTwo(const Token* left, const Token* right, const char* sep, int* outLen) {
+    int sepLen = (int)strlen(sep);
+    int len = left->length + sepLen + right->length;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, left->start, (size_t)left->length);
+    memcpy(s + left->length, sep, (size_t)sepLen);
+    memcpy(s + left->length + sepLen, right->start, (size_t)right->length);
+    s[len] = '\0';
+    if (outLen) *outLen = len;
+    return s;
 }
 
 
@@ -540,6 +596,13 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->length = p->name.length;
         variable->value = slot;
         variable->type = paramTypes[i];
+        if (p->type && p->type->kind == TYPE_NAMED) {
+            variable->typeName = p->type->name.start;
+            variable->typeNameLength = p->type->name.length;
+        } else {
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
+        }
         variable->isConst = 0;
         variable->isGlobal = 0;
         listAppend(funcBlock->variables, variable);
@@ -566,4 +629,193 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
 
     if (paramTypes) free(paramTypes);
     free(funcName);
+}
+
+void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
+    if (!compiler || !stmt) return;
+
+    // Register struct type
+    char* structName = malloc((size_t)stmt->name.length + 1);
+    memcpy(structName, stmt->name.start, (size_t)stmt->name.length);
+    structName[stmt->name.length] = '\0';
+
+    LLVMTypeRef structType = LLVMGetTypeByName2(compiler->context, structName);
+    if (!structType) {
+        structType = LLVMStructCreateNamed(compiler->context, structName);
+    }
+
+    // Set body (fields)
+    int fieldCount = stmt->fields ? stmt->fields->length : 0;
+    if (fieldCount > 0) {
+        LLVMTypeRef* fieldTypes = malloc(sizeof(LLVMTypeRef) * (size_t)fieldCount);
+        for (int i = 0; i < fieldCount; i++) {
+            FieldDeclaration* f = listGet(stmt->fields, i);
+            fieldTypes[i] = typeToLLVMType(compiler, f ? f->type : NULL, false);
+        }
+        LLVMStructSetBody(structType, fieldTypes, (unsigned)fieldCount, 0);
+        free(fieldTypes);
+    } else {
+        LLVMStructSetBody(structType, NULL, 0, 0);
+    }
+
+    if (!compilerFindStruct(compiler, stmt->name.start, stmt->name.length)) {
+        StructInfo* info = malloc(sizeof(StructInfo));
+        info->name = structName;
+        info->nameLength = stmt->name.length;
+        info->type = structType;
+        info->decl = stmt;
+        listAppend(compiler->structs, info);
+    } else {
+        free(structName);
+    }
+
+    // Compile methods as `Struct__method(this: Struct*, ...)`
+    if (stmt->methods) {
+        for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
+            FuncStmt* method = (FuncStmt*)node->data;
+            if (!method) continue;
+
+            int mangledLen = 0;
+            char* mangled = mangleTwo(&stmt->name, &method->name, "__", &mangledLen);
+            Token mangledTok = method->name;
+            mangledTok.start = mangled;
+            mangledTok.length = mangledLen;
+
+            // Build params: this + original params
+            List* params = listNew();
+            Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, 0};
+            Type* thisType = malloc(sizeof(Type));
+            thisType->kind = TYPE_NAMED;
+            thisType->name = stmt->name;
+            Parameter* thisParam = malloc(sizeof(Parameter));
+            thisParam->name = thisNameTok;
+            thisParam->type = thisType;
+            listAppend(params, thisParam);
+            if (method->params) {
+                for (ListNode* p = method->params->head; p != NULL; p = p->next) {
+                    listAppend(params, p->data);
+                }
+            }
+
+            FuncStmt tmp = *method;
+            tmp.name = mangledTok;
+            tmp.params = params;
+            compileFuncStmt(compiler, &tmp);
+
+            free(mangled);
+        }
+    }
+}
+
+void compileEnumStmt(Compiler* compiler, EnumStmt* stmt) {
+    if (!compiler || !stmt) return;
+
+    char* enumName = malloc((size_t)stmt->name.length + 1);
+    memcpy(enumName, stmt->name.start, (size_t)stmt->name.length);
+    enumName[stmt->name.length] = '\0';
+
+    if (!compilerFindEnum(compiler, stmt->name.start, stmt->name.length)) {
+        EnumInfo* info = malloc(sizeof(EnumInfo));
+        info->name = enumName;
+        info->nameLength = stmt->name.length;
+        info->decl = stmt;
+        listAppend(compiler->enums, info);
+    } else {
+        free(enumName);
+    }
+
+    // Generate enum helper: Enum__toString(value:int) string
+    int helperLen = stmt->name.length + 2 + (int)strlen("toString");
+    char* helperName = malloc((size_t)helperLen + 1);
+    memcpy(helperName, stmt->name.start, (size_t)stmt->name.length);
+    memcpy(helperName + stmt->name.length, "__", 2);
+    memcpy(helperName + stmt->name.length + 2, "toString", (size_t)strlen("toString"));
+    helperName[helperLen] = '\0';
+
+    if (!LLVMGetNamedFunction(compiler->module, helperName)) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i32, 1, 0);
+        LLVMValueRef fn = LLVMAddFunction(compiler->module, helperName, fnType);
+
+        LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+
+        LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
+        LLVMBasicBlockRef defBlock = LLVMAppendBasicBlock(fn, "default");
+        LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+        LLVMValueRef valueArg = LLVMGetParam(fn, 0);
+        unsigned variantCount = stmt->variants ? (unsigned)stmt->variants->length : 0;
+        LLVMValueRef sw = LLVMBuildSwitch(compiler->builder, valueArg, defBlock, variantCount);
+
+        int current = -1;
+        for (unsigned i = 0; i < variantCount; i++) {
+            EnumVariantDecl* v = listGet(stmt->variants, (int)i);
+            if (!v) continue;
+
+            if (v->valueKind == ENUM_VALUE_INT) {
+                char* tmp = malloc((size_t)v->value.length + 1);
+                memcpy(tmp, v->value.start, (size_t)v->value.length);
+                tmp[v->value.length] = '\0';
+                current = (int)strtol(tmp, NULL, 10);
+                free(tmp);
+            } else {
+                current++;
+            }
+
+            LLVMBasicBlockRef caseBlock = LLVMAppendBasicBlock(fn, "case");
+            LLVMAddCase(sw, LLVMConstInt(i32, (uint64_t)(uint32_t)current, 0), caseBlock);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, caseBlock);
+            if (v->valueKind == ENUM_VALUE_STRING) {
+                int len = v->value.length - 2; // strip quotes
+                if (len < 0) len = 0;
+                char* raw = malloc((size_t)len + 1);
+                if (len > 0) {
+                    memcpy(raw, v->value.start + 1, (size_t)len);
+                }
+                raw[len] = '\0';
+                LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, raw, "enum_variant");
+                LLVMBuildRet(compiler->builder, str);
+                free(raw);
+            } else {
+                char* variantName = malloc((size_t)v->name.length + 1);
+                memcpy(variantName, v->name.start, (size_t)v->name.length);
+                variantName[v->name.length] = '\0';
+                LLVMValueRef str = LLVMBuildGlobalStringPtr(compiler->builder, variantName, "enum_variant");
+                LLVMBuildRet(compiler->builder, str);
+                free(variantName);
+            }
+        }
+
+        LLVMPositionBuilderAtEnd(compiler->builder, defBlock);
+        LLVMValueRef unknown = LLVMBuildGlobalStringPtr(compiler->builder, "Unknown", "enum_unknown");
+        LLVMBuildRet(compiler->builder, unknown);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+    }
+
+    free(helperName);
+}
+
+void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt) {
+    // Compile object methods as top-level functions with mangled names: Object__method
+    if (!stmt || !stmt->methods) return;
+
+    for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
+        FuncStmt* method = (FuncStmt*)node->data;
+        if (!method) continue;
+
+        int mangledLen = 0;
+        char* mangled = mangleTwo(&stmt->name, &method->name, "__", &mangledLen);
+        Token mangledTok = method->name;
+        mangledTok.start = mangled;
+        mangledTok.length = mangledLen;
+
+        FuncStmt tmp = *method;
+        tmp.name = mangledTok;
+        compileFuncStmt(compiler, &tmp);
+
+        free(mangled);
+    }
 }

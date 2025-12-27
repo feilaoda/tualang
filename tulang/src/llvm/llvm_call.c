@@ -22,6 +22,10 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
 
+    if (srcKind == LLVMPointerTypeKind && dstKind == LLVMPointerTypeKind) {
+        return LLVMBuildBitCast(compiler->builder, value, targetType, "ptrcast");
+    }
+
     if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
         unsigned srcBits = LLVMGetIntTypeWidth(srcType);
         unsigned dstBits = LLVMGetIntTypeWidth(targetType);
@@ -39,6 +43,111 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     }
 
     return value;
+}
+
+static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
+    if (!type) return LLVMInt32TypeInContext(compiler->context);
+    switch (type->kind) {
+        case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED: {
+            StructInfo* info = compilerFindStruct(compiler, type->name.start, type->name.length);
+            if (!info) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            return LLVMPointerType(info->type, 0);
+        }
+        default: return LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
+    if (existing) return existing;
+
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef mallocType = LLVMFunctionType(i8ptr, &i64, 1, 0);
+    return LLVMAddFunction(compiler->module, "malloc", mallocType);
+}
+
+static LLVMTypeRef getMallocType(Compiler* compiler) {
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    return LLVMFunctionType(i8ptr, &i64, 1, 0);
+}
+
+static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
+    if (!value) return NULL;
+
+    LLVMTypeRef type = LLVMTypeOf(value);
+    LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind != LLVMIntegerTypeKind) return value;
+
+    unsigned bits = LLVMGetIntTypeWidth(type);
+    if (bits < 32) {
+        return LLVMBuildZExt(compiler->builder, value, LLVMInt32TypeInContext(compiler->context), "zext_printf");
+    }
+    if (bits == 32) return value;
+    if (bits < 64) {
+        return LLVMBuildSExt(compiler->builder, value, LLVMInt64TypeInContext(compiler->context), "sext_printf");
+    }
+    return value;
+}
+
+static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
+    const int sepLen = 2;
+    int len = leftLen + sepLen + right->length;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, left, (size_t)leftLen);
+    memcpy(s + leftLen, "__", (size_t)sepLen);
+    memcpy(s + leftLen + sepLen, right->start, (size_t)right->length);
+    s[len] = '\0';
+    if (outLen) *outLen = len;
+    return s;
+}
+
+static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, CallExpr* expr) {
+    if (!compiler || !info) return NULL;
+    int argCount = expr->arguments ? expr->arguments->length : 0;
+
+    LLVMValueRef mallocFunc = getOrCreateMalloc(compiler);
+    LLVMTypeRef mallocType = getMallocType(compiler);
+
+    LLVMValueRef sizeVal = LLVMSizeOf(info->type);
+    LLVMValueRef raw = LLVMBuildCall2(compiler->builder, mallocType, mallocFunc, &sizeVal, 1, "malloc");
+    LLVMTypeRef structPtrType = LLVMPointerType(info->type, 0);
+    LLVMValueRef obj = LLVMBuildBitCast(compiler->builder, raw, structPtrType, "obj");
+
+    // Initialize fields
+    int fieldCount = info->decl && info->decl->fields ? info->decl->fields->length : 0;
+    if (argCount > fieldCount) {
+        emitDebug("Too many constructor args\n");
+        return NULL;
+    }
+
+    ListNode* argNode = expr->arguments ? expr->arguments->head : NULL;
+    for (int i = 0; i < fieldCount; i++) {
+        FieldDeclaration* field = listGet(info->decl->fields, i);
+        LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, obj, (unsigned)i, "field_ptr");
+        LLVMTypeRef fType = typeToLLVMType(compiler, field ? field->type : NULL);
+
+        LLVMValueRef initVal = NULL;
+        if (i < argCount) {
+            initVal = compileExpr(compiler, (Expr*)argNode->data);
+            argNode = argNode->next;
+        } else if (field && field->initializer) {
+            initVal = compileExpr(compiler, field->initializer);
+        }
+        if (!initVal) {
+            initVal = LLVMConstNull(fType);
+        }
+        initVal = castValueToType(compiler, initVal, fType);
+        LLVMBuildStore(compiler->builder, initVal, fieldPtr);
+    }
+
+    return obj;
 }
 
 static LLVMValueRef getOrCreatePrintf(Compiler* compiler) {
@@ -168,6 +277,79 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
     if (!expr || !expr->callee) return NULL;
 
+    // Member call:
+    // - Instance: p.method(...) -> Struct__method(p, ...)
+    // - Object:   Obj.method(...) -> Obj__method(...)
+    if (expr->callee->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)expr->callee;
+        if (!get->object || get->object->type != EXPR_VARIABLE) {
+            emitDebug("Unsupported member call receiver\n");
+            return NULL;
+        }
+
+        VariableExpr* recvNameExpr = (VariableExpr*)get->object;
+
+        // If receiver resolves to a local and has a struct type, treat as instance method call.
+        VariableRef recvVar = findVariableExpr(compiler, get->object);
+        bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
+
+        int mangledLen = 0;
+        char* mangled = NULL;
+        if (isInstance) {
+            mangled = mangleRawAndToken(recvVar.typeName, recvVar.typeNameLength, &get->name, &mangledLen);
+        } else {
+            mangled = mangleRawAndToken(recvNameExpr->name.start, recvNameExpr->name.length, &get->name, &mangledLen);
+        }
+
+        LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
+        free(mangled);
+
+        if (!func) {
+            emitDebug("Undefined object method\n");
+            return NULL;
+        }
+
+        LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
+        unsigned expected = LLVMCountParamTypes(funcType);
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if ((!isInstance && expected != got) || (isInstance && expected != got + 1)) {
+            emitDebug("Argument count mismatch\n");
+            return NULL;
+        }
+
+        LLVMTypeRef* paramTypes = NULL;
+        if (expected > 0) {
+            paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+            LLVMGetParamTypes(funcType, paramTypes);
+        }
+
+        LLVMValueRef* args = NULL;
+        if (expected > 0) {
+            args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+
+            unsigned argIndex = 0;
+            ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+
+            if (isInstance) {
+                LLVMValueRef thisArg = compileExpr(compiler, get->object);
+                thisArg = castValueToType(compiler, thisArg, paramTypes[0]);
+                args[argIndex++] = thisArg;
+            }
+
+            for (; argIndex < expected; argIndex++) {
+                LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
+                argVal = castValueToType(compiler, argVal, paramTypes[argIndex]);
+                args[argIndex] = argVal;
+                node = node->next;
+            }
+        }
+
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
+        if (paramTypes) free(paramTypes);
+        if (args) free(args);
+        return call;
+    }
+
     if (expr->callee->type != EXPR_VARIABLE) {
         emitDebug("Only simple calls are supported for now\n");
         return NULL;
@@ -180,12 +362,16 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     if (!isPrintln && !isPrint) {
         char* name = tokenToCString(&callee->name);
         LLVMValueRef func = LLVMGetNamedFunction(compiler->module, name);
-        free(name);
-
         if (!func) {
+            StructInfo* info = compilerFindStruct(compiler, callee->name.start, callee->name.length);
+            free(name);
+            if (info) {
+                return emitStructConstructor(compiler, info, expr);
+            }
             emitDebug("Undefined function\n");
             return NULL;
         }
+        free(name);
 
         LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
         unsigned expected = LLVMCountParamTypes(funcType);
@@ -233,6 +419,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         emitDebug("Unsupported print argument type\n");
         return NULL;
     }
+    argValue = castForPrintf(compiler, argValue);
 
     LLVMValueRef formatStr = LLVMBuildGlobalStringPtr(compiler->builder, fmt, "fmt");
     LLVMValueRef args[] = { formatStr, argValue };

@@ -15,6 +15,11 @@ typedef enum {
     TOKEN_FUNC,
     TOKEN_RETURN,
     TOKEN_IN,
+    TOKEN_OBJECT,
+    TOKEN_ENUM,
+    TOKEN_PRIVATE,
+    TOKEN_THIS,
+    TOKEN_DEINIT,
     // Types
     TOKEN_INT,
     TOKEN_DOUBLE,
@@ -41,6 +46,7 @@ typedef enum {
     TOKEN_NEQ,        //!=
     TOKEN_INC, //++
     TOKEN_DEC, //--
+    TOKEN_DOT, // .
     // Delimiters
     TOKEN_LPAREN,    // (
     TOKEN_RPAREN,    // )

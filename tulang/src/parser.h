@@ -21,7 +21,9 @@ typedef enum {
     EXPR_CALL,
     EXPR_POSTFIX,
     EXPR_PREFIX,
-    EXPR_ASSIGN
+    EXPR_ASSIGN,
+    EXPR_GET,
+    EXPR_SET
 } ExprType;
 
 typedef enum {
@@ -33,7 +35,9 @@ typedef enum {
     STMT_FUNC,
     STMT_RETURN,
     STMT_BLOCK,
-    STMT_STRUCT
+    STMT_STRUCT,
+    STMT_OBJECT,
+    STMT_ENUM
 } StmtType;
 
 
@@ -46,11 +50,13 @@ typedef enum {
     TYPE_BOOL,
     TYPE_STRING,
     TYPE_VOID,
-    TYPE_ANY
+    TYPE_ANY,
+    TYPE_NAMED
 } TypeKind;
 
 typedef struct Type {
     TypeKind kind;
+    Token name; // for TYPE_NAMED
 } Type;
 
 // List structure for parameters and blocks
@@ -122,6 +128,19 @@ typedef struct {
     List* arguments;
 } CallExpr;
 
+typedef struct {
+    Expr base;
+    Expr* object;
+    Token name;
+} GetExpr;
+
+typedef struct {
+    Expr base;
+    Expr* object;
+    Token name;
+    Expr* value;
+} SetExpr;
+
 // Variable statement structure
 typedef struct {
     Stmt base;
@@ -179,6 +198,30 @@ typedef struct StructStmt {
     List* fields;
     List* methods;
 } StructStmt;
+
+typedef struct ObjectStmt {
+    Stmt base;
+    Token name;
+    List* methods;
+} ObjectStmt;
+
+typedef struct EnumStmt {
+    Stmt base;
+    Token name;
+    List* variants; // List<EnumVariantDecl*>
+} EnumStmt;
+
+typedef enum EnumVariantValueKind {
+    ENUM_VALUE_NONE = 0,
+    ENUM_VALUE_INT,
+    ENUM_VALUE_STRING
+} EnumVariantValueKind;
+
+typedef struct EnumVariantDecl {
+    Token name;
+    EnumVariantValueKind valueKind;
+    Token value; // TOKEN_INT/TOKEN_LONG/TOKEN_STRING_LITERAL depending on valueKind
+} EnumVariantDecl;
 
 typedef struct {
     Stmt base;

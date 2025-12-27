@@ -31,6 +31,8 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_POSTFIX: return "Postfix";
         case EXPR_PREFIX: return "Prefix";
         case EXPR_ASSIGN: return "Assign";
+        case EXPR_GET: return "Get";
+        case EXPR_SET: return "Set";
         default: return "Unknown";
     }
 }
@@ -225,6 +227,23 @@ static Expr* newAssignExpr(Token name, Expr* value) {
     return (Expr*)expr;
 }
 
+static Expr* newGetExpr(Expr* object, Token name) {
+    GetExpr* expr = malloc(sizeof(GetExpr));
+    expr->base.type = EXPR_GET;
+    expr->object = object;
+    expr->name = name;
+    return (Expr*)expr;
+}
+
+static Expr* newSetExpr(Expr* object, Token name, Expr* value) {
+    SetExpr* expr = malloc(sizeof(SetExpr));
+    expr->base.type = EXPR_SET;
+    expr->object = object;
+    expr->name = name;
+    expr->value = value;
+    return (Expr*)expr;
+}
+
 static Parameter* newParameter(Token name, Type* type) {
     Parameter* param = malloc(sizeof(Parameter));
     param->name = name;
@@ -258,6 +277,10 @@ static Expr* parseExpression(Parser* parser) {
         if (expr->type == EXPR_VARIABLE) {
             return newAssignExpr(((VariableExpr*)expr)->name, value);
         }
+        if (expr->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)expr;
+            return newSetExpr(get->object, get->name, value);
+        }
         
         printError(parser, "Invalid assignment target.");
     }
@@ -272,6 +295,15 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
     Expr* left = parseUnaryExpr(parser);
     parserDebug("parseBinaryExpr: left type:%d\n", left->type);
     while (true) {
+        if (check(parser, TOKEN_DOT)) {
+            advance(parser); // consume '.'
+            Token member = consume(parser, TOKEN_IDENTIFIER, "Expect member name after '.'");
+            left = newGetExpr(left, member);
+            if (match(parser, TOKEN_LPAREN)) {
+                left = finishCall(parser, left);
+            }
+            continue;
+        }
         TokenType op = parser->current.type;
         int prec = getOperatorPrecedence(op);
         parserDebug("parseBinaryExpr: current token: %s/%d, prec: %d, minPrec: %d\n", 
@@ -341,6 +373,8 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         match(parser, TOKEN_TRUE) ||
         match(parser, TOKEN_FALSE)) {
         expr = newLiteralExpr(parser->previous);
+    } else if (match(parser, TOKEN_THIS)) {
+        expr = newVariableExpr(parser->previous);
     } else if (match(parser, TOKEN_IDENTIFIER)) {
         parserDebug("parsePrimaryExpr: current code:[%.*s],[%s]\n", parser->current.length,parser->current.start, tokenToString(parser->previous.type));
         expr = newVariableExpr(parser->previous);
@@ -349,6 +383,15 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         if (match(parser, TOKEN_LPAREN)) {
 
             expr = finishCall(parser, expr);
+        }
+
+        // Member access / chained calls: A.B or A.B(...)
+        while (match(parser, TOKEN_DOT)) {
+            Token member = consume(parser, TOKEN_IDENTIFIER, "Expect member name after '.'");
+            expr = newGetExpr(expr, member);
+            if (match(parser, TOKEN_LPAREN)) {
+                expr = finishCall(parser, expr);
+            }
         }
     } else if (match(parser, TOKEN_LPAREN)) {
         expr = parseExpression(parser);
@@ -834,24 +877,68 @@ static Stmt* parseStructDeclaration(Parser* parser) {
     
     // Parse fields and methods
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
-        if (match(parser, TOKEN_FUNC)) {
-            // Parse method
+        while (match(parser, TOKEN_SEMICOLON)) {
+            // skip separators/newlines
+        }
+        if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+        if (match(parser, TOKEN_PRIVATE)) {
+            // ignore visibility for now
+            consume(parser, TOKEN_FUNC, "Expect 'fn' after 'private'");
             FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
             listAppend(methods, method);
-        } else {
-            // Parse field
-            Token fieldName = consume(parser, TOKEN_IDENTIFIER, "Expect field name");
-            consume(parser, TOKEN_COLON, "Expect ':' after field name");
-            Type* fieldType = parseType(parser);
-            if(check(parser, TOKEN_COMMA)) {
-            consume(parser, TOKEN_COMMA, "Expect ',' after field type");
-            }
-            // Create field declaration
-            FieldDeclaration* field = malloc(sizeof(FieldDeclaration));
-            field->name = fieldName;
-            field->type = fieldType;
-            listAppend(fields, field);
+            continue;
         }
+
+        if (match(parser, TOKEN_FUNC)) {
+            FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+            listAppend(methods, method);
+            continue;
+        }
+
+        if (match(parser, TOKEN_INIT) || match(parser, TOKEN_DEINIT)) {
+            Token nameToken = parser->previous;
+            consume(parser, TOKEN_LPAREN, "Expect '(' after init/deinit");
+
+            // init/deinit currently don't take parameters in README examples
+            consume(parser, TOKEN_RPAREN, "Expect ')' after init/deinit");
+
+            Type* returnType = NULL;
+            if (match(parser, TOKEN_ARROW)) {
+                returnType = parseType(parser);
+            }
+
+            List* body = parseBlock(parser);
+            FuncStmt* method = (FuncStmt*)newFuncStmt(nameToken, listNew(), returnType, body);
+            listAppend(methods, method);
+            continue;
+        }
+
+        // Field: optional `const`, then `name: Type`, optional `= expr`
+        bool isConst = false;
+        if (match(parser, TOKEN_CONST)) {
+            isConst = true;
+        }
+
+        Token fieldName = consume(parser, TOKEN_IDENTIFIER, "Expect field name");
+        consume(parser, TOKEN_COLON, "Expect ':' after field name");
+        Type* fieldType = parseType(parser);
+
+        Expr* initializer = NULL;
+        if (match(parser, TOKEN_ASSIGN)) {
+            initializer = parseExpression(parser);
+        }
+
+        if (check(parser, TOKEN_COMMA)) {
+            consume(parser, TOKEN_COMMA, "Expect ',' after field");
+        }
+
+        FieldDeclaration* field = malloc(sizeof(FieldDeclaration));
+        field->name = fieldName;
+        field->type = fieldType;
+        field->initializer = initializer;
+        field->isConst = isConst;
+        listAppend(fields, field);
     }
     
     consume(parser, TOKEN_RBRACE, "Expect '}' after struct body");
@@ -893,8 +980,85 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_BOOL;
         return type;
     }
+    if (match(parser, TOKEN_IDENTIFIER)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_NAMED;
+        type->name = parser->previous;
+        return type;
+    }
     printError(parser, "Expect type name");
     return NULL;
+}
+
+static Stmt* parseObjectDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect object name");
+    while (match(parser, TOKEN_SEMICOLON)) {}
+    consume(parser, TOKEN_LBRACE, "Expect '{' before object body");
+
+    List* methods = listNew();
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+        if (match(parser, TOKEN_PRIVATE)) {
+            // ignore visibility for now
+        }
+        consume(parser, TOKEN_FUNC, "Expect 'fn' in object body");
+        FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+        listAppend(methods, method);
+    }
+
+    consume(parser, TOKEN_RBRACE, "Expect '}' after object body");
+
+    ObjectStmt* stmt = malloc(sizeof(ObjectStmt));
+    stmt->base.type = STMT_OBJECT;
+    stmt->name = name;
+    stmt->methods = methods;
+    return (Stmt*)stmt;
+}
+
+static Stmt* parseEnumDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect enum name");
+    while (match(parser, TOKEN_SEMICOLON)) {}
+    consume(parser, TOKEN_LBRACE, "Expect '{' before enum body");
+
+    List* variants = listNew();
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        while (match(parser, TOKEN_SEMICOLON) || match(parser, TOKEN_COMMA)) {}
+        if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+        Token v = consume(parser, TOKEN_IDENTIFIER, "Expect enum variant");
+        EnumVariantDecl* decl = malloc(sizeof(EnumVariantDecl));
+        decl->name = v;
+        decl->valueKind = ENUM_VALUE_NONE;
+        decl->value = (Token){0};
+
+        if (match(parser, TOKEN_ASSIGN)) {
+            if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG)) {
+                decl->valueKind = ENUM_VALUE_INT;
+                decl->value = parser->previous;
+            } else if (match(parser, TOKEN_STRING_LITERAL)) {
+                decl->valueKind = ENUM_VALUE_STRING;
+                decl->value = parser->previous;
+            } else {
+                errorAtCurrent(parser, "Expect integer or string literal after '=' in enum variant");
+            }
+        }
+
+        listAppend(variants, decl);
+
+        if (check(parser, TOKEN_COMMA)) {
+            consume(parser, TOKEN_COMMA, "Expect ',' after variant");
+        }
+    }
+
+    consume(parser, TOKEN_RBRACE, "Expect '}' after enum body");
+
+    EnumStmt* stmt = malloc(sizeof(EnumStmt));
+    stmt->base.type = STMT_ENUM;
+    stmt->name = name;
+    stmt->variants = variants;
+    return (Stmt*)stmt;
 }
 
 static Stmt* declaration(Parser* parser) {
@@ -915,6 +1079,14 @@ static Stmt* declaration(Parser* parser) {
     {
         /* code */
         return parseStructDeclaration(parser);
+    }
+
+    if (match(parser, TOKEN_OBJECT)) {
+        return parseObjectDeclaration(parser);
+    }
+
+    if (match(parser, TOKEN_ENUM)) {
+        return parseEnumDeclaration(parser);
     }
     
     

@@ -17,6 +17,8 @@ typedef struct VariableRef {
     int length;
     LLVMValueRef value;
     LLVMTypeRef type;
+    const char* typeName;
+    int typeNameLength;
     int isConst;
     int isGlobal;
 }VariableRef;
@@ -38,6 +40,8 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr);
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr);
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr);
 LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr);
+LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr);
+LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr);
 LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr);
 LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 

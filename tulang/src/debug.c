@@ -29,6 +29,7 @@ static const char* typeToString(Type* type) {
         case TYPE_DOUBLE: return "double";
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
+        case TYPE_NAMED:  return "named";
         default:          return "unknown";
     }
 }
@@ -276,4 +277,3 @@ void printForStmt(ForStmt* stmt, int indent) {
     printIndent(indent);
     printf("}\n");
 }
-
