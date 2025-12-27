@@ -285,6 +285,10 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
+    if (expr == NULL) {
+        error("compileExpr got NULL\n");
+        return NULL;
+    }
     compilerDebug("Compiling expression type:%s\n", exprTypeToString(expr->type));
     switch (expr->type) {
         case EXPR_BINARY:

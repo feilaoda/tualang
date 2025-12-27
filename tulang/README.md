@@ -3,11 +3,11 @@ Tua 语言 - 极简语言
 
 语法定义:
 - 定义变量:
-let a:int = 10;
-a:int = 10;
-let a = 10;
-const b = 1000;
-const s = "hello world";
+let a:int = 10
+a:int = 10
+let a = 10
+const b = 1000
+const s = "hello world"
 用let定义可变变量, 用const定义常量
 
 - 类型

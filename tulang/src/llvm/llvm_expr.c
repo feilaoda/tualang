@@ -30,6 +30,60 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     emitDebug("emitBinaryExpr start\n");
     
     // 编译左右操作数
+    // Short-circuit for logical operators
+    if (expr->operator.type == TOKEN_AND || expr->operator.type == TOKEN_OR) {
+        LLVMValueRef leftVal = compileExpr(compiler, expr->left);
+        LLVMValueRef leftBool = llvmCoerceToBool(compiler, leftVal);
+        if (!leftBool) {
+            error("Failed to compile left operand for logical op\n");
+            return NULL;
+        }
+
+        LLVMValueRef function = compiler->current->func;
+        LLVMBuilderRef builder = compiler->builder;
+
+        LLVMBasicBlockRef currentBlock = LLVMGetInsertBlock(builder);
+        LLVMBasicBlockRef rhsBlock = LLVMAppendBasicBlock(function, expr->operator.type == TOKEN_AND ? "and.rhs" : "or.rhs");
+        LLVMBasicBlockRef endBlock = LLVMAppendBasicBlock(function, expr->operator.type == TOKEN_AND ? "and.end" : "or.end");
+
+        if (expr->operator.type == TOKEN_AND) {
+            LLVMBuildCondBr(builder, leftBool, rhsBlock, endBlock);
+        } else {
+            LLVMBuildCondBr(builder, leftBool, endBlock, rhsBlock);
+        }
+
+        // RHS
+        LLVMPositionBuilderAtEnd(builder, rhsBlock);
+        LLVMValueRef rightVal = compileExpr(compiler, expr->right);
+        LLVMValueRef rightBool = llvmCoerceToBool(compiler, rightVal);
+        if (!rightBool) {
+            error("Failed to compile right operand for logical op\n");
+            return NULL;
+        }
+        LLVMBasicBlockRef rhsEnd = LLVMGetInsertBlock(builder);
+        LLVMBuildBr(builder, endBlock);
+
+        // End / Phi
+        LLVMPositionBuilderAtEnd(builder, endBlock);
+        LLVMValueRef phi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(compiler->context),
+                                        expr->operator.type == TOKEN_AND ? "and" : "or");
+
+        LLVMValueRef falseVal = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 0, 0);
+        LLVMValueRef trueVal = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 1, 0);
+
+        if (expr->operator.type == TOKEN_AND) {
+            LLVMValueRef incomingVals[] = { rightBool, falseVal };
+            LLVMBasicBlockRef incomingBlocks[] = { rhsEnd, currentBlock };
+            LLVMAddIncoming(phi, incomingVals, incomingBlocks, 2);
+        } else {
+            LLVMValueRef incomingVals[] = { trueVal, rightBool };
+            LLVMBasicBlockRef incomingBlocks[] = { currentBlock, rhsEnd };
+            LLVMAddIncoming(phi, incomingVals, incomingBlocks, 2);
+        }
+
+        return phi;
+    }
+
     LLVMValueRef left = compileExpr(compiler, expr->left);
     LLVMValueRef right = compileExpr(compiler, expr->right);
     
@@ -106,22 +160,6 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
             return isFloat ?
                 LLVMBuildFCmp(builder, LLVMRealOGE, left, right, "fcmp_ge") :
                 LLVMBuildICmp(builder, LLVMIntSGE, left, right, "icmp_ge");
-
-        case TOKEN_AND:
-            if (LLVMGetTypeKind(LLVMTypeOf(left)) != LLVMIntegerTypeKind ||
-                LLVMGetTypeKind(LLVMTypeOf(right)) != LLVMIntegerTypeKind) {
-                error("&& operands must be integers/bools");
-                return NULL;
-            }
-            return LLVMBuildAnd(builder, left, right, "and");
-
-        case TOKEN_OR:
-            if (LLVMGetTypeKind(LLVMTypeOf(left)) != LLVMIntegerTypeKind ||
-                LLVMGetTypeKind(LLVMTypeOf(right)) != LLVMIntegerTypeKind) {
-                error("|| operands must be integers/bools");
-                return NULL;
-            }
-            return LLVMBuildOr(builder, left, right, "or");
             
         default:
             error("Unknown binary operator");

@@ -2,7 +2,7 @@
 #include "compiler.h"
 #include "debug.h"
 
-static LLVMValueRef coerceToBool(Compiler* compiler, LLVMValueRef value) {
+LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value) {
     if (!value) return NULL;
 
     LLVMTypeRef type = LLVMTypeOf(value);
@@ -33,7 +33,7 @@ void emitIfStmt(Compiler* compiler, IfStmt* stmt) {
     LLVMBuilderRef builder = compiler->builder;
 
     LLVMValueRef condValue = compileExpr(compiler, stmt->condition);
-    condValue = coerceToBool(compiler, condValue);
+    condValue = llvmCoerceToBool(compiler, condValue);
     if (!condValue) {
         emitDebug("Failed to compile if condition\n");
         return;
@@ -64,4 +64,3 @@ void emitIfStmt(Compiler* compiler, IfStmt* stmt) {
     // Merge
     LLVMPositionBuilderAtEnd(builder, mergeBlock);
 }
-

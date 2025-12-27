@@ -1,0 +1,12 @@
+let a:int = 0;
+
+if false && (a = 1) {
+    println(111);
+}
+println(a); // expect 0
+
+if true || (a = 2) {
+    // ok
+}
+println(a); // expect 0
+

@@ -26,6 +26,8 @@ VariableRef findVariable(List* variables, const char* name);
 VariableRef findVariableExpr(Compiler* compiler, Expr* expr);
 VariableRef findVariableWithLength(List* variables, const char* name, int length);
 
+LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value);
+
 void emitVarStmt(Compiler* compiler, VarStmt* stmt);
 void emitForStmt(Compiler* compiler, ForStmt* stmt);
 void emitIfStmt(Compiler* compiler, IfStmt* stmt);

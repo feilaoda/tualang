@@ -467,7 +467,9 @@ Token scanToken(Lexer* lexer) {
             return makeToken(lexer, TOKEN_MINUS);
         
         // Multi-character tokens
-        case '=': return makeToken(lexer, TOKEN_ASSIGN);
+        case '=':
+            if (match(lexer, '=')) return makeToken(lexer, TOKEN_EQ);
+            return makeToken(lexer, TOKEN_ASSIGN);
         case '<': 
         {
             if (match(lexer, '=')) return makeToken(lexer, TOKEN_LE);
