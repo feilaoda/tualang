@@ -1,0 +1,16 @@
+
+var a:int = 0
+
+for var i=0; i<100; i++ {
+    a = a+i
+}
+
+if a > 100 {
+    println(a)
+}else if a <= 50 {
+    println("less")
+} else {
+    println("zero")
+}
+
+println(a);

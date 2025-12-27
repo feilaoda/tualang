@@ -87,9 +87,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     listAppend(block->variables, variable);
 }
 
-void emitExprStmt() {
 
-}
 
 Block* newFuncBlock(Compiler *compiler, LLVMValueRef func) {
     Block *block = malloc(sizeof(Block));
