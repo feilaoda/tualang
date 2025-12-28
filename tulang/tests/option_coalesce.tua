@@ -1,0 +1,23 @@
+let m: map<string, int> = { "a": 1 }
+let x:int = m["a"] ?? 0
+assert(x == 1)
+
+let y:int = m["missing"] ?? 0
+assert(y == 0)
+
+let z:int = (m["missing"] ?? (m["a"] ?? 0))
+assert(z == 1)
+
+let w:int = Some(3) ?? 0
+assert(w == 3)
+
+let n:int = None() ?? 7
+assert(n == 7)
+
+let ms: map<string, string> = { "a": "hi" }
+let s:string = ms["missing"] ?? "def"
+assert(s == "def")
+
+let s2 = ms["a"]
+assert(s2 != "hi")
+assert(s2.isSome())

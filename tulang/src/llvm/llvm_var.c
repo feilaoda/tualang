@@ -29,6 +29,18 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                if (!inner) {
+                    // Best-effort: Option without type arg defaults to tua_value.
+                    return compilerGetOptionType(compiler, compilerGetTuaValueType(compiler));
+                }
+                LLVMTypeRef innerTy = toLLVMType(compiler, inner);
+                return compilerGetOptionType(compiler, innerTy);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -62,7 +74,16 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         return compilerGetMapType(compiler);
     }
     if (initializer->type == EXPR_INDEX) {
-        return compilerGetTuaValueType(compiler);
+        // Default to Option<tua_value>; if receiver is a typed map variable, infer Option<V>.
+        IndexExpr* ix = (IndexExpr*)initializer;
+        LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+        if (ix->object && ix->object->type == EXPR_VARIABLE) {
+            VariableRef rv = findVariableExpr(compiler, ix->object);
+            if (rv.value && rv.isTypedMap && rv.mapValueType) {
+                return compilerGetOptionType(compiler, rv.mapValueType);
+            }
+        }
+        return compilerGetOptionType(compiler, vt);
     }
     if (initializer->type == EXPR_INDEX_SET) {
         return compilerGetTuaValueType(compiler);
@@ -75,6 +96,22 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
 
     if (initializer->type == EXPR_CALL) {
         CallExpr* call = (CallExpr*)initializer;
+        if (call->callee && call->callee->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)call->callee;
+            // m.get(k) -> Option<V>
+            if (get->object) {
+                LLVMTypeRef mapType = compilerGetMapType(compiler);
+                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+
+                if (get->object->type == EXPR_VARIABLE) {
+                    VariableRef rv = findVariableExpr(compiler, get->object);
+                    if (rv.value && rv.type == mapType) {
+                        LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;
+                        return compilerGetOptionType(compiler, inner);
+                    }
+                }
+            }
+        }
         if (call->callee && call->callee->type == EXPR_VARIABLE) {
             VariableExpr* callee = (VariableExpr*)call->callee;
             StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
@@ -135,6 +172,45 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
 
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    // Option<T> -> Option<U>
+    if (srcKind == LLVMStructTypeKind && dstKind == LLVMStructTypeKind &&
+        LLVMCountStructElementTypes(srcType) == 2 && LLVMCountStructElementTypes(targetType) == 2) {
+        LLVMTypeRef s0 = LLVMStructGetTypeAtIndex(srcType, 0);
+        LLVMTypeRef d0 = LLVMStructGetTypeAtIndex(targetType, 0);
+        if (LLVMGetTypeKind(s0) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(s0) == 1 &&
+            LLVMGetTypeKind(d0) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(d0) == 1) {
+            LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, value, 0, "opt_ok");
+            LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "opt_v");
+            LLVMTypeRef dstInner = LLVMStructGetTypeAtIndex(targetType, 1);
+
+            LLVMValueRef fn = compiler->current->func;
+            LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "optcast.some");
+            LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "optcast.none");
+            LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "optcast.cont");
+            LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+            LLVMValueRef someV = castIfNeeded(compiler, payload, dstInner);
+            LLVMBuildBr(compiler->builder, contBB);
+            LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+            LLVMValueRef noneV = LLVMConstNull(dstInner);
+            LLVMBuildBr(compiler->builder, contBB);
+            LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+            LLVMValueRef phi = LLVMBuildPhi(compiler->builder, dstInner, "optcast_v");
+            LLVMAddIncoming(phi, &someV, &someEnd, 1);
+            LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
+
+            LLVMValueRef out = LLVMGetUndef(targetType);
+            out = LLVMBuildInsertValue(compiler->builder, out, ok, 0, "o0");
+            out = LLVMBuildInsertValue(compiler->builder, out, phi, 1, "o1");
+            return out;
+        }
+    }
 
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
     if (srcType == vt) {
@@ -359,6 +435,28 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
+    variable->isTypedMap = 0;
+    variable->mapKeyType = NULL;
+    variable->mapValueType = NULL;
+
+    if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+        stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
+        stmt->type->typeArgs && stmt->type->typeArgs->length == 2) {
+        Type* kAst = (Type*)stmt->type->typeArgs->head->data;
+        Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
+        int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
+        int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                             vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+        if (!okKey) {
+            error("map<K,V> key type must be string/int/long for now\n");
+        } else if (!okVal) {
+            error("map<K,V> value type must be int/long/double/bool/string for now\n");
+        } else {
+            variable->isTypedMap = 1;
+            variable->mapKeyType = toLLVMType(compiler, kAst);
+            variable->mapValueType = toLLVMType(compiler, vAst);
+        }
+    }
     listAppend(block->variables, variable);
 
     LLVMTypeRef finalSig = compiledLambdaSig ? compiledLambdaSig : declaredSig;

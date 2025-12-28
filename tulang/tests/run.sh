@@ -14,12 +14,19 @@ for f in tests/*.tua; do
   total=$((total+1))
   base="$(basename "$f")"
   if [[ "$base" == fail_* ]]; then
-    if ./bin/tuac "$f" >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    if ./bin/tuac "$f" >/dev/null 2>"$tmp"; then
       echo "[FAIL] $base (expected failure, got success)"
       fail=1
     else
-      echo "[PASS] $base (expected failure)"
+      if grep -q "at line" "$tmp"; then
+        echo "[PASS] $base (expected failure)"
+      else
+        echo "[FAIL] $base (expected failure, missing line info)"
+        fail=1
+      fi
     fi
+    rm -f "$tmp"
   else
     if ./bin/tuac "$f" >/dev/null 2>&1; then
       echo "[PASS] $base"
@@ -36,4 +43,3 @@ if [[ "$total" -eq 0 ]]; then
 fi
 
 exit "$fail"
-

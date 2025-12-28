@@ -23,6 +23,11 @@ typedef struct VariableRef {
     int isGlobal;
     int isBoxed;
     LLVMTypeRef boxPtrType; // T* for boxed variables; slot stores T*
+
+    // Optional: typed map metadata for `map<K,V>` variables/params.
+    int isTypedMap;
+    LLVMTypeRef mapKeyType;
+    LLVMTypeRef mapValueType;
 }VariableRef;
 
 

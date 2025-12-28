@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+static int isOptionLLVMType(LLVMTypeRef t);
+
 static int tokenEquals(const Token* token, const char* s) {
     int n = (int)strlen(s);
     return token->length == n && memcmp(token->start, s, (size_t)n) == 0;
@@ -21,6 +23,38 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (isOptionLLVMType(srcType) && isOptionLLVMType(targetType)) {
+        LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, value, 0, "opt_ok");
+        LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "opt_v");
+        LLVMTypeRef dstInner = LLVMStructGetTypeAtIndex(targetType, 1);
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "optcast.some");
+        LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "optcast.none");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "optcast.cont");
+        LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+        LLVMValueRef someV = castValueToType(compiler, payload, dstInner);
+        LLVMBuildBr(compiler->builder, contBB);
+        LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+        LLVMValueRef noneV = LLVMConstNull(dstInner);
+        LLVMBuildBr(compiler->builder, contBB);
+        LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(compiler->builder, dstInner, "optcast_v");
+        LLVMAddIncoming(phi, &someV, &someEnd, 1);
+        LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
+
+        LLVMValueRef out = LLVMGetUndef(targetType);
+        out = LLVMBuildInsertValue(compiler->builder, out, ok, 0, "o0");
+        out = LLVMBuildInsertValue(compiler->builder, out, phi, 1, "o1");
+        return out;
+    }
 
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
     if (srcType == vt) {
@@ -120,6 +154,20 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
+            if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                if (!inner) {
+                    return compilerGetOptionType(compiler, compilerGetTuaValueType(compiler));
+                }
+                LLVMTypeRef innerTy = typeToLLVMType(compiler, inner);
+                return compilerGetOptionType(compiler, innerTy);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -269,6 +317,15 @@ static LLVMValueRef getOrCreateTuaAssertFail(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_assert_fail", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_panic", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaMapHas(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_has");
     if (existing) return existing;
@@ -286,6 +343,36 @@ static LLVMValueRef getOrCreateTuaMapLen(Compiler* compiler) {
     LLVMTypeRef params[1] = { mapType };
     LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_map_len", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapGetWithOk(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get_with_ok");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { mapType, vt, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(vt, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_get_with_ok", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapDelete(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_delete");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[2] = { mapType, vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_delete", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapClear(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_clear");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_clear", fnType);
 }
 
 enum {
@@ -333,6 +420,15 @@ static LLVMValueRef tuaValueFromKey(Compiler* compiler, LLVMValueRef key) {
 
     emitDebug("Map key must be int/long/string\n");
     return NULL;
+}
+
+static int isOptionLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    if (LLVMCountStructElementTypes(t) != 2) return 0;
+    LLVMTypeRef f0 = LLVMStructGetTypeAtIndex(t, 0);
+    if (LLVMGetTypeKind(f0) != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(f0) == 1;
 }
 
 static LLVMTypeRef getPrintfType(Compiler* compiler) {
@@ -603,7 +699,213 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     // - Object:   Obj.method(...) -> Obj__method(...)
     if (expr->callee->type == EXPR_GET) {
         GetExpr* get = (GetExpr*)expr->callee;
-        if (!get->object || get->object->type != EXPR_VARIABLE) {
+        if (!get->object) {
+            emitDebug("Unsupported member call receiver\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        // Built-in member calls can accept non-variable receivers.
+        if (get->object->type != EXPR_VARIABLE) {
+            LLVMValueRef recvVal = compileExpr(compiler, get->object);
+            if (!recvVal) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMTypeRef recvType = LLVMTypeOf(recvVal);
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+
+            // Map built-in methods (untyped receiver): `expr.len()`, `expr.get(k)`, ...
+            if (recvType == compilerGetMapType(compiler)) {
+                LLVMValueRef mapPtr = recvVal;
+
+                if (tokenEquals(&get->name, "len")) {
+                    if (got != 0) {
+                        emitDebug("map.len expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { mapPtr };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "mlen");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
+                if (tokenEquals(&get->name, "hasKey")) {
+                    if (got != 1) {
+                        emitDebug("map.hasKey expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                    if (!key) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapHas(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args2[2] = { mapPtr, key };
+                    LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mhas");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "ok");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return ok;
+                }
+
+                if (tokenEquals(&get->name, "delete")) {
+                    if (got != 1) {
+                        emitDebug("map.delete expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                    if (!key) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapDelete(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args2[2] = { mapPtr, key };
+                    LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mdel32");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return ok;
+                }
+
+                if (tokenEquals(&get->name, "clear")) {
+                    if (got != 0) {
+                        emitDebug("map.clear expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapClear(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { mapPtr };
+                    LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+                }
+
+                if (tokenEquals(&get->name, "get")) {
+                    if (got != 1) {
+                        emitDebug("map.get expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                    if (!key) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+
+                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
+                    LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);
+                    LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                    LLVMValueRef args3[3] = { mapPtr, key, okPtr };
+                    LLVMValueRef tv = LLVMBuildCall2(compiler->builder, gtype, gfn, args3, 3, "mget");
+                    LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, LLVMInt32TypeInContext(compiler->context), okPtr, "mok32");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+
+                    LLVMTypeRef optType = compilerGetOptionType(compiler, vt);
+                    LLVMValueRef opt = LLVMGetUndef(optType);
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, tv, 1, "o1");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return opt;
+                }
+            }
+
+            // Option built-in methods: `opt.isSome()`, `opt.unwrap()`, ...
+            if (isOptionLLVMType(recvType)) {
+                LLVMTypeRef innerType = LLVMStructGetTypeAtIndex(recvType, 1);
+                LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, recvVal, 0, "opt_ok");
+                LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, recvVal, 1, "opt_v");
+
+                if (tokenEquals(&get->name, "isSome")) {
+                    if (got != 0) {
+                        emitDebug("Option.isSome expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return ok;
+                }
+
+                if (tokenEquals(&get->name, "isNone")) {
+                    if (got != 0) {
+                        emitDebug("Option.isNone expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef out = LLVMBuildNot(compiler->builder, ok, "opt_not");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
+                if (tokenEquals(&get->name, "unwrap")) {
+                    if (got != 0) {
+                        emitDebug("Option.unwrap expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = compiler->current->func;
+                    LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.unwrap.some");
+                    LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.unwrap.none");
+                    LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.unwrap.cont");
+                    LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                    LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                    LLVMTypeRef panicType = LLVMGlobalGetValueType(panicFn);
+                    LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "unwrap on None", "panicmsg");
+                    LLVMBuildCall2(compiler->builder, panicType, panicFn, &msg, 1, "");
+                    LLVMBuildUnreachable(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                    LLVMBuildBr(compiler->builder, contBB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return payload;
+                }
+
+                if (tokenEquals(&get->name, "unwrapOr")) {
+                    if (got != 1) {
+                        emitDebug("Option.unwrapOr expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef defRaw = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    defRaw = castValueToType(compiler, defRaw, innerType);
+
+                    LLVMValueRef fn = compiler->current->func;
+                    LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.uor.some");
+                    LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.uor.none");
+                    LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.uor.cont");
+                    LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                    LLVMBuildBr(compiler->builder, contBB);
+                    LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                    LLVMBuildBr(compiler->builder, contBB);
+                    LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                    LLVMValueRef phi = LLVMBuildPhi(compiler->builder, innerType, "uor");
+                    LLVMAddIncoming(phi, &payload, &someEnd, 1);
+                    LLVMAddIncoming(phi, &defRaw, &noneEnd, 1);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return phi;
+                }
+            }
+
             emitDebug("Unsupported member call receiver\n");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
@@ -667,6 +969,41 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return ok;
             }
 
+            if (tokenEquals(&get->name, "delete")) {
+                if (got != 1) {
+                    emitDebug("map.delete expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapDelete(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args2[2] = { mapPtr, key };
+                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mdel32");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return ok;
+            }
+
+            if (tokenEquals(&get->name, "clear")) {
+                if (got != 0) {
+                    emitDebug("map.clear expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapClear(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { mapPtr };
+                LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+            }
+
             if (tokenEquals(&get->name, "get")) {
                 if (got != 1) {
                     emitDebug("map.get expects 1 argument\n");
@@ -680,37 +1017,139 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return NULL;
                 }
 
-                // value
-                LLVMValueRef getFn = LLVMGetNamedFunction(compiler->module, "tua_map_get");
-                if (!getFn) {
-                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-                    LLVMTypeRef params[2] = { mapType, vt };
-                    LLVMTypeRef gType = LLVMFunctionType(vt, params, 2, 0);
-                    getFn = LLVMAddFunction(compiler->module, "tua_map_get", gType);
-                }
-                LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
-                LLVMValueRef gargs[2] = { mapPtr, key };
-                LLVMValueRef v = LLVMBuildCall2(compiler->builder, getType, getFn, gargs, 2, "mget");
+                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                LLVMTypeRef innerType = recvVar.isTypedMap && recvVar.mapValueType ? recvVar.mapValueType : vt;
 
-                // ok
-                LLVMValueRef hasFn = getOrCreateTuaMapHas(compiler);
-                LLVMTypeRef hasType = LLVMGlobalGetValueType(hasFn);
-                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, hasType, hasFn, gargs, 2, "mok32");
+                LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
+                LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);
+                LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                LLVMValueRef args3[3] = { mapPtr, key, okPtr };
+                LLVMValueRef tv = LLVMBuildCall2(compiler->builder, gtype, gfn, args3, 3, "mget");
+                LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, LLVMInt32TypeInContext(compiler->context), okPtr, "mok32");
                 LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
 
-                if (compiler && wantMultiForThisCall) {
-                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-                    LLVMTypeRef fields[2] = { vt, LLVMInt1TypeInContext(compiler->context) };
-                    LLVMTypeRef tupType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
-                    LLVMValueRef tup = LLVMGetUndef(tupType);
-                    tup = LLVMBuildInsertValue(compiler->builder, tup, v, 0, "t0");
-                    tup = LLVMBuildInsertValue(compiler->builder, tup, ok, 1, "t1");
-                    compiler->wantMultiValue = wantMultiForThisCall;
-                    return tup;
+                LLVMValueRef payload = NULL;
+                if (innerType == vt) {
+                    payload = tv;
+                } else {
+                    LLVMValueRef fn = compiler->current->func;
+                    LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.some");
+                    LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.none");
+                    LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.cont");
+                    LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                    LLVMValueRef someV = castValueToType(compiler, tv, innerType);
+                    LLVMBuildBr(compiler->builder, contBB);
+                    LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                    LLVMValueRef noneV = LLVMConstNull(innerType);
+                    LLVMBuildBr(compiler->builder, contBB);
+                    LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                    LLVMValueRef phi = LLVMBuildPhi(compiler->builder, innerType, "optv");
+                    LLVMAddIncoming(phi, &someV, &someEnd, 1);
+                    LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
+                    payload = phi;
                 }
 
+                LLVMTypeRef optType = compilerGetOptionType(compiler, innerType);
+                LLVMValueRef opt = LLVMGetUndef(optType);
+                opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+                opt = LLVMBuildInsertValue(compiler->builder, opt, payload, 1, "o1");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return v;
+                return opt;
+            }
+        }
+
+        // Option built-in methods (variable receiver): `o.isSome()`, `o.unwrap()`, ...
+        if (recvVar.value && isOptionLLVMType(recvVar.type)) {
+            LLVMValueRef optVal = loadLocalValue(compiler, recvVar);
+            LLVMTypeRef optType = recvVar.type;
+            LLVMTypeRef innerType = LLVMStructGetTypeAtIndex(optType, 1);
+            LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, optVal, 0, "opt_ok");
+            LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, optVal, 1, "opt_v");
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+
+            if (tokenEquals(&get->name, "isSome")) {
+                if (got != 0) {
+                    emitDebug("Option.isSome expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return ok;
+            }
+
+            if (tokenEquals(&get->name, "isNone")) {
+                if (got != 0) {
+                    emitDebug("Option.isNone expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef out = LLVMBuildNot(compiler->builder, ok, "opt_not");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "unwrap")) {
+                if (got != 0) {
+                    emitDebug("Option.unwrap expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.unwrap.some");
+                LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.unwrap.none");
+                LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.unwrap.cont");
+                LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef panicType = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "unwrap on None", "panicmsg");
+                LLVMBuildCall2(compiler->builder, panicType, panicFn, &msg, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                LLVMBuildBr(compiler->builder, contBB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return payload;
+            }
+
+            if (tokenEquals(&get->name, "unwrapOr")) {
+                if (got != 1) {
+                    emitDebug("Option.unwrapOr expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef defRaw = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                defRaw = castValueToType(compiler, defRaw, innerType);
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.uor.some");
+                LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.uor.none");
+                LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.uor.cont");
+                LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                LLVMBuildBr(compiler->builder, contBB);
+                LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                LLVMBuildBr(compiler->builder, contBB);
+                LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, innerType, "uor");
+                LLVMAddIncoming(phi, &payload, &someEnd, 1);
+                LLVMAddIncoming(phi, &defRaw, &noneEnd, 1);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return phi;
             }
         }
 
@@ -820,6 +1259,48 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isPrint = tokenEquals(&callee->name, "print");
     int isAssert = tokenEquals(&callee->name, "assert");
     int isLen = tokenEquals(&callee->name, "len");
+    int isSomeCtor = tokenEquals(&callee->name, "Some");
+    int isNoneCtor = tokenEquals(&callee->name, "None");
+
+    if (isSomeCtor) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("Some expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef v = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!v) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef inner = LLVMTypeOf(v);
+        LLVMTypeRef optType = compilerGetOptionType(compiler, inner);
+        LLVMValueRef ok = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 1, 0);
+        LLVMValueRef opt = LLVMGetUndef(optType);
+        opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+        opt = LLVMBuildInsertValue(compiler->builder, opt, v, 1, "o1");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return opt;
+    }
+
+    if (isNoneCtor) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 0) {
+            emitDebug("None expects 0 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+        LLVMTypeRef optType = compilerGetOptionType(compiler, vt);
+        LLVMValueRef ok = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 0, 0);
+        LLVMValueRef nil = tuaValueMake(compiler, TUA_VAL_NIL, NULL);
+        LLVMValueRef opt = LLVMGetUndef(optType);
+        opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+        opt = LLVMBuildInsertValue(compiler->builder, opt, nil, 1, "o1");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return opt;
+    }
 
     if (isAssert) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;

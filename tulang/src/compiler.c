@@ -131,6 +131,7 @@ void initCompiler(Compiler* compiler) {
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
     compiler->lastLambdaFuncType = NULL;
+    compiler->lastSetLine = 0;
     
     // Debug information
     compiler->hadError = false;
@@ -242,6 +243,15 @@ LLVMTypeRef compilerGetTuaValueType(Compiler* compiler) {
     };
     compiler->tuaValueType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
     return compiler->tuaValueType;
+}
+
+LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner) {
+    if (!compiler || !inner) return NULL;
+    LLVMTypeRef fields[2] = {
+        LLVMInt1TypeInContext(compiler->context),
+        inner,
+    };
+    return LLVMStructTypeInContext(compiler->context, fields, 2, 0);
 }
 
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType) {
@@ -515,6 +525,17 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                if (!inner) {
+                    return compilerGetOptionType(compiler, compilerGetTuaValueType(compiler));
+                }
+                LLVMTypeRef innerTy = typeToLLVMType(compiler, inner, false);
+                return compilerGetOptionType(compiler, innerTy);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 // Best-effort: create/lookup an opaque named struct type.
@@ -549,6 +570,45 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    // Option<T> -> Option<U>
+    if (srcKind == LLVMStructTypeKind && dstKind == LLVMStructTypeKind &&
+        LLVMCountStructElementTypes(srcType) == 2 && LLVMCountStructElementTypes(targetType) == 2) {
+        LLVMTypeRef s0 = LLVMStructGetTypeAtIndex(srcType, 0);
+        LLVMTypeRef d0 = LLVMStructGetTypeAtIndex(targetType, 0);
+        if (LLVMGetTypeKind(s0) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(s0) == 1 &&
+            LLVMGetTypeKind(d0) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(d0) == 1) {
+            LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, value, 0, "opt_ok");
+            LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "opt_v");
+            LLVMTypeRef dstInner = LLVMStructGetTypeAtIndex(targetType, 1);
+
+            LLVMValueRef fn = compiler->current->func;
+            LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "optcast.some");
+            LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "optcast.none");
+            LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "optcast.cont");
+            LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+            LLVMValueRef someV = castValueToType(compiler, payload, dstInner);
+            LLVMBuildBr(compiler->builder, contBB);
+            LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+            LLVMValueRef noneV = LLVMConstNull(dstInner);
+            LLVMBuildBr(compiler->builder, contBB);
+            LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+            LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+            LLVMValueRef phi = LLVMBuildPhi(compiler->builder, dstInner, "optcast_v");
+            LLVMAddIncoming(phi, &someV, &someEnd, 1);
+            LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
+
+            LLVMValueRef out = LLVMGetUndef(targetType);
+            out = LLVMBuildInsertValue(compiler->builder, out, ok, 0, "o0");
+            out = LLVMBuildInsertValue(compiler->builder, out, phi, 1, "o1");
+            return out;
+        }
+    }
 
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
     if (srcType == vt) {
@@ -641,12 +701,37 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     return value;
 }
 
+static LLVMValueRef getOrCreateTuaSetLine(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_set_line");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[1] = { i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_set_line", fnType);
+}
+
+static void emitSetLineIfNeeded(Compiler* compiler, int line) {
+    if (!compiler) return;
+    if (line <= 0) return;
+    if (compiler->lastSetLine == line) return;
+    if (!compiler->builder) return;
+    LLVMBasicBlockRef bb = LLVMGetInsertBlock(compiler->builder);
+    if (!bb) return;
+    if (LLVMGetBasicBlockTerminator(bb)) return;
+
+    compiler->lastSetLine = line;
+    LLVMValueRef fn = getOrCreateTuaSetLine(compiler);
+    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+    LLVMValueRef lineV = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)line, 0);
+    LLVMBuildCall2(compiler->builder, fnType, fn, &lineV, 1, "");
+}
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
     if (expr == NULL) {
         error("compileExpr got NULL\n");
         return NULL;
     }
+    emitSetLineIfNeeded(compiler, expr->token.line);
     compilerDebug("Compiling expression type:%s\n", exprTypeToString(expr->type));
     switch (expr->type) {
         case EXPR_BINARY:
@@ -705,8 +790,8 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
 LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr) {
     if (!compiler || !expr) return NULL;
 
-    // Multi-values only matter for direct call expressions. Everything else
-    // keeps the default "first value" rule for nested calls.
+    // Multi-values only matter for direct call expressions.
+    // Everything else keeps the default "first value" rule for nested calls.
     Expr* target = expr;
     if (target->type == EXPR_GROUPING) {
         target = ((GroupingExpr*)target)->expression;
@@ -1342,10 +1427,12 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     // Save current insertion point (main)
     LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
     Block* savedCurrent = compiler->current;
+    int savedLastSetLine = compiler->lastSetLine;
 
     // Create function entry
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(func, "entry");
     LLVMPositionBuilderAtEnd(compiler->builder, entry);
+    compiler->lastSetLine = 0;
 
     Block* funcBlock = malloc(sizeof(Block));
     funcBlock->parent = savedCurrent; // allow lookup of globals (no closures yet)
@@ -1417,6 +1504,28 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->isGlobal = 0;
         variable->isBoxed = isBoxed;
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
+        variable->isTypedMap = 0;
+        variable->mapKeyType = NULL;
+        variable->mapValueType = NULL;
+
+        if (p->type && p->type->kind == TYPE_NAMED &&
+            p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&
+            p->type->typeArgs && p->type->typeArgs->length == 2) {
+            Type* kAst = (Type*)p->type->typeArgs->head->data;
+            Type* vAst = (Type*)p->type->typeArgs->head->next->data;
+            int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
+            int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                                 vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+            if (!okKey) {
+                error("map<K,V> key type must be string/int/long for now\n");
+            } else if (!okVal) {
+                error("map<K,V> value type must be int/long/double/bool/string for now\n");
+            } else {
+                variable->isTypedMap = 1;
+                variable->mapKeyType = typeToLLVMType(compiler, kAst, false);
+                variable->mapValueType = typeToLLVMType(compiler, vAst, false);
+            }
+        }
         listAppend(funcBlock->variables, variable);
 
         // If parameter is annotated as a function type, record the closure call signature
@@ -1446,6 +1555,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compiler->current = savedCurrent;
     LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
     compiler->boxAllLocals = savedBox;
+    compiler->lastSetLine = savedLastSetLine;
 
     if (paramTypes) free(paramTypes);
     free(funcName);

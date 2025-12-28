@@ -76,6 +76,7 @@ typedef struct Type {
     TypeKind kind;
     Token name; // for TYPE_NAMED
     struct Type* inner; // for TYPE_REF
+    List* typeArgs;     // List<Type*>, for TYPE_NAMED generic args (e.g. map<K,V>, Option<T>)
     List* paramTypes;   // List<Type*>, for TYPE_FUNC
     List* returnTypes;  // List<Type*>, for TYPE_FUNC
 } Type;

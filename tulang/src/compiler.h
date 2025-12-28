@@ -83,6 +83,8 @@ typedef struct Compiler{
     List* closureSigs;       // List<ClosureSig*>, variable name -> function type
     List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
     LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
+
+    int lastSetLine; // last emitted tua_set_line(...) value
 } Compiler;
 
 typedef struct MultiReturnInfo {
@@ -308,6 +310,7 @@ Value tokenToValue(Token token);
 LLVMTypeRef compilerGetClosureType(Compiler* compiler);
 LLVMTypeRef compilerGetMapType(Compiler* compiler);
 LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
+LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner);
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);

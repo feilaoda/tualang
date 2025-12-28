@@ -450,7 +450,7 @@ void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef contex
     }
 }
 
-void endLLVM(Compiler* compiler) {
+int endLLVM(Compiler* compiler) {
     debug("endLLVM\n");
     LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
@@ -470,7 +470,7 @@ void endLLVM(Compiler* compiler) {
         fprintf(stderr, "LLVMVerifyModule failed: %s\n", error ? error : "(unknown)");
         LLVMDisposeMessage(error);
         cleanup(module, builder, context, NULL);
-        return;
+        return 1;
     }
 
 #ifdef DEBUG
@@ -481,7 +481,7 @@ void endLLVM(Compiler* compiler) {
         fprintf(stderr, "Error printing IR to file: %s\n", error);
         LLVMDisposeMessage(error);
         cleanup(module, builder, context, ir);
-        return;
+        return 1;
     }
     struct timeval stop, start;
     gettimeofday(&start, NULL);
@@ -493,7 +493,7 @@ void endLLVM(Compiler* compiler) {
     executeModule(module);
     cleanup(module, builder, context, NULL);
 #endif
-
+    return 0;
 }
 
 static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
@@ -643,6 +643,5 @@ int main(int argc, char* argv[]) {
 
     free(entryPath);
 
-    endLLVM(&compiler);
-    return 0;
+    return endLLVM(&compiler);
 }

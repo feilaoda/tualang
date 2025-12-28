@@ -6,11 +6,16 @@ assert(len(m) == 2)
 assert(m.hasKey("a"))
 assert(!m.hasKey("missing"))
 
-let v:int, ok:bool = m.get("a")
-assert(ok)
+let oa = m.get("a")
+assert(oa.isSome())
+let v:int = oa.unwrap()
 assert(v == 1)
 
-let v2:string, ok2:bool = m.get("missing")
-assert(!ok2)
-assert(v2 == null)
+let om = m.get("missing")
+assert(om.isNone())
 
+m["z"] = null
+let oz = m.get("z")
+assert(oz.isSome())
+let v3:string = oz.unwrap()
+assert(v3 == null)

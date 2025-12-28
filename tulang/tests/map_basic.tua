@@ -1,19 +1,18 @@
 let m: map
 m["a"] = 1
-let x:int = m["a"]
+let x:int = m["a"].unwrap()
 assert(x == 1, "map get int")
 
-let missing:string = m["missing"]
-assert(missing == null, "missing key returns null")
+let missing = m["missing"]
+assert(missing.isNone(), "missing key returns None")
 
 let k = 1
 m[k] = 10
 m[1L] = 20
-let y:int = m[1]
+let y:int = m[1].unwrap()
 assert(y == 20, "int/long key normalized")
 
 let n: map = null
 n["x"] = 2
-let z:int = n["x"]
+let z:int = n["x"].unwrap()
 assert(z == 2, "auto-init null map on simple var assignment")
-

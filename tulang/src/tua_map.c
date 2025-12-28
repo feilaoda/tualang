@@ -18,7 +18,8 @@ enum {
 typedef enum {
     KEY_EMPTY = 0,
     KEY_INT = 1,
-    KEY_STRING = 2
+    KEY_STRING = 2,
+    KEY_TOMBSTONE = 3
 } KeyKind;
 
 typedef struct {
@@ -34,11 +35,22 @@ typedef struct {
 struct tua_map {
     size_t capacity;
     size_t count;
+    size_t tombstones;
     MapEntry* entries;
 };
 
-static void tua_panic(const char* msg) {
-    fprintf(stderr, "tua runtime error: %s\n", msg ? msg : "(null)");
+static int32_t tua_current_line = 0;
+
+void tua_set_line(int32_t line) {
+    tua_current_line = line;
+}
+
+void tua_panic(const char* msg) {
+    if (tua_current_line > 0) {
+        fprintf(stderr, "tua runtime error at line %d: %s\n", (int)tua_current_line, msg ? msg : "(null)");
+    } else {
+        fprintf(stderr, "tua runtime error: %s\n", msg ? msg : "(null)");
+    }
     abort();
 }
 
@@ -79,7 +91,28 @@ static size_t find_slot(tua_map* m, KeyKind kind, uint32_t hash, int64_t ikey, c
             if (found) *found = 0;
             return i;
         }
-        if (e->hash == hash && key_equals(e, kind, ikey, skey)) {
+        if (e->kind != KEY_TOMBSTONE && e->hash == hash && key_equals(e, kind, ikey, skey)) {
+            if (found) *found = 1;
+            return i;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+static size_t find_slot_for_insert(tua_map* m, KeyKind kind, uint32_t hash, int64_t ikey, const char* skey, int* found) {
+    if (!m || m->capacity == 0) tua_panic("invalid map");
+    size_t mask = m->capacity - 1;
+    size_t i = (size_t)hash & mask;
+    size_t firstTombstone = (size_t)(-1);
+    for (;;) {
+        MapEntry* e = &m->entries[i];
+        if (e->kind == KEY_EMPTY) {
+            if (found) *found = 0;
+            return firstTombstone != (size_t)(-1) ? firstTombstone : i;
+        }
+        if (e->kind == KEY_TOMBSTONE) {
+            if (firstTombstone == (size_t)(-1)) firstTombstone = i;
+        } else if (e->hash == hash && key_equals(e, kind, ikey, skey)) {
             if (found) *found = 1;
             return i;
         }
@@ -97,16 +130,17 @@ static void map_rehash(tua_map* m, size_t newCap) {
     m->entries = entries;
     m->capacity = newCap;
     m->count = 0;
+    m->tombstones = 0;
 
     for (size_t i = 0; i < oldCap; i++) {
         MapEntry* e = &old[i];
-        if (e->kind == KEY_EMPTY) continue;
+        if (e->kind == KEY_EMPTY || e->kind == KEY_TOMBSTONE) continue;
         int found = 0;
         if (e->kind == KEY_INT) {
-            size_t slot = find_slot(m, KEY_INT, e->hash, e->k.i, NULL, &found);
+            size_t slot = find_slot_for_insert(m, KEY_INT, e->hash, e->k.i, NULL, &found);
             m->entries[slot] = *e;
         } else if (e->kind == KEY_STRING) {
-            size_t slot = find_slot(m, KEY_STRING, e->hash, 0, e->k.s, &found);
+            size_t slot = find_slot_for_insert(m, KEY_STRING, e->hash, 0, e->k.s, &found);
             m->entries[slot] = *e;
         }
         (void)found;
@@ -124,8 +158,18 @@ static void ensure_capacity(tua_map* m) {
         if (!m->entries) tua_panic("out of memory");
         return;
     }
-    // load factor ~0.75
-    if ((m->count + 1) * 4 < m->capacity * 3) return;
+    // Keep enough empty slots so lookups always terminate (need KEY_EMPTY sentinel).
+    size_t used = m->count + m->tombstones;
+
+    // load factor ~0.75 based on used slots (count + tombstones)
+    if ((used + 1) * 4 < m->capacity * 3) return;
+
+    // If table is cluttered with tombstones, rehash in-place to clean it up.
+    if (m->tombstones > m->count) {
+        map_rehash(m, m->capacity);
+        return;
+    }
+
     map_rehash(m, m->capacity * 2);
 }
 
@@ -164,6 +208,7 @@ tua_map* tua_map_new(void) {
     if (!m) tua_panic("out of memory");
     m->capacity = 0;
     m->count = 0;
+    m->tombstones = 0;
     m->entries = NULL;
     ensure_capacity(m);
     return m;
@@ -183,6 +228,22 @@ tua_value tua_map_get(tua_map* map, tua_value key) {
     return map->entries[slot].v;
 }
 
+tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
+    if (!map) tua_panic("index null map");
+    if (!outOk) tua_panic("invalid outOk");
+    KeyKind kind;
+    uint32_t hash;
+    int64_t ikey = 0;
+    const char* skey = NULL;
+    decode_key(key, &kind, &hash, &ikey, &skey);
+
+    int found = 0;
+    size_t slot = find_slot(map, kind, hash, ikey, skey, &found);
+    *outOk = found ? 1 : 0;
+    if (!found) return (tua_value){ .tag = TUA_VAL_NIL, .payload = 0 };
+    return map->entries[slot].v;
+}
+
 void tua_map_set(tua_map* map, tua_value key, tua_value value) {
     if (!map) tua_panic("assign into null map");
     ensure_capacity(map);
@@ -194,10 +255,13 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value) {
     decode_key(key, &kind, &hash, &ikey, &skey);
 
     int found = 0;
-    size_t slot = find_slot(map, kind, hash, ikey, skey, &found);
+    size_t slot = find_slot_for_insert(map, kind, hash, ikey, skey, &found);
     MapEntry* e = &map->entries[slot];
 
     if (!found) {
+        if (e->kind == KEY_TOMBSTONE) {
+            map->tombstones--;
+        }
         e->kind = kind;
         e->hash = hash;
         if (kind == KEY_INT) {
@@ -211,6 +275,54 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value) {
 
     // Overwrite semantics: later entries win.
     e->v = value;
+}
+
+int32_t tua_map_delete(tua_map* map, tua_value key) {
+    if (!map) tua_panic("index null map");
+    KeyKind kind;
+    uint32_t hash;
+    int64_t ikey = 0;
+    const char* skey = NULL;
+    decode_key(key, &kind, &hash, &ikey, &skey);
+
+    int found = 0;
+    size_t slot = find_slot(map, kind, hash, ikey, skey, &found);
+    if (!found) return 0;
+
+    MapEntry* e = &map->entries[slot];
+    if (e->kind == KEY_STRING && e->k.s) {
+        free(e->k.s);
+        e->k.s = NULL;
+    }
+
+    e->kind = KEY_TOMBSTONE;
+    e->hash = 0;
+    e->k.i = 0;
+    e->v.tag = TUA_VAL_NIL;
+    e->v.payload = 0;
+
+    map->count--;
+    map->tombstones++;
+    return 1;
+}
+
+void tua_map_clear(tua_map* map) {
+    if (!map) tua_panic("index null map");
+    if (!map->entries || map->capacity == 0) return;
+    for (size_t i = 0; i < map->capacity; i++) {
+        MapEntry* e = &map->entries[i];
+        if (e->kind == KEY_STRING && e->k.s) {
+            free(e->k.s);
+            e->k.s = NULL;
+        }
+        e->kind = KEY_EMPTY;
+        e->hash = 0;
+        e->k.i = 0;
+        e->v.tag = TUA_VAL_NIL;
+        e->v.payload = 0;
+    }
+    map->count = 0;
+    map->tombstones = 0;
 }
 
 int32_t tua_map_has(tua_map* map, tua_value key) {
@@ -241,7 +353,7 @@ int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_v
 
     for (; i < map->capacity; i++) {
         MapEntry* e = &map->entries[i];
-        if (e->kind == KEY_EMPTY) continue;
+        if (e->kind == KEY_EMPTY || e->kind == KEY_TOMBSTONE) continue;
 
         if (e->kind == KEY_INT) {
             outKey->tag = TUA_VAL_LONG;

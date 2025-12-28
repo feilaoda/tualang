@@ -25,6 +25,17 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                if (!inner) {
+                    return compilerGetOptionType(compiler, compilerGetTuaValueType(compiler));
+                }
+                LLVMTypeRef innerTy = lambdaTypeToLLVMType(compiler, inner, false);
+                return compilerGetOptionType(compiler, innerTy);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -205,6 +216,17 @@ static LLVMValueRef getOrCreateTuaMapGet(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_get", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaMapGetWithOk(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get_with_ok");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { mapType, vt, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(vt, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_get_with_ok", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaMapSet(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_set");
     if (existing) return existing;
@@ -309,6 +331,15 @@ static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLV
     }
 
     return value;
+}
+
+static int isOptionLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    if (LLVMCountStructElementTypes(t) != 2) return 0;
+    LLVMTypeRef f0 = LLVMStructGetTypeAtIndex(t, 0);
+    if (LLVMGetTypeKind(f0) != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(f0) == 1;
 }
 
 static int nameSetContains(List* set, const char* name, int len) {
@@ -765,6 +796,49 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         return phi;
     }
 
+    // Coalesce: Option<T> ?? T -> T (short-circuit; RHS evaluated only on None)
+    if (expr->operator.type == TOKEN_COALESCE) {
+        LLVMBuilderRef builder = compiler->builder;
+        LLVMValueRef leftVal = compileExpr(compiler, expr->left);
+        if (!leftVal) {
+            error("Failed to compile left operand for ??\n");
+            return NULL;
+        }
+        LLVMTypeRef leftTy = LLVMTypeOf(leftVal);
+        if (!isOptionLLVMType(leftTy)) {
+            error("Left operand of ?? must be Option<T>\n");
+            return NULL;
+        }
+        LLVMTypeRef innerTy = LLVMStructGetTypeAtIndex(leftTy, 1);
+        LLVMValueRef ok = LLVMBuildExtractValue(builder, leftVal, 0, "opt_ok");
+        LLVMValueRef payload = LLVMBuildExtractValue(builder, leftVal, 1, "opt_v");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef currentBB = LLVMGetInsertBlock(builder);
+        LLVMBasicBlockRef rhsBB = LLVMAppendBasicBlock(fn, "coalesce.rhs");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "coalesce.cont");
+        LLVMBuildCondBr(builder, ok, contBB, rhsBB);
+
+        LLVMPositionBuilderAtEnd(builder, rhsBB);
+        LLVMValueRef rhsVal = compileExpr(compiler, expr->right);
+        if (rhsVal) {
+            LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+            if (innerTy == vt && LLVMTypeOf(rhsVal) != vt) {
+                rhsVal = tuaValueFromValue(compiler, rhsVal);
+            } else {
+                rhsVal = castToType(compiler, rhsVal, innerTy);
+            }
+        }
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef rhsEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(builder, innerTy, "coalesce");
+        LLVMAddIncoming(phi, &payload, &currentBB, 1);
+        LLVMAddIncoming(phi, &rhsVal, &rhsEnd, 1);
+        return phi;
+    }
+
     LLVMValueRef left = compileExpr(compiler, expr->left);
     LLVMValueRef right = compileExpr(compiler, expr->right);
     
@@ -844,6 +918,98 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         LLVMAddIncoming(phi, &nullRes, &nullBB, 1);
         LLVMAddIncoming(phi, &strRes, &cmpBB, 1);
         return phi;
+    }
+
+    // Option<T> equality: Option<T> ==/!= Option<T>
+    if ((expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ) &&
+        isOptionLLVMType(leftType) && isOptionLLVMType(rightType)) {
+        if (leftType != rightType) {
+            error("Option<T> comparison requires same type\n");
+            return NULL;
+        }
+
+        LLVMTypeRef innerTy = LLVMStructGetTypeAtIndex(leftType, 1);
+        LLVMValueRef okL = LLVMBuildExtractValue(builder, left, 0, "opt_ok_l");
+        LLVMValueRef okR = LLVMBuildExtractValue(builder, right, 0, "opt_ok_r");
+        LLVMValueRef okEq = LLVMBuildICmp(builder, LLVMIntEQ, okL, okR, "opt_ok_eq");
+        LLVMValueRef bothSome = LLVMBuildAnd(builder, okL, okR, "opt_both_some");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.eq.some");
+        LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.eq.none");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.eq.cont");
+        LLVMBuildCondBr(builder, bothSome, someBB, noneBB);
+
+        // both Some: compare payloads
+        LLVMPositionBuilderAtEnd(builder, someBB);
+        LLVMValueRef vL = LLVMBuildExtractValue(builder, left, 1, "opt_v_l");
+        LLVMValueRef vR = LLVMBuildExtractValue(builder, right, 1, "opt_v_r");
+
+        LLVMValueRef payloadEq = NULL;
+        LLVMTypeKind innerKind = LLVMGetTypeKind(innerTy);
+        if (innerKind == LLVMIntegerTypeKind || innerKind == LLVMPointerTypeKind) {
+            if (innerKind == LLVMPointerTypeKind && innerTy == i8ptr) {
+                // string content equality for Option<string>
+                LLVMValueRef nullPtr = LLVMConstNull(i8ptr);
+                LLVMValueRef lNull = LLVMBuildICmp(builder, LLVMIntEQ, vL, nullPtr, "osl_null");
+                LLVMValueRef rNull = LLVMBuildICmp(builder, LLVMIntEQ, vR, nullPtr, "osr_null");
+                LLVMValueRef eitherNull = LLVMBuildOr(builder, lNull, rNull, "os_either_null");
+                LLVMValueRef bothNull = LLVMBuildAnd(builder, lNull, rNull, "os_both_null");
+
+                LLVMBasicBlockRef snullBB = LLVMAppendBasicBlock(fn, "opt.str.null");
+                LLVMBasicBlockRef scmpBB = LLVMAppendBasicBlock(fn, "opt.str.cmp");
+                LLVMBasicBlockRef scontBB = LLVMAppendBasicBlock(fn, "opt.str.cont");
+
+                LLVMBuildCondBr(builder, eitherNull, snullBB, scmpBB);
+
+                LLVMPositionBuilderAtEnd(builder, snullBB);
+                LLVMValueRef nullRes = bothNull;
+                LLVMBuildBr(builder, scontBB);
+
+                LLVMPositionBuilderAtEnd(builder, scmpBB);
+                LLVMValueRef strcmpFn = getOrCreateStrcmp(compiler);
+                LLVMTypeRef strcmpType = LLVMGlobalGetValueType(strcmpFn);
+                LLVMValueRef args2[2] = { vL, vR };
+                LLVMValueRef cmp = LLVMBuildCall2(builder, strcmpType, strcmpFn, args2, 2, "strcmp");
+                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+                LLVMValueRef strEq = LLVMBuildICmp(builder, LLVMIntEQ, cmp, zero, "os_streq");
+                LLVMBuildBr(builder, scontBB);
+
+                LLVMPositionBuilderAtEnd(builder, scontBB);
+                LLVMValueRef phi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(context), "os_phi");
+                LLVMAddIncoming(phi, &nullRes, &snullBB, 1);
+                LLVMAddIncoming(phi, &strEq, &scmpBB, 1);
+                payloadEq = phi;
+            } else {
+                payloadEq = LLVMBuildICmp(builder, LLVMIntEQ, vL, vR, "opt_v_eq");
+            }
+        } else if (innerKind == LLVMDoubleTypeKind) {
+            payloadEq = LLVMBuildFCmp(builder, LLVMRealOEQ, vL, vR, "opt_v_feq");
+        } else {
+            error("Unsupported Option<T> payload comparison\n");
+            return NULL;
+        }
+
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(builder);
+
+        // not both Some: payload is equal by definition (if okEq is true, both None)
+        LLVMPositionBuilderAtEnd(builder, noneBB);
+        LLVMValueRef payloadOk = LLVMConstInt(LLVMInt1TypeInContext(context), 1, 0);
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(builder);
+
+        // merge
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef payloadPhi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(context), "opt_payeq");
+        LLVMAddIncoming(payloadPhi, &payloadEq, &someEnd, 1);
+        LLVMAddIncoming(payloadPhi, &payloadOk, &noneEnd, 1);
+
+        LLVMValueRef eq = LLVMBuildAnd(builder, okEq, payloadPhi, "opt_eq");
+        if (expr->operator.type == TOKEN_NEQ) {
+            eq = LLVMBuildNot(builder, eq, "opt_neq");
+        }
+        return eq;
     }
 
     // Numeric type promotion (int/long/double) for arithmetic & comparisons.
@@ -1105,10 +1271,56 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
     if (!key) return NULL;
 
-    LLVMValueRef getFn = getOrCreateTuaMapGet(compiler);
+    // Determine V for typed maps when receiver is a simple variable.
+    LLVMTypeRef innerType = compilerGetTuaValueType(compiler);
+    if (expr->object && expr->object->type == EXPR_VARIABLE) {
+        VariableRef recvVar = findVariableExpr(compiler, expr->object);
+        if (recvVar.value && recvVar.isTypedMap && recvVar.mapValueType) {
+            innerType = recvVar.mapValueType;
+        }
+    }
+
+    LLVMValueRef okPtr = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
+    LLVMValueRef getFn = getOrCreateTuaMapGetWithOk(compiler);
     LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
-    LLVMValueRef args[2] = { obj, key };
-    return LLVMBuildCall2(builder, getType, getFn, args, 2, "mget");
+    LLVMValueRef args3[3] = { obj, key, okPtr };
+    LLVMValueRef tv = LLVMBuildCall2(builder, getType, getFn, args3, 3, "mget");
+    LLVMValueRef ok32 = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(compiler->context), okPtr, "mok32");
+    LLVMValueRef ok = LLVMBuildTrunc(builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+
+    LLVMValueRef payload = NULL;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (innerType == vt) {
+        payload = tv;
+    } else {
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.some");
+        LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.none");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.cont");
+        LLVMBuildCondBr(builder, ok, someBB, noneBB);
+
+        LLVMPositionBuilderAtEnd(builder, someBB);
+        LLVMValueRef someV = castFromTuaValue(compiler, tv, innerType);
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, noneBB);
+        LLVMValueRef noneV = LLVMConstNull(innerType);
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(builder, innerType, "optv");
+        LLVMAddIncoming(phi, &someV, &someEnd, 1);
+        LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
+        payload = phi;
+    }
+
+    LLVMTypeRef optType = compilerGetOptionType(compiler, innerType);
+    LLVMValueRef opt = LLVMGetUndef(optType);
+    opt = LLVMBuildInsertValue(builder, opt, ok, 0, "o0");
+    opt = LLVMBuildInsertValue(builder, opt, payload, 1, "o1");
+    return opt;
 }
 
 LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
@@ -1844,10 +2056,12 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(builder);
     Block* savedCurrent = compiler->current;
     int savedBox = compiler->boxAllLocals;
+    int savedLastSetLine = compiler->lastSetLine;
     compiler->boxAllLocals = 1; // simplest safe default for closures
 
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
     LLVMPositionBuilderAtEnd(builder, entry);
+    compiler->lastSetLine = 0;
 
     Block* funcBlock = malloc(sizeof(Block));
     funcBlock->parent = savedCurrent;
@@ -1960,6 +2174,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     compiler->current = savedCurrent;
     compiler->boxAllLocals = savedBox;
     LLVMPositionBuilderAtEnd(builder, savedBlock);
+    compiler->lastSetLine = savedLastSetLine;
 
     // Allocate env instance and pack closure value.
     LLVMTypeRef closureType = compilerGetClosureType(compiler);

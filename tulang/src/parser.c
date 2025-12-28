@@ -129,6 +129,7 @@ static void synchronize(Parser* parser) {
 static int getOperatorPrecedence(TokenType type) {
     switch (type) {
         case TOKEN_ASSIGN: return 1;      // =
+        case TOKEN_COALESCE: return 2;    // ??
         case TOKEN_OR: return 2;          // ||
         case TOKEN_AND: return 3;         // &&
         case TOKEN_EQ: 
@@ -181,6 +182,7 @@ static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch) {
 static Expr* newPostfixExpr(Expr* operand, Token operator) {
     PostfixExpr* expr = malloc(sizeof(PostfixExpr));
     expr->base.type = EXPR_POSTFIX;
+    expr->base.token = operator;
     expr->operand = operand;
     expr->operator = operator;
     return (Expr*)expr;
@@ -189,6 +191,7 @@ static Expr* newPostfixExpr(Expr* operand, Token operator) {
 static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
     BinaryExpr* expr = malloc(sizeof(BinaryExpr));
     expr->base.type = EXPR_BINARY;
+    expr->base.token = operator;
     expr->left = left;
     expr->operator = operator;
     expr->right = right;
@@ -198,6 +201,7 @@ static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
 static Expr* newUnaryExpr(Token operator, Expr* right) {
     UnaryExpr* expr = malloc(sizeof(UnaryExpr));
     expr->base.type = EXPR_UNARY;
+    expr->base.token = operator;
     expr->operator = operator;
     expr->right = right;
     return (Expr*)expr;
@@ -206,6 +210,7 @@ static Expr* newUnaryExpr(Token operator, Expr* right) {
 static Expr* newLiteralExpr(Token value) {
     LiteralExpr* expr = malloc(sizeof(LiteralExpr));
     expr->base.type = EXPR_LITERAL;
+    expr->base.token = value;
     expr->value = value;
     return (Expr*)expr;
 }
@@ -213,6 +218,7 @@ static Expr* newLiteralExpr(Token value) {
 static Expr* newVariableExpr(Token name) {
     VariableExpr* expr = malloc(sizeof(VariableExpr));
     expr->base.type = EXPR_VARIABLE;
+    expr->base.token = name;
     expr->name = name;
     return (Expr*)expr;
 }
@@ -220,6 +226,7 @@ static Expr* newVariableExpr(Token name) {
 static Expr* newGroupingExpr(Expr* expression) {
     GroupingExpr* expr = malloc(sizeof(GroupingExpr));
     expr->base.type = EXPR_GROUPING;
+    if (expression) expr->base.token = expression->token;
     expr->expression = expression;
     return (Expr*)expr;
 }
@@ -227,6 +234,7 @@ static Expr* newGroupingExpr(Expr* expression) {
 static Expr* newAssignExpr(Token name, Expr* value) {
     AssignExpr* expr = malloc(sizeof(AssignExpr));
     expr->base.type = EXPR_ASSIGN;
+    expr->base.token = name;
     expr->name = name;
     expr->value = value;
     return (Expr*)expr;
@@ -235,6 +243,7 @@ static Expr* newAssignExpr(Token name, Expr* value) {
 static Expr* newGetExpr(Expr* object, Token name) {
     GetExpr* expr = malloc(sizeof(GetExpr));
     expr->base.type = EXPR_GET;
+    expr->base.token = name;
     expr->object = object;
     expr->name = name;
     return (Expr*)expr;
@@ -243,6 +252,7 @@ static Expr* newGetExpr(Expr* object, Token name) {
 static Expr* newSetExpr(Expr* object, Token name, Expr* value) {
     SetExpr* expr = malloc(sizeof(SetExpr));
     expr->base.type = EXPR_SET;
+    expr->base.token = name;
     expr->object = object;
     expr->name = name;
     expr->value = value;
@@ -260,6 +270,8 @@ static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
 static Expr* newIndexExpr(Expr* object, Expr* index) {
     IndexExpr* expr = malloc(sizeof(IndexExpr));
     expr->base.type = EXPR_INDEX;
+    if (object) expr->base.token = object->token;
+    else if (index) expr->base.token = index->token;
     expr->object = object;
     expr->index = index;
     return (Expr*)expr;
@@ -268,6 +280,8 @@ static Expr* newIndexExpr(Expr* object, Expr* index) {
 static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value) {
     IndexSetExpr* expr = malloc(sizeof(IndexSetExpr));
     expr->base.type = EXPR_INDEX_SET;
+    if (object) expr->base.token = object->token;
+    else if (index) expr->base.token = index->token;
     expr->object = object;
     expr->index = index;
     expr->value = value;
@@ -374,7 +388,8 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
         Token operator = parser->current;
         advance(parser);
         parserDebug("parseBinaryExpr: parse right expr start, op type:%d\n", operator.type);
-        Expr* right = parseBinaryExpr(parser, prec + 1);
+        // Right-associative for `??` so `a ?? b ?? c` parses as `a ?? (b ?? c)`.
+        Expr* right = parseBinaryExpr(parser, operator.type == TOKEN_COALESCE ? prec : (prec + 1));
         left = newBinaryExpr(left, operator, right);
         TokenType op2 = parser->current.type;
         parserDebug("parseBinaryExpr last: left type:%d, operator:%.*s/%s right type:%d, parser current token:%s/%d\n", left->type, operator.length, operator.start, tokenToString(operator.type), right->type, tokenToString(op2),op2);
@@ -515,6 +530,7 @@ static Expr* parsePrimaryExpr(Parser* parser) {
 
         LambdaExpr* lam = malloc(sizeof(LambdaExpr));
         lam->base.type = EXPR_LAMBDA;
+        lam->base.token = keyword;
         lam->keyword = keyword;
         lam->params = parameters;
         lam->returnType = returnType;
@@ -554,6 +570,7 @@ static Expr* finishCall(Parser* parser, Expr* callee) {
     
     CallExpr* expr = malloc(sizeof(CallExpr));
     expr->base.type = EXPR_CALL;
+    expr->base.token = parser->previous;
     expr->callee = callee;
     expr->arguments = arguments;
     parserDebugEnd("finishCall");
@@ -1384,6 +1401,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_FUNC;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = paramTypes;
         type->returnTypes = returnTypes;
         return type;
@@ -1395,6 +1413,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_REF;
         type->name = (Token){0};
         type->inner = inner;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1404,6 +1423,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_INT;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1413,6 +1433,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_LONG;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1422,6 +1443,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_DOUBLE;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1431,6 +1453,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_STRING;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1440,6 +1463,7 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_BOOL;
         type->name = (Token){0};
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
         return type;
@@ -1449,8 +1473,22 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_NAMED;
         type->name = parser->previous;
         type->inner = NULL;
+        type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
+
+        // Generic type args: Name<Arg1, Arg2, ...>
+        if (match(parser, TOKEN_LT)) {
+            List* args = listNew();
+            if (!check(parser, TOKEN_GT)) {
+                do {
+                    Type* a = parseType(parser);
+                    listAppend(args, a);
+                } while (match(parser, TOKEN_COMMA));
+            }
+            consume(parser, TOKEN_GT, "Expect '>' after generic type arguments");
+            type->typeArgs = args;
+        }
         return type;
     }
     printError(parser, "Expect type name");

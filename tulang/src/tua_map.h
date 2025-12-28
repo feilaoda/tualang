@@ -12,10 +12,17 @@ typedef struct tua_map tua_map;
 
 tua_map* tua_map_new(void);
 tua_value tua_map_get(tua_map* map, tua_value key);
+// Returns value and writes ok=1 if key exists (even if value is null), else ok=0 and returns null.
+tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk);
 void tua_map_set(tua_map* map, tua_value key, tua_value value);
+int32_t tua_map_delete(tua_map* map, tua_value key);
+void tua_map_clear(tua_map* map);
 int32_t tua_map_has(tua_map* map, tua_value key);
 int32_t tua_map_len(tua_map* map);
 int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue);
+
+void tua_panic(const char* msg);
+void tua_set_line(int32_t line);
 
 void tua_print_value(tua_value value, int32_t newline);
 

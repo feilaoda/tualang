@@ -51,6 +51,14 @@ LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value) {
         return LLVMBuildAnd(compiler->builder, notNil, boolOk, "truthy");
     }
 
+    if (kind == LLVMStructTypeKind && LLVMCountStructElementTypes(type) == 2) {
+        // Option<T>: treat as truthy when isSome == true.
+        LLVMTypeRef f0 = LLVMStructGetTypeAtIndex(type, 0);
+        if (LLVMGetTypeKind(f0) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(f0) == 1) {
+            return LLVMBuildExtractValue(compiler->builder, value, 0, "opt_ok");
+        }
+    }
+
     emitDebug("Unsupported condition type in if\n");
     return NULL;
 }

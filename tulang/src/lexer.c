@@ -105,6 +105,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_GE: return ">=";
         case TOKEN_OR: return "||";
         case TOKEN_AND: return "&&";
+        case TOKEN_COALESCE: return "??";
         case TOKEN_AMP: return "&";
         case TOKEN_ARROW: return "->";
         case TOKEN_COLON: return ":";
@@ -563,6 +564,9 @@ Token scanToken(Lexer* lexer) {
             if (match(lexer, '|')) return makeToken(lexer, TOKEN_OR);
             //或
             break;
+        case '?':
+            if (match(lexer, '?')) return makeToken(lexer, TOKEN_COALESCE);
+            return errorToken(lexer, "Unexpected '?' (did you mean '??'?)");
         
         // String literals
         case '"': return string(lexer);
