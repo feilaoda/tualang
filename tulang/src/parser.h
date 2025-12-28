@@ -235,6 +235,8 @@ typedef struct {
 typedef struct {
     Stmt base;
     Token loopVar;
+    Token valueVar; // optional second binding for map iteration: for k,v in m {}
+    int hasValueVar;
     Expr* range;
     Stmt* body;
 } ForInStmt;

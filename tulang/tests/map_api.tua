@@ -1,0 +1,16 @@
+let m: map = { "a": 1, 2: 3 }
+
+assert(m.len() == 2)
+assert(len(m) == 2)
+
+assert(m.hasKey("a"))
+assert(!m.hasKey("missing"))
+
+let v:int, ok:bool = m.get("a")
+assert(ok)
+assert(v == 1)
+
+let v2:string, ok2:bool = m.get("missing")
+assert(!ok2)
+assert(v2 == null)
+

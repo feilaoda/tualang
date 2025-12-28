@@ -269,6 +269,72 @@ static LLVMValueRef getOrCreateTuaAssertFail(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_assert_fail", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaMapHas(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_has");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[2] = { mapType, vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_has", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapLen(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_len");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_len", fnType);
+}
+
+enum {
+    TUA_VAL_NIL = 0,
+    TUA_VAL_INT = 1,
+    TUA_VAL_LONG = 2,
+    TUA_VAL_DOUBLE = 3,
+    TUA_VAL_BOOL = 4,
+    TUA_VAL_STRING = 5,
+    TUA_VAL_PTR = 6
+};
+
+static LLVMValueRef tuaValueMake(Compiler* compiler, int tag, LLVMValueRef payloadI64) {
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMValueRef v = LLVMGetUndef(vt);
+    LLVMValueRef tagV = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)tag, 0);
+    LLVMValueRef payload = payloadI64 ? payloadI64 : LLVMConstInt(LLVMInt64TypeInContext(compiler->context), 0, 0);
+    v = LLVMBuildInsertValue(compiler->builder, v, tagV, 0, "t_tag");
+    v = LLVMBuildInsertValue(compiler->builder, v, payload, 1, "t_payload");
+    return v;
+}
+
+static LLVMValueRef tuaValueFromKey(Compiler* compiler, LLVMValueRef key) {
+    LLVMTypeRef t = LLVMTypeOf(key);
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+
+    if (k == LLVMIntegerTypeKind) {
+        unsigned bits = LLVMGetIntTypeWidth(t);
+        LLVMValueRef k64 = key;
+        if (bits < 64) k64 = LLVMBuildSExt(compiler->builder, key, i64, "k_sext");
+        else if (bits > 64) k64 = LLVMBuildTrunc(compiler->builder, key, i64, "k_trunc");
+        return tuaValueMake(compiler, TUA_VAL_LONG, k64);
+    }
+
+    if (k == LLVMPointerTypeKind) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        if (t != i8ptr) {
+            emitDebug("Map key pointer type must be string (i8*)\n");
+            return NULL;
+        }
+        LLVMValueRef p64 = LLVMBuildPtrToInt(compiler->builder, key, i64, "k_ptr");
+        return tuaValueMake(compiler, TUA_VAL_STRING, p64);
+    }
+
+    emitDebug("Map key must be int/long/string\n");
+    return NULL;
+}
+
 static LLVMTypeRef getPrintfType(Compiler* compiler) {
     LLVMTypeRef contextI8 = LLVMInt8TypeInContext(compiler->context);
     LLVMTypeRef printfParamTypes[] = { LLVMPointerType(contextI8, 0) };
@@ -547,6 +613,107 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
         // If receiver resolves to a local and has a struct type, treat as instance method call.
         VariableRef recvVar = findVariableExpr(compiler, get->object);
+
+        // Map built-in methods: `m.hasKey(k)`, `m.get(k)`, `m.len()`
+        if (recvVar.value && recvVar.type == compilerGetMapType(compiler)) {
+            LLVMTypeRef mapType = compilerGetMapType(compiler);
+            LLVMValueRef mapPtr = NULL;
+            if (recvVar.isBoxed) {
+                if (!recvVar.boxPtrType) {
+                    emitDebug("Missing boxed pointer type for map receiver\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cell");
+                mapPtr = LLVMBuildLoad2(compiler->builder, mapType, cell, "mval");
+            } else {
+                mapPtr = LLVMBuildLoad2(compiler->builder, mapType, recvVar.value, "mval");
+            }
+
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("map.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { mapPtr };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "mlen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "hasKey")) {
+                if (got != 1) {
+                    emitDebug("map.hasKey expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapHas(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args2[2] = { mapPtr, key };
+                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mhas");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "ok");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return ok;
+            }
+
+            if (tokenEquals(&get->name, "get")) {
+                if (got != 1) {
+                    emitDebug("map.get expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+
+                // value
+                LLVMValueRef getFn = LLVMGetNamedFunction(compiler->module, "tua_map_get");
+                if (!getFn) {
+                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    LLVMTypeRef params[2] = { mapType, vt };
+                    LLVMTypeRef gType = LLVMFunctionType(vt, params, 2, 0);
+                    getFn = LLVMAddFunction(compiler->module, "tua_map_get", gType);
+                }
+                LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
+                LLVMValueRef gargs[2] = { mapPtr, key };
+                LLVMValueRef v = LLVMBuildCall2(compiler->builder, getType, getFn, gargs, 2, "mget");
+
+                // ok
+                LLVMValueRef hasFn = getOrCreateTuaMapHas(compiler);
+                LLVMTypeRef hasType = LLVMGlobalGetValueType(hasFn);
+                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, hasType, hasFn, gargs, 2, "mok32");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+
+                if (compiler && wantMultiForThisCall) {
+                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    LLVMTypeRef fields[2] = { vt, LLVMInt1TypeInContext(compiler->context) };
+                    LLVMTypeRef tupType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
+                    LLVMValueRef tup = LLVMGetUndef(tupType);
+                    tup = LLVMBuildInsertValue(compiler->builder, tup, v, 0, "t0");
+                    tup = LLVMBuildInsertValue(compiler->builder, tup, ok, 1, "t1");
+                    compiler->wantMultiValue = wantMultiForThisCall;
+                    return tup;
+                }
+
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return v;
+            }
+        }
+
         bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
 
         int mangledLen = 0;
@@ -652,6 +819,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isPrintln = tokenEquals(&callee->name, "println");
     int isPrint = tokenEquals(&callee->name, "print");
     int isAssert = tokenEquals(&callee->name, "assert");
+    int isLen = tokenEquals(&callee->name, "len");
 
     if (isAssert) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
@@ -698,6 +866,31 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMPositionBuilderAtEnd(compiler->builder, contBB);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isLen) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("len expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef arg0 = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!arg0) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        if (LLVMTypeOf(arg0) != compilerGetMapType(compiler)) {
+            emitDebug("len currently only supports map\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args1[1] = { arg0 };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "len");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
     }
 
     if (!isPrintln && !isPrint) {

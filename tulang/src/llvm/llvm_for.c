@@ -2,6 +2,74 @@
 #include "compiler.h"
 #include "debug.h"
 
+static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
+    return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapIterNext(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_iter_next");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[4] = { mapType, LLVMPointerType(i32, 0), LLVMPointerType(vt, 0), LLVMPointerType(vt, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_iter_next", fnType);
+}
+
+static char* tokenToHeapCString(Token tok) {
+    char* s = malloc((size_t)tok.length + 1);
+    memcpy(s, tok.start, (size_t)tok.length);
+    s[tok.length] = '\0';
+    return s;
+}
+
+static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token nameTok, LLVMTypeRef valueType) {
+    char* name = tokenToHeapCString(nameTok);
+    int shouldBox = compiler && compiler->boxAllLocals;
+    LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
+    LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
+    LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, slotElemType, name);
+
+    if (shouldBox) {
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(valueType);
+        LLVMValueRef raw = LLVMBuildCall2(
+            compiler->builder,
+            LLVMGlobalGetValueType(mallocFn),
+            mallocFn,
+            &sizeV,
+            1,
+            "malloc"
+        );
+        LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), cell);
+        LLVMBuildStore(compiler->builder, cell, slot);
+    } else {
+        // default initialize to null
+        LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), slot);
+    }
+
+    VariableRef* variable = malloc(sizeof(VariableRef));
+    variable->name = name;
+    variable->length = nameTok.length;
+    variable->value = slot;
+    variable->type = valueType;
+    variable->typeName = NULL;
+    variable->typeNameLength = 0;
+    variable->isConst = 0;
+    variable->isGlobal = 0;
+    variable->isBoxed = shouldBox ? 1 : 0;
+    variable->boxPtrType = shouldBox ? boxPtrType : NULL;
+    listAppend(scope->variables, variable);
+    return variable;
+}
+
 
 
 Block* newFuncBlock(Compiler *compiler, LLVMValueRef func) {
@@ -214,4 +282,102 @@ void emitForStmt(Compiler*compiler, ForStmt*stmt) {
     emitForStmtBody(compiler, *block, stmt);
     emitForStmtInc(compiler, *block, stmt);
     emitForStmtEnd(compiler, *block, stmt);
+}
+
+void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
+    if (!compiler || !stmt || !stmt->range || !stmt->body) return;
+
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMValueRef function = compiler->current->func;
+
+    LLVMValueRef iterable = compileExpr(compiler, stmt->range);
+    if (!iterable) {
+        error("Failed to compile for-in iterable\n");
+        return;
+    }
+
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    if (LLVMTypeOf(iterable) != mapType) {
+        error("for-in currently only supports map\n");
+        return;
+    }
+
+    // Create a loop scope so body can reference loop variables.
+    Block* saved = compiler->current;
+    Block* scope = malloc(sizeof(Block));
+    scope->parent = saved;
+    scope->func = saved ? saved->func : NULL;
+    scope->variables = listNew();
+    scope->labels = saved ? saved->labels : listNew();
+    compiler->current = scope;
+
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    defineLoopValue(compiler, scope, stmt->loopVar, vt);
+    if (stmt->hasValueVar) {
+        defineLoopValue(compiler, scope, stmt->valueVar, vt);
+    }
+
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    LLVMValueRef idx = LLVMBuildAlloca(builder, i32, "iter_idx");
+    LLVMBuildStore(builder, LLVMConstInt(i32, 0, 0), idx);
+    LLVMValueRef keyTmp = LLVMBuildAlloca(builder, vt, "iter_key");
+    LLVMValueRef valTmp = LLVMBuildAlloca(builder, vt, "iter_val");
+
+    LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(function, "forin.cond");
+    LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(function, "forin.body");
+    LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(function, "forin.end");
+
+    LLVMBuildBr(builder, condBB);
+
+    LLVMPositionBuilderAtEnd(builder, condBB);
+    LLVMValueRef iterFn = getOrCreateTuaMapIterNext(compiler);
+    LLVMTypeRef iterType = LLVMGlobalGetValueType(iterFn);
+    LLVMValueRef args[4] = { iterable, idx, keyTmp, valTmp };
+    LLVMValueRef ok32 = LLVMBuildCall2(builder, iterType, iterFn, args, 4, "iterok");
+    LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntNE, ok32, LLVMConstInt(i32, 0, 0), "ok");
+    LLVMBuildCondBr(builder, ok, bodyBB, endBB);
+
+    LLVMPositionBuilderAtEnd(builder, bodyBB);
+    // Update loop variables for this iteration.
+    VariableRef keyVar = findVariableWithLength(scope->variables, stmt->loopVar.start, stmt->loopVar.length);
+    if (!keyVar.value || !keyVar.type) {
+        error("Failed to resolve loop var\n");
+        compiler->current = saved;
+        return;
+    }
+    LLVMValueRef k = LLVMBuildLoad2(builder, vt, keyTmp, "k");
+    if (keyVar.isBoxed) {
+        LLVMValueRef cell = LLVMBuildLoad2(builder, keyVar.boxPtrType, keyVar.value, "kcell");
+        LLVMBuildStore(builder, k, cell);
+    } else {
+        LLVMBuildStore(builder, k, keyVar.value);
+    }
+
+    if (stmt->hasValueVar) {
+        VariableRef valVar = findVariableWithLength(scope->variables, stmt->valueVar.start, stmt->valueVar.length);
+        if (!valVar.value || !valVar.type) {
+            error("Failed to resolve value loop var\n");
+            compiler->current = saved;
+            return;
+        }
+        LLVMValueRef v = LLVMBuildLoad2(builder, vt, valTmp, "v");
+        if (valVar.isBoxed) {
+            LLVMValueRef cell = LLVMBuildLoad2(builder, valVar.boxPtrType, valVar.value, "vcell");
+            LLVMBuildStore(builder, v, cell);
+        } else {
+            LLVMBuildStore(builder, v, valVar.value);
+        }
+    }
+
+    llvmPushLoop(compiler, endBB, condBB);
+    compileStmt(compiler, stmt->body);
+    llvmPopLoop(compiler);
+
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        LLVMBuildBr(builder, condBB);
+    }
+
+    LLVMPositionBuilderAtEnd(builder, endBB);
+    compiler->current = saved;
 }

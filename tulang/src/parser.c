@@ -818,6 +818,13 @@ static Stmt* parseForStatement(Parser* parser) {
         Token current = parser->current;
         advance(parser);
         
+        Token valueVar = (Token){0};
+        int hasValueVar = 0;
+        if (match(parser, TOKEN_COMMA)) {
+            valueVar = consume(parser, TOKEN_IDENTIFIER, "Expect identifier after ',' in for-in loop");
+            hasValueVar = 1;
+        }
+
         if (check(parser, TOKEN_IN)) {
             // Case: for i in range(1,10) {}
             advance(parser); // consume 'in'
@@ -834,6 +841,8 @@ static Stmt* parseForStatement(Parser* parser) {
             ForInStmt* stmt = malloc(sizeof(ForInStmt));
             stmt->base.type = STMT_FOR_IN;
             stmt->loopVar = current;
+            stmt->valueVar = valueVar;
+            stmt->hasValueVar = hasValueVar;
             stmt->range = rangeExpr;
             stmt->body = body;
             return (Stmt*)stmt;

@@ -213,6 +213,60 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value) {
     e->v = value;
 }
 
+int32_t tua_map_has(tua_map* map, tua_value key) {
+    if (!map) tua_panic("index null map");
+    KeyKind kind;
+    uint32_t hash;
+    int64_t ikey = 0;
+    const char* skey = NULL;
+    decode_key(key, &kind, &hash, &ikey, &skey);
+
+    int found = 0;
+    (void)find_slot(map, kind, hash, ikey, skey, &found);
+    return found ? 1 : 0;
+}
+
+int32_t tua_map_len(tua_map* map) {
+    if (!map) tua_panic("index null map");
+    if (map->count > (size_t)INT32_MAX) return INT32_MAX;
+    return (int32_t)map->count;
+}
+
+int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue) {
+    if (!map) tua_panic("index null map");
+    if (!index || !outKey || !outValue) tua_panic("invalid map iterator args");
+
+    size_t i = 0;
+    if (*index > 0) i = (size_t)(*index);
+
+    for (; i < map->capacity; i++) {
+        MapEntry* e = &map->entries[i];
+        if (e->kind == KEY_EMPTY) continue;
+
+        if (e->kind == KEY_INT) {
+            outKey->tag = TUA_VAL_LONG;
+            outKey->payload = (uint64_t)e->k.i;
+        } else if (e->kind == KEY_STRING) {
+            outKey->tag = TUA_VAL_STRING;
+            outKey->payload = (uint64_t)(uintptr_t)e->k.s;
+        } else {
+            outKey->tag = TUA_VAL_NIL;
+            outKey->payload = 0;
+        }
+
+        *outValue = e->v;
+        *index = (int32_t)(i + 1);
+        return 1;
+    }
+
+    outKey->tag = TUA_VAL_NIL;
+    outKey->payload = 0;
+    outValue->tag = TUA_VAL_NIL;
+    outValue->payload = 0;
+    *index = (int32_t)map->capacity;
+    return 0;
+}
+
 void tua_print_value(tua_value value, int32_t newline) {
     switch (value.tag) {
         case TUA_VAL_NIL:
@@ -248,6 +302,19 @@ void tua_print_value(tua_value value, int32_t newline) {
         }
     }
     if (newline) fputc('\n', stdout);
+}
+
+char* tua_str_concat(const char* a, const char* b) {
+    const char* na = a ? a : "null";
+    const char* nb = b ? b : "null";
+    size_t la = strlen(na);
+    size_t lb = strlen(nb);
+    char* out = (char*)malloc(la + lb + 1);
+    if (!out) tua_panic("out of memory");
+    memcpy(out, na, la);
+    memcpy(out + la, nb, lb);
+    out[la + lb] = '\0';
+    return out;
 }
 
 void tua_assert_fail(const char* msg, int32_t line) {

@@ -43,6 +43,7 @@ void llvmPopLoop(Compiler* compiler);
 void emitLabelStmt(Compiler* compiler, LabelStmt* stmt);
 void emitGotoStmt(Compiler* compiler, GotoStmt* stmt);
 void emitIfStmt(Compiler* compiler, IfStmt* stmt);
+void emitForInStmt(Compiler* compiler, ForInStmt* stmt);
 // LLVMValueRef emitExpr(Compiler* compiler, Expr* expr);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
 LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr);

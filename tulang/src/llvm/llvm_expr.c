@@ -60,6 +60,24 @@ static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "malloc", fnType);
 }
 
+static LLVMValueRef getOrCreateStrcmp(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "strcmp");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { i8ptr, i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "strcmp", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaStrConcat(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_str_concat");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { i8ptr, i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_concat", fnType);
+}
+
 enum {
     TUA_VAL_NIL = 0,
     TUA_VAL_INT = 1,
@@ -766,11 +784,113 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     }
     
     LLVMBuilderRef builder = compiler->builder;
-    LLVMTypeRef type = LLVMTypeOf(left);
+    LLVMContextRef context = compiler->context;
     LLVMTypeRef leftType = LLVMTypeOf(left);
     LLVMTypeRef rightType = LLVMTypeOf(right);
-    bool isFloat = LLVMGetTypeKind(type) == LLVMDoubleTypeKind;
-    emitDebug("emitBinaryExpr op type:%s, isFloat:%d\n",tokenToString(expr->operator.type), isFloat);
+    LLVMTypeKind leftKind = LLVMGetTypeKind(leftType);
+    LLVMTypeKind rightKind = LLVMGetTypeKind(rightType);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+    // String concatenation: i8* + i8*
+    if (expr->operator.type == TOKEN_PLUS &&
+        leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
+        leftType == i8ptr && rightType == i8ptr) {
+        LLVMValueRef fn = getOrCreateTuaStrConcat(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { left, right };
+        return LLVMBuildCall2(builder, fnType, fn, args2, 2, "sadd");
+    }
+
+    // String content equality: i8* ==/!= i8*
+    if ((expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ) &&
+        leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
+        leftType == i8ptr && rightType == i8ptr) {
+        LLVMValueRef nullPtr = LLVMConstNull(i8ptr);
+        LLVMValueRef leftNull = LLVMBuildICmp(builder, LLVMIntEQ, left, nullPtr, "l_null");
+        LLVMValueRef rightNull = LLVMBuildICmp(builder, LLVMIntEQ, right, nullPtr, "r_null");
+        LLVMValueRef eitherNull = LLVMBuildOr(builder, leftNull, rightNull, "either_null");
+        LLVMValueRef bothNull = LLVMBuildAnd(builder, leftNull, rightNull, "both_null");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef nullBB = LLVMAppendBasicBlock(fn, "str.null");
+        LLVMBasicBlockRef cmpBB = LLVMAppendBasicBlock(fn, "str.cmp");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "str.cont");
+
+        LLVMBuildCondBr(builder, eitherNull, nullBB, cmpBB);
+
+        LLVMPositionBuilderAtEnd(builder, nullBB);
+        LLVMValueRef nullRes = bothNull;
+        if (expr->operator.type == TOKEN_NEQ) {
+            nullRes = LLVMBuildNot(builder, bothNull, "null_neq");
+        }
+        LLVMBuildBr(builder, contBB);
+
+        LLVMPositionBuilderAtEnd(builder, cmpBB);
+        LLVMValueRef strcmpFn = getOrCreateStrcmp(compiler);
+        LLVMTypeRef strcmpType = LLVMGlobalGetValueType(strcmpFn);
+        LLVMValueRef args2[2] = { left, right };
+        LLVMValueRef cmp = LLVMBuildCall2(builder, strcmpType, strcmpFn, args2, 2, "strcmp");
+        LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+        LLVMValueRef strRes = NULL;
+        if (expr->operator.type == TOKEN_EQ) {
+            strRes = LLVMBuildICmp(builder, LLVMIntEQ, cmp, zero, "streq");
+        } else {
+            strRes = LLVMBuildICmp(builder, LLVMIntNE, cmp, zero, "strneq");
+        }
+        LLVMBuildBr(builder, contBB);
+
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(context), "str_phi");
+        LLVMAddIncoming(phi, &nullRes, &nullBB, 1);
+        LLVMAddIncoming(phi, &strRes, &cmpBB, 1);
+        return phi;
+    }
+
+    // Numeric type promotion (int/long/double) for arithmetic & comparisons.
+    int opIsArithmetic = (expr->operator.type == TOKEN_PLUS ||
+                          expr->operator.type == TOKEN_MINUS ||
+                          expr->operator.type == TOKEN_STAR ||
+                          expr->operator.type == TOKEN_SLASH);
+    int opIsCompare = (expr->operator.type == TOKEN_EQ ||
+                       expr->operator.type == TOKEN_NEQ ||
+                       expr->operator.type == TOKEN_LT ||
+                       expr->operator.type == TOKEN_GT ||
+                       expr->operator.type == TOKEN_LE ||
+                       expr->operator.type == TOKEN_GE);
+
+    bool leftIsNum = (leftKind == LLVMIntegerTypeKind || leftKind == LLVMDoubleTypeKind);
+    bool rightIsNum = (rightKind == LLVMIntegerTypeKind || rightKind == LLVMDoubleTypeKind);
+
+    LLVMTypeRef commonType = NULL;
+    bool isFloat = false;
+    if ((opIsArithmetic || opIsCompare) && leftIsNum && rightIsNum) {
+        if (leftKind == LLVMDoubleTypeKind || rightKind == LLVMDoubleTypeKind) {
+            commonType = LLVMDoubleTypeInContext(context);
+            isFloat = true;
+        } else {
+            unsigned lb = LLVMGetIntTypeWidth(leftType);
+            unsigned rb = LLVMGetIntTypeWidth(rightType);
+            // Promote bool to int for arithmetic.
+            if (opIsArithmetic) {
+                if (lb == 1) lb = 32;
+                if (rb == 1) rb = 32;
+            }
+            unsigned cb = lb > rb ? lb : rb;
+            if (cb < 32) cb = 32;
+            commonType = LLVMIntTypeInContext(context, cb);
+            isFloat = false;
+        }
+        left = castToType(compiler, left, commonType);
+        right = castToType(compiler, right, commonType);
+        leftType = LLVMTypeOf(left);
+        rightType = LLVMTypeOf(right);
+        leftKind = LLVMGetTypeKind(leftType);
+        rightKind = LLVMGetTypeKind(rightType);
+    } else {
+        isFloat = (leftKind == LLVMDoubleTypeKind);
+    }
+
+    emitDebug("emitBinaryExpr op type:%s\n", tokenToString(expr->operator.type));
     switch (expr->operator.type) {
         case TOKEN_PLUS:
             return isFloat ? 
@@ -1478,12 +1598,12 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
                 error("Failed to compile right operand");
                 return NULL;
             }
-            // 逻辑取反
-            if (LLVMGetTypeKind(LLVMTypeOf(operand)) != LLVMIntegerTypeKind) {
-                error("Operand must be boolean for logical not");
+            LLVMValueRef b = llvmCoerceToBool(compiler, operand);
+            if (!b) {
+                error("Operand cannot be coerced to bool for logical not");
                 return NULL;
             }
-            return LLVMBuildNot(builder, operand, "not");
+            return LLVMBuildNot(builder, b, "not");
         }
         
         // case TOKEN_BITNOT: {

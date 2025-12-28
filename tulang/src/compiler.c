@@ -936,32 +936,7 @@ void compileGotoStmt(Compiler* compiler, GotoStmt* stmt) {
 }
 
 void compileForInStmt(Compiler* compiler, ForInStmt* stmt) {
-    // Compile range expression
-    // compileExpr(compiler, stmt->range);
-    
-    // // Store range start and end
-    // emitByte(compiler, OP_STORE_RANGE);
-    
-    // int loopStart = compiler->code->length;
-    
-    // // Check if iterator < end
-    // emitByte(compiler, OP_CHECK_RANGE);
-    // int exitJump = emitJump(compiler, OP_JMPF);
-    
-    // // Load current value into loop variable
-    // emitByte(compiler, OP_LOAD_RANGE);
-    
-    // // Compile loop body
-    // compileStmt(compiler, stmt->body);
-    
-    // // Increment range iterator
-    // emitByte(compiler, OP_INC_RANGE);
-    
-    // // Loop back
-    // emitLoop(compiler, loopStart);
-    
-    // // Patch exit jump
-    // patchJump(compiler, exitJump);
+    emitForInStmt(compiler, stmt);
 }
 
 void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
