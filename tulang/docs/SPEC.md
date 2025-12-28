@@ -97,6 +97,7 @@
   - 变量类型标注：`let f: (int, int) -> int = fn(a:int, b:int) -> int { return a + b }`
   - 多返回：`let g: (int) -> (int, string) = fn(x:int) -> int, string { return x, "ok" }`
   - 作为参数：`fn apply(x:int, f:(int)->int) -> int { return f(x) }`
+  - 作为返回值：`fn makeAdder(n:int) -> (int)->int { return fn(x:int)->int { return x + n } }`，并支持 `makeAdder(5)(10)` 这种“返回闭包再调用”的写法
 
 ### 7. struct / object / enum（Status: Partial）
 
@@ -115,7 +116,7 @@
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）
 
-#### 7.2 impl（Status: Planned，Rust 风格）
+#### 7.2 impl（Status: Implemented，Rust 风格）
 - 语法：
   - `impl StructName { fn func(...) ... }`
 - 语义：

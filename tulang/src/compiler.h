@@ -79,6 +79,7 @@ typedef struct Compiler{
     int lambdaCount;         // unique lambda id
     LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
     List* closureSigs;       // List<ClosureSig*>, variable name -> function type
+    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
     LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 } Compiler;
 
@@ -93,6 +94,12 @@ typedef struct ClosureSig {
     int nameLen;
     LLVMTypeRef funcType; // the lambda implementation function type (env + args)
 } ClosureSig;
+
+typedef struct ClosureReturnSig {
+    char* name;
+    int nameLen;
+    LLVMTypeRef funcType; // expected closure call signature (env + args) for function return value
+} ClosureReturnSig;
 
 typedef struct LoopTarget {
     LLVMBasicBlockRef breakTarget;
@@ -287,6 +294,7 @@ void compileVarStmt(Compiler* compiler, VarStmt* stmt);
 void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt);
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt);
 void compileStructStmt(Compiler* compiler, StructStmt* stmt);
+void compileImplStmt(Compiler* compiler, ImplStmt* stmt);
 void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);
 void compileEnumStmt(Compiler* compiler, EnumStmt* stmt);
 void initCompiler(Compiler* compiler);
@@ -299,5 +307,7 @@ LLVMTypeRef compilerGetClosureType(Compiler* compiler);
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);
+void compilerRegisterClosureReturnSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
+LLVMTypeRef compilerFindClosureReturnSig(Compiler* compiler, const char* name, int nameLen);
 
 #endif

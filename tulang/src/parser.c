@@ -306,6 +306,11 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
             }
             continue;
         }
+        // Call chaining: `callee(args...)(args...)`
+        if (match(parser, TOKEN_LPAREN)) {
+            left = finishCall(parser, left);
+            continue;
+        }
         TokenType op = parser->current.type;
         int prec = getOperatorPrecedence(op);
         parserDebug("parseBinaryExpr: current token: %s/%d, prec: %d, minPrec: %d\n", 
@@ -320,11 +325,6 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
                        tokenToString(parser->current.type));
             break;
         }
-        if (match(parser, TOKEN_LPAREN)) {
-            left = finishCall(parser, left);
-            continue;
-        }
-        
         if ((op == TOKEN_INC || op == TOKEN_DEC) && prec >= minPrec) {
             advance(parser);
             left = newPostfixExpr(left, parser->previous);
@@ -1203,6 +1203,72 @@ static Stmt* parseStructDeclaration(Parser* parser) {
     return (Stmt*)stmt;
 }
 
+static Stmt* parseImplDeclaration(Parser* parser) {
+    parserDebugStart("parseImplDeclaration");
+
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect struct name after 'impl'");
+    while (match(parser, TOKEN_SEMICOLON)) {
+        // allow newline before '{'
+    }
+    consume(parser, TOKEN_LBRACE, "Expect '{' before impl body");
+
+    List* methods = listNew();
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+        if (match(parser, TOKEN_PRIVATE)) {
+            // ignore visibility for now
+            consume(parser, TOKEN_FUNC, "Expect 'fn' after 'private'");
+            FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+            listAppend(methods, method);
+            continue;
+        }
+
+        if (match(parser, TOKEN_FUNC)) {
+            FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+            listAppend(methods, method);
+            continue;
+        }
+
+        if (match(parser, TOKEN_INIT) || match(parser, TOKEN_DEINIT)) {
+            Token nameToken = parser->previous;
+            consume(parser, TOKEN_LPAREN, "Expect '(' after init/deinit");
+            consume(parser, TOKEN_RPAREN, "Expect ')' after init/deinit");
+
+            Type* returnType = NULL;
+            List* returnTypes = NULL;
+            if (match(parser, TOKEN_ARROW)) {
+                returnTypes = listNew();
+                returnType = parseType(parser);
+                listAppend(returnTypes, returnType);
+                while (match(parser, TOKEN_COMMA)) {
+                    Type* t = parseType(parser);
+                    listAppend(returnTypes, t);
+                }
+            }
+
+            List* body = parseBlock(parser);
+            FuncStmt* method = (FuncStmt*)newFuncStmt(nameToken, listNew(), returnType, returnTypes, body);
+            listAppend(methods, method);
+            continue;
+        }
+
+        errorAtCurrent(parser, "Expect method declaration in impl block");
+        break;
+    }
+
+    consume(parser, TOKEN_RBRACE, "Expect '}' after impl body");
+
+    ImplStmt* stmt = malloc(sizeof(ImplStmt));
+    stmt->base.type = STMT_IMPL;
+    stmt->name = name;
+    stmt->methods = methods;
+
+    parserDebugEnd("parseImplDeclaration");
+    return (Stmt*)stmt;
+}
+
 static Type* parseType(Parser* parser) {
     // Function type: `(T1, T2, ...) -> R` or `(T1, ...) -> (R1, R2, ...)`
     // Note: standalone tuple types like `(int, string)` are not a general type form yet.
@@ -1444,6 +1510,10 @@ static Stmt* declaration(Parser* parser) {
     {
         /* code */
         return parseStructDeclaration(parser);
+    }
+
+    if (match(parser, TOKEN_IMPL)) {
+        return parseImplDeclaration(parser);
     }
 
     if (match(parser, TOKEN_OBJECT)) {

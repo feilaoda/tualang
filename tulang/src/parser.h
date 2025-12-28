@@ -48,7 +48,8 @@ typedef enum {
     STMT_STRUCT,
     STMT_OBJECT,
     STMT_ENUM,
-    STMT_DESTRUCTURE
+    STMT_DESTRUCTURE,
+    STMT_IMPL
 } StmtType;
 
 
@@ -294,6 +295,12 @@ typedef struct StructStmt {
     List* fields;
     List* methods;
 } StructStmt;
+
+typedef struct ImplStmt {
+    Stmt base;
+    Token name;     // target struct name
+    List* methods;  // List<FuncStmt*>
+} ImplStmt;
 
 typedef struct ObjectStmt {
     Stmt base;

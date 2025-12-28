@@ -94,6 +94,30 @@ static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
     return value;
 }
 
+static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, CallExpr* call) {
+    if (!compiler || !call || !call->callee) return NULL;
+    if (call->callee->type != EXPR_VARIABLE) return NULL;
+
+    VariableExpr* callee = (VariableExpr*)call->callee;
+
+    SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+    if (a && a->kind == ALIAS_FUNC) {
+        return compilerFindClosureReturnSig(compiler, a->qualified, a->qualifiedLen);
+    }
+
+    if (compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+        if (q) {
+            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            free(q);
+            if (t) return t;
+        }
+    }
+
+    return compilerFindClosureReturnSig(compiler, callee->name.start, callee->name.length);
+}
+
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
     const int sepLen = 2;
     int len = leftLen + sepLen + right->length;
@@ -363,6 +387,63 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         if (paramTypes) free(paramTypes);
         if (args) free(args);
         return out;
+    }
+
+    // Call a closure value returned by a simple call: `makeAdder(1)(2)`
+    // Requires that the inner call target has an explicit closure return type `(args)->ret`.
+    Expr* calleeExpr = expr->callee;
+    while (calleeExpr && calleeExpr->type == EXPR_GROUPING) {
+        calleeExpr = ((GroupingExpr*)calleeExpr)->expression;
+    }
+    if (calleeExpr && calleeExpr->type == EXPR_CALL) {
+        LLVMTypeRef fnType = resolveClosureReturnSigForSimpleCall(compiler, (CallExpr*)calleeExpr);
+        if (fnType) {
+            LLVMValueRef closureVal = compileExpr(compiler, calleeExpr);
+            LLVMTypeRef closureType = compilerGetClosureType(compiler);
+            if (!closureVal || LLVMTypeOf(closureVal) != closureType) {
+                emitDebug("Expected closure return value\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMValueRef fnPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 0, "fnptr");
+            LLVMValueRef envPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 1, "envptr");
+
+            unsigned expected = LLVMCountParamTypes(fnType);
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (expected != got + 1) {
+                emitDebug("Closure argument count mismatch\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMTypeRef* paramTypes = NULL;
+            if (expected > 0) {
+                paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+                LLVMGetParamTypes(fnType, paramTypes);
+            }
+
+            LLVMValueRef* args = NULL;
+            if (expected > 0) {
+                args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+                args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
+                ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+                for (unsigned i = 1; i < expected; i++) {
+                    LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
+                    argVal = castValueToType(compiler, argVal, paramTypes[i]);
+                    args[i] = argVal;
+                    node = node->next;
+                }
+            }
+
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+            if (paramTypes) free(paramTypes);
+            if (args) free(args);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, LLVMGetReturnType(fnType));
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return out;
+        }
     }
 
     // Member call:

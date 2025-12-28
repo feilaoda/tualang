@@ -9,7 +9,7 @@
 
 
 VariableRef findVariable(List* variables, const char* name) {
-    for (int i = 0; i < variables->length; i++) {
+    for (int i = variables->length - 1; i >= 0; i--) {
         VariableRef* variable = listGet(variables, i);
         emitDebug("findVariable %s %s\n",variable->name, name);
         if (strcmp(variable->name, name) == 0) {
@@ -22,7 +22,7 @@ VariableRef findVariableWithLength(List* variables, const char* name, int length
     char var[250] ={0};
     memcpy(var, name, length);
     var[length] = '\0';
-    for (int i = 0; i < variables->length; i++) {
+    for (int i = variables->length - 1; i >= 0; i--) {
         VariableRef* variable = listGet(variables, i);
         emitDebug("findVariable %s=%s\n",variable->name, var);
         if (strcmp(variable->name, var) == 0) {

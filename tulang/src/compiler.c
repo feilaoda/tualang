@@ -127,6 +127,7 @@ void initCompiler(Compiler* compiler) {
     compiler->lambdaCount = 0;
     compiler->closureType = NULL;
     compiler->closureSigs = listNew();
+    compiler->closureReturnSigs = listNew();
     compiler->lastLambdaFuncType = NULL;
     
     // Debug information
@@ -245,6 +246,37 @@ LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nam
     if (!compiler || !compiler->closureSigs || !name) return NULL;
     for (int i = 0; i < compiler->closureSigs->length; i++) {
         ClosureSig* s = listGet(compiler->closureSigs, i);
+        if (!s) continue;
+        if (s->nameLen != nameLen) continue;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) return s->funcType;
+    }
+    return NULL;
+}
+
+void compilerRegisterClosureReturnSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType) {
+    if (!compiler || !compiler->closureReturnSigs || !name || nameLen <= 0 || !funcType) return;
+    for (int i = 0; i < compiler->closureReturnSigs->length; i++) {
+        ClosureReturnSig* s = listGet(compiler->closureReturnSigs, i);
+        if (!s) continue;
+        if (s->nameLen != nameLen) continue;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) {
+            s->funcType = funcType;
+            return;
+        }
+    }
+    ClosureReturnSig* s = malloc(sizeof(ClosureReturnSig));
+    s->name = malloc((size_t)nameLen + 1);
+    memcpy(s->name, name, (size_t)nameLen);
+    s->name[nameLen] = '\0';
+    s->nameLen = nameLen;
+    s->funcType = funcType;
+    listAppend(compiler->closureReturnSigs, s);
+}
+
+LLVMTypeRef compilerFindClosureReturnSig(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler || !compiler->closureReturnSigs || !name) return NULL;
+    for (int i = 0; i < compiler->closureReturnSigs->length; i++) {
+        ClosureReturnSig* s = listGet(compiler->closureReturnSigs, i);
         if (!s) continue;
         if (s->nameLen != nameLen) continue;
         if (memcmp(s->name, name, (size_t)nameLen) == 0) return s->funcType;
@@ -744,6 +776,9 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
         case STMT_ENUM:
             compileEnumStmt(compiler, (EnumStmt*)stmt);
             break;
+        case STMT_IMPL:
+            compileImplStmt(compiler, (ImplStmt*)stmt);
+            break;
     }
 }
 
@@ -813,19 +848,27 @@ void compileForInStmt(Compiler* compiler, ForInStmt* stmt) {
 
 void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
     compilerDebug("Compiling block statement\n");
-     // 进入新的作用域
+
+    // Enter a new lexical scope for name resolution (LLVM JIT path).
+    Block* saved = compiler->current;
+    Block* scoped = malloc(sizeof(Block));
+    scoped->parent = saved;
+    scoped->func = saved ? saved->func : NULL;
+    scoped->variables = listNew();
+    // Labels should be function-scoped (Lua-style goto/labels).
+    scoped->labels = saved ? saved->labels : listNew();
+    compiler->current = scoped;
+
     beginScope(compiler);
-    
-    // 编译代码块中的每个语句
     ListNode* node = stmt->statements->head;
     while (node != NULL) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) break;
         compileStmt(compiler, (Stmt*)node->data);
         node = node->next;
     }
-    
-    // 离开作用域
     endScope(compiler);
+
+    compiler->current = saved;
     compilerDebug("Compiled block statement end\n");
 }
 void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
@@ -952,6 +995,80 @@ static const char* typeToLLVM(Type* type) {
 void compileVarStmt(Compiler* compiler, VarStmt* stmt) {
     compilerDebug("compileVarStmt: %.*s\n", stmt->name.length, stmt->name.start);
     emitVarStmt(compiler, stmt);
+}
+
+void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
+    if (!compiler || !stmt) return;
+    if (!stmt->methods) return;
+
+    StructInfo* info = compilerResolveStructByToken(compiler, &stmt->name);
+    if (!info) {
+        error("Unknown struct for impl: %.*s\n", stmt->name.length, stmt->name.start);
+        return;
+    }
+
+    Token structTok = stmt->name;
+    structTok.start = info->name;
+    structTok.length = info->nameLength;
+
+    for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
+        FuncStmt* method = (FuncStmt*)node->data;
+        if (!method) continue;
+
+        int mangledLen = 0;
+        char* mangled = mangleTwo(&structTok, &method->name, "__", &mangledLen);
+
+        // If a function with this mangled name already exists, treat as duplicate method definition.
+        LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, mangled);
+        if (existing) {
+            error("Duplicate method definition: %.*s.%.*s\n",
+                  stmt->name.length, stmt->name.start,
+                  method->name.length, method->name.start);
+            free(mangled);
+            continue;
+        }
+
+        Token mangledTok = method->name;
+        mangledTok.start = mangled;
+        mangledTok.length = mangledLen;
+
+        // Build params: this + original params
+        List* params = listNew();
+        Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, 0};
+
+        Type* thisInner = malloc(sizeof(Type));
+        thisInner->kind = TYPE_NAMED;
+        thisInner->name = structTok;
+        thisInner->inner = NULL;
+        thisInner->paramTypes = NULL;
+        thisInner->returnTypes = NULL;
+
+        Type* thisType = malloc(sizeof(Type));
+        thisType->kind = TYPE_REF;
+        thisType->name = (Token){0};
+        thisType->inner = thisInner;
+        thisType->paramTypes = NULL;
+        thisType->returnTypes = NULL;
+
+        Parameter* thisParam = malloc(sizeof(Parameter));
+        thisParam->name = thisNameTok;
+        thisParam->type = thisType;
+        listAppend(params, thisParam);
+
+        if (method->params) {
+            for (ListNode* p = method->params->head; p != NULL; p = p->next) {
+                listAppend(params, p->data);
+            }
+        }
+
+        // Compile as a normal function statement with mangled name.
+        FuncStmt tmp = *method;
+        tmp.name = mangledTok;
+        tmp.params = params;
+        compileFuncStmt(compiler, &tmp);
+
+        free(mangled);
+    }
 }
 
 static const char* llvmStructNameOrNull(LLVMTypeRef t) {
@@ -1121,6 +1238,13 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     }
     LLVMTypeRef funcType = LLVMFunctionType(retType, paramTypes, (unsigned)paramCount, 0);
     LLVMValueRef func = LLVMAddFunction(compiler->module, funcName, funcType);
+
+    // If this function returns a closure value, record the expected closure call signature
+    // so expressions like `makeAdder(1)(2)` can be compiled.
+    if (stmt->returnType && stmt->returnType->kind == TYPE_FUNC) {
+        LLVMTypeRef sig = compilerClosureSigFromType(compiler, stmt->returnType);
+        if (sig) compilerRegisterClosureReturnSig(compiler, funcName, stmt->name.length, sig);
+    }
 
     // Save current insertion point (main)
     LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);

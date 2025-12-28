@@ -23,7 +23,8 @@ static const char* StmtTypeNames[] = {
     "STRUCT",
     "OBJECT",
     "ENUM",
-    "DESTRUCTURE"
+    "DESTRUCTURE",
+    "IMPL"
 };
 
 const char* stmtTypeToString(StmtType type) {
@@ -43,6 +44,7 @@ static const char* typeToString(Type* type) {
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
         case TYPE_NAMED:  return "named";
+        case TYPE_FUNC:   return "fn";
         default:          return "unknown";
     }
 }

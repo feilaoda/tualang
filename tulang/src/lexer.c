@@ -282,11 +282,13 @@ static TokenType identifierType(Lexer* lexer) {
                         if (checkEqWord(lexer, 1, 1, "n")) {
                             return TOKEN_IN;
                         }
+                        break;
                     }
                     case 'f': return checkKeyword(lexer, 1, 1, "f", TOKEN_IF);
-                    case 'm': return checkKeyword(lexer, 1, 2, "pl", TOKEN_IMPL);
+                    case 'm': return checkKeyword(lexer, 2, 2, "pl", TOKEN_IMPL);
                 }
           }
+          break;
         case 'v': return checkKeyword(lexer, 1, 2, "ar", TOKEN_VAR);
         case 'c':
             if (lexer->current - lexer->start > 7 && memcmp(lexer->start, "continue", 8) == 0) {
