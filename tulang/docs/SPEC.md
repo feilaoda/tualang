@@ -33,6 +33,8 @@
 - 字面量：整数/长整数/浮点/字符串/`true`/`false`
 - 一元运算：`-x`、`!x`、`&x`（取址目前仅支持变量）
 - 二元运算：`+ - * /`、`== != < <= > >=`、`&& ||`（`&&/||` 为短路求值）
+- `??`（空值合并，Status: Implemented）：
+  - 仅支持 `Option<T> ?? T -> T`，右结合；当左侧为 `None()` 时才会求值右侧（短路）
 - 自增自减：`i++`、`i--`、`++i`、`--i`（当前主要用于整型变量）
 - 调用：`f(a,b)`、成员访问/调用：`obj.field`、`obj.method(a,b)`
 - 分组：`(expr)`
@@ -55,6 +57,8 @@
 - `goto` / label（Lua 风格）：
   - label：`::name::`
   - 跳转：`goto name`
+ - `Option<T>` 作为条件（Status: Implemented）：
+   - `if opt { ... }` 等价于 `if opt.isSome() { ... }`
 
 ### 6. 函数（Status: Partial）
 - 定义：
@@ -155,7 +159,59 @@
   - 只支持字符串字面量路径（不支持表达式路径）
   - 仅支持导入 `fn/struct/object/enum`；不支持导入模块级变量
 
-### 9. 数据结构与空值（Status: Planned）
-- `null`：空值语义（比较/打印/条件判断/赋值）
-- `string`：作为真正的运行时基础类型（不只是 `i8*` 指针）
-- `map/table`：键值容器（优先）
+### 9. 数据结构、Option 与空值（Status: Partial）
+
+#### 9.1 `Option<T>`（Status: Implemented）
+- 目的：显式表达“可能不存在”的值，避免把 `null` 扩散到所有类型（Rust 风格）。
+- 类型：`Option<T>` 为命名泛型类型（第一版，仅用于编译期/LLVM 类型层）。
+- 构造：
+  - `Some(x)`：产出 `Option<T>`
+  - `None()`：产出 `Option<any>`（`Option<tua_value>`），可通过赋值/显式类型让其转成 `Option<T>`
+- 方法：
+  - `opt.isSome() -> bool`
+  - `opt.isNone() -> bool`
+  - `opt.unwrap() -> T`（若为 `None`，运行时错误）
+  - `opt.unwrapOr(default:T) -> T`
+- 运算：
+  - `opt ?? default`：当 `opt` 为 `Some(v)` 时返回 `v`，否则返回 `default`
+- 相等性：
+  - 允许 `Option<T> == Option<T>` / `!=`：`None == None`；`Some(a) == Some(b)` 比较 payload（`string` 为内容比较）
+
+#### 9.2 `map` / `map<K,V>`（Status: Partial）
+- 目标：先提供“可用的键值容器”，再逐步补齐语义层与内存模型。
+- 类型形态：
+  - `map`：不带类型参数的 map（value 在 runtime 中以 `tua_value` 存储）
+  - `map<K,V>`：带类型参数的 map（第一版）
+    - `K` 当前仅允许：`string/int/long`
+    - `V` 当前仅允许：`int/long/double/bool/string`
+- 字面量（Status: Implemented）：
+  - 语法：`{ key: value, ... }`
+  - `key` 仅允许常量字面量：`int/long/string`
+  - 重复 key：后者覆盖前者
+  - 允许尾逗号：`{ "a": 1, }`
+- 读取（Status: Implemented）：
+  - `m[k] -> Option<V>`（对 `map` 则为 `Option<tua_value>`）
+  - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
+  - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
+- 写入（Status: Implemented）：
+  - `m[k] = v`
+  - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
+- 内建方法（Status: Implemented）：
+  - `m.len() -> int`
+  - `m.hasKey(k) -> bool`
+  - `m.get(k) -> Option<V>`
+  - `m.delete(k) -> bool`
+  - `m.clear() -> void`
+- key 规范化（Status: Implemented）：
+  - `int` 与 `long` 作为 key 归一到同一 int64 域，因此 `1` 与 `1L` 视为同一个 key
+- 待补齐（Status: Planned）：
+  - `map<K,V>` 的强类型写入检查（禁止写入错误类型/对非空 V 写入 `null`）
+  - 从字面量推断 `map<K,V>`（语义层）
+
+#### 9.3 `null`（Status: Partial）
+- 当前实现：`null` 是“指针空值字面量”（主要用于 `string`/map 指针等），并非全局 bottom type。
+- 规划：引入真正的 `null/nil` 语义，并定义比较/打印/条件判断/赋值规则（见 ROADMAP）。
+
+#### 9.4 运行时错误定位（Status: Partial）
+- 运行时错误会输出 best-effort 行号（用于定位 `unwrap(None)`、对 `null map` 读写等）。
+- 规划：统一诊断格式为 `file:line:col: ...` 并增加栈回溯。

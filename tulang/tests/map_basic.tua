@@ -16,3 +16,10 @@ let n: map = null
 n["x"] = 2
 let z:int = n["x"].unwrap()
 assert(z == 2, "auto-init null map on simple var assignment")
+
+
+let a2 = n["x"].unwrap()
+assert(a2 == 2, "auto-init null map on simple var assignment")
+println(a2)
+let a3 = n["x"]
+println(a3.unwrap())

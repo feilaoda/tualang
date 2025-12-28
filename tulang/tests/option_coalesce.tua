@@ -19,5 +19,6 @@ let s:string = ms["missing"] ?? "def"
 assert(s == "def")
 
 let s2 = ms["a"]
-assert(s2 != "hi")
 assert(s2.isSome())
+assert(s2.unwrap() == "hi")
+assert(s2 == Some("hi"))
