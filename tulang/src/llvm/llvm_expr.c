@@ -342,6 +342,65 @@ static int isOptionLLVMType(LLVMTypeRef t) {
     return LLVMGetIntTypeWidth(f0) == 1;
 }
 
+static int isTuaValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    return t == compilerGetTuaValueType(compiler);
+}
+
+static int isStringLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    return t == i8ptr;
+}
+
+static int isBoolLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(t) == 1;
+}
+
+static int isNumericLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+    if (k == LLVMDoubleTypeKind) return 1;
+    if (k != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(t) != 1;
+}
+
+static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, LLVMValueRef keyVal) {
+    if (!compiler || !expectedKeyTy || !keyVal) return 0;
+    LLVMTypeRef actualTy = LLVMTypeOf(keyVal);
+    if (isTuaValueLLVMType(compiler, actualTy)) return 0;
+
+    if (isStringLLVMType(compiler, expectedKeyTy)) {
+        return isStringLLVMType(compiler, actualTy);
+    }
+
+    // int/long keys: accept any non-bool integer.
+    return isNumericLLVMType(actualTy);
+}
+
+static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy, LLVMValueRef rawVal) {
+    if (!compiler || !expectedValTy || !rawVal) return 0;
+    LLVMTypeRef actualTy = LLVMTypeOf(rawVal);
+    if (isTuaValueLLVMType(compiler, actualTy)) return 0;
+
+    if (isStringLLVMType(compiler, expectedValTy)) {
+        return isStringLLVMType(compiler, actualTy);
+    }
+    if (isBoolLLVMType(expectedValTy)) {
+        return isBoolLLVMType(actualTy);
+    }
+    if (LLVMGetTypeKind(expectedValTy) == LLVMDoubleTypeKind) {
+        return isNumericLLVMType(actualTy);
+    }
+    if (LLVMGetTypeKind(expectedValTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(expectedValTy) != 1) {
+        return isNumericLLVMType(actualTy);
+    }
+    return 0;
+}
+
 static int nameSetContains(List* set, const char* name, int len) {
     if (!set) return 0;
     for (ListNode* n = set->head; n != NULL; n = n->next) {
@@ -865,6 +924,18 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     LLVMTypeKind rightKind = LLVMGetTypeKind(rightType);
     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
 
+    // Better compile-time errors for Option<T>:
+    // - disallow comparing Option<T> with non-Option directly
+    int opIsEq = (expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ);
+    int opIsOrd = (expr->operator.type == TOKEN_LT ||
+                   expr->operator.type == TOKEN_GT ||
+                   expr->operator.type == TOKEN_LE ||
+                   expr->operator.type == TOKEN_GE);
+    if ((opIsEq || opIsOrd) && (isOptionLLVMType(leftType) ^ isOptionLLVMType(rightType))) {
+        compilerErrorAt(compiler, expr->operator.line, "cannot compare Option<T> with non-Option; use unwrap()/isSome() or compare with Some(...)");
+        return NULL;
+    }
+
     // String concatenation: i8* + i8*
     if (expr->operator.type == TOKEN_PLUS &&
         leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
@@ -924,7 +995,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     if ((expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ) &&
         isOptionLLVMType(leftType) && isOptionLLVMType(rightType)) {
         if (leftType != rightType) {
-            error("Option<T> comparison requires same type\n");
+            compilerErrorAt(compiler, expr->operator.line, "Option<T> comparison requires same type");
             return NULL;
         }
 
@@ -986,7 +1057,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         } else if (innerKind == LLVMDoubleTypeKind) {
             payloadEq = LLVMBuildFCmp(builder, LLVMRealOEQ, vL, vR, "opt_v_feq");
         } else {
-            error("Unsupported Option<T> payload comparison\n");
+            compilerErrorAt(compiler, expr->operator.line, "unsupported Option<T> payload comparison");
             return NULL;
         }
 
@@ -1221,6 +1292,10 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
     LLVMValueRef mapVal = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "map");
     mapVal = castToType(compiler, mapVal, mapType);
 
+    LLVMTypeRef expectedKeyTy = compiler->expectedMapKeyType;
+    LLVMTypeRef expectedValTy = compiler->expectedMapValueType;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+
     LLVMValueRef setFn = getOrCreateTuaMapSet(compiler);
     LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);
 
@@ -1243,10 +1318,39 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
             return NULL;
         }
 
+        if (expectedKeyTy) {
+            if (expectedKeyTy == i8ptr) {
+                if (e->key.type != TOKEN_STRING_LITERAL) {
+                    compilerErrorAt(compiler, e->key.line, "typed map key type is string; got non-string key");
+                    return NULL;
+                }
+            } else {
+                if (e->key.type == TOKEN_STRING_LITERAL) {
+                    compilerErrorAt(compiler, e->key.line, "typed map key type is int/long; got string key");
+                    return NULL;
+                }
+            }
+        }
+
         LLVMValueRef key = tuaValueFromKey(compiler, keyConst);
         if (!key) return NULL;
+        if (expectedValTy && e->value && e->value->type == EXPR_LITERAL) {
+            LiteralExpr* lit = (LiteralExpr*)e->value;
+            if (lit->value.type == TOKEN_NULL) {
+                compilerErrorAt(compiler, lit->value.line, "cannot assign null into typed map value");
+                return NULL;
+            }
+        }
+
         LLVMValueRef rawValue = compileExpr(compiler, e->value);
         if (!rawValue) return NULL;
+        if (expectedValTy) {
+            if (!typedMapValueCompatible(compiler, expectedValTy, rawValue)) {
+                compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map value type mismatch");
+                return NULL;
+            }
+            rawValue = castToType(compiler, rawValue, expectedValTy);
+        }
         LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
         if (!v) return NULL;
 
@@ -1268,6 +1372,19 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     }
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
+
+    // Typed map key check when receiver is a simple variable.
+    if (expr->object && expr->object->type == EXPR_VARIABLE) {
+        VariableRef recvVar = findVariableExpr(compiler, expr->object);
+        if (recvVar.value && recvVar.isTypedMap && recvVar.mapKeyType) {
+            if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+                compilerErrorAt(compiler, expr->index ? expr->index->token.line : expr->base.token.line,
+                                "typed map key type mismatch");
+                return NULL;
+            }
+        }
+    }
+
     LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
     if (!key) return NULL;
 
@@ -1331,16 +1448,14 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
 
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
-    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
-    if (!key) return NULL;
 
     LLVMValueRef rawValue = compileExpr(compiler, expr->value);
     if (!rawValue) return NULL;
-    LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
-    if (!v) return NULL;
 
     LLVMValueRef objVal = NULL;
     int canAutoInit = expr->object && expr->object->type == EXPR_VARIABLE;
+    LLVMTypeRef expectedKeyTy = NULL;
+    LLVMTypeRef expectedValTy = NULL;
 
     if (canAutoInit) {
         VariableExpr* ve = (VariableExpr*)expr->object;
@@ -1356,6 +1471,10 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
         if (var.type != mapType) {
             error("Index assignment target is not a map\n");
             return NULL;
+        }
+        if (var.isTypedMap) {
+            expectedKeyTy = var.mapKeyType;
+            expectedValTy = var.mapValueType;
         }
 
         // Load current map pointer.
@@ -1405,6 +1524,34 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
             return NULL;
         }
     }
+
+    if (expectedKeyTy) {
+        if (!typedMapKeyCompatible(compiler, expectedKeyTy, keyExpr)) {
+            compilerErrorAt(compiler, expr->index ? expr->index->token.line : expr->base.token.line,
+                            "typed map key type mismatch");
+            return NULL;
+        }
+    }
+    if (expectedValTy) {
+        if (expr->value && expr->value->type == EXPR_LITERAL) {
+            LiteralExpr* lit = (LiteralExpr*)expr->value;
+            if (lit->value.type == TOKEN_NULL) {
+                compilerErrorAt(compiler, lit->value.line, "cannot assign null into typed map value");
+                return NULL;
+            }
+        }
+        if (!typedMapValueCompatible(compiler, expectedValTy, rawValue)) {
+            compilerErrorAt(compiler, expr->value ? expr->value->token.line : expr->base.token.line,
+                            "typed map value type mismatch");
+            return NULL;
+        }
+        rawValue = castToType(compiler, rawValue, expectedValTy);
+    }
+
+    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+    if (!key) return NULL;
+    LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
+    if (!v) return NULL;
 
     LLVMValueRef setFn = getOrCreateTuaMapSet(compiler);
     LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);

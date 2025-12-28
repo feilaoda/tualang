@@ -165,6 +165,81 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
     }
 }
 
+static int inferTypedMapKVFromLiteral(Compiler* compiler, MapLiteralExpr* lit, LLVMTypeRef* outKeyTy, LLVMTypeRef* outValTy) {
+    if (!compiler || !lit || !outKeyTy || !outValTy) return 0;
+    *outKeyTy = NULL;
+    *outValTy = NULL;
+
+    // key inference (string vs numeric only; mixed => no inference)
+    int sawStringKey = 0;
+    int sawNumericKey = 0;
+    int sawLongKey = 0;
+    for (ListNode* n = lit->entries ? lit->entries->head : NULL; n != NULL; n = n->next) {
+        MapEntry* e = (MapEntry*)n->data;
+        if (!e) continue;
+        if (e->key.type == TOKEN_STRING_LITERAL) {
+            sawStringKey = 1;
+        } else if (e->key.type == TOKEN_INT) {
+            sawNumericKey = 1;
+        } else if (e->key.type == TOKEN_LONG) {
+            sawNumericKey = 1;
+            sawLongKey = 1;
+        }
+    }
+    if (sawStringKey && sawNumericKey) return 0;
+    if (sawStringKey) {
+        *outKeyTy = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    } else {
+        *outKeyTy = sawLongKey ? LLVMInt64TypeInContext(compiler->context)
+                               : LLVMInt32TypeInContext(compiler->context);
+    }
+
+    // value inference: only when all values are non-null literals of a consistent family.
+    int sawInt = 0, sawLong = 0, sawDouble = 0, sawBool = 0, sawString = 0;
+    for (ListNode* n = lit->entries ? lit->entries->head : NULL; n != NULL; n = n->next) {
+        MapEntry* e = (MapEntry*)n->data;
+        if (!e || !e->value) return 0;
+        if (e->value->type != EXPR_LITERAL) return 0;
+        LiteralExpr* v = (LiteralExpr*)e->value;
+        switch (v->value.type) {
+            case TOKEN_INT: sawInt = 1; break;
+            case TOKEN_LONG: sawLong = 1; break;
+            case TOKEN_DOUBLE: sawDouble = 1; break;
+            case TOKEN_TRUE:
+            case TOKEN_FALSE: sawBool = 1; break;
+            case TOKEN_STRING_LITERAL: sawString = 1; break;
+            case TOKEN_NULL:
+            default:
+                return 0;
+        }
+    }
+
+    int families = 0;
+    if (sawBool) families++;
+    if (sawString) families++;
+    if (sawInt || sawLong || sawDouble) families++;
+    if (families != 1) return 0;
+
+    if (sawString) {
+        *outValTy = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        return 1;
+    }
+    if (sawBool) {
+        *outValTy = LLVMInt1TypeInContext(compiler->context);
+        return 1;
+    }
+    if (sawDouble) {
+        *outValTy = LLVMDoubleTypeInContext(compiler->context);
+        return 1;
+    }
+    if (sawLong) {
+        *outValTy = LLVMInt64TypeInContext(compiler->context);
+        return 1;
+    }
+    *outValTy = LLVMInt32TypeInContext(compiler->context);
+    return 1;
+}
+
 static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
     if (!value) return NULL;
     LLVMTypeRef srcType = LLVMTypeOf(value);
@@ -302,6 +377,31 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     emitDebug("emitVarStmt var name:%s\n", var);
     LLVMTypeRef valueType = stmt->type ? toLLVMType(compiler, stmt->type) : inferLLVMTypeFromInitializer(compiler, stmt->initializer);
 
+    int hasAnnotatedTypedMap = 0;
+    LLVMTypeRef annotatedKeyTy = NULL;
+    LLVMTypeRef annotatedValTy = NULL;
+    if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+        stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
+        stmt->type->typeArgs && stmt->type->typeArgs->length == 2) {
+        Type* kAst = (Type*)stmt->type->typeArgs->head->data;
+        Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
+        int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
+        int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                             vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+        if (okKey && okVal) {
+            hasAnnotatedTypedMap = 1;
+            annotatedKeyTy = toLLVMType(compiler, kAst);
+            annotatedValTy = toLLVMType(compiler, vAst);
+        }
+    }
+
+    int inferredTypedMap = 0;
+    LLVMTypeRef inferredKeyTy = NULL;
+    LLVMTypeRef inferredValTy = NULL;
+    if (!stmt->type && stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
+        inferredTypedMap = inferTypedMapKVFromLiteral(compiler, (MapLiteralExpr*)stmt->initializer, &inferredKeyTy, &inferredValTy);
+    }
+
     int shouldBox = compiler && compiler->boxAllLocals;
     LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
     LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
@@ -314,7 +414,22 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     }
     if (stmt->initializer != NULL) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
+        LLVMTypeRef savedKey = compiler->expectedMapKeyType;
+        LLVMTypeRef savedVal = compiler->expectedMapValueType;
+        if (valueType == compilerGetMapType(compiler) && stmt->initializer->type == EXPR_MAP_LITERAL) {
+            if (hasAnnotatedTypedMap) {
+                compiler->expectedMapKeyType = annotatedKeyTy;
+                compiler->expectedMapValueType = annotatedValTy;
+            } else if (inferredTypedMap) {
+                compiler->expectedMapKeyType = inferredKeyTy;
+                compiler->expectedMapValueType = inferredValTy;
+            }
+        }
+
         LLVMValueRef initValue = compileExpr(compiler, stmt->initializer);
+
+        compiler->expectedMapKeyType = savedKey;
+        compiler->expectedMapValueType = savedVal;
         if (stmt->initializer->type == EXPR_LAMBDA) {
             compiledLambdaSig = compiler->lastLambdaFuncType;
             if (declaredSig && compiledLambdaSig && declaredSig != compiledLambdaSig) {
@@ -456,6 +571,12 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->mapKeyType = toLLVMType(compiler, kAst);
             variable->mapValueType = toLLVMType(compiler, vAst);
         }
+    }
+
+    if (!stmt->type && inferredTypedMap && valueType == compilerGetMapType(compiler) && inferredKeyTy && inferredValTy) {
+        variable->isTypedMap = 1;
+        variable->mapKeyType = inferredKeyTy;
+        variable->mapValueType = inferredValTy;
     }
     listAppend(block->variables, variable);
 

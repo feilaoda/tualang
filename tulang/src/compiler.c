@@ -132,10 +132,31 @@ void initCompiler(Compiler* compiler) {
     compiler->closureReturnSigs = listNew();
     compiler->lastLambdaFuncType = NULL;
     compiler->lastSetLine = 0;
+    compiler->expectedMapKeyType = NULL;
+    compiler->expectedMapValueType = NULL;
     
     // Debug information
     compiler->hadError = false;
     compiler->panicMode = false;
+}
+
+void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...) {
+    if (compiler) compiler->hadError = true;
+    if (line > 0) {
+        fprintf(stderr, "error at line %d: ", line);
+    } else {
+        fprintf(stderr, "error: ");
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (fmt) {
+        size_t n = strlen(fmt);
+        if (n == 0 || fmt[n - 1] != '\n') fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "\n");
+    }
 }
 
 StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length) {

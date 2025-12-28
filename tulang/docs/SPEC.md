@@ -176,6 +176,7 @@
   - `opt ?? default`：当 `opt` 为 `Some(v)` 时返回 `v`，否则返回 `default`
 - 相等性：
   - 允许 `Option<T> == Option<T>` / `!=`：`None == None`；`Some(a) == Some(b)` 比较 payload（`string` 为内容比较）
+  - 禁止 `Option<T>` 与非 `Option` 直接比较（例如 `opt == 1`）；需用 `unwrap()/isSome()` 或与 `Some(...)` 比较
 
 #### 9.2 `map` / `map<K,V>`（Status: Partial）
 - 目标：先提供“可用的键值容器”，再逐步补齐语义层与内存模型。
@@ -196,6 +197,7 @@
 - 写入（Status: Implemented）：
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
+  - 对 `map<K,V>`：写入时会做静态检查（key/value 类型不匹配会编译错误；禁止写入 `null`）
 - 内建方法（Status: Implemented）：
   - `m.len() -> int`
   - `m.hasKey(k) -> bool`
@@ -205,8 +207,8 @@
 - key 规范化（Status: Implemented）：
   - `int` 与 `long` 作为 key 归一到同一 int64 域，因此 `1` 与 `1L` 视为同一个 key
 - 待补齐（Status: Planned）：
-  - `map<K,V>` 的强类型写入检查（禁止写入错误类型/对非空 V 写入 `null`）
-  - 从字面量推断 `map<K,V>`（语义层）
+  - 更完整的语义层：让非字面量表达式也能参与 `map<K,V>` 推断/检查（避免依赖 LLVM 类型）
+  - 支持可空 value 的明确语义（例如 `map<K, Option<V>>` 的存储/区分规则）
 
 #### 9.3 `null`（Status: Partial）
 - 当前实现：`null` 是“指针空值字面量”（主要用于 `string`/map 指针等），并非全局 bottom type。

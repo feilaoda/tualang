@@ -7,6 +7,7 @@
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
+#include <stdarg.h>
 
 typedef struct {
     Token name;
@@ -85,6 +86,10 @@ typedef struct Compiler{
     LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 
     int lastSetLine; // last emitted tua_set_line(...) value
+
+    // Side-channel: when compiling a map literal for a typed map variable, enforce K/V.
+    LLVMTypeRef expectedMapKeyType;
+    LLVMTypeRef expectedMapValueType;
 } Compiler;
 
 typedef struct MultiReturnInfo {
@@ -279,6 +284,8 @@ typedef struct {
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr);
 LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr);
+
+void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...);
 
 // Function to compile statements
 void compileStmt(Compiler* compiler, Stmt* stmt);

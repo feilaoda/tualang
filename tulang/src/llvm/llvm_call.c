@@ -431,6 +431,34 @@ static int isOptionLLVMType(LLVMTypeRef t) {
     return LLVMGetIntTypeWidth(f0) == 1;
 }
 
+static int isTuaValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    return t == compilerGetTuaValueType(compiler);
+}
+
+static int isStringLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    return t == i8ptr;
+}
+
+static int isNumericLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+    if (k == LLVMDoubleTypeKind) return 1;
+    if (k != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(t) != 1;
+}
+
+static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, LLVMValueRef keyVal) {
+    if (!compiler || !expectedKeyTy || !keyVal) return 0;
+    LLVMTypeRef actualTy = LLVMTypeOf(keyVal);
+    if (isTuaValueLLVMType(compiler, actualTy)) return 0;
+    if (isStringLLVMType(compiler, expectedKeyTy)) return isStringLLVMType(compiler, actualTy);
+    return isNumericLLVMType(actualTy);
+}
+
 static LLVMTypeRef getPrintfType(Compiler* compiler) {
     LLVMTypeRef contextI8 = LLVMInt8TypeInContext(compiler->context);
     LLVMTypeRef printfParamTypes[] = { LLVMPointerType(contextI8, 0) };
@@ -954,7 +982,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
-                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                if (recvVar.isTypedMap && recvVar.mapKeyType) {
+                    if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+                        compilerErrorAt(compiler, keyAst ? keyAst->token.line : get->name.line, "typed map key type mismatch");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                }
                 LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
                 if (!key) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -975,7 +1011,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
-                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                if (recvVar.isTypedMap && recvVar.mapKeyType) {
+                    if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+                        compilerErrorAt(compiler, keyAst ? keyAst->token.line : get->name.line, "typed map key type mismatch");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                }
                 LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
                 if (!key) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1010,7 +1054,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
-                LLVMValueRef keyExpr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                if (recvVar.isTypedMap && recvVar.mapKeyType) {
+                    if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+                        compilerErrorAt(compiler, keyAst ? keyAst->token.line : get->name.line, "typed map key type mismatch");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                }
                 LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
                 if (!key) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;

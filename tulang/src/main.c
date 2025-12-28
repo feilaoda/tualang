@@ -456,6 +456,11 @@ int endLLVM(Compiler* compiler) {
     LLVMBuilderRef builder = compiler->builder;
     LLVMModuleRef module = compiler->module;
 
+    if (compiler && compiler->hadError) {
+        cleanup(module, builder, context, NULL);
+        return 1;
+    }
+
     // Add implicit `return 0` for the generated `main` if needed.
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
         debug("call return\n");

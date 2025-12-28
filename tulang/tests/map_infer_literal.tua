@@ -1,0 +1,6 @@
+let m = { "a": 1, "z": 2 }
+let v = m["a"]
+assert(v == Some(1))
+let x:int = v.unwrap()
+assert(x == 1)
+
