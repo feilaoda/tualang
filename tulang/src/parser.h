@@ -23,7 +23,8 @@ typedef enum {
     EXPR_PREFIX,
     EXPR_ASSIGN,
     EXPR_GET,
-    EXPR_SET
+    EXPR_SET,
+    EXPR_LAMBDA
 } ExprType;
 
 typedef enum {
@@ -62,13 +63,17 @@ typedef enum {
     TYPE_VOID,
     TYPE_ANY,
     TYPE_NAMED,
-    TYPE_REF
+    TYPE_REF,
+    // Function type syntax: `(args...) -> ret[,ret2...]` or `(args...) -> (ret, ret2, ...)`
+    TYPE_FUNC
 } TypeKind;
 
 typedef struct Type {
     TypeKind kind;
     Token name; // for TYPE_NAMED
     struct Type* inner; // for TYPE_REF
+    List* paramTypes;   // List<Type*>, for TYPE_FUNC
+    List* returnTypes;  // List<Type*>, for TYPE_FUNC
 } Type;
 
 // List structure for parameters and blocks
@@ -152,6 +157,17 @@ typedef struct {
     Token name;
     Expr* value;
 } SetExpr;
+
+// Lambda expression (closure literal)
+// Syntax: `fn (params...) -> T[,U...] { ... }`
+typedef struct {
+    Expr base;
+    Token keyword;
+    List* params;      // List<Parameter*>
+    Type* returnType;  // single return (legacy)
+    List* returnTypes; // List<Type*> for multi-return
+    List* body;        // List<Stmt*>
+} LambdaExpr;
 
 // Variable statement structure
 typedef struct {

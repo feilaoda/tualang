@@ -73,6 +73,13 @@ typedef struct Compiler{
     // Multi-return function tracking (LLVM JIT path)
     List* multiReturns; // List<MultiReturnInfo*>
     int wantMultiValue; // when true, calls return full tuple value
+
+    // Closure / lambda (LLVM JIT path)
+    int boxAllLocals;        // when true, locals/params stored in heap boxes
+    int lambdaCount;         // unique lambda id
+    LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
+    List* closureSigs;       // List<ClosureSig*>, variable name -> function type
+    LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 } Compiler;
 
 typedef struct MultiReturnInfo {
@@ -80,6 +87,12 @@ typedef struct MultiReturnInfo {
     int nameLen;
     int count;
 } MultiReturnInfo;
+
+typedef struct ClosureSig {
+    char* name;
+    int nameLen;
+    LLVMTypeRef funcType; // the lambda implementation function type (env + args)
+} ClosureSig;
 
 typedef struct LoopTarget {
     LLVMBasicBlockRef breakTarget;
@@ -281,5 +294,10 @@ void initCompiler(Compiler* compiler);
 int makeLabel(Compiler* compiler);
 
 Value tokenToValue(Token token);
+
+LLVMTypeRef compilerGetClosureType(Compiler* compiler);
+void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
+LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
+LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);
 
 #endif

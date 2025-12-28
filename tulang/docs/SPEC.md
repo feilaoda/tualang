@@ -71,10 +71,32 @@
   - 解构赋值：`a, b = f()`
   - 表达式上下文规则：当 `f()` 返回多个值时，在普通表达式上下文会自动取第一个值（例如 `let x = f()`）
   - `return f()` 转发规则：当当前函数是多返回值函数时，`return f()` 会直接转发 `f()` 的多返回结果
-- 闭包/upvalue（Status: Planned）：
-  - 需要引入函数值与捕获环境（Analyze + Runtime）
+- 闭包/upvalue（Status: Implemented，第一版）：
+  - 匿名函数表达式：
+    - `fn (params...) -> T { ... }`
+    - `fn (params...) T { ... }`（省略 `->` 语法糖）
+    - 可省略返回类型，默认 `void`
+  - 闭包值：匿名函数可赋值给变量：`let f = fn(x:int) -> int { return x + 1 }`
+  - 捕获语义（Lua 风格）：闭包默认按引用捕获外层变量（读写共享），例如：
+    - `let x = 0; let inc = fn() -> int { x = x + 1; return x }`
+  - 调用：
+    - `f(args...)`
+    - 立即调用：`(fn(...) -> T { ... })(args...)`
+  - 实现策略（当前 LLVM-JIT 版本）：
+    - 当函数体内出现匿名函数时，本函数的局部变量/参数会自动使用“heap box”存储以保证被捕获后仍然有效
+    - 目前 box/env 使用 `malloc`，尚未引入 RC/GC，因此存在内存泄漏（后续按 roadmap 切换到 RC/增量 GC）
+  - 当前限制（后续规划补齐）：
+    - 已支持 TS 风格函数类型 `(args) -> ret`（见下）；但完整类型检查/类型推断仍在规划中
 - 内建函数（Status: Implemented）：
   - `print(x)` / `println(x)`（目前支持打印 int/long/double/bool/string 指针）
+
+#### 6.1 函数类型（TypeScript 风格，Status: Implemented）
+- 语法形态：`(argType1, argType2, ...) -> retType`
+  - 多返回写法：`(int) -> (int, string)`（推荐用括号包起来；实现也接受 `-> int, string`）
+- 用法示例：
+  - 变量类型标注：`let f: (int, int) -> int = fn(a:int, b:int) -> int { return a + b }`
+  - 多返回：`let g: (int) -> (int, string) = fn(x:int) -> int, string { return x, "ok" }`
+  - 作为参数：`fn apply(x:int, f:(int)->int) -> int { return f(x) }`
 
 ### 7. struct / object / enum（Status: Partial）
 

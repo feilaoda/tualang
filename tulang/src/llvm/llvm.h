@@ -21,6 +21,8 @@ typedef struct VariableRef {
     int typeNameLength;
     int isConst;
     int isGlobal;
+    int isBoxed;
+    LLVMTypeRef boxPtrType; // T* for boxed variables; slot stores T*
 }VariableRef;
 
 
@@ -52,5 +54,6 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr);
 LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr);
 LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr);
 LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
+LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);
 
 #endif

@@ -15,6 +15,8 @@
 
 #define compilerDebug(...) debug(__VA_ARGS__)
 
+static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);
+
 int strtoi(const char *str, int length) {
     // compilerDebug("strtoi: %.*s\n", length, str);
     int sign = 1;  // 符号标志，默认为正
@@ -120,6 +122,12 @@ void initCompiler(Compiler* compiler) {
 
     compiler->multiReturns = listNew();
     compiler->wantMultiValue = 0;
+
+    compiler->boxAllLocals = 0;
+    compiler->lambdaCount = 0;
+    compiler->closureType = NULL;
+    compiler->closureSigs = listNew();
+    compiler->lastLambdaFuncType = NULL;
     
     // Debug information
     compiler->hadError = false;
@@ -202,6 +210,82 @@ void compilerRegisterMultiReturn(Compiler* compiler, const char* name, int nameL
     info->nameLen = nameLen;
     info->count = count;
     listAppend(compiler->multiReturns, info);
+}
+
+LLVMTypeRef compilerGetClosureType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    if (compiler->closureType) return compiler->closureType;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fields[2] = { i8ptr, i8ptr };
+    compiler->closureType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
+    return compiler->closureType;
+}
+
+void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType) {
+    if (!compiler || !compiler->closureSigs || !name || nameLen <= 0 || !funcType) return;
+    for (int i = 0; i < compiler->closureSigs->length; i++) {
+        ClosureSig* s = listGet(compiler->closureSigs, i);
+        if (!s) continue;
+        if (s->nameLen != nameLen) continue;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) {
+            s->funcType = funcType;
+            return;
+        }
+    }
+    ClosureSig* s = malloc(sizeof(ClosureSig));
+    s->name = malloc((size_t)nameLen + 1);
+    memcpy(s->name, name, (size_t)nameLen);
+    s->name[nameLen] = '\0';
+    s->nameLen = nameLen;
+    s->funcType = funcType;
+    listAppend(compiler->closureSigs, s);
+}
+
+LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler || !compiler->closureSigs || !name) return NULL;
+    for (int i = 0; i < compiler->closureSigs->length; i++) {
+        ClosureSig* s = listGet(compiler->closureSigs, i);
+        if (!s) continue;
+        if (s->nameLen != nameLen) continue;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) return s->funcType;
+    }
+    return NULL;
+}
+
+LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type) {
+    if (!compiler || !type || type->kind != TYPE_FUNC) return NULL;
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+
+    int argCount = type->paramTypes ? type->paramTypes->length : 0;
+    int totalParams = argCount + 1; // env ptr + args...
+    LLVMTypeRef* params = malloc(sizeof(LLVMTypeRef) * (size_t)totalParams);
+    params[0] = i8ptr;
+    for (int i = 0; i < argCount; i++) {
+        Type* t = listGet(type->paramTypes, i);
+        params[i + 1] = typeToLLVMType(compiler, t, false);
+    }
+
+    LLVMTypeRef retType = LLVMVoidTypeInContext(compiler->context);
+    int rc = type->returnTypes ? type->returnTypes->length : 0;
+    if (rc <= 0) {
+        retType = LLVMVoidTypeInContext(compiler->context);
+    } else if (rc == 1) {
+        Type* rt = listGet(type->returnTypes, 0);
+        retType = typeToLLVMType(compiler, rt, true);
+    } else {
+        LLVMTypeRef* rts = malloc(sizeof(LLVMTypeRef) * (size_t)rc);
+        for (int i = 0; i < rc; i++) {
+            Type* rt = listGet(type->returnTypes, i);
+            rts[i] = typeToLLVMType(compiler, rt, false);
+        }
+        retType = LLVMStructTypeInContext(compiler->context, rts, (unsigned)rc, 0);
+        free(rts);
+    }
+
+    LLVMTypeRef fnType = LLVMFunctionType(retType, params, (unsigned)totalParams, 0);
+    free(params);
+    return fnType;
 }
 
 StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name) {
@@ -391,6 +475,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             LLVMTypeRef inner = typeToLLVMType(compiler, type->inner, false);
             return LLVMPointerType(inner, 0);
         }
+        case TYPE_FUNC:
+            return compilerGetClosureType(compiler);
         case TYPE_VOID:
             return LLVMVoidTypeInContext(compiler->context);
         default:
@@ -473,6 +559,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
             //++i
             return emitPrefixExpr(compiler, (PrefixExpr*)expr);
             break;
+        case EXPR_LAMBDA:
+            return emitLambdaExpr(compiler, (LambdaExpr*)expr);
+            break;
 
     }
     compilerDebug("Compiled expression end %d\n", expr->type);
@@ -498,6 +587,93 @@ LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr) {
     LLVMValueRef v = compileExpr(compiler, expr);
     compiler->wantMultiValue = saved;
     return v;
+}
+
+static int exprHasLambdaLiteral(Expr* e) {
+    if (!e) return 0;
+    if (e->type == EXPR_LAMBDA) return 1;
+    switch (e->type) {
+        case EXPR_BINARY:
+            return exprHasLambdaLiteral(((BinaryExpr*)e)->left) || exprHasLambdaLiteral(((BinaryExpr*)e)->right);
+        case EXPR_UNARY:
+            return exprHasLambdaLiteral(((UnaryExpr*)e)->right);
+        case EXPR_GROUPING:
+            return exprHasLambdaLiteral(((GroupingExpr*)e)->expression);
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            if (exprHasLambdaLiteral(c->callee)) return 1;
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                if (exprHasLambdaLiteral((Expr*)n->data)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ASSIGN:
+            return exprHasLambdaLiteral(((AssignExpr*)e)->value);
+        case EXPR_GET:
+            return exprHasLambdaLiteral(((GetExpr*)e)->object);
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            return exprHasLambdaLiteral(s->object) || exprHasLambdaLiteral(s->value);
+        }
+        case EXPR_POSTFIX:
+            return exprHasLambdaLiteral(((PostfixExpr*)e)->operand);
+        case EXPR_PREFIX:
+            return exprHasLambdaLiteral(((PrefixExpr*)e)->operand);
+        default:
+            return 0;
+    }
+}
+
+static int stmtHasLambdaLiteral(Stmt* s) {
+    if (!s) return 0;
+    if (s->type == STMT_PRIVATE) return stmtHasLambdaLiteral(((PrivateStmt*)s)->inner);
+    switch (s->type) {
+        case STMT_VAR:
+            return exprHasLambdaLiteral(((VarStmt*)s)->initializer);
+        case STMT_DESTRUCTURE:
+            return exprHasLambdaLiteral(((DestructureStmt*)s)->value);
+        case STMT_EXPR:
+            return exprHasLambdaLiteral(((ExprStmt*)s)->expression);
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)s;
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    if (exprHasLambdaLiteral((Expr*)n->data)) return 1;
+                }
+                return 0;
+            }
+            return exprHasLambdaLiteral(r->value);
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)s;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                if (stmtHasLambdaLiteral((Stmt*)n->data)) return 1;
+            }
+            return 0;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)s;
+            return exprHasLambdaLiteral(i->condition) || stmtHasLambdaLiteral(i->thenBranch) || stmtHasLambdaLiteral(i->elseBranch);
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)s;
+            return stmtHasLambdaLiteral(f->initializer) || exprHasLambdaLiteral(f->condition) || exprHasLambdaLiteral(f->increment) || stmtHasLambdaLiteral(f->body);
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)s;
+            return exprHasLambdaLiteral(fi->range) || stmtHasLambdaLiteral(fi->body);
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)s;
+            return exprHasLambdaLiteral(w->condition) || stmtHasLambdaLiteral(w->body);
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)s;
+            return exprHasLambdaLiteral(dw->condition) || stmtHasLambdaLiteral(dw->body);
+        }
+        default:
+            return 0;
+    }
 }
 
 void compileStmt(Compiler* compiler, Stmt* stmt) {
@@ -826,8 +1002,27 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             memcpy(varName, nameTok->start, (size_t)nameTok->length);
             varName[nameTok->length] = '\0';
 
-            LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, targetType, varName);
-            if (v) LLVMBuildStore(compiler->builder, v, slot);
+            int isBoxed = compiler->boxAllLocals;
+            LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(targetType, 0) : NULL;
+            LLVMValueRef slot = NULL;
+            if (isBoxed) {
+                slot = LLVMBuildAlloca(compiler->builder, boxPtrType, varName);
+                LLVMValueRef mallocFn = LLVMGetNamedFunction(compiler->module, "malloc");
+                if (!mallocFn) {
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+                    LLVMTypeRef mty = LLVMFunctionType(i8ptr, &i64, 1, 0);
+                    mallocFn = LLVMAddFunction(compiler->module, "malloc", mty);
+                }
+                LLVMValueRef sizeV = LLVMSizeOf(targetType);
+                LLVMValueRef raw = LLVMBuildCall2(compiler->builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+                LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+                if (v) LLVMBuildStore(compiler->builder, v, cell);
+                LLVMBuildStore(compiler->builder, cell, slot);
+            } else {
+                slot = LLVMBuildAlloca(compiler->builder, targetType, varName);
+                if (v) LLVMBuildStore(compiler->builder, v, slot);
+            }
 
             VariableRef* variable = malloc(sizeof(VariableRef));
             variable->name = varName;
@@ -846,6 +1041,8 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
 
             variable->isConst = stmt->isConst ? 1 : 0;
             variable->isGlobal = 0;
+            variable->isBoxed = isBoxed;
+            variable->boxPtrType = isBoxed ? boxPtrType : NULL;
             listAppend(compiler->current->variables, variable);
         }
     } else {
@@ -870,7 +1067,14 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
 
             LLVMValueRef v = LLVMBuildExtractValue(compiler->builder, rhs, i, "mv");
             v = castValueToType(compiler, v, var.type);
-            if (v) LLVMBuildStore(compiler->builder, v, var.value);
+            if (v) {
+                if (var.isBoxed) {
+                    LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "cellptr");
+                    LLVMBuildStore(compiler->builder, v, cellPtr);
+                } else {
+                    LLVMBuildStore(compiler->builder, v, var.value);
+                }
+            }
         }
     }
 }
@@ -881,6 +1085,15 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     char* funcName = malloc((size_t)stmt->name.length + 1);
     memcpy(funcName, stmt->name.start, (size_t)stmt->name.length);
     funcName[stmt->name.length] = '\0';
+
+    // If this function contains any lambda literal, box all locals/params to make
+    // upvalue-by-reference safe without a separate "close upvalues" phase.
+    int savedBox = compiler->boxAllLocals;
+    int containsLambda = 0;
+    for (ListNode* n = stmt->body ? stmt->body->head : NULL; n != NULL; n = n->next) {
+        if (stmtHasLambdaLiteral((Stmt*)n->data)) { containsLambda = 1; break; }
+    }
+    compiler->boxAllLocals = containsLambda ? 1 : savedBox;
 
     int paramCount = stmt->params ? stmt->params->length : 0;
     LLVMTypeRef* paramTypes = NULL;
@@ -933,14 +1146,34 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         memcpy(paramName, p->name.start, (size_t)p->name.length);
         paramName[p->name.length] = '\0';
 
-        LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, paramTypes[i], paramName);
-        LLVMBuildStore(compiler->builder, arg, slot);
+        LLVMValueRef slot = NULL;
+        int isBoxed = compiler->boxAllLocals;
+        LLVMTypeRef valueType = paramTypes[i];
+        LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(valueType, 0) : NULL;
+        if (isBoxed) {
+            slot = LLVMBuildAlloca(compiler->builder, boxPtrType, paramName);
+            LLVMValueRef mallocFn = LLVMGetNamedFunction(compiler->module, "malloc");
+            if (!mallocFn) {
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+                LLVMTypeRef mty = LLVMFunctionType(i8ptr, &i64, 1, 0);
+                mallocFn = LLVMAddFunction(compiler->module, "malloc", mty);
+            }
+            LLVMValueRef sizeV = LLVMSizeOf(valueType);
+            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+            LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+            LLVMBuildStore(compiler->builder, arg, cell);
+            LLVMBuildStore(compiler->builder, cell, slot);
+        } else {
+            slot = LLVMBuildAlloca(compiler->builder, valueType, paramName);
+            LLVMBuildStore(compiler->builder, arg, slot);
+        }
 
         VariableRef* variable = malloc(sizeof(VariableRef));
         variable->name = paramName;
         variable->length = p->name.length;
         variable->value = slot;
-        variable->type = paramTypes[i];
+        variable->type = valueType;
         if (p->type && p->type->kind == TYPE_NAMED) {
             StructInfo* info = compilerResolveStructByToken(compiler, &p->type->name);
             if (info) {
@@ -965,7 +1198,16 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         }
         variable->isConst = 0;
         variable->isGlobal = 0;
+        variable->isBoxed = isBoxed;
+        variable->boxPtrType = isBoxed ? boxPtrType : NULL;
         listAppend(funcBlock->variables, variable);
+
+        // If parameter is annotated as a function type, record the closure call signature
+        // so `f(x)` can be compiled inside this function body.
+        if (p->type && p->type->kind == TYPE_FUNC) {
+            LLVMTypeRef sig = compilerClosureSigFromType(compiler, p->type);
+            if (sig) compilerRegisterClosureSig(compiler, variable->name, variable->length, sig);
+        }
     }
 
     // Compile function body
@@ -986,6 +1228,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     // Restore insertion point and compiler block
     compiler->current = savedCurrent;
     LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+    compiler->boxAllLocals = savedBox;
 
     if (paramTypes) free(paramTypes);
     free(funcName);
@@ -1048,11 +1291,15 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
             thisInner->kind = TYPE_NAMED;
             thisInner->name = stmt->name;
             thisInner->inner = NULL;
+            thisInner->paramTypes = NULL;
+            thisInner->returnTypes = NULL;
 
             Type* thisType = malloc(sizeof(Type));
             thisType->kind = TYPE_REF;
             thisType->name = (Token){0};
             thisType->inner = thisInner;
+            thisType->paramTypes = NULL;
+            thisType->returnTypes = NULL;
             Parameter* thisParam = malloc(sizeof(Parameter));
             thisParam->name = thisNameTok;
             thisParam->type = thisType;

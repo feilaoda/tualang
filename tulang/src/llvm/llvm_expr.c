@@ -2,6 +2,391 @@
 #include "compiler.h"
 #include "debug.h"
 
+static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
+
+static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
+    if (type == NULL) {
+        return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
+                             : LLVMInt32TypeInContext(compiler->context);
+    }
+
+    switch (type->kind) {
+        case TYPE_INT:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL:
+            return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED: {
+            StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
+            if (!info) {
+                char* tn = malloc((size_t)type->name.length + 1);
+                memcpy(tn, type->name.start, (size_t)type->name.length);
+                tn[type->name.length] = '\0';
+                LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+                if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+                free(tn);
+                return t;
+            }
+            return info->type;
+        }
+        case TYPE_REF: {
+            LLVMTypeRef inner = lambdaTypeToLLVMType(compiler, type->inner, false);
+            return LLVMPointerType(inner, 0);
+        }
+        case TYPE_FUNC:
+            return compilerGetClosureType(compiler);
+        case TYPE_VOID:
+            return LLVMVoidTypeInContext(compiler->context);
+        default:
+            return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
+                                 : LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
+    return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
+static int nameSetContains(List* set, const char* name, int len) {
+    if (!set) return 0;
+    for (ListNode* n = set->head; n != NULL; n = n->next) {
+        Token* t = (Token*)n->data;
+        if (!t) continue;
+        if (t->length != len) continue;
+        if (memcmp(t->start, name, (size_t)len) == 0) return 1;
+    }
+    return 0;
+}
+
+static void nameSetAdd(List* set, const char* name, int len) {
+    if (!set || !name || len <= 0) return;
+    if (nameSetContains(set, name, len)) return;
+    Token* t = malloc(sizeof(Token));
+    t->type = TOKEN_IDENTIFIER;
+    t->start = name;
+    t->length = len;
+    t->line = 0;
+    t->hasDot = 0;
+    listAppend(set, t);
+}
+
+static void freeTokenSet(List* set) {
+    if (!set) return;
+    for (ListNode* n = set->head; n != NULL; n = n->next) {
+        free(n->data);
+    }
+    listFree(set);
+}
+
+static void collectLambdaLocalsStmt(List* locals, Stmt* stmt);
+static void collectLambdaLocalsExpr(List* locals, Expr* expr) {
+    if (!expr) return;
+    if (expr->type == EXPR_LAMBDA) return; // stop at nested lambda
+    switch (expr->type) {
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)expr;
+            collectLambdaLocalsExpr(locals, b->left);
+            collectLambdaLocalsExpr(locals, b->right);
+            break;
+        }
+        case EXPR_UNARY: {
+            UnaryExpr* u = (UnaryExpr*)expr;
+            collectLambdaLocalsExpr(locals, u->right);
+            break;
+        }
+        case EXPR_GROUPING: {
+            collectLambdaLocalsExpr(locals, ((GroupingExpr*)expr)->expression);
+            break;
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)expr;
+            collectLambdaLocalsExpr(locals, c->callee);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectLambdaLocalsExpr(locals, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)expr;
+            collectLambdaLocalsExpr(locals, a->value);
+            break;
+        }
+        case EXPR_GET: {
+            GetExpr* g = (GetExpr*)expr;
+            collectLambdaLocalsExpr(locals, g->object);
+            break;
+        }
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)expr;
+            collectLambdaLocalsExpr(locals, s->object);
+            collectLambdaLocalsExpr(locals, s->value);
+            break;
+        }
+        case EXPR_POSTFIX:
+            collectLambdaLocalsExpr(locals, ((PostfixExpr*)expr)->operand);
+            break;
+        case EXPR_PREFIX:
+            collectLambdaLocalsExpr(locals, ((PrefixExpr*)expr)->operand);
+            break;
+        default:
+            break;
+    }
+}
+
+static void collectLambdaLocalsStmt(List* locals, Stmt* stmt) {
+    if (!stmt) return;
+    if (stmt->type == STMT_PRIVATE) {
+        collectLambdaLocalsStmt(locals, ((PrivateStmt*)stmt)->inner);
+        return;
+    }
+    if (stmt->type == STMT_VAR) {
+        VarStmt* v = (VarStmt*)stmt;
+        nameSetAdd(locals, v->name.start, v->name.length);
+        collectLambdaLocalsExpr(locals, v->initializer);
+        return;
+    }
+    if (stmt->type == STMT_DESTRUCTURE) {
+        DestructureStmt* d = (DestructureStmt*)stmt;
+        if (d->isDeclaration && d->names) {
+            for (ListNode* n = d->names->head; n != NULL; n = n->next) {
+                Token* t = (Token*)n->data;
+                if (t) nameSetAdd(locals, t->start, t->length);
+            }
+        }
+        collectLambdaLocalsExpr(locals, d->value);
+        return;
+    }
+    switch (stmt->type) {
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectLambdaLocalsStmt(locals, (Stmt*)n->data);
+            }
+            break;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            collectLambdaLocalsExpr(locals, i->condition);
+            collectLambdaLocalsStmt(locals, i->thenBranch);
+            collectLambdaLocalsStmt(locals, i->elseBranch);
+            break;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)stmt;
+            collectLambdaLocalsStmt(locals, f->initializer);
+            collectLambdaLocalsExpr(locals, f->condition);
+            collectLambdaLocalsExpr(locals, f->increment);
+            collectLambdaLocalsStmt(locals, f->body);
+            break;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)stmt;
+            nameSetAdd(locals, fi->loopVar.start, fi->loopVar.length);
+            collectLambdaLocalsExpr(locals, fi->range);
+            collectLambdaLocalsStmt(locals, fi->body);
+            break;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)stmt;
+            collectLambdaLocalsExpr(locals, w->condition);
+            collectLambdaLocalsStmt(locals, w->body);
+            break;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)stmt;
+            collectLambdaLocalsStmt(locals, dw->body);
+            collectLambdaLocalsExpr(locals, dw->condition);
+            break;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    collectLambdaLocalsExpr(locals, (Expr*)n->data);
+                }
+            } else {
+                collectLambdaLocalsExpr(locals, r->value);
+            }
+            break;
+        }
+        case STMT_EXPR:
+            collectLambdaLocalsExpr(locals, ((ExprStmt*)stmt)->expression);
+            break;
+        default:
+            break;
+    }
+}
+
+static void collectLambdaUsesExpr(List* uses, Expr* expr) {
+    if (!expr) return;
+    if (expr->type == EXPR_LAMBDA) return; // stop at nested lambda
+    switch (expr->type) {
+        case EXPR_VARIABLE: {
+            VariableExpr* v = (VariableExpr*)expr;
+            if (v->name.type != TOKEN_THIS) {
+                nameSetAdd(uses, v->name.start, v->name.length);
+            }
+            break;
+        }
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)expr;
+            collectLambdaUsesExpr(uses, b->left);
+            collectLambdaUsesExpr(uses, b->right);
+            break;
+        }
+        case EXPR_UNARY:
+            collectLambdaUsesExpr(uses, ((UnaryExpr*)expr)->right);
+            break;
+        case EXPR_GROUPING:
+            collectLambdaUsesExpr(uses, ((GroupingExpr*)expr)->expression);
+            break;
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)expr;
+            collectLambdaUsesExpr(uses, c->callee);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectLambdaUsesExpr(uses, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_ASSIGN:
+            collectLambdaUsesExpr(uses, ((AssignExpr*)expr)->value);
+            break;
+        case EXPR_GET:
+            collectLambdaUsesExpr(uses, ((GetExpr*)expr)->object);
+            break;
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)expr;
+            collectLambdaUsesExpr(uses, s->object);
+            collectLambdaUsesExpr(uses, s->value);
+            break;
+        }
+        case EXPR_POSTFIX:
+            collectLambdaUsesExpr(uses, ((PostfixExpr*)expr)->operand);
+            break;
+        case EXPR_PREFIX:
+            collectLambdaUsesExpr(uses, ((PrefixExpr*)expr)->operand);
+            break;
+        default:
+            break;
+    }
+}
+
+static void collectLambdaUsesStmt(List* uses, Stmt* stmt) {
+    if (!stmt) return;
+    if (stmt->type == STMT_PRIVATE) {
+        collectLambdaUsesStmt(uses, ((PrivateStmt*)stmt)->inner);
+        return;
+    }
+    switch (stmt->type) {
+        case STMT_VAR:
+            collectLambdaUsesExpr(uses, ((VarStmt*)stmt)->initializer);
+            break;
+        case STMT_DESTRUCTURE:
+            collectLambdaUsesExpr(uses, ((DestructureStmt*)stmt)->value);
+            break;
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectLambdaUsesStmt(uses, (Stmt*)n->data);
+            }
+            break;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            collectLambdaUsesExpr(uses, i->condition);
+            collectLambdaUsesStmt(uses, i->thenBranch);
+            collectLambdaUsesStmt(uses, i->elseBranch);
+            break;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)stmt;
+            collectLambdaUsesStmt(uses, f->initializer);
+            collectLambdaUsesExpr(uses, f->condition);
+            collectLambdaUsesExpr(uses, f->increment);
+            collectLambdaUsesStmt(uses, f->body);
+            break;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)stmt;
+            collectLambdaUsesExpr(uses, fi->range);
+            collectLambdaUsesStmt(uses, fi->body);
+            break;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)stmt;
+            collectLambdaUsesExpr(uses, w->condition);
+            collectLambdaUsesStmt(uses, w->body);
+            break;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)stmt;
+            collectLambdaUsesStmt(uses, dw->body);
+            collectLambdaUsesExpr(uses, dw->condition);
+            break;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    collectLambdaUsesExpr(uses, (Expr*)n->data);
+                }
+            } else {
+                collectLambdaUsesExpr(uses, r->value);
+            }
+            break;
+        }
+        case STMT_EXPR:
+            collectLambdaUsesExpr(uses, ((ExprStmt*)stmt)->expression);
+            break;
+        default:
+            break;
+    }
+}
+
+static List* computeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
+    (void)compiler;
+    List* locals = listNew();
+    if (expr->params) {
+        for (ListNode* n = expr->params->head; n != NULL; n = n->next) {
+            Parameter* p = (Parameter*)n->data;
+            if (!p) continue;
+            nameSetAdd(locals, p->name.start, p->name.length);
+        }
+    }
+    for (ListNode* n = expr->body ? expr->body->head : NULL; n != NULL; n = n->next) {
+        collectLambdaLocalsStmt(locals, (Stmt*)n->data);
+    }
+
+    List* uses = listNew();
+    for (ListNode* n = expr->body ? expr->body->head : NULL; n != NULL; n = n->next) {
+        collectLambdaUsesStmt(uses, (Stmt*)n->data);
+    }
+
+    List* freeNames = listNew();
+    for (ListNode* n = uses->head; n != NULL; n = n->next) {
+        Token* t = (Token*)n->data;
+        if (!t) continue;
+        if (!nameSetContains(locals, t->start, t->length)) {
+            nameSetAdd(freeNames, t->start, t->length);
+        }
+    }
+
+    // Note: tokens inside `locals`/`uses` are shallow wrappers; free lists only.
+    freeTokenSet(locals);
+    freeTokenSet(uses);
+    return freeNames;
+}
+
 // void emitExprStmt(Compiler* compiler, ExprStmt* stmt) {
 //     emitDebug("emitExprStmt\n");
 //     emitExpr(compiler, stmt->expression);
@@ -172,7 +557,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
     emitDebug("emitVariableExpr\n");
     
-    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
+    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0, 0, NULL};
 
     // Resolve in current block chain
     Block* block = compiler->current;
@@ -207,12 +592,21 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
             error("Missing variable type metadata, name: %.*s\n", expr->name.length, expr->name.start);
             return NULL;
         }
-        return LLVMBuildLoad2(
-            compiler->builder,
-            var.type,
-            var.value,
-            "load"
-        );
+        if (var.isBoxed) {
+            if (!var.boxPtrType) {
+                error("Missing boxed pointer type metadata, name: %.*s\n", expr->name.length, expr->name.start);
+                return NULL;
+            }
+            LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxptr");
+            return LLVMBuildLoad2(compiler->builder, var.type, ptr, "load");
+        } else {
+            return LLVMBuildLoad2(
+                compiler->builder,
+                var.type,
+                var.value,
+                "load"
+            );
+        }
     }
     
     // 全局变量直接返回其值
@@ -256,7 +650,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
     emitDebug("emitAssignExpr\n");
     
     // Find variable reference
-    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0};
+    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0, 0, NULL};
     Block* block = compiler->current;
     while (block != NULL) {
         var = findVariableWithLength(block->variables, expr->name.start, expr->name.length);
@@ -292,10 +686,30 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         error("Failed to compile Assign expr\n");
         return NULL;
     }
+    value = castToType(compiler, value, var.type);
 
+    if (var.isBoxed) {
+        if (!var.boxPtrType) {
+            error("Missing boxed pointer type metadata\n");
+            return NULL;
+        }
+        LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxptr");
+        LLVMBuildStore(compiler->builder, value, ptr);
+    } else {
+        LLVMBuildStore(compiler->builder, value, var.value);
+    }
 
-    // Store value
-    LLVMBuildStore(compiler->builder, value, var.value);
+    // Best-effort: keep closure call signature in sync across assignments.
+    if (var.type == compilerGetClosureType(compiler)) {
+        LLVMTypeRef rhsSig = NULL;
+        if (expr->value && expr->value->type == EXPR_LAMBDA) {
+            rhsSig = compiler->lastLambdaFuncType;
+        } else if (expr->value && expr->value->type == EXPR_VARIABLE) {
+            VariableExpr* ve = (VariableExpr*)expr->value;
+            rhsSig = compilerFindClosureSig(compiler, ve->name.start, ve->name.length);
+        }
+        if (rhsSig) compilerRegisterClosureSig(compiler, expr->name.start, expr->name.length, rhsSig);
+    }
     
     // Return value for chained assignments
     emitDebug("emitAssignExpr end\n");
@@ -483,8 +897,22 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
     }
 
     LLVMValueRef structPtr = NULL;
-    if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
-        // Variable holds a pointer value (e.g. `&A`), so load it.
+    if (recvVar.isBoxed) {
+        // Boxed variable slot stores pointer-to-cell.
+        if (!recvVar.boxPtrType) {
+            error("Missing boxed pointer type for receiver\n");
+            return NULL;
+        }
+        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cellptr");
+        if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+            // Cell contains a pointer value (e.g. &T)
+            structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, cellPtr, "recv_ptr");
+        } else {
+            // Cell is the struct storage itself.
+            structPtr = cellPtr;
+        }
+    } else if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+        // Variable holds a pointer value (e.g. `&A`), so load it from its slot.
         structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "recv_ptr");
     } else {
         // Variable holds a struct value, so its alloca is already a pointer to the struct.
@@ -529,7 +957,18 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
     }
 
     LLVMValueRef structPtr = NULL;
-    if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+    if (recvVar.isBoxed) {
+        if (!recvVar.boxPtrType) {
+            error("Missing boxed pointer type for receiver\n");
+            return NULL;
+        }
+        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cellptr");
+        if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+            structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, cellPtr, "recv_ptr");
+        } else {
+            structPtr = cellPtr;
+        }
+    } else if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
         structPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "recv_ptr");
     } else {
         structPtr = recvVar.value;
@@ -560,6 +999,13 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
             if (!var.value) {
                 error("Undefined variable in address-of\n");
                 return NULL;
+            }
+            if (var.isBoxed) {
+                if (!var.boxPtrType) {
+                    error("Missing boxed pointer type metadata\n");
+                    return NULL;
+                }
+                return LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxptr");
             }
             return var.value;
         }
@@ -627,13 +1073,17 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr) {
             return NULL;
         }
         
-        // 加载当前值
-        LLVMValueRef currentValue = LLVMBuildLoad2(
-            builder,
-            var.type,
-            var.value,
-            "load"
-        );
+        LLVMValueRef currentValue = NULL;
+        if (var.isBoxed) {
+            if (!var.boxPtrType) {
+                error("Missing boxed pointer type in postfix expression");
+                return NULL;
+            }
+            LLVMValueRef ptr = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "boxptr");
+            currentValue = LLVMBuildLoad2(builder, var.type, ptr, "load");
+        } else {
+            currentValue = LLVMBuildLoad2(builder, var.type, var.value, "load");
+        }
         
         // 创建增减后的值
         LLVMValueRef newValue;
@@ -654,7 +1104,12 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr) {
         }
         
         // 存储新值
-        LLVMBuildStore(builder, newValue, var.value);
+        if (var.isBoxed) {
+            LLVMValueRef ptr = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "boxptr");
+            LLVMBuildStore(builder, newValue, ptr);
+        } else {
+            LLVMBuildStore(builder, newValue, var.value);
+        }
         
         // 返回原值（后缀操作返回操作前的值）
         return currentValue;
@@ -683,12 +1138,17 @@ LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr) {
         }
         
         // 加载当前值
-        LLVMValueRef currentValue = LLVMBuildLoad2(
-            builder,
-            var.type,
-            var.value,
-            "load"
-        );
+        LLVMValueRef currentValue = NULL;
+        if (var.isBoxed) {
+            if (!var.boxPtrType) {
+                error("Missing boxed pointer type in prefix expression");
+                return NULL;
+            }
+            LLVMValueRef ptr = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "boxptr");
+            currentValue = LLVMBuildLoad2(builder, var.type, ptr, "load");
+        } else {
+            currentValue = LLVMBuildLoad2(builder, var.type, var.value, "load");
+        }
         
         // 创建增减后的值
         LLVMValueRef newValue;
@@ -709,7 +1169,12 @@ LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr) {
         }
         
         // 存储新值
-        LLVMBuildStore(builder, newValue, var.value);
+        if (var.isBoxed) {
+            LLVMValueRef ptr = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "boxptr");
+            LLVMBuildStore(builder, newValue, ptr);
+        } else {
+            LLVMBuildStore(builder, newValue, var.value);
+        }
         
         // 返回新值（前缀操作返回操作后的值）
         return newValue;
@@ -717,4 +1182,266 @@ LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr) {
     
     error("Invalid prefix expression operand");
     return NULL;
+}
+
+LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
+    emitDebug("emitLambdaExpr\n");
+    if (!compiler || !expr) return NULL;
+
+    // Compute direct free variable names (excluding nested lambdas).
+    List* freeNames = computeLambdaFreeNames(compiler, expr);
+
+    LLVMContextRef context = compiler->context;
+    LLVMBuilderRef builder = compiler->builder;
+
+    int id = compiler->lambdaCount++;
+
+    // Name the lambda function and its env struct for debugging.
+    char fnNameBuf[256];
+    if (compiler->currentModulePrefix && compiler->currentModulePrefixLen > 0) {
+        snprintf(fnNameBuf, sizeof(fnNameBuf), "%.*s__lambda_%d", compiler->currentModulePrefixLen, compiler->currentModulePrefix, id);
+    } else {
+        snprintf(fnNameBuf, sizeof(fnNameBuf), "__lambda_%d", id);
+    }
+
+    char envNameBuf[256];
+    snprintf(envNameBuf, sizeof(envNameBuf), "__env_%d", id);
+
+    // Build env type (struct of pointers to captured cells).
+    LLVMTypeRef envType = NULL;
+    LLVMTypeRef envPtrType = NULL;
+    LLVMTypeRef* envFieldTypes = NULL;
+    LLVMTypeRef* envValueTypes = NULL;
+    int captureCount = freeNames ? freeNames->length : 0;
+
+    if (captureCount > 0) {
+        envType = LLVMStructCreateNamed(context, envNameBuf);
+        envFieldTypes = malloc(sizeof(LLVMTypeRef) * (size_t)captureCount);
+        envValueTypes = malloc(sizeof(LLVMTypeRef) * (size_t)captureCount);
+
+        for (int i = 0; i < captureCount; i++) {
+            Token* t = (Token*)listGet(freeNames, i);
+            VariableExpr ve;
+            memset(&ve, 0, sizeof(ve));
+            ve.base.type = EXPR_VARIABLE;
+            ve.name = *t;
+            VariableRef ref = findVariableExpr(compiler, (Expr*)&ve);
+            if (!ref.value || !ref.type) {
+                // Unresolved capture: treat as opaque pointer.
+                envFieldTypes[i] = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+                envValueTypes[i] = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+                continue;
+            }
+            envValueTypes[i] = ref.type;
+            envFieldTypes[i] = ref.isBoxed ? ref.boxPtrType : LLVMPointerType(ref.type, 0);
+        }
+        LLVMStructSetBody(envType, envFieldTypes, (unsigned)captureCount, 0);
+        envPtrType = LLVMPointerType(envType, 0);
+    }
+
+    // Build lambda function type: (env, args...) -> ret
+    int paramCount = expr->params ? expr->params->length : 0;
+    int totalParams = paramCount + 1;
+
+    LLVMTypeRef* paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)totalParams);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+    paramTypes[0] = envPtrType ? envPtrType : i8ptr;
+
+    for (int i = 0; i < paramCount; i++) {
+        Parameter* p = listGet(expr->params, i);
+        paramTypes[i + 1] = lambdaTypeToLLVMType(compiler, p ? p->type : NULL, false);
+    }
+
+    LLVMTypeRef retType = LLVMVoidTypeInContext(context);
+    int multiCount = 0;
+    if (expr->returnTypes && expr->returnTypes->length > 1) {
+        multiCount = expr->returnTypes->length;
+        LLVMTypeRef* rts = malloc(sizeof(LLVMTypeRef) * (size_t)multiCount);
+        for (int i = 0; i < multiCount; i++) {
+            Type* t = listGet(expr->returnTypes, i);
+            rts[i] = lambdaTypeToLLVMType(compiler, t, false);
+        }
+        retType = LLVMStructTypeInContext(context, rts, (unsigned)multiCount, 0);
+        free(rts);
+    } else {
+        retType = lambdaTypeToLLVMType(compiler, expr->returnType, true);
+    }
+
+    LLVMTypeRef fnType = LLVMFunctionType(retType, paramTypes, (unsigned)totalParams, 0);
+    LLVMValueRef fn = LLVMAddFunction(compiler->module, fnNameBuf, fnType);
+    compiler->lastLambdaFuncType = fnType;
+    if (multiCount > 1) {
+        compilerRegisterMultiReturn(compiler, fnNameBuf, (int)strlen(fnNameBuf), multiCount);
+    }
+
+    // Compile lambda body in its own function.
+    LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(builder);
+    Block* savedCurrent = compiler->current;
+    int savedBox = compiler->boxAllLocals;
+    compiler->boxAllLocals = 1; // simplest safe default for closures
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
+    LLVMPositionBuilderAtEnd(builder, entry);
+
+    Block* funcBlock = malloc(sizeof(Block));
+    funcBlock->parent = savedCurrent;
+    funcBlock->func = fn;
+    funcBlock->variables = listNew();
+    funcBlock->labels = listNew();
+    compiler->current = funcBlock;
+
+    // Bind captured variables as boxed locals pointing to env cells.
+    if (captureCount > 0 && envType) {
+        LLVMValueRef envArg = LLVMGetParam(fn, 0);
+        for (int i = 0; i < captureCount; i++) {
+            Token* t = (Token*)listGet(freeNames, i);
+            if (!t) continue;
+            LLVMTypeRef cellPtrType = envFieldTypes ? envFieldTypes[i] : i8ptr;
+            LLVMValueRef fieldPtr = LLVMBuildStructGEP2(builder, envType, envArg, (unsigned)i, "cap_gep");
+            LLVMValueRef cellPtr = LLVMBuildLoad2(builder, cellPtrType, fieldPtr, "cap");
+
+            char* localName = malloc((size_t)t->length + 1);
+            memcpy(localName, t->start, (size_t)t->length);
+            localName[t->length] = '\0';
+            LLVMValueRef slot = LLVMBuildAlloca(builder, cellPtrType, localName);
+            LLVMBuildStore(builder, cellPtr, slot);
+
+            VariableRef* vr = malloc(sizeof(VariableRef));
+            vr->name = localName;
+            vr->length = t->length;
+            vr->value = slot;
+            vr->type = envValueTypes ? envValueTypes[i] : LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+            vr->typeName = NULL;
+            vr->typeNameLength = 0;
+            vr->isConst = 0;
+            vr->isGlobal = 0;
+            vr->isBoxed = 1;
+            vr->boxPtrType = cellPtrType;
+            listAppend(funcBlock->variables, vr);
+        }
+    }
+
+    // Bind parameters (boxed).
+    for (int i = 0; i < paramCount; i++) {
+        Parameter* p = listGet(expr->params, i);
+        LLVMValueRef arg = LLVMGetParam(fn, (unsigned)(i + 1));
+
+        char* paramName = malloc((size_t)p->name.length + 1);
+        memcpy(paramName, p->name.start, (size_t)p->name.length);
+        paramName[p->name.length] = '\0';
+
+        LLVMTypeRef vType = paramTypes[i + 1];
+        LLVMTypeRef cellPtrType = LLVMPointerType(vType, 0);
+        LLVMValueRef slot = LLVMBuildAlloca(builder, cellPtrType, paramName);
+
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(vType);
+        LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+        LLVMValueRef cell = LLVMBuildBitCast(builder, raw, cellPtrType, "cell");
+        LLVMBuildStore(builder, arg, cell);
+        LLVMBuildStore(builder, cell, slot);
+
+        VariableRef* variable = malloc(sizeof(VariableRef));
+        variable->name = paramName;
+        variable->length = p->name.length;
+        variable->value = slot;
+        variable->type = vType;
+        if (p->type && p->type->kind == TYPE_NAMED) {
+            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->name);
+            if (info) {
+                variable->typeName = info->name;
+                variable->typeNameLength = info->nameLength;
+            } else {
+                variable->typeName = p->type->name.start;
+                variable->typeNameLength = p->type->name.length;
+            }
+        } else if (p->type && p->type->kind == TYPE_REF && p->type->inner && p->type->inner->kind == TYPE_NAMED) {
+            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->inner->name);
+            if (info) {
+                variable->typeName = info->name;
+                variable->typeNameLength = info->nameLength;
+            } else {
+                variable->typeName = p->type->inner->name.start;
+                variable->typeNameLength = p->type->inner->name.length;
+            }
+        } else {
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
+        }
+        variable->isConst = 0;
+        variable->isGlobal = 0;
+        variable->isBoxed = 1;
+        variable->boxPtrType = cellPtrType;
+        listAppend(funcBlock->variables, variable);
+    }
+
+    // Compile body statements
+    for (ListNode* node = expr->body ? expr->body->head : NULL; node != NULL; node = node->next) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) break;
+        compileStmt(compiler, (Stmt*)node->data);
+    }
+
+    // Implicit return
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        if (LLVMGetTypeKind(retType) == LLVMVoidTypeKind) {
+            LLVMBuildRetVoid(builder);
+        } else {
+            LLVMBuildRet(builder, LLVMConstNull(retType));
+        }
+    }
+
+    // Restore insertion point and compiler state.
+    compiler->current = savedCurrent;
+    compiler->boxAllLocals = savedBox;
+    LLVMPositionBuilderAtEnd(builder, savedBlock);
+
+    // Allocate env instance and pack closure value.
+    LLVMTypeRef closureType = compilerGetClosureType(compiler);
+    LLVMValueRef closure = LLVMGetUndef(closureType);
+
+    LLVMValueRef fnPtr = LLVMBuildBitCast(builder, fn, i8ptr, "fnptr");
+    LLVMValueRef envPtrI8 = LLVMConstNull(i8ptr);
+
+    if (captureCount > 0 && envType && envPtrType) {
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(envType);
+        LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+        LLVMValueRef envPtr = LLVMBuildBitCast(builder, raw, envPtrType, "env");
+
+        for (int i = 0; i < captureCount; i++) {
+            Token* t = (Token*)listGet(freeNames, i);
+            if (!t) continue;
+            VariableExpr ve;
+            memset(&ve, 0, sizeof(ve));
+            ve.base.type = EXPR_VARIABLE;
+            ve.name = *t;
+            VariableRef ref = findVariableExpr(compiler, (Expr*)&ve);
+            if (!ref.value || !ref.type) continue;
+
+            LLVMTypeRef fieldType = envFieldTypes ? envFieldTypes[i] : i8ptr;
+            LLVMValueRef cellPtr = NULL;
+            if (ref.isBoxed) {
+                cellPtr = LLVMBuildLoad2(builder, ref.boxPtrType, ref.value, "cap_cell");
+            } else {
+                cellPtr = ref.value;
+            }
+            cellPtr = LLVMBuildBitCast(builder, cellPtr, fieldType, "cap_cast");
+            LLVMValueRef fieldPtr = LLVMBuildStructGEP2(builder, envType, envPtr, (unsigned)i, "env_gep");
+            LLVMBuildStore(builder, cellPtr, fieldPtr);
+        }
+
+        envPtrI8 = LLVMBuildBitCast(builder, envPtr, i8ptr, "env_i8");
+    }
+
+    closure = LLVMBuildInsertValue(builder, closure, fnPtr, 0, "c0");
+    closure = LLVMBuildInsertValue(builder, closure, envPtrI8, 1, "c1");
+
+    // If this lambda was used as initializer, the surrounding var-stmt can consume this.
+    compiler->lastLambdaFuncType = fnType;
+
+    if (paramTypes) free(paramTypes);
+    if (envFieldTypes) free(envFieldTypes);
+    if (envValueTypes) free(envValueTypes);
+    if (freeNames) freeTokenSet(freeNames);
+    return closure;
 }

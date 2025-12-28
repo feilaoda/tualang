@@ -1,0 +1,11 @@
+fn apply(x:int, f:(int)->int) -> int {
+    return f(x)
+}
+
+let add10: (int) -> int = fn(x:int) -> int {
+    return x + 10
+}
+
+println(apply(5, add10))
+println(apply(7, fn(x:int) -> int { return x * 2 }))
+

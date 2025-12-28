@@ -12,6 +12,7 @@
   - 条件：`if cond { ... } else if cond { ... } else { ... }`（可选括号：`if (cond) {}`)
   - 循环：`for i=0; i<n; i++ { ... }`（可选括号）
   - 函数：`fn demo(a:int, b:string) -> int { ... }`（可选 `->` 语法糖：`fn demo(...) int {}`)
+  - 函数类型（TS 风格）：`(int, int) -> int`、`(int) -> (int, string)`
 
 ### 2. 前端（Lexer/Parser/AST）
 - Lexer：把 README 的关键字/字面量稳定 token 化（含兼容别名：`let` ~ `var`，`fn` ~ `func`）
@@ -37,6 +38,7 @@
 
 ### 7. TODO List（下一阶段，按执行顺序）
 - [ ] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则
+- [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）
 - [ ] 增加语义/类型分析层（Parse → Analyze → Codegen）：符号表、类型推断/检查、错误定位
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
@@ -45,7 +47,7 @@
 
 ### 8. Lua 能力对齐（如果目标是“具备 Lua 的所有能力”）
 - [x] 控制流：`while/do/for`、`break/goto/continue`
-- [ ] 函数：闭包（upvalue）
+- [x] 函数：闭包（upvalue）
 - [x] 函数：多返回值
 - [x] 模块与加载器：`import` / `from xx import yy`（TypeScript 风格）
 - [x] 模块系统细节：默认全部导出；`private fn/struct/...` 不导出；模块作用域/命名空间；相对/绝对路径与扩展名；循环依赖顺序；模块缓存（同一模块只执行一次）

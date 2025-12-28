@@ -65,6 +65,10 @@ static void errorAt(Parser* parser, Token* token, const char* message) {
 
 static Type* parseType(Parser* parser) {
     Type* type = (Type*)malloc(sizeof(Type));
+    type->name = (Token){0};
+    type->inner = NULL;
+    type->paramTypes = NULL;
+    type->returnTypes = NULL;
     
     if (match(parser, TOKEN_INT)) {
         type->kind = TYPE_INT;

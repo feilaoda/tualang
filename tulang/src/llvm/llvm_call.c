@@ -70,6 +70,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
             LLVMTypeRef inner = typeToLLVMType(compiler, type->inner);
             return LLVMPointerType(inner, 0);
         }
+        case TYPE_FUNC:
+            return compilerGetClosureType(compiler);
         default: return LLVMInt32TypeInContext(compiler->context);
     }
 }
@@ -275,6 +277,26 @@ static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef
     return call;
 }
 
+static LLVMValueRef collapseMultiReturnByTypeIfNeeded(Compiler* compiler, LLVMValueRef call, LLVMTypeRef retType) {
+    if (!compiler || !call || !retType) return call;
+    if (compiler->wantMultiValue) return call;
+    if (LLVMGetTypeKind(retType) == LLVMStructTypeKind) {
+        return LLVMBuildExtractValue(compiler->builder, call, 0, "mv0");
+    }
+    return call;
+}
+
+static LLVMValueRef loadLocalValue(Compiler* compiler, VariableRef var) {
+    if (!compiler || !var.value || !var.type) return NULL;
+    if (var.isGlobal) return var.value;
+    if (var.isBoxed) {
+        if (!var.boxPtrType) return NULL;
+        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "cellptr");
+        return LLVMBuildLoad2(compiler->builder, var.type, cellPtr, "load");
+    }
+    return LLVMBuildLoad2(compiler->builder, var.type, var.value, "load");
+}
+
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     emitDebug("emitCallExpr\n");
 
@@ -284,6 +306,64 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     // Nested calls (arguments) should keep the default "first value" rule.
     int wantMultiForThisCall = compiler ? compiler->wantMultiValue : 0;
     if (compiler) compiler->wantMultiValue = 0;
+
+    // Immediate lambda call: (fn(...) { ... })(args)
+    if (expr->callee->type == EXPR_LAMBDA) {
+        LLVMValueRef closureVal = compileExpr(compiler, expr->callee);
+        LLVMTypeRef closureType = compilerGetClosureType(compiler);
+        if (!closureVal || LLVMTypeOf(closureVal) != closureType) {
+            emitDebug("Failed to compile lambda callee\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        LLVMValueRef fnPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 0, "fnptr");
+        LLVMValueRef envPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 1, "envptr");
+
+        LLVMTypeRef fnType = compiler->lastLambdaFuncType;
+        if (!fnType) {
+            emitDebug("Missing lambda signature\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        unsigned expected = LLVMCountParamTypes(fnType);
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (expected != got + 1) {
+            emitDebug("Lambda argument count mismatch\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        LLVMTypeRef* paramTypes = NULL;
+        if (expected > 0) {
+            paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+            LLVMGetParamTypes(fnType, paramTypes);
+        }
+
+        LLVMValueRef* args = NULL;
+        if (expected > 0) {
+            args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+            args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
+            ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+            for (unsigned i = 1; i < expected; i++) {
+                LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
+                argVal = castValueToType(compiler, argVal, paramTypes[i]);
+                args[i] = argVal;
+                node = node->next;
+            }
+        }
+
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+        LLVMTypeRef retType = LLVMGetReturnType(fnType);
+        LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+
+        if (paramTypes) free(paramTypes);
+        if (args) free(args);
+        return out;
+    }
 
     // Member call:
     // - Instance: p.method(...) -> Struct__method(p, ...)
@@ -356,7 +436,20 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
             if (isInstance) {
                 LLVMValueRef thisArg = NULL;
-                if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+                if (recvVar.isBoxed) {
+                    if (!recvVar.boxPtrType) {
+                        emitDebug("Missing boxed pointer type for receiver\n");
+                        return NULL;
+                    }
+                    LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cellptr");
+                    if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
+                        // Cell contains a pointer value (&T)
+                        thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, cellPtr, "this");
+                    } else {
+                        // Cell is the struct storage itself.
+                        thisArg = cellPtr;
+                    }
+                } else if (LLVMGetTypeKind(recvVar.type) == LLVMPointerTypeKind) {
                     thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "this");
                 } else {
                     thisArg = recvVar.value; // alloca already yields pointer to struct value
@@ -393,6 +486,65 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isPrint = tokenEquals(&callee->name, "print");
 
     if (!isPrintln && !isPrint) {
+        // Closure value call: f(args...)
+        VariableRef calleeVar = findVariableExpr(compiler, expr->callee);
+        LLVMTypeRef closureType = compilerGetClosureType(compiler);
+        if (calleeVar.value && calleeVar.type == closureType) {
+            LLVMTypeRef fnType = compilerFindClosureSig(compiler, calleeVar.name, calleeVar.length);
+            if (!fnType) {
+                emitDebug("Missing closure signature for variable\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMValueRef closureVal = loadLocalValue(compiler, calleeVar);
+            if (!closureVal) {
+                emitDebug("Failed to load closure value\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMValueRef fnPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 0, "fnptr");
+            LLVMValueRef envPtr = LLVMBuildExtractValue(compiler->builder, closureVal, 1, "envptr");
+
+            unsigned expected = LLVMCountParamTypes(fnType);
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (expected != got + 1) {
+                emitDebug("Closure argument count mismatch\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMTypeRef* paramTypes = NULL;
+            if (expected > 0) {
+                paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+                LLVMGetParamTypes(fnType, paramTypes);
+            }
+
+            LLVMValueRef* args = NULL;
+            if (expected > 0) {
+                args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+                args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
+                ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+                for (unsigned i = 1; i < expected; i++) {
+                    LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
+                    argVal = castValueToType(compiler, argVal, paramTypes[i]);
+                    args[i] = argVal;
+                    node = node->next;
+                }
+            }
+
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+            LLVMTypeRef retType = LLVMGetReturnType(fnType);
+            LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+
+            if (paramTypes) free(paramTypes);
+            if (args) free(args);
+            return out;
+        }
+
         char* name = tokenToCString(&callee->name);
         LLVMValueRef func = LLVMGetNamedFunction(compiler->module, name);
         if (!func) {

@@ -33,6 +33,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_ASSIGN: return "Assign";
         case EXPR_GET: return "Get";
         case EXPR_SET: return "Set";
+        case EXPR_LAMBDA: return "Lambda";
         default: return "Unknown";
     }
 }
@@ -399,6 +400,62 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         expr = parseExpression(parser);
         consume(parser, TOKEN_RPAREN, "Expect ')' after expression");
         expr = newGroupingExpr(expr);
+    } else if (match(parser, TOKEN_FUNC)) {
+        // Lambda expression: fn (params...) -> T[,U...] { ... }
+        Token keyword = parser->previous;
+        consume(parser, TOKEN_LPAREN, "Expect '(' after 'fn' in lambda expression");
+
+        List* parameters = listNew();
+        if (!check(parser, TOKEN_RPAREN)) {
+            do {
+                Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
+                Type* type = NULL;
+                if (match(parser, TOKEN_COLON)) {
+                    type = parseType(parser);
+                }
+                listAppend(parameters, newParameter(param, type));
+            } while (match(parser, TOKEN_COMMA));
+        }
+        consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
+
+        Type* returnType = NULL;
+        List* returnTypes = NULL;
+
+        // Support both:
+        // - `fn(...) -> int {}` (preferred)
+        // - `fn(...) int {}` (sugar)
+        if (match(parser, TOKEN_ARROW) ||
+            check(parser, TOKEN_INT) ||
+            check(parser, TOKEN_LONG) ||
+            check(parser, TOKEN_DOUBLE) ||
+            check(parser, TOKEN_STRING) ||
+            check(parser, TOKEN_BOOL) ||
+            check(parser, TOKEN_IDENTIFIER) ||
+            check(parser, TOKEN_AMP)) {
+            returnTypes = listNew();
+            returnType = parseType(parser);
+            listAppend(returnTypes, returnType);
+            while (match(parser, TOKEN_COMMA)) {
+                Type* t = parseType(parser);
+                listAppend(returnTypes, t);
+            }
+        }
+
+        List* body = parseBlock(parser);
+
+        LambdaExpr* lam = malloc(sizeof(LambdaExpr));
+        lam->base.type = EXPR_LAMBDA;
+        lam->keyword = keyword;
+        lam->params = parameters;
+        lam->returnType = returnType;
+        lam->returnTypes = returnTypes;
+        lam->body = body;
+        expr = (Expr*)lam;
+
+        // Allow immediate call: (fn(...) {...})(args)
+        if (match(parser, TOKEN_LPAREN)) {
+            expr = finishCall(parser, expr);
+        }
     } else if (match(parser, TOKEN_PRINTLN)){
         expr = newVariableExpr(parser->previous);
         if (match(parser, TOKEN_LPAREN)) {
@@ -1147,12 +1204,54 @@ static Stmt* parseStructDeclaration(Parser* parser) {
 }
 
 static Type* parseType(Parser* parser) {
+    // Function type: `(T1, T2, ...) -> R` or `(T1, ...) -> (R1, R2, ...)`
+    // Note: standalone tuple types like `(int, string)` are not a general type form yet.
+    if (match(parser, TOKEN_LPAREN)) {
+        List* paramTypes = listNew();
+        if (!check(parser, TOKEN_RPAREN)) {
+            do {
+                Type* t = parseType(parser);
+                listAppend(paramTypes, t);
+            } while (match(parser, TOKEN_COMMA));
+        }
+        consume(parser, TOKEN_RPAREN, "Expect ')' after function type parameters");
+        consume(parser, TOKEN_ARROW, "Expect '->' after function type parameters");
+
+        List* returnTypes = listNew();
+        if (match(parser, TOKEN_LPAREN)) {
+            if (!check(parser, TOKEN_RPAREN)) {
+                do {
+                    Type* t = parseType(parser);
+                    listAppend(returnTypes, t);
+                } while (match(parser, TOKEN_COMMA));
+            }
+            consume(parser, TOKEN_RPAREN, "Expect ')' after function type return types");
+        } else {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+            while (match(parser, TOKEN_COMMA)) {
+                Type* more = parseType(parser);
+                listAppend(returnTypes, more);
+            }
+        }
+
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_FUNC;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->paramTypes = paramTypes;
+        type->returnTypes = returnTypes;
+        return type;
+    }
+
     if (match(parser, TOKEN_AMP)) {
         Type* inner = parseType(parser);
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_REF;
         type->name = (Token){0};
         type->inner = inner;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_INT)) {
@@ -1160,6 +1259,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_INT;
         type->name = (Token){0};
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_LONG)) {
@@ -1167,6 +1268,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_LONG;
         type->name = (Token){0};
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_DOUBLE)) {
@@ -1174,6 +1277,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_DOUBLE;
         type->name = (Token){0};
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_STRING)) {
@@ -1181,6 +1286,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_STRING;
         type->name = (Token){0};
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_BOOL)) {
@@ -1188,6 +1295,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_BOOL;
         type->name = (Token){0};
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
@@ -1195,6 +1304,8 @@ static Type* parseType(Parser* parser) {
         type->kind = TYPE_NAMED;
         type->name = parser->previous;
         type->inner = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
         return type;
     }
     printError(parser, "Expect type name");

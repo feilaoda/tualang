@@ -2,6 +2,15 @@
 #include "compiler.h"
 #include "debug.h"
 
+static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
+    return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
 static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
 
@@ -33,6 +42,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             LLVMTypeRef inner = toLLVMType(compiler, type->inner);
             return LLVMPointerType(inner, 0);
         }
+        case TYPE_FUNC:
+            return compilerGetClosureType(compiler);
         default:
             return LLVMInt32TypeInContext(compiler->context);
     }
@@ -40,6 +51,10 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
 
 static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
     if (!initializer) return LLVMInt32TypeInContext(compiler->context);
+
+    if (initializer->type == EXPR_LAMBDA) {
+        return compilerGetClosureType(compiler);
+    }
 
     if (initializer->type == EXPR_VARIABLE) {
         VariableRef ref = findVariableExpr(compiler, initializer);
@@ -131,23 +146,70 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     memcpy(var, stmt->name.start, stmt->name.length);
     var[stmt->name.length] = '\0';
     emitDebug("emitVarStmt var name:%s\n", var);
-    LLVMTypeRef allocaType = stmt->type ? toLLVMType(compiler, stmt->type) : inferLLVMTypeFromInitializer(compiler, stmt->initializer);
-    LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, allocaType, var);
+    LLVMTypeRef valueType = stmt->type ? toLLVMType(compiler, stmt->type) : inferLLVMTypeFromInitializer(compiler, stmt->initializer);
 
+    int shouldBox = compiler && compiler->boxAllLocals;
+    LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
+    LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
+    LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, slotElemType, var);
+
+    LLVMTypeRef compiledLambdaSig = NULL;
+    LLVMTypeRef declaredSig = NULL;
+    if (stmt->type && stmt->type->kind == TYPE_FUNC) {
+        declaredSig = compilerClosureSigFromType(compiler, stmt->type);
+    }
     if (stmt->initializer != NULL) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
         LLVMValueRef initValue = compileExpr(compiler, stmt->initializer);
-        initValue = castIfNeeded(compiler, initValue, allocaType);
-        if (initValue) {
-            LLVMBuildStore(compiler->builder, initValue, slot);
+        if (stmt->initializer->type == EXPR_LAMBDA) {
+            compiledLambdaSig = compiler->lastLambdaFuncType;
+            if (declaredSig && compiledLambdaSig && declaredSig != compiledLambdaSig) {
+                emitDebug("emitVarStmt: function type annotation does not match lambda signature for %s\n", var);
+            }
+        } else if (stmt->initializer->type == EXPR_VARIABLE && valueType == compilerGetClosureType(compiler)) {
+            VariableExpr* ve = (VariableExpr*)stmt->initializer;
+            LLVMTypeRef baseSig = compilerFindClosureSig(compiler, ve->name.start, ve->name.length);
+            if (baseSig) compiledLambdaSig = baseSig;
         }
+        initValue = castIfNeeded(compiler, initValue, valueType);
+        if (shouldBox) {
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(valueType);
+            LLVMValueRef raw = LLVMBuildCall2(
+                compiler->builder,
+                LLVMGlobalGetValueType(mallocFn),
+                mallocFn,
+                &sizeV,
+                1,
+                "malloc"
+            );
+            LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+            if (initValue) LLVMBuildStore(compiler->builder, initValue, cell);
+            LLVMBuildStore(compiler->builder, cell, slot);
+        } else {
+            if (initValue) LLVMBuildStore(compiler->builder, initValue, slot);
+        }
+    } else if (shouldBox) {
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(valueType);
+        LLVMValueRef raw = LLVMBuildCall2(
+            compiler->builder,
+            LLVMGlobalGetValueType(mallocFn),
+            mallocFn,
+            &sizeV,
+            1,
+            "malloc"
+        );
+        LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), cell);
+        LLVMBuildStore(compiler->builder, cell, slot);
     }
     Block * block = compiler->current;
     VariableRef * variable = malloc(sizeof(VariableRef));
     variable->name = var;
     variable->length = stmt->name.length;
     variable->value = slot;
-    variable->type = allocaType;
+    variable->type = valueType;
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
         StructInfo* info = compilerResolveStructByToken(compiler, &stmt->type->name);
         if (info) {
@@ -212,5 +274,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     }
     variable->isConst = stmt->isConst ? 1 : 0;
     variable->isGlobal = 0;
+    variable->isBoxed = shouldBox ? 1 : 0;
+    variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     listAppend(block->variables, variable);
+
+    LLVMTypeRef finalSig = compiledLambdaSig ? compiledLambdaSig : declaredSig;
+    if (finalSig) compilerRegisterClosureSig(compiler, variable->name, variable->length, finalSig);
 }
