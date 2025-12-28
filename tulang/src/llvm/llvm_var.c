@@ -26,6 +26,9 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -54,6 +57,15 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
 
     if (initializer->type == EXPR_LAMBDA) {
         return compilerGetClosureType(compiler);
+    }
+    if (initializer->type == EXPR_MAP_LITERAL) {
+        return compilerGetMapType(compiler);
+    }
+    if (initializer->type == EXPR_INDEX) {
+        return compilerGetTuaValueType(compiler);
+    }
+    if (initializer->type == EXPR_INDEX_SET) {
+        return compilerGetTuaValueType(compiler);
     }
 
     if (initializer->type == EXPR_VARIABLE) {
@@ -203,6 +215,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
         LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), cell);
         LLVMBuildStore(compiler->builder, cell, slot);
+    } else {
+        // Make `map` locals safely default to null when uninitialized.
+        if (valueType == compilerGetMapType(compiler)) {
+            LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), slot);
+        }
     }
     Block * block = compiler->current;
     VariableRef * variable = malloc(sizeof(VariableRef));

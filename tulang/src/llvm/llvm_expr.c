@@ -22,6 +22,9 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 char* tn = malloc((size_t)type->name.length + 1);
@@ -55,6 +58,143 @@ static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
     LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
     return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
+enum {
+    TUA_VAL_NIL = 0,
+    TUA_VAL_INT = 1,
+    TUA_VAL_LONG = 2,
+    TUA_VAL_DOUBLE = 3,
+    TUA_VAL_BOOL = 4,
+    TUA_VAL_STRING = 5,
+    TUA_VAL_PTR = 6
+};
+
+static LLVMValueRef tuaValueMake(Compiler* compiler, int tag, LLVMValueRef payloadI64) {
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMValueRef v = LLVMGetUndef(vt);
+    LLVMValueRef tagV = LLVMConstInt(LLVMInt32TypeInContext(context), (unsigned)tag, 0);
+    LLVMValueRef payload = payloadI64 ? payloadI64 : LLVMConstInt(LLVMInt64TypeInContext(context), 0, 0);
+    v = LLVMBuildInsertValue(builder, v, tagV, 0, "t_tag");
+    v = LLVMBuildInsertValue(builder, v, payload, 1, "t_payload");
+    return v;
+}
+
+static LLVMValueRef tuaValueFromKey(Compiler* compiler, LLVMValueRef key) {
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef t = LLVMTypeOf(key);
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+
+    if (k == LLVMIntegerTypeKind) {
+        unsigned bits = LLVMGetIntTypeWidth(t);
+        LLVMValueRef k64 = key;
+        if (bits < 64) k64 = LLVMBuildSExt(builder, key, i64, "k_sext");
+        else if (bits > 64) k64 = LLVMBuildTrunc(builder, key, i64, "k_trunc");
+        return tuaValueMake(compiler, TUA_VAL_LONG, k64); // normalize int/long to long key
+    }
+    if (k == LLVMPointerTypeKind) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        if (t != i8ptr) {
+            error("Map key pointer type must be string (i8*)\n");
+            return NULL;
+        }
+        LLVMValueRef p64 = LLVMBuildPtrToInt(builder, key, i64, "k_ptr");
+        return tuaValueMake(compiler, TUA_VAL_STRING, p64);
+    }
+
+    error("Map key must be int/long/string\n");
+    return NULL;
+}
+
+static LLVMValueRef tuaValueFromValue(Compiler* compiler, LLVMValueRef value) {
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef t = LLVMTypeOf(value);
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+
+    if (k == LLVMIntegerTypeKind) {
+        unsigned bits = LLVMGetIntTypeWidth(t);
+        if (bits == 1) {
+            LLVMValueRef b64 = LLVMBuildZExt(builder, value, i64, "b64");
+            return tuaValueMake(compiler, TUA_VAL_BOOL, b64);
+        }
+        if (bits == 32) {
+            LLVMValueRef i64v = LLVMBuildSExt(builder, value, i64, "i64");
+            return tuaValueMake(compiler, TUA_VAL_INT, i64v);
+        }
+        if (bits == 64) {
+            return tuaValueMake(compiler, TUA_VAL_LONG, value);
+        }
+        LLVMValueRef i64v = LLVMBuildSExt(builder, value, i64, "i64x");
+        return tuaValueMake(compiler, TUA_VAL_LONG, i64v);
+    }
+
+    if (k == LLVMDoubleTypeKind) {
+        LLVMValueRef bits = LLVMBuildBitCast(builder, value, i64, "dblbits");
+        return tuaValueMake(compiler, TUA_VAL_DOUBLE, bits);
+    }
+
+    if (k == LLVMPointerTypeKind) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        LLVMValueRef ptr = value;
+        int tag = TUA_VAL_PTR;
+        if (t == i8ptr) {
+            tag = TUA_VAL_STRING;
+        } else {
+            ptr = LLVMBuildBitCast(builder, value, i8ptr, "p_i8p");
+        }
+        LLVMValueRef bits = LLVMBuildPtrToInt(builder, ptr, i64, "p64");
+        return tuaValueMake(compiler, tag, bits);
+    }
+
+    // For aggregate values, box into heap and store pointer.
+    if (k == LLVMStructTypeKind) {
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(t);
+        LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+        LLVMValueRef cell = LLVMBuildBitCast(builder, raw, LLVMPointerType(t, 0), "cell");
+        LLVMBuildStore(builder, value, cell);
+        LLVMValueRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        LLVMValueRef p = LLVMBuildBitCast(builder, cell, i8ptr, "cell_i8");
+        LLVMValueRef bits = LLVMBuildPtrToInt(builder, p, i64, "cell64");
+        return tuaValueMake(compiler, TUA_VAL_PTR, bits);
+    }
+
+    error("Unsupported map value type\n");
+    return NULL;
+}
+
+static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_new");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, NULL, 0, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_new", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapGet(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[2] = { mapType, vt };
+    LLVMTypeRef fnType = LLVMFunctionType(vt, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_get", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapSet(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_set");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[3] = { mapType, vt, vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_set", fnType);
 }
 
 static int nameSetContains(List* set, const char* name, int len) {
@@ -129,6 +269,27 @@ static void collectLambdaLocalsExpr(List* locals, Expr* expr) {
         case EXPR_SET: {
             SetExpr* s = (SetExpr*)expr;
             collectLambdaLocalsExpr(locals, s->object);
+            collectLambdaLocalsExpr(locals, s->value);
+            break;
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)expr;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* e = (MapEntry*)n->data;
+                if (e) collectLambdaLocalsExpr(locals, e->value);
+            }
+            break;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)expr;
+            collectLambdaLocalsExpr(locals, i->object);
+            collectLambdaLocalsExpr(locals, i->index);
+            break;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* s = (IndexSetExpr*)expr;
+            collectLambdaLocalsExpr(locals, s->object);
+            collectLambdaLocalsExpr(locals, s->index);
             collectLambdaLocalsExpr(locals, s->value);
             break;
         }
@@ -267,6 +428,27 @@ static void collectLambdaUsesExpr(List* uses, Expr* expr) {
         case EXPR_SET: {
             SetExpr* s = (SetExpr*)expr;
             collectLambdaUsesExpr(uses, s->object);
+            collectLambdaUsesExpr(uses, s->value);
+            break;
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)expr;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* e = (MapEntry*)n->data;
+                if (e) collectLambdaUsesExpr(uses, e->value);
+            }
+            break;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)expr;
+            collectLambdaUsesExpr(uses, i->object);
+            collectLambdaUsesExpr(uses, i->index);
+            break;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* s = (IndexSetExpr*)expr;
+            collectLambdaUsesExpr(uses, s->object);
+            collectLambdaUsesExpr(uses, s->index);
             collectLambdaUsesExpr(uses, s->value);
             break;
         }
@@ -636,6 +818,9 @@ LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr) {
             return LLVMBuildGlobalStringPtr(compiler->builder, 
                                           val.as.string, "str");
         }
+        case TOKEN_NULL: {
+            return LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0));
+        }
         case TOKEN_TRUE:
             return LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 1, 0);
         case TOKEN_FALSE:
@@ -644,6 +829,162 @@ LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr) {
             emitDebug("Unknown literal type");
             return NULL;
     }
+}
+
+LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+    LLVMValueRef mapVal = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "map");
+    mapVal = castToType(compiler, mapVal, mapType);
+
+    LLVMValueRef setFn = getOrCreateTuaMapSet(compiler);
+    LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);
+
+    for (ListNode* n = expr->entries ? expr->entries->head : NULL; n != NULL; n = n->next) {
+        MapEntry* e = (MapEntry*)n->data;
+        if (!e) continue;
+
+        LLVMValueRef keyConst = NULL;
+        if (e->key.type == TOKEN_INT) {
+            int v = tokenToValue(e->key).as.i;
+            keyConst = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)v, 1);
+        } else if (e->key.type == TOKEN_LONG) {
+            int64_t v = tokenToValue(e->key).as.l;
+            keyConst = LLVMConstInt(LLVMInt64TypeInContext(compiler->context), (uint64_t)v, 1);
+        } else if (e->key.type == TOKEN_STRING_LITERAL) {
+            Value val = tokenToValue(e->key);
+            keyConst = LLVMBuildGlobalStringPtr(builder, val.as.string, "kstr");
+        } else {
+            error("Map key must be int/long/string literal\n");
+            return NULL;
+        }
+
+        LLVMValueRef key = tuaValueFromKey(compiler, keyConst);
+        if (!key) return NULL;
+        LLVMValueRef rawValue = compileExpr(compiler, e->value);
+        if (!rawValue) return NULL;
+        LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
+        if (!v) return NULL;
+
+        LLVMValueRef args[3] = { mapVal, key, v };
+        LLVMBuildCall2(builder, setType, setFn, args, 3, "");
+    }
+
+    return mapVal;
+}
+
+LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMValueRef obj = compileExpr(compiler, expr->object);
+    if (!obj) return NULL;
+    if (LLVMTypeOf(obj) != compilerGetMapType(compiler)) {
+        error("Indexing is only supported on map for now\n");
+        return NULL;
+    }
+    LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
+    if (!keyExpr) return NULL;
+    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+    if (!key) return NULL;
+
+    LLVMValueRef getFn = getOrCreateTuaMapGet(compiler);
+    LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
+    LLVMValueRef args[2] = { obj, key };
+    return LLVMBuildCall2(builder, getType, getFn, args, 2, "mget");
+}
+
+LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+
+    LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
+    if (!keyExpr) return NULL;
+    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+    if (!key) return NULL;
+
+    LLVMValueRef rawValue = compileExpr(compiler, expr->value);
+    if (!rawValue) return NULL;
+    LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
+    if (!v) return NULL;
+
+    LLVMValueRef objVal = NULL;
+    int canAutoInit = expr->object && expr->object->type == EXPR_VARIABLE;
+
+    if (canAutoInit) {
+        VariableExpr* ve = (VariableExpr*)expr->object;
+        VariableRef var = findVariableExpr(compiler, (Expr*)ve);
+        if (!var.value || !var.type) {
+            error("Undefined map variable\n");
+            return NULL;
+        }
+        if (var.isConst) {
+            error("Cannot assign into const map\n");
+            return NULL;
+        }
+        if (var.type != mapType) {
+            error("Index assignment target is not a map\n");
+            return NULL;
+        }
+
+        // Load current map pointer.
+        if (var.isBoxed) {
+            LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell");
+            objVal = LLVMBuildLoad2(builder, mapType, cell, "mval");
+        } else {
+            objVal = LLVMBuildLoad2(builder, mapType, var.value, "mval");
+        }
+
+        LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, objVal, LLVMConstNull(mapType), "isnull");
+
+        LLVMBasicBlockRef current = LLVMGetInsertBlock(builder);
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef initBB = LLVMAppendBasicBlock(fn, "map.init");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "map.cont");
+        LLVMBuildCondBr(builder, isNull, initBB, contBB);
+
+        // initBB: m = tua_map_new()
+        LLVMPositionBuilderAtEnd(builder, initBB);
+        LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+        LLVMValueRef newMap = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "newmap");
+        newMap = castToType(compiler, newMap, mapType);
+        if (var.isBoxed) {
+            LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell2");
+            LLVMBuildStore(builder, newMap, cell);
+        } else {
+            LLVMBuildStore(builder, newMap, var.value);
+        }
+        LLVMBuildBr(builder, contBB);
+
+        // contBB: reload map pointer (now guaranteed non-null)
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        if (var.isBoxed) {
+            LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell3");
+            objVal = LLVMBuildLoad2(builder, mapType, cell, "mval2");
+        } else {
+            objVal = LLVMBuildLoad2(builder, mapType, var.value, "mval2");
+        }
+
+        (void)current;
+    } else {
+        objVal = compileExpr(compiler, expr->object);
+        if (!objVal) return NULL;
+        if (LLVMTypeOf(objVal) != mapType) {
+            error("Index assignment target is not a map\n");
+            return NULL;
+        }
+    }
+
+    LLVMValueRef setFn = getOrCreateTuaMapSet(compiler);
+    LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);
+    LLVMValueRef args[3] = { objVal, key, v };
+    LLVMBuildCall2(builder, setType, setFn, args, 3, "");
+
+    // Return assigned value as tua_value for potential chaining.
+    return v;
 }
 
 LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {

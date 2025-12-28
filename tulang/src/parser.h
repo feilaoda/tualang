@@ -24,7 +24,10 @@ typedef enum {
     EXPR_ASSIGN,
     EXPR_GET,
     EXPR_SET,
-    EXPR_LAMBDA
+    EXPR_LAMBDA,
+    EXPR_MAP_LITERAL,
+    EXPR_INDEX,
+    EXPR_INDEX_SET
 } ExprType;
 
 typedef enum {
@@ -158,6 +161,29 @@ typedef struct {
     Token name;
     Expr* value;
 } SetExpr;
+
+typedef struct MapEntry {
+    Token key;     // TOKEN_INT/TOKEN_LONG/TOKEN_STRING_LITERAL only
+    Expr* value;   // any expression
+} MapEntry;
+
+typedef struct {
+    Expr base;
+    List* entries; // List<MapEntry*>
+} MapLiteralExpr;
+
+typedef struct {
+    Expr base;
+    Expr* object;
+    Expr* index;
+} IndexExpr;
+
+typedef struct {
+    Expr base;
+    Expr* object;
+    Expr* index;
+    Expr* value;
+} IndexSetExpr;
 
 // Lambda expression (closure literal)
 // Syntax: `fn (params...) -> T[,U...] { ... }`
@@ -371,6 +397,9 @@ static Expr* newVariableExpr(Token value);
 static Expr* newGroupingExpr(Expr* expression);
 static Expr* newPostfixExpr(Expr* operand, Token operator);
 static Expr* finishCall(Parser* parser, Expr* callee);
+static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+static Expr* newIndexExpr(Expr* object, Expr* index);
+static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
 
 
 static Stmt* newExpressionStmt(Expr* expression);

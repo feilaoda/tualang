@@ -126,6 +126,8 @@ void initCompiler(Compiler* compiler) {
     compiler->boxAllLocals = 0;
     compiler->lambdaCount = 0;
     compiler->closureType = NULL;
+    compiler->mapType = NULL;
+    compiler->tuaValueType = NULL;
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
     compiler->lastLambdaFuncType = NULL;
@@ -220,6 +222,26 @@ LLVMTypeRef compilerGetClosureType(Compiler* compiler) {
     LLVMTypeRef fields[2] = { i8ptr, i8ptr };
     compiler->closureType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
     return compiler->closureType;
+}
+
+LLVMTypeRef compilerGetMapType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    if (compiler->mapType) return compiler->mapType;
+    LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, "tua_map");
+    if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_map");
+    compiler->mapType = LLVMPointerType(t, 0);
+    return compiler->mapType;
+}
+
+LLVMTypeRef compilerGetTuaValueType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    if (compiler->tuaValueType) return compiler->tuaValueType;
+    LLVMTypeRef fields[2] = {
+        LLVMInt32TypeInContext(compiler->context),
+        LLVMInt64TypeInContext(compiler->context),
+    };
+    compiler->tuaValueType = LLVMStructTypeInContext(compiler->context, fields, 2, 0);
+    return compiler->tuaValueType;
 }
 
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType) {
@@ -490,6 +512,9 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
             StructInfo* info = compilerResolveStructByToken(compiler, &type->name);
             if (!info) {
                 // Best-effort: create/lookup an opaque named struct type.
@@ -594,6 +619,15 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_LAMBDA:
             return emitLambdaExpr(compiler, (LambdaExpr*)expr);
             break;
+        case EXPR_MAP_LITERAL:
+            return emitMapLiteralExpr(compiler, (MapLiteralExpr*)expr);
+            break;
+        case EXPR_INDEX:
+            return emitIndexExpr(compiler, (IndexExpr*)expr);
+            break;
+        case EXPR_INDEX_SET:
+            return emitIndexSetExpr(compiler, (IndexSetExpr*)expr);
+            break;
 
     }
     compilerDebug("Compiled expression end %d\n", expr->type);
@@ -646,6 +680,22 @@ static int exprHasLambdaLiteral(Expr* e) {
         case EXPR_SET: {
             SetExpr* s = (SetExpr*)e;
             return exprHasLambdaLiteral(s->object) || exprHasLambdaLiteral(s->value);
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me && exprHasLambdaLiteral(me->value)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)e;
+            return exprHasLambdaLiteral(i->object) || exprHasLambdaLiteral(i->index);
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* s = (IndexSetExpr*)e;
+            return exprHasLambdaLiteral(s->object) || exprHasLambdaLiteral(s->index) || exprHasLambdaLiteral(s->value);
         }
         case EXPR_POSTFIX:
             return exprHasLambdaLiteral(((PostfixExpr*)e)->operand);

@@ -78,6 +78,8 @@ typedef struct Compiler{
     int boxAllLocals;        // when true, locals/params stored in heap boxes
     int lambdaCount;         // unique lambda id
     LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
+    LLVMTypeRef mapType;     // cached %tua_map* type
+    LLVMTypeRef tuaValueType; // cached {i32, i64} tagged value type
     List* closureSigs;       // List<ClosureSig*>, variable name -> function type
     List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
     LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
@@ -304,6 +306,8 @@ int makeLabel(Compiler* compiler);
 Value tokenToValue(Token token);
 
 LLVMTypeRef compilerGetClosureType(Compiler* compiler);
+LLVMTypeRef compilerGetMapType(Compiler* compiler);
+LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);

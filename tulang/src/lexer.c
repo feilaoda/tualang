@@ -14,6 +14,7 @@ static const char* TokenNames[] = {
     "IN",
     "INT",
     "LONG",
+    "NULL",
     "TRUE",
     "FALSE",
     "DOUBLE",
@@ -39,6 +40,8 @@ static const char* TokenNames[] = {
     "RPAREN", 
     "LBRACE",
     "RBRACE",
+    "LBRACKET",
+    "RBRACKET",
     "SEMICOLON",
     "COMMA",
     "DOT",
@@ -86,6 +89,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_LONG: return "long";
         case TOKEN_STRING: return "string";
         case TOKEN_BOOL: return "bool";
+        case TOKEN_NULL: return "null";
         case TOKEN_TRUE: return "true";
         case TOKEN_FALSE: return "false";
         
@@ -114,6 +118,8 @@ const char* tokenToString(TokenType type) {
         case TOKEN_RPAREN: return ")";
         case TOKEN_LBRACE: return "{";
         case TOKEN_RBRACE: return "}";
+        case TOKEN_LBRACKET: return "[";
+        case TOKEN_RBRACKET: return "]";
         case TOKEN_SEMICOLON: return ";";
         case TOKEN_COMMA: return ",";
         case TOKEN_DOT: return ".";
@@ -314,7 +320,11 @@ static TokenType identifierType(Lexer* lexer) {
                 return TOKEN_BOOL;
             }
             break;
-        case 'n': return checkKeyword(lexer, 1, 2, "ot", TOKEN_NOT);
+        case 'n':
+            if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "null", 4) == 0) {
+                return TOKEN_NULL;
+            }
+            return checkKeyword(lexer, 1, 2, "ot", TOKEN_NOT);
         case '|': return checkKeyword(lexer, 1, 1, "|", TOKEN_OR);
         case 'r': return checkKeyword(lexer, 1, 5, "eturn", TOKEN_RETURN);
         case 's':
@@ -511,6 +521,8 @@ Token scanToken(Lexer* lexer) {
         case ')': return makeToken(lexer, TOKEN_RPAREN);
         case '{': return makeToken(lexer, TOKEN_LBRACE);
         case '}': return makeToken(lexer, TOKEN_RBRACE);
+        case '[': return makeToken(lexer, TOKEN_LBRACKET);
+        case ']': return makeToken(lexer, TOKEN_RBRACKET);
         case ';': return makeToken(lexer, TOKEN_SEMICOLON);
         case ',': return makeToken(lexer, TOKEN_COMMA);
         case '.': return makeToken(lexer, TOKEN_DOT);

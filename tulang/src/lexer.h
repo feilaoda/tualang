@@ -33,6 +33,7 @@ typedef enum {
     TOKEN_LONG,
     TOKEN_STRING,
     TOKEN_BOOL,
+    TOKEN_NULL,
     TOKEN_TRUE,
     TOKEN_FALSE,
     // Operators
@@ -60,6 +61,8 @@ typedef enum {
     TOKEN_RPAREN,    // )
     TOKEN_LBRACE,    // {
     TOKEN_RBRACE,    // }
+    TOKEN_LBRACKET,  // [
+    TOKEN_RBRACKET,  // ]
     TOKEN_SEMICOLON, // ;
     TOKEN_COMMA,     // ,
     // Literals

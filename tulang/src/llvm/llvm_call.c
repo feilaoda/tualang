@@ -183,6 +183,16 @@ static LLVMValueRef getOrCreatePrintf(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "printf", printfType);
 }
 
+static LLVMValueRef getOrCreateTuaPrintValue(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_print_value");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { vt, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_print_value", fnType);
+}
+
 static LLVMTypeRef getPrintfType(Compiler* compiler) {
     LLVMTypeRef contextI8 = LLVMInt8TypeInContext(compiler->context);
     LLVMTypeRef printfParamTypes[] = { LLVMPointerType(contextI8, 0) };
@@ -702,6 +712,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     LLVMTypeRef printfType = getPrintfType(compiler);
 
     LLVMValueRef argValue = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+    if (argValue && LLVMTypeOf(argValue) == compilerGetTuaValueType(compiler)) {
+        LLVMValueRef fn = getOrCreateTuaPrintValue(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef nl = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), isPrintln ? 1 : 0, 0);
+        LLVMValueRef args2[2] = { argValue, nl };
+        LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
     const char* fmt = formatForValue(argValue, isPrintln);
     if (!fmt) {
         emitDebug("Unsupported print argument type\n");

@@ -55,5 +55,8 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr);
 LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr);
 LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);
+LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr);
+LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
+LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
 
 #endif

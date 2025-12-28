@@ -34,6 +34,9 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_GET: return "Get";
         case EXPR_SET: return "Set";
         case EXPR_LAMBDA: return "Lambda";
+        case EXPR_MAP_LITERAL: return "MapLiteral";
+        case EXPR_INDEX: return "Index";
+        case EXPR_INDEX_SET: return "IndexSet";
         default: return "Unknown";
     }
 }
@@ -246,6 +249,31 @@ static Expr* newSetExpr(Expr* object, Token name, Expr* value) {
     return (Expr*)expr;
 }
 
+static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
+    MapLiteralExpr* expr = malloc(sizeof(MapLiteralExpr));
+    expr->base.type = EXPR_MAP_LITERAL;
+    expr->base.token = lbrace;
+    expr->entries = entries;
+    return (Expr*)expr;
+}
+
+static Expr* newIndexExpr(Expr* object, Expr* index) {
+    IndexExpr* expr = malloc(sizeof(IndexExpr));
+    expr->base.type = EXPR_INDEX;
+    expr->object = object;
+    expr->index = index;
+    return (Expr*)expr;
+}
+
+static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value) {
+    IndexSetExpr* expr = malloc(sizeof(IndexSetExpr));
+    expr->base.type = EXPR_INDEX_SET;
+    expr->object = object;
+    expr->index = index;
+    expr->value = value;
+    return (Expr*)expr;
+}
+
 static Parameter* newParameter(Token name, Type* type) {
     Parameter* param = malloc(sizeof(Parameter));
     param->name = name;
@@ -283,6 +311,10 @@ static Expr* parseExpression(Parser* parser) {
             GetExpr* get = (GetExpr*)expr;
             return newSetExpr(get->object, get->name, value);
         }
+        if (expr->type == EXPR_INDEX) {
+            IndexExpr* idx = (IndexExpr*)expr;
+            return newIndexSetExpr(idx->object, idx->index, value);
+        }
         
         printError(parser, "Invalid assignment target.");
     }
@@ -309,6 +341,13 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
         // Call chaining: `callee(args...)(args...)`
         if (match(parser, TOKEN_LPAREN)) {
             left = finishCall(parser, left);
+            continue;
+        }
+        // Indexing: `obj[expr]`
+        if (match(parser, TOKEN_LBRACKET)) {
+            Expr* index = parseExpression(parser);
+            consume(parser, TOKEN_RBRACKET, "Expect ']' after index expression");
+            left = newIndexExpr(left, index);
             continue;
         }
         TokenType op = parser->current.type;
@@ -373,9 +412,40 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         match(parser, TOKEN_LONG) ||
         match(parser, TOKEN_DOUBLE) ||
         match(parser, TOKEN_STRING_LITERAL) ||
+        match(parser, TOKEN_NULL) ||
         match(parser, TOKEN_TRUE) ||
         match(parser, TOKEN_FALSE)) {
         expr = newLiteralExpr(parser->previous);
+    } else if (match(parser, TOKEN_LBRACE)) {
+        // Map literal: { <constKey> : <expr> (, ...)? }
+        Token lbrace = parser->previous;
+        List* entries = listNew();
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (!check(parser, TOKEN_RBRACE)) {
+            while (true) {
+                Token key = (Token){0};
+                if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG) || match(parser, TOKEN_STRING_LITERAL)) {
+                    key = parser->previous;
+                } else {
+                    printError(parser, "Map key must be a constant literal (int/long/string)");
+                    return NULL;
+                }
+                consume(parser, TOKEN_COLON, "Expect ':' after map key");
+                Expr* value = parseExpression(parser);
+                MapEntry* e = malloc(sizeof(MapEntry));
+                e->key = key;
+                e->value = value;
+                listAppend(entries, e);
+                if (match(parser, TOKEN_COMMA)) {
+                    while (match(parser, TOKEN_SEMICOLON)) {}
+                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
+                    continue;
+                }
+                break;
+            }
+        }
+        consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
+        expr = newMapLiteralExpr(lbrace, entries);
     } else if (match(parser, TOKEN_THIS)) {
         expr = newVariableExpr(parser->previous);
     } else if (match(parser, TOKEN_IDENTIFIER)) {
