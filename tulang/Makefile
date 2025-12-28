@@ -10,6 +10,7 @@ LIBS = $(LLVM_LIBS)
 CC = clang
 
 .PHONY: tuac tuac-debug tuaparse
+.PHONY: test
 
 tuac:
 	$(CC) $(CFLAGS) -O2 \
@@ -33,3 +34,6 @@ tuaparse:
 	$(CC) -I./src -Wall -O0 -g \
 		src/tuaparse.c src/lexer.c src/parser.c src/list.c src/debug.c \
 		-o bin/tuaparse
+
+test:
+	./tests/run.sh

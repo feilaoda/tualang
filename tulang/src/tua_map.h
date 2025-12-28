@@ -16,5 +16,12 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value);
 
 void tua_print_value(tua_value value, int32_t newline);
 
-#endif
+void tua_assert_fail(const char* msg, int32_t line);
 
+int32_t tua_value_to_int(tua_value v);
+int64_t tua_value_to_long(tua_value v);
+double tua_value_to_double(tua_value v);
+int32_t tua_value_to_bool(tua_value v);
+char* tua_value_to_string(tua_value v);
+
+#endif

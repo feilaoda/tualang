@@ -22,6 +22,35 @@ LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value) {
         return LLVMBuildFCmp(compiler->builder, LLVMRealONE, value, zero, "to_bool");
     }
 
+    if (kind == LLVMPointerTypeKind) {
+        LLVMValueRef zero = LLVMConstNull(type);
+        return LLVMBuildICmp(compiler->builder, LLVMIntNE, value, zero, "to_bool");
+    }
+
+    if (kind == LLVMStructTypeKind && compiler && type == compilerGetTuaValueType(compiler)) {
+        // nil -> false; bool -> payload!=0; others -> true
+        LLVMValueRef tag = LLVMBuildExtractValue(compiler->builder, value, 0, "tag");
+        LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "payload");
+        LLVMValueRef zeroTag = LLVMConstInt(LLVMTypeOf(tag), 0, 0);
+        LLVMValueRef isNil = LLVMBuildICmp(compiler->builder, LLVMIntEQ, tag, zeroTag, "isnil");
+
+        LLVMValueRef boolTag = LLVMConstInt(LLVMTypeOf(tag), 4, 0);
+        LLVMValueRef isBool = LLVMBuildICmp(compiler->builder, LLVMIntEQ, tag, boolTag, "isbool");
+
+        LLVMValueRef payloadNonZero = LLVMBuildICmp(
+            compiler->builder,
+            LLVMIntNE,
+            payload,
+            LLVMConstInt(LLVMTypeOf(payload), 0, 0),
+            "p_nz"
+        );
+
+        // truthy = !isNil && (!isBool || payloadNonZero)
+        LLVMValueRef notNil = LLVMBuildNot(compiler->builder, isNil, "notnil");
+        LLVMValueRef boolOk = LLVMBuildOr(compiler->builder, LLVMBuildNot(compiler->builder, isBool, "notbool"), payloadNonZero, "boolok");
+        return LLVMBuildAnd(compiler->builder, notNil, boolOk, "truthy");
+    }
+
     emitDebug("Unsupported condition type in if\n");
     return NULL;
 }

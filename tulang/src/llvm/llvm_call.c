@@ -22,6 +22,72 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
 
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (srcType == vt) {
+        LLVMValueRef fn = NULL;
+        LLVMTypeRef fnType = NULL;
+        if (dstKind == LLVMIntegerTypeKind) {
+            unsigned bits = LLVMGetIntTypeWidth(targetType);
+            if (bits == 1) {
+                fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_bool");
+                if (!fn) {
+                    LLVMTypeRef params[1] = { vt };
+                    fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+                    fn = LLVMAddFunction(compiler->module, "tua_value_to_bool", fnType);
+                }
+                fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef b32 = LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "b32");
+                return LLVMBuildTrunc(compiler->builder, b32, targetType, "b");
+            }
+            if (bits <= 32) {
+                fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_int");
+                if (!fn) {
+                    LLVMTypeRef params[1] = { vt };
+                    fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+                    fn = LLVMAddFunction(compiler->module, "tua_value_to_int", fnType);
+                }
+                fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef i32 = LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "i32");
+                if (bits < 32) return LLVMBuildTrunc(compiler->builder, i32, targetType, "itr");
+                if (bits > 32) return LLVMBuildSExt(compiler->builder, i32, targetType, "isx");
+                return i32;
+            }
+            if (bits == 64) {
+                fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_long");
+                if (!fn) {
+                    LLVMTypeRef params[1] = { vt };
+                    fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 1, 0);
+                    fn = LLVMAddFunction(compiler->module, "tua_value_to_long", fnType);
+                }
+                fnType = LLVMGlobalGetValueType(fn);
+                return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "i64");
+            }
+        }
+        if (dstKind == LLVMDoubleTypeKind) {
+            fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
+            if (!fn) {
+                LLVMTypeRef params[1] = { vt };
+                fnType = LLVMFunctionType(LLVMDoubleTypeInContext(compiler->context), params, 1, 0);
+                fn = LLVMAddFunction(compiler->module, "tua_value_to_double", fnType);
+            }
+            fnType = LLVMGlobalGetValueType(fn);
+            return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
+        }
+        if (dstKind == LLVMPointerTypeKind) {
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (targetType == i8ptr) {
+                fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_string");
+                if (!fn) {
+                    LLVMTypeRef params[1] = { vt };
+                    fnType = LLVMFunctionType(i8ptr, params, 1, 0);
+                    fn = LLVMAddFunction(compiler->module, "tua_value_to_string", fnType);
+                }
+                fnType = LLVMGlobalGetValueType(fn);
+                return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "s");
+            }
+        }
+    }
+
     if (srcKind == LLVMPointerTypeKind && dstKind == LLVMPointerTypeKind) {
         return LLVMBuildBitCast(compiler->builder, value, targetType, "ptrcast");
     }
@@ -191,6 +257,16 @@ static LLVMValueRef getOrCreateTuaPrintValue(Compiler* compiler) {
     LLVMTypeRef params[2] = { vt, i32 };
     LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 2, 0);
     return LLVMAddFunction(compiler->module, "tua_print_value", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaAssertFail(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_assert_fail");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i8ptr, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_assert_fail", fnType);
 }
 
 static LLVMTypeRef getPrintfType(Compiler* compiler) {
@@ -575,6 +651,54 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     VariableExpr* callee = (VariableExpr*)expr->callee;
     int isPrintln = tokenEquals(&callee->name, "println");
     int isPrint = tokenEquals(&callee->name, "print");
+    int isAssert = tokenEquals(&callee->name, "assert");
+
+    if (isAssert) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1 && got != 2) {
+            emitDebug("assert expects 1 or 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        LLVMValueRef cond = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        cond = llvmCoerceToBool(compiler, cond);
+        if (!cond) {
+            emitDebug("assert condition cannot be coerced to bool\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "assert.ok");
+        LLVMBasicBlockRef failBB = LLVMAppendBasicBlock(fn, "assert.fail");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "assert.cont");
+
+        LLVMBuildCondBr(compiler->builder, cond, okBB, failBB);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, failBB);
+        LLVMValueRef msg = LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0));
+        if (got == 2) {
+            LLVMValueRef raw = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+            if (raw) {
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                if (LLVMTypeOf(raw) == i8ptr) msg = raw;
+            }
+        }
+        LLVMValueRef line = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)callee->name.line, 0);
+        LLVMValueRef af = getOrCreateTuaAssertFail(compiler);
+        LLVMTypeRef afType = LLVMGlobalGetValueType(af);
+        LLVMValueRef args2[2] = { msg, line };
+        LLVMBuildCall2(compiler->builder, afType, af, args2, 2, "");
+        LLVMBuildUnreachable(compiler->builder);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, okBB);
+        LLVMBuildBr(compiler->builder, contBB);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
 
     if (!isPrintln && !isPrint) {
         // Closure value call: f(args...)

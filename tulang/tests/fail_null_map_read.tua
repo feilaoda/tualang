@@ -1,0 +1,4 @@
+let m: map = null
+let x:int = m["a"]
+println(x)
+

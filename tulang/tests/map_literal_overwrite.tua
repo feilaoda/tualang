@@ -1,0 +1,8 @@
+let m: map = { "a": 1, "a": 2, }
+let x:int = m["a"]
+assert(x == 2, "duplicate key overwrites")
+
+let m2: map = { 1: 10, 1L: 20 }
+let y:int = m2[1]
+assert(y == 20, "1 and 1L are same key")
+

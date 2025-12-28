@@ -250,3 +250,52 @@ void tua_print_value(tua_value value, int32_t newline) {
     if (newline) fputc('\n', stdout);
 }
 
+void tua_assert_fail(const char* msg, int32_t line) {
+    if (msg && msg[0] != '\0') {
+        fprintf(stderr, "assert failed at line %d: %s\n", (int)line, msg);
+    } else {
+        fprintf(stderr, "assert failed at line %d\n", (int)line);
+    }
+    abort();
+}
+
+int32_t tua_value_to_int(tua_value v) {
+    if (v.tag == TUA_VAL_INT) return (int32_t)v.payload;
+    if (v.tag == TUA_VAL_LONG) return (int32_t)(int64_t)v.payload;
+    tua_panic("cannot convert value to int");
+    return 0;
+}
+
+int64_t tua_value_to_long(tua_value v) {
+    if (v.tag == TUA_VAL_LONG) return (int64_t)v.payload;
+    if (v.tag == TUA_VAL_INT) return (int64_t)(int32_t)v.payload;
+    tua_panic("cannot convert value to long");
+    return 0;
+}
+
+double tua_value_to_double(tua_value v) {
+    if (v.tag == TUA_VAL_DOUBLE) {
+        double d = 0.0;
+        uint64_t bits = v.payload;
+        memcpy(&d, &bits, sizeof(double));
+        return d;
+    }
+    if (v.tag == TUA_VAL_INT) return (double)(int32_t)v.payload;
+    if (v.tag == TUA_VAL_LONG) return (double)(int64_t)v.payload;
+    tua_panic("cannot convert value to double");
+    return 0.0;
+}
+
+int32_t tua_value_to_bool(tua_value v) {
+    if (v.tag == TUA_VAL_BOOL) return v.payload ? 1 : 0;
+    if (v.tag == TUA_VAL_NIL) return 0;
+    // truthy for non-null values
+    return 1;
+}
+
+char* tua_value_to_string(tua_value v) {
+    if (v.tag == TUA_VAL_STRING) return (char*)(uintptr_t)v.payload;
+    if (v.tag == TUA_VAL_NIL) return NULL;
+    tua_panic("cannot convert value to string");
+    return NULL;
+}

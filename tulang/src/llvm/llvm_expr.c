@@ -197,6 +197,102 @@ static LLVMValueRef getOrCreateTuaMapSet(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_set", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaValueToInt(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_int");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_int", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToLong(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_long");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_long", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToDouble(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMDoubleTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_double", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToBool(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_bool");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_bool", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToString(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_string");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_string", fnType);
+}
+
+static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
+    if (!compiler || !value || !targetType) return value;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (LLVMTypeOf(value) != vt) return value;
+
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (dstKind == LLVMIntegerTypeKind) {
+        unsigned bits = LLVMGetIntTypeWidth(targetType);
+        if (bits == 1) {
+            LLVMValueRef fn = getOrCreateTuaValueToBool(compiler);
+            LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+            LLVMValueRef b32 = LLVMBuildCall2(builder, fnType, fn, &value, 1, "b32");
+            return LLVMBuildTrunc(builder, b32, targetType, "b");
+        }
+        if (bits <= 32) {
+            LLVMValueRef fn = getOrCreateTuaValueToInt(compiler);
+            LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+            LLVMValueRef i32 = LLVMBuildCall2(builder, fnType, fn, &value, 1, "i32");
+            if (bits < 32) return LLVMBuildTrunc(builder, i32, targetType, "itr");
+            if (bits > 32) return LLVMBuildSExt(builder, i32, targetType, "isx");
+            return i32;
+        }
+        if (bits == 64) {
+            LLVMValueRef fn = getOrCreateTuaValueToLong(compiler);
+            LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+            return LLVMBuildCall2(builder, fnType, fn, &value, 1, "i64");
+        }
+    }
+
+    if (dstKind == LLVMDoubleTypeKind) {
+        LLVMValueRef fn = getOrCreateTuaValueToDouble(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        return LLVMBuildCall2(builder, fnType, fn, &value, 1, "d");
+    }
+
+    if (dstKind == LLVMPointerTypeKind) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        if (targetType == i8ptr) {
+            LLVMValueRef fn = getOrCreateTuaValueToString(compiler);
+            LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+            return LLVMBuildCall2(builder, fnType, fn, &value, 1, "s");
+        }
+    }
+
+    return value;
+}
+
 static int nameSetContains(List* set, const char* name, int len) {
     if (!set) return 0;
     for (ListNode* n = set->head; n != NULL; n = n->next) {
@@ -1166,8 +1262,17 @@ static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeR
     LLVMTypeRef srcType = LLVMTypeOf(value);
     if (srcType == targetType) return value;
 
+    value = castFromTuaValue(compiler, value, targetType);
+    if (!value) return NULL;
+    srcType = LLVMTypeOf(value);
+    if (srcType == targetType) return value;
+
     LLVMTypeKind srcKind = LLVMGetTypeKind(srcType);
     LLVMTypeKind dstKind = LLVMGetTypeKind(targetType);
+
+    if (srcKind == LLVMPointerTypeKind && dstKind == LLVMPointerTypeKind) {
+        return LLVMBuildBitCast(compiler->builder, value, targetType, "ptrcast");
+    }
 
     if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMIntegerTypeKind) {
         unsigned srcBits = LLVMGetIntTypeWidth(srcType);

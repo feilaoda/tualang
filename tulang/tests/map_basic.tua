@@ -1,0 +1,19 @@
+let m: map
+m["a"] = 1
+let x:int = m["a"]
+assert(x == 1, "map get int")
+
+let missing:string = m["missing"]
+assert(missing == null, "missing key returns null")
+
+let k = 1
+m[k] = 10
+m[1L] = 20
+let y:int = m[1]
+assert(y == 20, "int/long key normalized")
+
+let n: map = null
+n["x"] = 2
+let z:int = n["x"]
+assert(z == 2, "auto-init null map on simple var assignment")
+
