@@ -1,0 +1,6 @@
+fn main() int {
+    return 42
+}
+
+assert(main() == 42)
+

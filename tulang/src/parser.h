@@ -29,6 +29,7 @@ typedef enum {
     EXPR_LAMBDA,
     EXPR_MAP_LITERAL,
     EXPR_ARRAY_LITERAL,
+    EXPR_BRACE_LITERAL,
     EXPR_INDEX,
     EXPR_INDEX_SET
 } ExprType;
@@ -182,6 +183,13 @@ typedef struct {
     Expr base;
     List* elements; // List<Expr*>
 } ArrayLiteralExpr;
+
+// Ambiguous empty brace literal: `{}`.
+// At parse time it may be a map or an array; resolver/codegen decides using context.
+typedef struct {
+    Expr base;
+    Token lbrace;
+} BraceLiteralExpr;
 
 typedef struct {
     Expr base;

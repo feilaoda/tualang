@@ -1529,6 +1529,26 @@ LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr) {
     return arr;
 }
 
+LLVMValueRef emitBraceLiteralExpr(Compiler* compiler, BraceLiteralExpr* expr) {
+    if (!compiler || !expr) return NULL;
+
+    // `{}` is ambiguous; use typed context if present, otherwise default to empty map (back-compat).
+    if (compiler->expectedArrayElemType) {
+        ArrayLiteralExpr tmp = {0};
+        tmp.base.type = EXPR_ARRAY_LITERAL;
+        tmp.base.token = expr->base.token;
+        tmp.elements = NULL; // empty
+        return emitArrayLiteralExpr(compiler, &tmp);
+    }
+
+    // Default: empty map.
+    MapLiteralExpr tmp = {0};
+    tmp.base.type = EXPR_MAP_LITERAL;
+    tmp.base.token = expr->base.token;
+    tmp.entries = NULL;
+    return emitMapLiteralExpr(compiler, &tmp);
+}
+
 LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     if (!compiler || !expr) return NULL;
     LLVMBuilderRef builder = compiler->builder;

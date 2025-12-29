@@ -744,10 +744,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (expected != got + 1) {
                 compilerErrorAtToken(
                     compiler,
-                    &callee->name,
-                    "argument count mismatch for call '%.*s': expected %u, got %u",
-                    callee->name.length,
-                    callee->name.start,
+                    &expr->base.token,
+                    "argument count mismatch for closure call: expected %u, got %u",
                     expected > 0 ? (unsigned)(expected - 1) : 0u,
                     got
                 );
@@ -1726,10 +1724,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (expected != got + 1) {
                 compilerErrorAtToken(
                     compiler,
-                    &callee->name,
+                    expr->callee && expr->callee->type == EXPR_VARIABLE ? &((VariableExpr*)expr->callee)->name : &expr->base.token,
                     "argument count mismatch for call '%.*s': expected %u, got %u",
-                    callee->name.length,
-                    callee->name.start,
+                    expr->callee && expr->callee->type == EXPR_VARIABLE ? ((VariableExpr*)expr->callee)->name.length : 0,
+                    expr->callee && expr->callee->type == EXPR_VARIABLE ? ((VariableExpr*)expr->callee)->name.start : "",
                     expected > 0 ? (unsigned)(expected - 1) : 0u,
                     got
                 );
@@ -1767,22 +1765,40 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             return out;
         }
 
-        char* name = tokenToCString(&callee->name);
-        LLVMValueRef func = LLVMGetNamedFunction(compiler->module, name);
-        if (!func) {
-            SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
-            if (a && a->kind == ALIAS_FUNC) {
-                func = LLVMGetNamedFunction(compiler->module, a->qualified);
-            }
-        }
-        if (!func && compiler->currentModulePrefix) {
+        // Resolve functions with module-local qualified names taking precedence
+        // over the generated entry `main` and over imported aliases.
+        LLVMValueRef func = NULL;
+        int foundQualified = 0;
+        int foundAlias = 0;
+
+        if (compiler->currentModulePrefix) {
             int ql = 0;
             char* q = compilerQualifyToken(compiler, &callee->name, &ql);
             if (q) {
                 func = LLVMGetNamedFunction(compiler->module, q);
+                if (func) foundQualified = 1;
                 free(q);
             }
         }
+
+        if (!func) {
+            SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+            if (a && a->kind == ALIAS_FUNC) {
+                func = LLVMGetNamedFunction(compiler->module, a->qualified);
+                if (func) foundAlias = 1;
+            }
+        }
+
+        char* name = tokenToCString(&callee->name);
+        if (!func) {
+            func = LLVMGetNamedFunction(compiler->module, name);
+            // Prevent accidental recursion by calling the generated entry `main`
+            // when the user did not define a module-local `main`.
+            if (func && !foundQualified && !foundAlias && tokenEquals(&callee->name, "main")) {
+                func = NULL;
+            }
+        }
+
         if (!func) {
             StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
             free(name);

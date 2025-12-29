@@ -1,0 +1,4 @@
+const m:map
+m["a"] = 1
+assert(m.len() == 1)
+

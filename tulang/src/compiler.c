@@ -698,6 +698,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_ARRAY_LITERAL:
             return emitArrayLiteralExpr(compiler, (ArrayLiteralExpr*)expr);
             break;
+        case EXPR_BRACE_LITERAL:
+            return emitBraceLiteralExpr(compiler, (BraceLiteralExpr*)expr);
+            break;
         case EXPR_INDEX:
             return emitIndexExpr(compiler, (IndexExpr*)expr);
             break;

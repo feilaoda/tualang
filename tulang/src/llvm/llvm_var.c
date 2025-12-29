@@ -39,6 +39,14 @@ static LLVMValueRef getOrCreateTuaArrayNew(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_array_new", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_new");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, NULL, 0, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_new", fnType);
+}
+
 static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef type, const char* name) {
     if (!compiler || !compiler->current || !compiler->current->func) return NULL;
     LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(compiler->current->func);
@@ -122,6 +130,10 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
     }
     if (initializer->type == EXPR_ARRAY_LITERAL) {
         return compilerGetArrayType(compiler);
+    }
+    if (initializer->type == EXPR_BRACE_LITERAL) {
+        // Default: `{}` means empty map unless typed context overrides.
+        return compilerGetMapType(compiler);
     }
     if (initializer->type == EXPR_INDEX) {
         // Default to Option<tua_value>; if receiver is an array variable, infer element type;
@@ -491,7 +503,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMTypeRef savedVal = compiler->expectedMapValueType;
         LLVMTypeRef savedAElem = compiler->expectedArrayElemType;
         int64_t savedAFixed = compiler->expectedArrayFixedLen;
-        if (valueType == compilerGetMapType(compiler) && stmt->initializer->type == EXPR_MAP_LITERAL) {
+        if (valueType == compilerGetMapType(compiler) &&
+            (stmt->initializer->type == EXPR_MAP_LITERAL || stmt->initializer->type == EXPR_BRACE_LITERAL)) {
             if (hasAnnotatedTypedMap) {
                 compiler->expectedMapKeyType = annotatedKeyTy;
                 compiler->expectedMapValueType = annotatedValTy;
@@ -500,7 +513,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 compiler->expectedMapValueType = inferredValTy;
             }
         }
-        if (valueType == compilerGetArrayType(compiler) && stmt->initializer->type == EXPR_ARRAY_LITERAL) {
+        if (valueType == compilerGetArrayType(compiler) &&
+            (stmt->initializer->type == EXPR_ARRAY_LITERAL || stmt->initializer->type == EXPR_BRACE_LITERAL)) {
             if (hasAnnotatedArray) {
                 compiler->expectedArrayElemType = annotatedElemTy;
                 compiler->expectedArrayFixedLen = annotatedFixedLen;
@@ -577,6 +591,30 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         compilerErrorAt(compiler, stmt->name.line, "dynamic array must have an initializer (use [] or [..])");
         free(var);
         return;
+    } else if (valueType == compilerGetMapType(compiler) && stmt->isConst) {
+        // `const` means the binding cannot be re-assigned, but the map object is mutable.
+        // To avoid auto-init-on-write rebinding, default-initialize `const map` to an empty map.
+        LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+        LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+        LLVMValueRef initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, NULL, 0, "newmap");
+        initValue = castIfNeeded(compiler, initValue, valueType);
+        if (shouldBox) {
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(valueType);
+            LLVMValueRef raw = LLVMBuildCall2(
+                compiler->builder,
+                LLVMGlobalGetValueType(mallocFn),
+                mallocFn,
+                &sizeV,
+                1,
+                "malloc"
+            );
+            LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+            LLVMBuildStore(compiler->builder, initValue, cell);
+            LLVMBuildStore(compiler->builder, cell, slot);
+        } else {
+            LLVMBuildStore(compiler->builder, initValue, slot);
+        }
     } else if (shouldBox) {
         LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
         LLVMValueRef sizeV = LLVMSizeOf(valueType);

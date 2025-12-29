@@ -2,17 +2,14 @@
 let u:int = 10
 let r:int = 0
 fn loop(u:int, r:int) int {
-    let a:int[] = [1]
+    let a:int[10000] = [0]
     for let i=0; i<10000; i++ {
         for let j=0; j<10000; j++ {
             a[i] = a[i] + j / u; 
         }
         a[i] = a[i] + r;
     }
-    println(a[r])
     return a[r]
 }
-
-
-println(loop(u))
+println(loop(u,1))
 

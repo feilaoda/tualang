@@ -71,6 +71,7 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 	LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);
 	LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr);
 	LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr);
+	LLVMValueRef emitBraceLiteralExpr(Compiler* compiler, BraceLiteralExpr* expr);
 	LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
 	LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
 

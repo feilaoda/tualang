@@ -37,6 +37,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_LAMBDA: return "Lambda";
         case EXPR_MAP_LITERAL: return "MapLiteral";
         case EXPR_ARRAY_LITERAL: return "ArrayLiteral";
+        case EXPR_BRACE_LITERAL: return "BraceLiteral";
         case EXPR_INDEX: return "Index";
         case EXPR_INDEX_SET: return "IndexSet";
         default: return "Unknown";
@@ -301,6 +302,14 @@ static Expr* newArrayLiteralExpr(Token lbracket, List* elements) {
     return (Expr*)expr;
 }
 
+static Expr* newBraceLiteralExpr(Token lbrace) {
+    BraceLiteralExpr* expr = malloc(sizeof(BraceLiteralExpr));
+    expr->base.type = EXPR_BRACE_LITERAL;
+    expr->base.token = lbrace;
+    expr->lbrace = lbrace;
+    return (Expr*)expr;
+}
+
 static Expr* newIndexExpr(Expr* object, Expr* index) {
     IndexExpr* expr = malloc(sizeof(IndexExpr));
     expr->base.type = EXPR_INDEX;
@@ -466,35 +475,74 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         match(parser, TOKEN_FALSE)) {
         expr = newLiteralExpr(parser->previous);
     } else if (match(parser, TOKEN_LBRACE)) {
-        // Map literal: { <constKey> : <expr> (, ...)? }
+        // Brace literal:
+        // - Map:   { <constKey> : <expr> (, ...)? }
+        // - Array: { <expr> (, ...)? }
+        // Empty `{}` is ambiguous; keep as EXPR_BRACE_LITERAL and resolve later (default to map).
         Token lbrace = parser->previous;
-        List* entries = listNew();
         while (match(parser, TOKEN_SEMICOLON)) {}
-        if (!check(parser, TOKEN_RBRACE)) {
-            while (true) {
-                Token key = (Token){0};
-                if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG) || match(parser, TOKEN_STRING_LITERAL)) {
-                    key = parser->previous;
-                } else {
+
+        if (check(parser, TOKEN_RBRACE)) {
+            consume(parser, TOKEN_RBRACE, "Expect '}' after brace literal");
+            expr = newBraceLiteralExpr(lbrace);
+        } else {
+            // Parse first expression, then decide map vs array based on ':'.
+            // This avoids committing early for cases like `{1 + 2}`.
+            Expr* first = parseExpression(parser);
+            if (match(parser, TOKEN_COLON)) {
+                // Map literal.
+                if (!first || first->type != EXPR_LITERAL) {
                     printError(parser, "Map key must be a constant literal (int/long/string)");
                     return NULL;
                 }
-                consume(parser, TOKEN_COLON, "Expect ':' after map key");
+                LiteralExpr* lit = (LiteralExpr*)first;
+                Token keyTok = lit->value;
+                if (!(keyTok.type == TOKEN_INT || keyTok.type == TOKEN_LONG || keyTok.type == TOKEN_STRING_LITERAL)) {
+                    printError(parser, "Map key must be a constant literal (int/long/string)");
+                    return NULL;
+                }
+
+                List* entries = listNew();
                 Expr* value = parseExpression(parser);
                 MapEntry* e = malloc(sizeof(MapEntry));
-                e->key = key;
+                e->key = keyTok;
                 e->value = value;
                 listAppend(entries, e);
-                if (match(parser, TOKEN_COMMA)) {
+
+                while (match(parser, TOKEN_COMMA)) {
                     while (match(parser, TOKEN_SEMICOLON)) {}
                     if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
-                    continue;
+
+                    Token key = (Token){0};
+                    if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG) || match(parser, TOKEN_STRING_LITERAL)) {
+                        key = parser->previous;
+                    } else {
+                        printError(parser, "Map key must be a constant literal (int/long/string)");
+                        return NULL;
+                    }
+                    consume(parser, TOKEN_COLON, "Expect ':' after map key");
+                    Expr* v = parseExpression(parser);
+                    MapEntry* me = malloc(sizeof(MapEntry));
+                    me->key = key;
+                    me->value = v;
+                    listAppend(entries, me);
                 }
-                break;
+                consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
+                expr = newMapLiteralExpr(lbrace, entries);
+            } else {
+                // Array literal.
+                List* elements = listNew();
+                listAppend(elements, first);
+                while (match(parser, TOKEN_COMMA)) {
+                    while (match(parser, TOKEN_SEMICOLON)) {}
+                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
+                    Expr* e = parseExpression(parser);
+                    listAppend(elements, e);
+                }
+                consume(parser, TOKEN_RBRACE, "Expect '}' after array literal");
+                expr = newArrayLiteralExpr(lbrace, elements);
             }
         }
-        consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
-        expr = newMapLiteralExpr(lbrace, entries);
     } else if (match(parser, TOKEN_LBRACKET)) {
         // Array literal: [] or [e1, e2, ...]
         Token lbracket = parser->previous;

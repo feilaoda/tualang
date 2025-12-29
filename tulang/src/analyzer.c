@@ -236,6 +236,7 @@ static int isValueLiteralNull(const Expr* e) {
 
 static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char* modulePath);
 static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralExpr* al, AType* expectedArray, const char* modulePath);
+static AType* inferBraceLiteral(Compiler* compiler, Scope* scope, BraceLiteralExpr* bl, AType* expected, const char* modulePath);
 
 static void analyzeErrorAt(Compiler* compiler, const char* modulePath, int line, const char* fmt, ...) {
     (void)modulePath;
@@ -302,6 +303,19 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
 
     AType* inner = (expectedInner && !atIsAny(expectedInner)) ? expectedInner : inferred;
     return atArray(inner, expectedLen);
+}
+
+static AType* inferBraceLiteral(Compiler* compiler, Scope* scope, BraceLiteralExpr* bl, AType* expected, const char* modulePath) {
+    (void)scope;
+    if (!bl) return atMap(atNew(AT_ANY), atNew(AT_ANY));
+    if (expected && expected->kind == AT_ARRAY) {
+        return atArray(expected->inner ? expected->inner : atNew(AT_ANY), expected->arrayLen);
+    }
+    if (expected && expected->kind == AT_MAP) {
+        return atMap(expected->key ? expected->key : atNew(AT_ANY), expected->value ? expected->value : atNew(AT_ANY));
+    }
+    // Default (back-compat): `{}` means empty map when no expected type.
+    return atMap(atNew(AT_ANY), atNew(AT_ANY));
 }
 
 static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const char* modulePath) {
@@ -466,6 +480,8 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_ARRAY_LITERAL: {
             return inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)expr, NULL, modulePath);
         }
+        case EXPR_BRACE_LITERAL:
+            return inferBraceLiteral(compiler, scope, (BraceLiteralExpr*)expr, NULL, modulePath);
         case EXPR_GET: {
             // Member access type inference is incomplete; keep permissive.
             GetExpr* g = (GetExpr*)expr;
@@ -600,6 +616,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 initTy = inferMapLiteral(compiler, scope, (MapLiteralExpr*)v->initializer, annotated, modulePath);
             } else if (v->initializer && v->initializer->type == EXPR_ARRAY_LITERAL) {
                 initTy = inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)v->initializer, annotated, modulePath);
+            } else if (v->initializer && v->initializer->type == EXPR_BRACE_LITERAL) {
+                initTy = inferBraceLiteral(compiler, scope, (BraceLiteralExpr*)v->initializer, annotated, modulePath);
             } else {
                 initTy = inferExpr(compiler, scope, v->initializer, modulePath);
             }
