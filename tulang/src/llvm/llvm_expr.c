@@ -68,6 +68,8 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
             return LLVMInt64TypeInContext(compiler->context);
         case TYPE_DOUBLE:
             return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_FLOAT:
+            return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL:
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
@@ -218,6 +220,11 @@ static LLVMValueRef tuaValueFromValue(Compiler* compiler, LLVMValueRef value) {
 
     if (k == LLVMDoubleTypeKind) {
         LLVMValueRef bits = LLVMBuildBitCast(builder, value, i64, "dblbits");
+        return tuaValueMake(compiler, TUA_VAL_DOUBLE, bits);
+    }
+    if (k == LLVMFloatTypeKind) {
+        LLVMValueRef d = LLVMBuildFPExt(builder, value, LLVMDoubleTypeInContext(context), "f64");
+        LLVMValueRef bits = LLVMBuildBitCast(builder, d, i64, "dblbits");
         return tuaValueMake(compiler, TUA_VAL_DOUBLE, bits);
     }
 
@@ -392,6 +399,13 @@ static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLV
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         return LLVMBuildCall2(builder, fnType, fn, &value, 1, "d");
     }
+    if (dstKind == LLVMFloatTypeKind) {
+        // Decode as double then truncate to float (runtime stores floats as doubles in tua_value).
+        LLVMValueRef fn = getOrCreateTuaValueToDouble(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef d = LLVMBuildCall2(builder, fnType, fn, &value, 1, "d");
+        return LLVMBuildFPTrunc(builder, d, targetType, "f");
+    }
 
     if (dstKind == LLVMPointerTypeKind) {
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
@@ -435,9 +449,8 @@ static int isBoolLLVMType(LLVMTypeRef t) {
 static int isNumericLLVMType(LLVMTypeRef t) {
     if (!t) return 0;
     LLVMTypeKind k = LLVMGetTypeKind(t);
-    if (k == LLVMDoubleTypeKind) return 1;
-    if (k != LLVMIntegerTypeKind) return 0;
-    return LLVMGetIntTypeWidth(t) != 1;
+    if (k == LLVMIntegerTypeKind) return LLVMGetIntTypeWidth(t) != 1;
+    return (k == LLVMFloatTypeKind || k == LLVMDoubleTypeKind);
 }
 
 static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, LLVMValueRef keyVal) {
@@ -449,8 +462,8 @@ static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, 
         return isStringLLVMType(compiler, actualTy);
     }
 
-    // int/long keys: accept any non-bool integer.
-    return isNumericLLVMType(actualTy);
+    // int/long keys: accept only non-bool integers (not float/double).
+    return LLVMGetTypeKind(actualTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(actualTy) != 1;
 }
 
 static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy, LLVMValueRef rawVal) {
@@ -464,7 +477,7 @@ static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy
     if (isBoolLLVMType(expectedValTy)) {
         return isBoolLLVMType(actualTy);
     }
-    if (LLVMGetTypeKind(expectedValTy) == LLVMDoubleTypeKind) {
+    if (LLVMGetTypeKind(expectedValTy) == LLVMFloatTypeKind || LLVMGetTypeKind(expectedValTy) == LLVMDoubleTypeKind) {
         return isNumericLLVMType(actualTy);
     }
     if (LLVMGetTypeKind(expectedValTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(expectedValTy) != 1) {
@@ -1126,7 +1139,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
             } else {
                 payloadEq = LLVMBuildICmp(builder, LLVMIntEQ, vL, vR, "opt_v_eq");
             }
-        } else if (innerKind == LLVMDoubleTypeKind) {
+        } else if (innerKind == LLVMFloatTypeKind || innerKind == LLVMDoubleTypeKind) {
             payloadEq = LLVMBuildFCmp(builder, LLVMRealOEQ, vL, vR, "opt_v_feq");
         } else {
             compilerErrorAt(compiler, expr->operator.line, "unsupported Option<T> payload comparison");
@@ -1167,14 +1180,17 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
                        expr->operator.type == TOKEN_LE ||
                        expr->operator.type == TOKEN_GE);
 
-    bool leftIsNum = (leftKind == LLVMIntegerTypeKind || leftKind == LLVMDoubleTypeKind);
-    bool rightIsNum = (rightKind == LLVMIntegerTypeKind || rightKind == LLVMDoubleTypeKind);
+    bool leftIsNum = (leftKind == LLVMIntegerTypeKind || leftKind == LLVMFloatTypeKind || leftKind == LLVMDoubleTypeKind);
+    bool rightIsNum = (rightKind == LLVMIntegerTypeKind || rightKind == LLVMFloatTypeKind || rightKind == LLVMDoubleTypeKind);
 
     LLVMTypeRef commonType = NULL;
     bool isFloat = false;
     if ((opIsArithmetic || opIsCompare) && leftIsNum && rightIsNum) {
         if (leftKind == LLVMDoubleTypeKind || rightKind == LLVMDoubleTypeKind) {
             commonType = LLVMDoubleTypeInContext(context);
+            isFloat = true;
+        } else if (leftKind == LLVMFloatTypeKind || rightKind == LLVMFloatTypeKind) {
+            commonType = LLVMFloatTypeInContext(context);
             isFloat = true;
         } else {
             unsigned lb = LLVMGetIntTypeWidth(leftType);
@@ -1196,7 +1212,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         leftKind = LLVMGetTypeKind(leftType);
         rightKind = LLVMGetTypeKind(rightType);
     } else {
-        isFloat = (leftKind == LLVMDoubleTypeKind);
+        isFloat = (leftKind == LLVMFloatTypeKind || leftKind == LLVMDoubleTypeKind);
     }
 
     emitDebug("emitBinaryExpr op type:%s\n", tokenToString(expr->operator.type));
@@ -2047,6 +2063,7 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
         case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
         case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
@@ -2067,6 +2084,7 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
                 case TYPE_INT: return LLVMPointerType(LLVMInt32TypeInContext(compiler->context), 0);
                 case TYPE_LONG: return LLVMPointerType(LLVMInt64TypeInContext(compiler->context), 0);
                 case TYPE_DOUBLE: return LLVMPointerType(LLVMDoubleTypeInContext(compiler->context), 0);
+                case TYPE_FLOAT: return LLVMPointerType(LLVMFloatTypeInContext(compiler->context), 0);
                 case TYPE_BOOL: return LLVMPointerType(LLVMInt1TypeInContext(compiler->context), 0);
                 case TYPE_STRING: return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), 0);
                 default: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
@@ -2100,11 +2118,17 @@ static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeR
         if (srcBits > dstBits) return LLVMBuildTrunc(compiler->builder, value, targetType, "trunc");
         return value;
     }
-    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMDoubleTypeKind) {
+    if (srcKind == LLVMIntegerTypeKind && (dstKind == LLVMFloatTypeKind || dstKind == LLVMDoubleTypeKind)) {
         return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
     }
-    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMIntegerTypeKind) {
+    if ((srcKind == LLVMFloatTypeKind || srcKind == LLVMDoubleTypeKind) && dstKind == LLVMIntegerTypeKind) {
         return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
+    }
+    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMDoubleTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, targetType, "fpext");
+    }
+    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMFloatTypeKind) {
+        return LLVMBuildFPTrunc(compiler->builder, value, targetType, "fptrunc");
     }
     return value;
 }
@@ -2324,7 +2348,7 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
             LLVMTypeRef type = LLVMTypeOf(operand);
             if (LLVMGetTypeKind(type) == LLVMIntegerTypeKind) {
                 return LLVMBuildNeg(builder, operand, "neg");
-            } else if (LLVMGetTypeKind(type) == LLVMDoubleTypeKind) {
+            } else if (LLVMGetTypeKind(type) == LLVMFloatTypeKind || LLVMGetTypeKind(type) == LLVMDoubleTypeKind) {
                 return LLVMBuildFNeg(builder, operand, "fneg");
             }
             error("Invalid operand type for unary minus");

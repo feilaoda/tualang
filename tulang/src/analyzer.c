@@ -12,6 +12,7 @@ typedef enum {
     AT_INT,
     AT_LONG,
     AT_DOUBLE,
+    AT_FLOAT,
     AT_BOOL,
     AT_STRING,
     AT_OPTION,
@@ -80,7 +81,7 @@ static int atIsMap(const AType* t) { return t && t->kind == AT_MAP; }
 static int atIsArray(const AType* t) { return t && t->kind == AT_ARRAY; }
 static int atIsAny(const AType* t) { return !t || t->kind == AT_ANY; }
 static int atIsNull(const AType* t) { return t && t->kind == AT_NULL; }
-static int atIsNumeric(const AType* t) { return t && (t->kind == AT_INT || t->kind == AT_LONG || t->kind == AT_DOUBLE); }
+static int atIsNumeric(const AType* t) { return t && (t->kind == AT_INT || t->kind == AT_LONG || t->kind == AT_FLOAT || t->kind == AT_DOUBLE); }
 static int atIsBool(const AType* t) { return t && t->kind == AT_BOOL; }
 static int atIsString(const AType* t) { return t && t->kind == AT_STRING; }
 
@@ -127,6 +128,7 @@ static AType* atFromAstType(Type* t) {
         case TYPE_INT: return atNew(AT_INT);
         case TYPE_LONG: return atNew(AT_LONG);
         case TYPE_DOUBLE: return atNew(AT_DOUBLE);
+        case TYPE_FLOAT: return atNew(AT_FLOAT);
         case TYPE_BOOL: return atNew(AT_BOOL);
         case TYPE_STRING: return atNew(AT_STRING);
         case TYPE_VOID: return atNew(AT_VOID);
@@ -185,6 +187,7 @@ static int atAssignable(AType* to, AType* from) {
     // Numeric promotions.
     if (atIsNumeric(to) && atIsNumeric(from)) {
         if (to->kind == AT_DOUBLE) return 1;
+        if (to->kind == AT_FLOAT) return from->kind == AT_INT || from->kind == AT_LONG || from->kind == AT_FLOAT;
         if (to->kind == AT_LONG && from->kind == AT_INT) return 1;
     }
 
@@ -216,6 +219,7 @@ static int typedMapValueAllows(AType* valTy, AType* exprTy) {
     if (valTy->kind == AT_STRING) return exprTy->kind == AT_STRING || exprTy->kind == AT_NULL;
     if (valTy->kind == AT_BOOL) return exprTy->kind == AT_BOOL;
     if (valTy->kind == AT_DOUBLE) return atIsNumeric(exprTy);
+    if (valTy->kind == AT_FLOAT) return atIsNumeric(exprTy);
     if (valTy->kind == AT_INT || valTy->kind == AT_LONG) return atIsNumeric(exprTy);
     return atAssignable(valTy, exprTy);
 }
@@ -290,6 +294,7 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
         }
         if (atIsNumeric(inferred) && atIsNumeric(et)) {
             if (inferred->kind == AT_DOUBLE || et->kind == AT_DOUBLE) inferred = atNew(AT_DOUBLE);
+            else if (inferred->kind == AT_FLOAT || et->kind == AT_FLOAT) inferred = atNew(AT_FLOAT);
             else if (inferred->kind == AT_LONG || et->kind == AT_LONG) inferred = atNew(AT_LONG);
             else inferred = atNew(AT_INT);
         } else if (inferred->kind != et->kind) {
@@ -416,6 +421,7 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
     // Best-effort: propagate numeric promotion.
     if (atIsNumeric(l) && atIsNumeric(r)) {
         if (l->kind == AT_DOUBLE || r->kind == AT_DOUBLE) return atNew(AT_DOUBLE);
+        if (l->kind == AT_FLOAT || r->kind == AT_FLOAT) return atNew(AT_FLOAT);
         if (l->kind == AT_LONG || r->kind == AT_LONG) return atNew(AT_LONG);
         return atNew(AT_INT);
     }
@@ -563,15 +569,16 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
 
         AType* vTy = inferExpr(compiler, scope, e->value, modulePath);
         if (vTy->kind == AT_NULL) { ok = 0; break; }
-        if (!(vTy->kind == AT_INT || vTy->kind == AT_LONG || vTy->kind == AT_DOUBLE || vTy->kind == AT_BOOL || vTy->kind == AT_STRING)) {
+        if (!(vTy->kind == AT_INT || vTy->kind == AT_LONG || vTy->kind == AT_FLOAT || vTy->kind == AT_DOUBLE || vTy->kind == AT_BOOL || vTy->kind == AT_STRING)) {
             ok = 0;
             break;
         }
         if (inferredVal == AT_ANY) inferredVal = vTy->kind;
         else {
             // numeric promotion for inference
-            if (atIsNumeric(vTy) && (inferredVal == AT_INT || inferredVal == AT_LONG || inferredVal == AT_DOUBLE)) {
+            if (atIsNumeric(vTy) && (inferredVal == AT_INT || inferredVal == AT_LONG || inferredVal == AT_FLOAT || inferredVal == AT_DOUBLE)) {
                 if (inferredVal == AT_DOUBLE || vTy->kind == AT_DOUBLE) inferredVal = AT_DOUBLE;
+                else if (inferredVal == AT_FLOAT || vTy->kind == AT_FLOAT) inferredVal = AT_FLOAT;
                 else if (inferredVal == AT_LONG || vTy->kind == AT_LONG) inferredVal = AT_LONG;
                 else inferredVal = AT_INT;
             } else if (inferredVal != vTy->kind) {

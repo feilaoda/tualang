@@ -31,6 +31,7 @@ typedef enum {
     // Types
     TOKEN_INT,
     TOKEN_DOUBLE,
+    TOKEN_FLOAT,
     TOKEN_LONG,
     TOKEN_STRING,
     TOKEN_BOOL,

@@ -41,6 +41,7 @@ static const char* typeToString(Type* type) {
         case TYPE_INT:    return "int";
         case TYPE_LONG:   return "long";
         case TYPE_DOUBLE: return "double";
+        case TYPE_FLOAT:  return "float";
         case TYPE_STRING: return "string";
         case TYPE_BOOL:   return "bool";
         case TYPE_NAMED:  return "named";

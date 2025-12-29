@@ -87,6 +87,7 @@ const char* tokenToString(TokenType type) {
         // 类型
         case TOKEN_INT: return "int";
         case TOKEN_DOUBLE: return "double";
+        case TOKEN_FLOAT: return "float";
         case TOKEN_LONG: return "long";
         case TOKEN_STRING: return "string";
         case TOKEN_BOOL: return "bool";
@@ -251,6 +252,9 @@ static TokenType identifierType(Lexer* lexer) {
         case 'f':
             if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "from", 4) == 0) {
                 return TOKEN_FROM;
+            }
+            if (lexer->current - lexer->start > 4 && memcmp(lexer->start, "float", 5) == 0) {
+                return TOKEN_FLOAT;
             }
             if (lexer->current - lexer->start > 1) {
                 

@@ -614,6 +614,7 @@ static Expr* parsePrimaryExpr(Parser* parser) {
             check(parser, TOKEN_INT) ||
             check(parser, TOKEN_LONG) ||
             check(parser, TOKEN_DOUBLE) ||
+            check(parser, TOKEN_FLOAT) ||
             check(parser, TOKEN_STRING) ||
             check(parser, TOKEN_BOOL) ||
             check(parser, TOKEN_IDENTIFIER) ||
@@ -1285,6 +1286,7 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     } else if (check(parser, TOKEN_INT) ||
                check(parser, TOKEN_LONG) ||
                check(parser, TOKEN_DOUBLE) ||
+               check(parser, TOKEN_FLOAT) ||
                check(parser, TOKEN_STRING) ||
                check(parser, TOKEN_BOOL)) {
         // Support `fn demo(...) int {}` in addition to `fn demo(...) -> int {}`
@@ -1546,6 +1548,16 @@ static Type* parseType(Parser* parser) {
     } else if (match(parser, TOKEN_DOUBLE)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_DOUBLE;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_FLOAT)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_FLOAT;
         type->name = (Token){0};
         type->inner = NULL;
         type->typeArgs = NULL;

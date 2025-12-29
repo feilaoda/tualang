@@ -66,6 +66,7 @@ typedef enum {
     TYPE_INT,
     TYPE_LONG,
     TYPE_DOUBLE,
+    TYPE_FLOAT,
     TYPE_BOOL,
     TYPE_STRING,
     TYPE_VOID,

@@ -13,10 +13,11 @@ assert(c[2] == 3)
 
 let d:int[] = {}
 assert(d.len() == 0)
-
+d.push(1)
+assert(d.len() == 1)
 let m:map = {}
 assert(m.len() == 0)
 
-let m2 = {\"a\": 1}
-assert(m2.get(\"a\").unwrap() == 1)
+let m2 = {"a": 1}
+assert(m2.get("a").unwrap() == 1)
 

@@ -17,7 +17,7 @@ LLVMValueRef llvmCoerceToBool(Compiler* compiler, LLVMValueRef value) {
         return LLVMBuildICmp(compiler->builder, LLVMIntNE, value, zero, "to_bool");
     }
 
-    if (kind == LLVMDoubleTypeKind) {
+    if (kind == LLVMFloatTypeKind || kind == LLVMDoubleTypeKind) {
         LLVMValueRef zero = LLVMConstReal(type, 0.0);
         return LLVMBuildFCmp(compiler->builder, LLVMRealONE, value, zero, "to_bool");
     }

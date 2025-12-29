@@ -108,6 +108,18 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
             fnType = LLVMGlobalGetValueType(fn);
             return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
         }
+        if (dstKind == LLVMFloatTypeKind) {
+            // Decode as double then truncate to float (runtime stores floats as doubles in tua_value).
+            fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
+            if (!fn) {
+                LLVMTypeRef params[1] = { vt };
+                fnType = LLVMFunctionType(LLVMDoubleTypeInContext(compiler->context), params, 1, 0);
+                fn = LLVMAddFunction(compiler->module, "tua_value_to_double", fnType);
+            }
+            fnType = LLVMGlobalGetValueType(fn);
+            LLVMValueRef d = LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
+            return LLVMBuildFPTrunc(compiler->builder, d, targetType, "f");
+        }
         if (dstKind == LLVMPointerTypeKind) {
             LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             if (targetType == i8ptr) {
@@ -135,12 +147,19 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
         return value;
     }
 
-    if (srcKind == LLVMIntegerTypeKind && dstKind == LLVMDoubleTypeKind) {
+    if (srcKind == LLVMIntegerTypeKind && (dstKind == LLVMFloatTypeKind || dstKind == LLVMDoubleTypeKind)) {
         return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
     }
 
-    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMIntegerTypeKind) {
+    if ((srcKind == LLVMFloatTypeKind || srcKind == LLVMDoubleTypeKind) && dstKind == LLVMIntegerTypeKind) {
         return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
+    }
+
+    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMDoubleTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, targetType, "fpext");
+    }
+    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMFloatTypeKind) {
+        return LLVMBuildFPTrunc(compiler->builder, value, targetType, "fptrunc");
     }
 
     return value;
@@ -152,6 +171,7 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
         case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
         case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
@@ -196,6 +216,10 @@ static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
 
     LLVMTypeRef type = LLVMTypeOf(value);
     LLVMTypeKind kind = LLVMGetTypeKind(type);
+    if (kind == LLVMFloatTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, LLVMDoubleTypeInContext(compiler->context), "fpext_printf");
+    }
+    if (kind == LLVMDoubleTypeKind) return value;
     if (kind != LLVMIntegerTypeKind) return value;
 
     unsigned bits = LLVMGetIntTypeWidth(type);
@@ -500,7 +524,6 @@ static int isStringLLVMType(Compiler* compiler, LLVMTypeRef t) {
 static int isNumericLLVMType(LLVMTypeRef t) {
     if (!t) return 0;
     LLVMTypeKind k = LLVMGetTypeKind(t);
-    if (k == LLVMDoubleTypeKind) return 1;
     if (k != LLVMIntegerTypeKind) return 0;
     return LLVMGetIntTypeWidth(t) != 1;
 }
@@ -537,7 +560,7 @@ static const char* formatForValue(LLVMValueRef value, int addNewline) {
         return addNewline ? "%lld\n" : "%lld";
     }
 
-    if (kind == LLVMDoubleTypeKind) {
+    if (kind == LLVMFloatTypeKind || kind == LLVMDoubleTypeKind) {
         return addNewline ? "%f\n" : "%f";
     }
 

@@ -74,6 +74,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             return LLVMInt64TypeInContext(compiler->context);
         case TYPE_DOUBLE:
             return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_FLOAT:
+            return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL:
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
@@ -414,6 +416,18 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
             fnType = LLVMGlobalGetValueType(fn);
             return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
         }
+        if (dstKind == LLVMFloatTypeKind) {
+            // Decode as double then truncate to float (runtime stores floats as doubles in tua_value).
+            fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
+            if (!fn) {
+                LLVMTypeRef params[1] = { vt };
+                fnType = LLVMFunctionType(LLVMDoubleTypeInContext(compiler->context), params, 1, 0);
+                fn = LLVMAddFunction(compiler->module, "tua_value_to_double", fnType);
+            }
+            fnType = LLVMGlobalGetValueType(fn);
+            LLVMValueRef d = LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
+            return LLVMBuildFPTrunc(compiler->builder, d, targetType, "f");
+        }
         if (dstKind == LLVMPointerTypeKind) {
             LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             if (targetType == i8ptr) {
@@ -441,6 +455,19 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
         return value;
     }
 
+    if (srcKind == LLVMIntegerTypeKind && (dstKind == LLVMFloatTypeKind || dstKind == LLVMDoubleTypeKind)) {
+        return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
+    }
+    if ((srcKind == LLVMFloatTypeKind || srcKind == LLVMDoubleTypeKind) && dstKind == LLVMIntegerTypeKind) {
+        return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
+    }
+    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMDoubleTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, targetType, "fpext");
+    }
+    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMFloatTypeKind) {
+        return LLVMBuildFPTrunc(compiler->builder, value, targetType, "fptrunc");
+    }
+
     // Keep it simple for now; extend as language grows.
     return value;
 }
@@ -463,7 +490,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
         int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
         int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
-                             vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+                             vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
         if (okKey && okVal) {
             hasAnnotatedTypedMap = 1;
             annotatedKeyTy = toLLVMType(compiler, kAst);
@@ -749,11 +776,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
         int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
         int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
-                             vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+                             vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
         if (!okKey) {
             error("map<K,V> key type must be string/int/long for now\n");
         } else if (!okVal) {
-            error("map<K,V> value type must be int/long/double/bool/string for now\n");
+            error("map<K,V> value type must be int/long/float/double/bool/string for now\n");
         } else {
             variable->isTypedMap = 1;
             variable->mapKeyType = toLLVMType(compiler, kAst);
