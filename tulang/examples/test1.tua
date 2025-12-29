@@ -1,6 +1,0 @@
-func add(x:int,y:int) {
-	let a = x + y
-	println(a)
-}
-
-add(1+2)

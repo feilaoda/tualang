@@ -6,7 +6,6 @@
 #include <stdarg.h>
 
 #include "compiler.h"
-#include "opcode.h"
 #include "parser.h"
 #include "error.h"
 #include "list.h"
@@ -17,101 +16,7 @@
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);
 
-int strtoi(const char *str, int length) {
-    // compilerDebug("strtoi: %.*s\n", length, str);
-    int sign = 1;  // 符号标志，默认为正
-    int result = 0;  // 结果存储变量
-    int i = 0;  // 字符串的索引
-
-    // 跳过开头的空格
-    while (str[i] == ' ') {
-        i++;
-    }
-
-    // 处理正负号
-    if (str[i] == '-' || str[i] == '+') {
-        if (str[i] == '-') {
-            sign = -1;
-        }
-        i++;
-    }
-
-    // 处理数字部分
-    while (str[i] >= '0' && str[i] <= '9' && i < length) {
-        // 检查是否溢出
-        if (result > (INT_MAX / 10) || (result == (INT_MAX / 10) && (str[i] - '0') > 7)) {
-            if (sign == 1) {
-                return INT_MAX;
-            } else {
-                return INT_MIN;
-            }
-        }
-        result = result * 10 + (str[i] - '0');
-        i++;
-    }
-
-    int res = sign * result;
-    // compilerDebug("strtoi end: %d\n", res);
-    return res;
-}
-
-static bool hasReturn(Compiler* compiler) {
-    ListNode* node = compiler->code->tail;
-    if (node == NULL) return false;
-    uint8_t lastOp = (uint8_t)(uintptr_t)node->data;
-    return lastOp == OP_RETURN;
-}
-
-static ObjFunction* newFunction(Token name, int arity) {
-    ObjFunction* function = malloc(sizeof(ObjFunction));
-    function->obj.type = OBJ_FUNCTION;
-    function->obj.isMarked = false;
-    function->obj.next = NULL;
-    function->name = name;
-    function->arity = arity;
-    function->code = listNew();
-    function->constants = listNew();
-    function->maxLocals = 0;
-    function->maxStack = 0;
-    function->lines = listNew();
-    function->upvalueCount = 0;
-    return function;
-}
-
-static int addLocal(Compiler* compiler, Token name) {
-    if (compiler->localCount >= compiler->maxLocals) {
-        compiler->maxLocals *= 2;
-        compiler->locals = realloc(compiler->locals, 
-                                 sizeof(Local) * compiler->maxLocals);
-    }
-    
-    Local* local = &compiler->locals[compiler->localCount];
-    local->name = name;
-    local->depth = compiler->scopeDepth;
-    return compiler->localCount++;
-}
-
 void initCompiler(Compiler* compiler) {
-    compiler->code = listNew();
-    compiler->constants = listNew();
-    compiler->ir = listNew();
-    // Local variable management
-    compiler->localCount = 0;
-    compiler->maxLocals = 8;
-    compiler->locals = malloc(sizeof(Local) * compiler->maxLocals);
-    
-    // Scope management
-    compiler->scopeDepth = 0;
-    
-    // Function compilation
-    compiler->enclosing = NULL;
-    compiler->function = NULL;
-    
-    // Loop and jump tracking
-    compiler->loops = listNew();
-    compiler->breaks = listNew();
-    compiler->labelCount = 0;
-
     compiler->structs = listNew();
     compiler->enums = listNew();
     compiler->loopStack = listNew();
@@ -407,122 +312,6 @@ EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name) {
         }
     }
     return compilerFindEnum(compiler, name->start, name->length);
-}
-
-void convertTokenToValue(Token token, Value *value) {
-switch (token.type) {
-        case TOKEN_INT: {
-            value->type = VAL_INT;
-            value->as.i = strtoi(token.start,token.length);
-            break;
-        }
-        case TOKEN_LONG: {
-            value->type = VAL_LONG;
-            char* tmp = malloc((size_t)token.length + 1);
-            memcpy(tmp, token.start, (size_t)token.length);
-            tmp[token.length] = '\0';
-            value->as.l = strtoll(tmp, NULL, 10);
-            free(tmp);
-            break;
-        }
-        case TOKEN_DOUBLE: {
-            value->type = VAL_DOUBLE;
-            char* tmp = malloc((size_t)token.length + 1);
-            memcpy(tmp, token.start, (size_t)token.length);
-            tmp[token.length] = '\0';
-            value->as.d = strtod(tmp, NULL);
-            free(tmp);
-            break;
-        }
-        case TOKEN_STRING_LITERAL: {
-            value->type = VAL_STRING;
-            // Copy string without quotes
-            int length = token.length - 2; // Remove quotes
-            char* string = malloc(length + 1);
-            memcpy(string, token.start + 1, length);
-            string[length] = '\0';
-            value->as.string = string;
-            break;
-        }
-        case TOKEN_TRUE: {
-            value->type = VAL_BOOL;
-            value->as.boolean = true;
-            break;
-        }
-        case TOKEN_FALSE: {
-            value->type = VAL_BOOL;
-            value->as.boolean = false;
-            break;
-        }
-        default: {
-            value->type = VAL_NIL;
-            break;
-        }
-    }
-}
-
-Value tokenToValue(Token token) {
-    compilerDebug("Converting token to value %.*s, %d,%d\n", token.length, token.start, token.type,TOKEN_STRING_LITERAL);
-    // Value *value = malloc(sizeof(Value));
-    Value value;
-    convertTokenToValue(token, &value);
-    return value;
-}
-
-
-Value* tokenToValuePtr(Token token) {
-    compilerDebug("Converting token to value %.*s, %d,%d\n", token.length, token.start, token.type,TOKEN_STRING_LITERAL);
-    Value *value = malloc(sizeof(Value));
-    convertTokenToValue(token, value);
-    return value;
-}
-
-static int addConstant(Compiler* compiler, Token value) {
-    compilerDebug("Adding constant %.*s, %p\n", value.length, value.start,compiler->constants);
-    // Add constant to constant pool and return index
-    Value *constant = tokenToValuePtr(value);
-
-    listAppend(compiler->constants, constant);
-    return compiler->constants->length - 1;
-}
-static int addConstantObj(Compiler* compiler, Obj* obj) {
-    Value* value = malloc(sizeof(Value));
-    value->type = VAL_OBJ;
-    value->as.obj = obj;
-    
-    // Add to constant pool
-    listAppend(compiler->constants, value);
-    return compiler->constants->length - 1;
-}
-static bool identifiersEqual(Token a, Token b) {
-    // Check lengths match
-    if (a.length != b.length) return false;
-    
-    // Compare token contents
-    return memcmp(a.start, b.start, a.length) == 0;
-}
-static int resolveLocal(Compiler* compiler, Token name) {
-    // Find local variable in current scope
-    for (int i = compiler->localCount - 1; i >= 0; i--) {
-        if (identifiersEqual(compiler->locals[i].name, name)) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static void beginScope(Compiler* compiler) {
-    compiler->scopeDepth++;
-}
-
-static void endScope(Compiler* compiler) {
-    compiler->scopeDepth--;
-    
-    while (compiler->localCount > 0 &&
-           compiler->locals[compiler->localCount - 1].depth > compiler->scopeDepth) {
-        // emitByte(compiler, OP_POP);
-        compiler->localCount--;
-    }
 }
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
@@ -1058,14 +847,12 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
     scoped->labels = saved ? saved->labels : listNew();
     compiler->current = scoped;
 
-    beginScope(compiler);
     ListNode* node = stmt->statements->head;
     while (node != NULL) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) break;
         compileStmt(compiler, (Stmt*)node->data);
         node = node->next;
     }
-    endScope(compiler);
 
     compiler->current = saved;
     compilerDebug("Compiled block statement end\n");

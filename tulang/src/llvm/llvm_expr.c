@@ -4,6 +4,49 @@
 
 static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
 
+static char* dupTokenCString(const Token* token) {
+    if (!token || !token->start || token->length <= 0) return NULL;
+    char* s = malloc((size_t)token->length + 1);
+    memcpy(s, token->start, (size_t)token->length);
+    s[token->length] = '\0';
+    return s;
+}
+
+static int32_t parseIntToken(Token token) {
+    char* s = dupTokenCString(&token);
+    if (!s) return 0;
+    long v = strtol(s, NULL, 10);
+    free(s);
+    return (int32_t)v;
+}
+
+static int64_t parseLongToken(Token token) {
+    char* s = dupTokenCString(&token);
+    if (!s) return 0;
+    long long v = strtoll(s, NULL, 10);
+    free(s);
+    return (int64_t)v;
+}
+
+static double parseDoubleToken(Token token) {
+    char* s = dupTokenCString(&token);
+    if (!s) return 0.0;
+    double v = strtod(s, NULL);
+    free(s);
+    return v;
+}
+
+static char* dupStringLiteral(Token token) {
+    if (!token.start || token.length < 2) return dupTokenCString(&token);
+    // Best-effort: strip surrounding quotes without unescaping.
+    int innerLen = token.length - 2;
+    if (innerLen < 0) innerLen = 0;
+    char* s = malloc((size_t)innerLen + 1);
+    memcpy(s, token.start + 1, (size_t)innerLen);
+    s[innerLen] = '\0';
+    return s;
+}
+
 static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
     if (type == NULL) {
         return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
@@ -1253,23 +1296,25 @@ LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr) {
     
     switch(expr->value.type) {
         case TOKEN_INT: {
-            int value = tokenToValue(expr->value).as.i;
+            int32_t value = parseIntToken(expr->value);
             return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 
                               value, 0);
         }
         case TOKEN_LONG: {
-            int64_t value = tokenToValue(expr->value).as.l;
+            int64_t value = parseLongToken(expr->value);
             return LLVMConstInt(LLVMInt64TypeInContext(compiler->context), (uint64_t)value, 0);
         }
         case TOKEN_DOUBLE: {
-            double value = tokenToValue(expr->value).as.d;
+            double value = parseDoubleToken(expr->value);
             return LLVMConstReal(LLVMDoubleTypeInContext(compiler->context), 
                                value);
         }
         case TOKEN_STRING_LITERAL: {
-            Value val = tokenToValue(expr->value);
-            return LLVMBuildGlobalStringPtr(compiler->builder, 
-                                          val.as.string, "str");
+            char* s = dupStringLiteral(expr->value);
+            if (!s) return NULL;
+            LLVMValueRef out = LLVMBuildGlobalStringPtr(compiler->builder, s, "str");
+            free(s);
+            return out;
         }
         case TOKEN_NULL: {
             return LLVMConstNull(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0));
@@ -1305,14 +1350,16 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
 
         LLVMValueRef keyConst = NULL;
         if (e->key.type == TOKEN_INT) {
-            int v = tokenToValue(e->key).as.i;
-            keyConst = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)v, 1);
+            int32_t v = parseIntToken(e->key);
+            keyConst = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (uint64_t)(int64_t)v, 1);
         } else if (e->key.type == TOKEN_LONG) {
-            int64_t v = tokenToValue(e->key).as.l;
+            int64_t v = parseLongToken(e->key);
             keyConst = LLVMConstInt(LLVMInt64TypeInContext(compiler->context), (uint64_t)v, 1);
         } else if (e->key.type == TOKEN_STRING_LITERAL) {
-            Value val = tokenToValue(e->key);
-            keyConst = LLVMBuildGlobalStringPtr(builder, val.as.string, "kstr");
+            char* s = dupStringLiteral(e->key);
+            if (!s) return NULL;
+            keyConst = LLVMBuildGlobalStringPtr(builder, s, "kstr");
+            free(s);
         } else {
             error("Map key must be int/long/string literal\n");
             return NULL;
