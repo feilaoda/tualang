@@ -10,6 +10,7 @@
 #include "parser.h"
 #include "compiler.h"
 #include "debug.h"
+#include "analyzer.h"
 
 #include "llvm/llvm.h"
 #include <llvm-c/Core.h>
@@ -736,7 +737,15 @@ int main(int argc, char* argv[]) {
     // Compile modules in dependency-first order into the single LLVM module's main.
     for (ListNode* node = sys.order->head; node != NULL; node = node->next) {
         ModuleInfo* m = (ModuleInfo*)node->data;
+        if (!analyzeModule(&compiler, m->statements, m->aliases, m->path)) {
+            free(entryPath);
+            return 1;
+        }
         compileModuleIntoMain(&compiler, m);
+        if (compiler.hadError) {
+            free(entryPath);
+            return 1;
+        }
     }
 
     free(entryPath);

@@ -1820,6 +1820,46 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
     emitDebug("emitGetExpr\n");
     if (!expr || !expr->object) return NULL;
 
+    // Namespace-qualified enum variant access:
+    // `import "m" as ns; ns.E.A`
+    // Parses as Get(object=Get(object=Variable(ns), name=E), name=A).
+    if (expr->object->type == EXPR_GET) {
+        GetExpr* inner = (GetExpr*)expr->object;
+        if (inner->object && inner->object->type == EXPR_VARIABLE) {
+            VariableExpr* ns = (VariableExpr*)inner->object;
+            SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+            if (a && a->kind == ALIAS_MODULE) {
+                const int sepLen = 2;
+                int ql = a->qualifiedLen + sepLen + inner->name.length;
+                char* q = malloc((size_t)ql + 1);
+                memcpy(q, a->qualified, (size_t)a->qualifiedLen);
+                memcpy(q + a->qualifiedLen, "__", (size_t)sepLen);
+                memcpy(q + a->qualifiedLen + sepLen, inner->name.start, (size_t)inner->name.length);
+                q[ql] = '\0';
+
+                EnumInfo* enumInfo = compilerFindEnum(compiler, q, ql);
+                free(q);
+                if (enumInfo) {
+                    if (enumInfo->isStringTag) {
+                        LLVMValueRef tag = enumVariantStringTagOf(compiler, enumInfo, &expr->name);
+                        if (!tag) {
+                            error("Unknown enum variant\n");
+                            return NULL;
+                        }
+                        return tag;
+                    } else {
+                        int idx = enumVariantIntTagOf(enumInfo, &expr->name);
+                        if (idx < 0) {
+                            error("Unknown enum variant\n");
+                            return NULL;
+                        }
+                        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (uint64_t)idx, 0);
+                    }
+                }
+            }
+        }
+    }
+
     // Only support member access on variables for now.
     if (expr->object->type != EXPR_VARIABLE) {
         error("Member access receiver must be a variable for now\n");

@@ -163,6 +163,7 @@
   - 只支持字符串字面量路径（不支持表达式路径）
   - 仅支持导入 `fn/struct/object/enum`；不支持导入模块级变量
   - 任何导入形式（import-all / named import / namespace import）若引入同名符号（或同名命名空间别名）冲突，会直接报错并停止（可用 `as` 或命名空间导入来消歧义）
+  - 命名空间导入的成员访问：已支持 `ns.F(...)`、`ns.StructCtor(...)`、`ns.Obj.method(...)`、`ns.Enum.Variant`
 
 ### 9. 数据结构、Option 与空值（Status: Partial）
 
@@ -179,9 +180,11 @@
   - `opt.unwrapOr(default:T) -> T`
 - 运算：
   - `opt ?? default`：当 `opt` 为 `Some(v)` 时返回 `v`，否则返回 `default`
+    - 左操作数必须是 `Option<T>`；`1 ?? 0` 这类写法会编译期报错
 - 相等性：
   - 允许 `Option<T> == Option<T>` / `!=`：`None == None`；`Some(a) == Some(b)` 比较 payload（`string` 为内容比较）
   - 禁止 `Option<T>` 与非 `Option` 直接比较（例如 `opt == 1`）；需用 `unwrap()/isSome()` 或与 `Some(...)` 比较
+  - 禁止把 `Option<T>` 直接赋给 `T`（例如 `let x:int = m["a"]`）；需用 `unwrap()` 或 `??` 提供默认值
 
 #### 9.2 `map` / `map<K,V>`（Status: Partial）
 - 目标：先提供“可用的键值容器”，再逐步补齐语义层与内存模型。

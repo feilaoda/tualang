@@ -39,7 +39,7 @@
 ### 7. TODO List（下一阶段，按执行顺序）
 - [ ] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则
 - [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）
-- [ ] 增加语义/类型分析层（Parse → Analyze → Codegen）：符号表、类型推断/检查、错误定位
+- [x] 增加语义/类型分析层（第一版）：在 LLVM codegen 前做基础类型推断/检查（Option/map 相关），避免 LLVMVerify 才报错
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化

@@ -1,0 +1,4 @@
+enum E { A, B = 10 }
+
+enum S { X, Y = "rawy" }
+
