@@ -57,10 +57,38 @@ tua_array* tua_array_clone(tua_array* a) {
     return b;
 }
 
+int64_t tua_array_push(tua_array* a, const void* elem) {
+    if (!a) tua_panic("null array");
+    if (a->fixed_len >= 0) tua_panic("cannot push to fixed-length array");
+    if (a->elem_size <= 0) tua_panic("invalid array element size");
+    if (!elem && a->elem_size > 0) tua_panic("null element pointer");
+
+    if (a->len < 0 || a->cap < 0) tua_panic("invalid array header");
+    if (a->len >= a->cap) {
+        int64_t newCap = a->cap > 0 ? a->cap * 2 : 1;
+        if (newCap < a->len + 1) newCap = a->len + 1;
+
+        size_t oldBytes = (size_t)a->cap * (size_t)a->elem_size;
+        size_t newBytes = (size_t)newCap * (size_t)a->elem_size;
+        void* newData = realloc(a->data, newBytes);
+        if (!newData) tua_panic("out of memory");
+        if (newBytes > oldBytes) {
+            memset((char*)newData + oldBytes, 0, newBytes - oldBytes);
+        }
+        a->data = newData;
+        a->cap = newCap;
+    }
+
+    if (a->elem_size > 0) {
+        memcpy((char*)a->data + (size_t)a->len * (size_t)a->elem_size, elem, (size_t)a->elem_size);
+    }
+    a->len += 1;
+    return a->len;
+}
+
 void tua_array_free(tua_array* a) {
     if (!a) return;
     free(a->data);
     a->data = NULL;
     free(a);
 }
-

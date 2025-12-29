@@ -343,6 +343,22 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             if (tokenTextEquals(&get->name, "clone")) {
                 return atArray(recvTy->inner ? recvTy->inner : atNew(AT_ANY), recvTy->arrayLen);
             }
+            if (tokenTextEquals(&get->name, "push")) {
+                if (recvTy->arrayLen >= 0) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "cannot push to fixed-length array");
+                }
+                unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+                if (got != 1) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "array.push expects 1 argument");
+                } else {
+                    Expr* arg0 = (Expr*)call->arguments->head->data;
+                    AType* argTy = inferExpr(compiler, scope, arg0, modulePath);
+                    if (recvTy->inner && !atIsAny(recvTy->inner) && !atAssignable(recvTy->inner, argTy)) {
+                        analyzeErrorAt(compiler, modulePath, get->name.line, "array element type mismatch");
+                    }
+                }
+                return atNew(AT_INT);
+            }
         }
     }
 

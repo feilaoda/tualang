@@ -26,4 +26,3 @@ assert(g[2] == 0)
 
 let h:int[5]
 assert(h[4] == 0)
-

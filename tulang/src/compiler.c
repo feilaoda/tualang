@@ -11,11 +11,27 @@
 #include "list.h"
 #include "debug.h"
 #include "llvm/llvm.h"
-#include "opt/tailrec.h"
 
 #define compilerDebug(...) debug(__VA_ARGS__)
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);
+
+typedef struct TailrecState {
+    int enabled;
+    LLVMValueRef func;
+    LLVMBasicBlockRef loop;
+    int paramCount;
+    LLVMValueRef* paramSlots;      // alloca slots (or box pointer slots if boxed)
+    LLVMTypeRef* paramTypes;       // value types (T)
+    int* paramIsBoxed;             // 1 if slot stores T*
+    LLVMTypeRef* paramBoxPtrTypes; // T* when boxed, else NULL
+} TailrecState;
+
+static int tokenEqualsCString(const Token* token, const char* s) {
+    if (!token || !s) return 0;
+    size_t len = strlen(s);
+    return token->length == (int)len && memcmp(token->start, s, len) == 0;
+}
 
 void initCompiler(Compiler* compiler) {
     compiler->structs = listNew();
@@ -47,12 +63,7 @@ void initCompiler(Compiler* compiler) {
     compiler->expectedMapValueType = NULL;
     compiler->expectedArrayElemType = NULL;
     compiler->expectedArrayFixedLen = -1;
-    compiler->tailrecLoop = NULL;
-    compiler->tailrecParamCount = 0;
-    compiler->tailrecParamSlots = NULL;
-    compiler->tailrecParamTypes = NULL;
-    compiler->tailrecParamIsBoxed = NULL;
-    compiler->tailrecParamBoxPtrTypes = NULL;
+    compiler->tailrec = NULL;
     
     // Debug information
     compiler->hadError = false;
@@ -830,6 +841,91 @@ static int stmtHasLambdaLiteral(Stmt* s) {
     }
 }
 
+static int tailrecIsSelfCall(Compiler* compiler, const Token* calleeName) {
+    if (!compiler || !calleeName) return 0;
+    if (!compiler->current || !compiler->current->func) return 0;
+
+    const char* cur = LLVMGetValueName(compiler->current->func);
+    if (cur && tokenEqualsCString(calleeName, cur)) return 1;
+
+    // Module-qualified self call: `foo(...)` inside module where function is compiled as `mod__foo`.
+    if (compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, calleeName, &ql);
+        if (q) {
+            int ok = cur && ql == (int)strlen(cur) && memcmp(q, cur, (size_t)ql) == 0;
+            free(q);
+            if (ok) return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int tailrecTryRewriteReturn(Compiler* compiler, ReturnStmt* stmt) {
+    if (!compiler || !stmt) return 0;
+    TailrecState* tr = (TailrecState*)compiler->tailrec;
+    if (!tr || !tr->enabled || !tr->loop || !tr->func) return 0;
+    if (!compiler->current || compiler->current->func != tr->func) return 0;
+
+    // Only `return f(args...)` (single return value).
+    Expr* retExpr = NULL;
+    if (stmt->values && stmt->values->length > 0) {
+        if (stmt->values->length != 1) return 0;
+        retExpr = (Expr*)stmt->values->head->data;
+    } else {
+        retExpr = stmt->value;
+    }
+    if (!retExpr || retExpr->type != EXPR_CALL) return 0;
+
+    CallExpr* call = (CallExpr*)retExpr;
+    if (!call->callee || call->callee->type != EXPR_VARIABLE) return 0;
+    VariableExpr* callee = (VariableExpr*)call->callee;
+    if (!tailrecIsSelfCall(compiler, &callee->name)) return 0;
+
+    unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+    if ((int)got != tr->paramCount) return 0;
+
+    LLVMBuilderRef builder = compiler->builder;
+
+    // Evaluate all arguments first (preserve argument evaluation semantics).
+    LLVMValueRef* argVals = NULL;
+    if (tr->paramCount > 0) {
+        argVals = malloc(sizeof(LLVMValueRef) * (size_t)tr->paramCount);
+        ListNode* n = call->arguments ? call->arguments->head : NULL;
+        for (int i = 0; i < tr->paramCount; i++) {
+            if (!n) {
+                free(argVals);
+                return 0;
+            }
+            LLVMValueRef v = compileExpr(compiler, (Expr*)n->data);
+            v = castValueToType(compiler, v, tr->paramTypes[i]);
+            argVals[i] = v;
+            n = n->next;
+        }
+    }
+
+    // Assign arguments into parameter storage slots.
+    for (int i = 0; i < tr->paramCount; i++) {
+        if (tr->paramIsBoxed && tr->paramIsBoxed[i]) {
+            LLVMTypeRef cellTy = tr->paramBoxPtrTypes ? tr->paramBoxPtrTypes[i] : NULL;
+            if (!cellTy) {
+                if (argVals) free(argVals);
+                return 0;
+            }
+            LLVMValueRef cell = LLVMBuildLoad2(builder, cellTy, tr->paramSlots[i], "tr_cell");
+            LLVMBuildStore(builder, argVals[i], cell);
+        } else {
+            LLVMBuildStore(builder, argVals[i], tr->paramSlots[i]);
+        }
+    }
+    if (argVals) free(argVals);
+
+    // Jump back to loop header instead of calling recursively.
+    LLVMBuildBr(builder, tr->loop);
+    return 1;
+}
+
 void compileStmt(Compiler* compiler, Stmt* stmt) {
     compilerDebug("Compiling statement %s\n", stmtTypeToString(stmt->type));
 #ifdef DEBUG
@@ -976,7 +1072,6 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
     LLVMTypeRef funcType = LLVMGlobalGetValueType(compiler->current->func);
     LLVMTypeRef returnType = LLVMGetReturnType(funcType);
 
-    // Tail recursion elimination (self tail call): `return f(args...)`
     if (tailrecTryRewriteReturn(compiler, stmt)) {
         return;
     }
@@ -1359,14 +1454,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     const char* savedLastSetFilePath = compiler->lastSetFilePath;
     int savedLastSetLine = compiler->lastSetLine;
     int savedLastSetCol = compiler->lastSetCol;
-
-    // Save tailrec state (nested function compile)
-    LLVMBasicBlockRef savedTailrecLoop = compiler->tailrecLoop;
-    int savedTailrecParamCount = compiler->tailrecParamCount;
-    LLVMValueRef* savedTailrecParamSlots = compiler->tailrecParamSlots;
-    LLVMTypeRef* savedTailrecParamTypes = compiler->tailrecParamTypes;
-    int* savedTailrecParamIsBoxed = compiler->tailrecParamIsBoxed;
-    LLVMTypeRef* savedTailrecParamBoxPtrTypes = compiler->tailrecParamBoxPtrTypes;
+    TailrecState* savedTailrec = (TailrecState*)compiler->tailrec;
 
     // Create function entry
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(func, "entry");
@@ -1382,25 +1470,25 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     funcBlock->labels = listNew();
     compiler->current = funcBlock;
 
-    // Init tailrec state for this function.
-    compiler->tailrecLoop = NULL;
-    compiler->tailrecParamCount = paramCount;
-    compiler->tailrecParamSlots = NULL;
-    compiler->tailrecParamTypes = NULL;
-    compiler->tailrecParamIsBoxed = NULL;
-    compiler->tailrecParamBoxPtrTypes = NULL;
+    // Tail recursion elimination: enable only when this function is not using boxing for closures.
+    // Boxing makes tail-call frame reuse observable for captured variables.
+    TailrecState tr = {0};
+    tr.enabled = compiler->boxAllLocals ? 0 : 1;
+    tr.func = func;
+    tr.paramCount = paramCount;
     if (paramCount > 0) {
-        compiler->tailrecParamSlots = malloc(sizeof(LLVMValueRef) * (size_t)paramCount);
-        compiler->tailrecParamTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
-        compiler->tailrecParamIsBoxed = malloc(sizeof(int) * (size_t)paramCount);
-        compiler->tailrecParamBoxPtrTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
+        tr.paramSlots = malloc(sizeof(LLVMValueRef) * (size_t)paramCount);
+        tr.paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
+        tr.paramIsBoxed = malloc(sizeof(int) * (size_t)paramCount);
+        tr.paramBoxPtrTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
         for (int i = 0; i < paramCount; i++) {
-            compiler->tailrecParamSlots[i] = NULL;
-            compiler->tailrecParamTypes[i] = NULL;
-            compiler->tailrecParamIsBoxed[i] = 0;
-            compiler->tailrecParamBoxPtrTypes[i] = NULL;
+            tr.paramSlots[i] = NULL;
+            tr.paramTypes[i] = NULL;
+            tr.paramIsBoxed[i] = 0;
+            tr.paramBoxPtrTypes[i] = NULL;
         }
     }
+    compiler->tailrec = &tr;
 
     // Bind parameters into local allocas
     for (int i = 0; i < paramCount; i++) {
@@ -1434,12 +1522,11 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             LLVMBuildStore(compiler->builder, arg, slot);
         }
 
-        // Record parameter slots for tail recursion elimination.
-        if (compiler->tailrecParamSlots && compiler->tailrecParamTypes && compiler->tailrecParamIsBoxed && compiler->tailrecParamBoxPtrTypes) {
-            compiler->tailrecParamSlots[i] = slot;
-            compiler->tailrecParamTypes[i] = valueType;
-            compiler->tailrecParamIsBoxed[i] = isBoxed ? 1 : 0;
-            compiler->tailrecParamBoxPtrTypes[i] = isBoxed ? boxPtrType : NULL;
+        if (tr.paramSlots && tr.paramTypes && tr.paramIsBoxed && tr.paramBoxPtrTypes) {
+            tr.paramSlots[i] = slot;
+            tr.paramTypes[i] = valueType;
+            tr.paramIsBoxed[i] = isBoxed ? 1 : 0;
+            tr.paramBoxPtrTypes[i] = isBoxed ? boxPtrType : NULL;
         }
 
         VariableRef* variable = malloc(sizeof(VariableRef));
@@ -1523,11 +1610,12 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         }
     }
 
-    // Jump into the body loop block so self tail calls can branch back without re-running entry allocas.
-    LLVMBasicBlockRef tailLoop = LLVMAppendBasicBlock(func, "tailrecurse");
-    compiler->tailrecLoop = tailLoop;
-    LLVMBuildBr(compiler->builder, tailLoop);
-    LLVMPositionBuilderAtEnd(compiler->builder, tailLoop);
+    // Place the body in a loop header block so `return f(args...)` can branch back.
+    if (tr.enabled) {
+        tr.loop = LLVMAppendBasicBlock(func, "tailrecurse");
+        LLVMBuildBr(compiler->builder, tr.loop);
+        LLVMPositionBuilderAtEnd(compiler->builder, tr.loop);
+    }
 
     // Compile function body
     for (ListNode* node = stmt->body ? stmt->body->head : NULL; node != NULL; node = node->next) {
@@ -1551,17 +1639,12 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compiler->lastSetFilePath = savedLastSetFilePath;
     compiler->lastSetLine = savedLastSetLine;
     compiler->lastSetCol = savedLastSetCol;
+    compiler->tailrec = savedTailrec;
 
-    if (compiler->tailrecParamSlots) free(compiler->tailrecParamSlots);
-    if (compiler->tailrecParamTypes) free(compiler->tailrecParamTypes);
-    if (compiler->tailrecParamIsBoxed) free(compiler->tailrecParamIsBoxed);
-    if (compiler->tailrecParamBoxPtrTypes) free(compiler->tailrecParamBoxPtrTypes);
-    compiler->tailrecLoop = savedTailrecLoop;
-    compiler->tailrecParamCount = savedTailrecParamCount;
-    compiler->tailrecParamSlots = savedTailrecParamSlots;
-    compiler->tailrecParamTypes = savedTailrecParamTypes;
-    compiler->tailrecParamIsBoxed = savedTailrecParamIsBoxed;
-    compiler->tailrecParamBoxPtrTypes = savedTailrecParamBoxPtrTypes;
+    if (tr.paramSlots) free(tr.paramSlots);
+    if (tr.paramTypes) free(tr.paramTypes);
+    if (tr.paramIsBoxed) free(tr.paramIsBoxed);
+    if (tr.paramBoxPtrTypes) free(tr.paramBoxPtrTypes);
 
     if (paramTypes) free(paramTypes);
     free(funcName);

@@ -171,6 +171,9 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 if (rv.value && rv.isArray && tokenEquals(&get->name, "clone")) {
                     return compilerGetArrayType(compiler);
                 }
+                if (rv.value && rv.isArray && tokenEquals(&get->name, "push")) {
+                    return LLVMInt32TypeInContext(compiler->context);
+                }
             }
         }
         if (call->callee && call->callee->type == EXPR_VARIABLE) {

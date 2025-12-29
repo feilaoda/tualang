@@ -71,13 +71,9 @@ typedef struct Compiler{
 	    LLVMTypeRef expectedArrayElemType;
 	    int64_t expectedArrayFixedLen; // -1 => dynamic / unknown
 
-    // Tail recursion elimination (self tail calls): `return f(args...)` -> param stores + branch.
-    LLVMBasicBlockRef tailrecLoop;
-    int tailrecParamCount;
-    LLVMValueRef* tailrecParamSlots;      // alloca slots (or box pointer slots if boxed)
-    LLVMTypeRef* tailrecParamTypes;       // value types (T)
-    int* tailrecParamIsBoxed;             // 1 if slot stores T*
-    LLVMTypeRef* tailrecParamBoxPtrTypes; // T* when boxed, else NULL
+    // Tail recursion elimination (self tail calls) state for the currently compiled function.
+    // Kept opaque here; implemented in `src/compiler.c`.
+    struct TailrecState* tailrec;
 } Compiler;
 
 typedef struct MultiReturnInfo {

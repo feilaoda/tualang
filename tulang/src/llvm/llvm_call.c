@@ -419,6 +419,16 @@ static LLVMValueRef getOrCreateTuaArrayClone(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_array_clone", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaArrayPush(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_push");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { arrType, i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_push", fnType);
+}
+
 enum {
     TUA_VAL_NIL = 0,
     TUA_VAL_INT = 1,
@@ -732,7 +742,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             unsigned expected = LLVMCountParamTypes(fnType);
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
             if (expected != got + 1) {
-                emitDebug("Closure argument count mismatch\n");
+                compilerErrorAtToken(
+                    compiler,
+                    &callee->name,
+                    "argument count mismatch for call '%.*s': expected %u, got %u",
+                    callee->name.length,
+                    callee->name.start,
+                    expected > 0 ? (unsigned)(expected - 1) : 0u,
+                    got
+                );
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return NULL;
             }
@@ -1131,6 +1149,42 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return out;
             }
+
+            if (tokenEquals(&get->name, "push")) {
+                if (got != 1) {
+                    compilerErrorAt(compiler, get->name.line, "array.push expects 1 argument");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (recvVar.arrayFixedLen >= 0) {
+                    compilerErrorAt(compiler, get->name.line, "cannot push to fixed-length array");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMTypeRef elemTy = recvVar.arrayElemType;
+                if (!elemTy) {
+                    compilerErrorAt(compiler, get->name.line, "missing array element type metadata");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef arg0 = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                arg0 = castValueToType(compiler, arg0, elemTy);
+                LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, elemTy, "push_tmp");
+                LLVMBuildStore(compiler->builder, arg0, tmp);
+                LLVMValueRef p = LLVMBuildBitCast(compiler->builder, tmp, LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), "push_p");
+
+                LLVMValueRef fn = getOrCreateTuaArrayPush(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args2[2] = { arrPtr, p };
+                LLVMValueRef len64 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "plen64");
+                LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "plen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            compilerErrorAt(compiler, get->name.line, "unknown array method: %.*s", get->name.length, get->name.start);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
         }
 
         // Map built-in methods: `m.hasKey(k)`, `m.get(k)`, `m.len()`
@@ -1430,7 +1484,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         unsigned expected = LLVMCountParamTypes(funcType);
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if ((!isInstance && expected != got) || (isInstance && expected != got + 1)) {
-            emitDebug("Argument count mismatch\n");
+            compilerErrorAtToken(
+                compiler,
+                &get->name,
+                "argument count mismatch for call '%.*s': expected %u, got %u",
+                get->name.length,
+                get->name.start,
+                isInstance ? (unsigned)(expected - 1) : expected,
+                got
+            );
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -1662,7 +1724,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             unsigned expected = LLVMCountParamTypes(fnType);
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
             if (expected != got + 1) {
-                emitDebug("Closure argument count mismatch\n");
+                compilerErrorAtToken(
+                    compiler,
+                    &callee->name,
+                    "argument count mismatch for call '%.*s': expected %u, got %u",
+                    callee->name.length,
+                    callee->name.start,
+                    expected > 0 ? (unsigned)(expected - 1) : 0u,
+                    got
+                );
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return NULL;
             }
@@ -1732,7 +1802,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         unsigned expected = LLVMCountParamTypes(funcType);
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (expected != got) {
-            emitDebug("Argument count mismatch\n");
+            compilerErrorAtToken(
+                compiler,
+                &callee->name,
+                "argument count mismatch for call '%.*s': expected %u, got %u",
+                callee->name.length,
+                callee->name.start,
+                expected,
+                got
+            );
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -1765,7 +1843,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     }
 
     if (!expr->arguments || expr->arguments->length != 1) {
-        emitDebug("print/println expects exactly 1 argument for now\n");
+        compilerErrorAtToken(compiler, &callee->name, "%.*s expects exactly 1 argument", callee->name.length, callee->name.start);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
