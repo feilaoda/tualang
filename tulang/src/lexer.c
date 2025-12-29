@@ -273,13 +273,13 @@ static TokenType identifierType(Lexer* lexer) {
             
             break;
         case 'd':
-            if (lexer->current - lexer->start > 1 && memcmp(lexer->start, "do", 2) == 0) {
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "do", 2) == 0) {
                 return TOKEN_DO;
             }
-            if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "deinit", 6) == 0) {
+            if (lexer->current - lexer->start == 6 && memcmp(lexer->start, "deinit", 6) == 0) {
                 return TOKEN_DEINIT;
             }
-            if (lexer->current - lexer->start > 5 && memcmp(lexer->start, "double", 6) == 0) {
+            if (lexer->current - lexer->start == 6 && memcmp(lexer->start, "double", 6) == 0) {
                 return TOKEN_DOUBLE;
             }
             break;

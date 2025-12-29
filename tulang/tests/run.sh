@@ -13,6 +13,18 @@ for f in tests/*.tua; do
   [ -e "$f" ] || continue
   total=$((total+1))
   base="$(basename "$f")"
+  if [[ "$base" == aot_* ]]; then
+    tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
+    out="$tmpd/a.out"
+    if ./bin/tuac --output "$out" "$f" >/dev/null 2>&1 && "$out" >/dev/null 2>&1; then
+      echo "[PASS] $base"
+    else
+      echo "[FAIL] $base"
+      fail=1
+    fi
+    rm -rf "$tmpd"
+    continue
+  fi
   if [[ "$base" == fail_* ]]; then
     tmp="$(mktemp)"
     if ./bin/tuac "$f" >/dev/null 2>"$tmp"; then

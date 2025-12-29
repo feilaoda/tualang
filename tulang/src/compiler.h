@@ -74,6 +74,12 @@ typedef struct Compiler{
     // Tail recursion elimination (self tail calls) state for the currently compiled function.
     // Kept opaque here; implemented in `src/compiler.c`.
     struct TailrecState* tailrec;
+
+    // LLVM optimization level for the generated module (0-3). Default: 0 (no extra passes).
+    int llvmOptLevel;
+
+    // When set, compile to native executable at this path instead of running via JIT.
+    const char* outputPath;
 } Compiler;
 
 typedef struct MultiReturnInfo {

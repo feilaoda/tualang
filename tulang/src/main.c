@@ -5,6 +5,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include <limits.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include "lexer.h"
 #include "parser.h"
@@ -16,8 +19,10 @@
 #include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 typedef enum {
     EXPORT_FUNC = 0,
@@ -437,6 +442,7 @@ static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path) {
     List* statements = NULL;
     if (!parse(&parser, &statements)) {
         fprintf(stderr, "Parsing failed for module: %s\n", path);
+        sys->hadError = 1;
         module->statements = listNew();
     } else {
         module->statements = statements;
@@ -520,6 +526,208 @@ int executeModule(LLVMModuleRef module) {
     return result;
 }
 
+static LLVMTargetMachineRef createHostTargetMachine(int optLevel) {
+    char* triple = LLVMGetDefaultTargetTriple();
+    LLVMTargetRef target = NULL;
+    char* err = NULL;
+    if (LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
+        if (err) {
+            fprintf(stderr, "LLVMGetTargetFromTriple failed: %s\n", err);
+            LLVMDisposeMessage(err);
+        }
+        LLVMDisposeMessage(triple);
+        return NULL;
+    }
+    LLVMCodeGenOptLevel cg = LLVMCodeGenLevelDefault;
+    switch (optLevel) {
+        case 0: cg = LLVMCodeGenLevelNone; break;
+        case 1: cg = LLVMCodeGenLevelLess; break;
+        case 2: cg = LLVMCodeGenLevelDefault; break;
+        default: cg = LLVMCodeGenLevelAggressive; break;
+    }
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target,
+        triple,
+        "generic",
+        "",
+        cg,
+        LLVMRelocDefault,
+        LLVMCodeModelDefault
+    );
+    LLVMDisposeMessage(triple);
+    return tm;
+}
+
+static int fileExists(const char* path) {
+    if (!path || path[0] == '\0') return 0;
+    return access(path, F_OK) == 0;
+}
+
+static char* resolveExecutablePath(const char* argv0) {
+    if (!argv0 || argv0[0] == '\0') return NULL;
+    if (strchr(argv0, '/')) {
+        char* resolved = realpath(argv0, NULL);
+        if (resolved) return resolved;
+        return dupCStringN(argv0, (int)strlen(argv0));
+    }
+
+    const char* pathEnv = getenv("PATH");
+    if (!pathEnv || pathEnv[0] == '\0') return NULL;
+
+    char* pathCopy = dupCStringN(pathEnv, (int)strlen(pathEnv));
+    char* save = NULL;
+    for (char* dir = strtok_r(pathCopy, ":", &save); dir != NULL; dir = strtok_r(NULL, ":", &save)) {
+        char* cand = joinPath(dir, argv0);
+        if (cand && access(cand, X_OK) == 0) {
+            char* resolved = realpath(cand, NULL);
+            if (resolved) {
+                free(cand);
+                free(pathCopy);
+                return resolved;
+            }
+            free(pathCopy);
+            return cand;
+        }
+        free(cand);
+    }
+    free(pathCopy);
+    return NULL;
+}
+
+static char* findRuntimeSrcDir(const char* argv0) {
+    // Prefer current working directory layout: ./src/tua_map.c
+    if (fileExists("src/tua_map.c") && fileExists("src/tua_array.c")) {
+        return dupCStringN("src", 3);
+    }
+
+    // Try relative to argv0: <root>/bin/tuac => <root>/src
+    {
+        char* exePath = resolveExecutablePath(argv0);
+        const char* p = exePath ? exePath : argv0;
+        if (!p || !strchr(p, '/')) {
+            if (exePath) free(exePath);
+            return NULL;
+        }
+        char* binDir = dirOfPath(p);
+        char* root = NULL;
+        int dl = (int)strlen(binDir);
+        if (dl >= 4 && memcmp(binDir + dl - 4, "/bin", 4) == 0) {
+            root = dupCStringN(binDir, dl - 4);
+        } else {
+            root = dupCStringN(binDir, dl);
+        }
+        free(binDir);
+        if (exePath) free(exePath);
+
+        char* srcDir = joinPath(root, "src");
+        free(root);
+        char* mapC = joinPath(srcDir, "tua_map.c");
+        char* arrC = joinPath(srcDir, "tua_array.c");
+        int ok = fileExists(mapC) && fileExists(arrC);
+        free(mapC);
+        free(arrC);
+        if (ok) return srcDir;
+        free(srcDir);
+    }
+
+    return NULL;
+}
+
+static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
+    if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
+
+    char* srcDir = findRuntimeSrcDir(argv0);
+    if (!srcDir) {
+        fprintf(stderr, "error: cannot locate runtime sources (expected ./src/tua_map.c and ./src/tua_array.c)\n");
+        return 1;
+    }
+
+    // Emit module as a native object file via LLVM, then link it with the runtime C sources.
+    char objTemplate[] = "/tmp/tuac_obj_XXXXXX";
+    int fd = mkstemp(objTemplate);
+    if (fd < 0) {
+        fprintf(stderr, "error: mkstemp failed: %s\n", strerror(errno));
+        free(srcDir);
+        return 1;
+    }
+    close(fd);
+    unlink(objTemplate);
+
+    char* error = NULL;
+    LLVMTargetMachineRef tm = createHostTargetMachine(compiler->llvmOptLevel);
+    if (!tm) {
+        fprintf(stderr, "error: failed to create host target machine for codegen\n");
+        free(srcDir);
+        return 1;
+    }
+    if (LLVMTargetMachineEmitToFile(tm, module, objTemplate, LLVMObjectFile, &error) != 0) {
+        fprintf(stderr, "error: failed to emit object file: %s\n", error ? error : "(unknown)");
+        if (error) LLVMDisposeMessage(error);
+        LLVMDisposeTargetMachine(tm);
+        unlink(objTemplate);
+        free(srcDir);
+        return 1;
+    }
+    LLVMDisposeTargetMachine(tm);
+
+    char* mapC = joinPath(srcDir, "tua_map.c");
+    char* arrC = joinPath(srcDir, "tua_array.c");
+
+    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC>
+    const char* clangExe = "clang";
+    const char* optFlag = "-O0";
+    switch (compiler->llvmOptLevel) {
+        case 0: optFlag = "-O0"; break;
+        case 1: optFlag = "-O1"; break;
+        case 2: optFlag = "-O2"; break;
+        default: optFlag = "-O3"; break;
+    }
+
+    const char* args[16];
+    int n = 0;
+    args[n++] = clangExe;
+    args[n++] = optFlag;
+    args[n++] = "-I";
+    args[n++] = srcDir;
+    args[n++] = "-o";
+    args[n++] = outPath;
+    args[n++] = objTemplate;
+    args[n++] = mapC;
+    args[n++] = arrC;
+    args[n++] = NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "error: fork failed: %s\n", strerror(errno));
+        unlink(objTemplate);
+        free(mapC);
+        free(arrC);
+        free(srcDir);
+        return 1;
+    }
+    if (pid == 0) {
+        execvp(clangExe, (char* const*)args);
+        fprintf(stderr, "error: exec clang failed: %s\n", strerror(errno));
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "error: waitpid failed: %s\n", strerror(errno));
+        status = 1;
+    } else if (WIFEXITED(status)) {
+        status = WEXITSTATUS(status);
+    } else {
+        status = 1;
+    }
+
+    unlink(objTemplate);
+    free(mapC);
+    free(arrC);
+    free(srcDir);
+    return status == 0 ? 0 : 1;
+}
+
 void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef context, char* ir) {
     if (ir) {
 #ifdef DEBUG
@@ -548,7 +756,7 @@ void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef contex
     }
 }
 
-int endLLVM(Compiler* compiler) {
+int endLLVM(Compiler* compiler, const char* argv0) {
     debug("endLLVM\n");
     LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
@@ -576,6 +784,53 @@ int endLLVM(Compiler* compiler) {
         return 1;
     }
 
+    LLVMTargetMachineRef tm = NULL;
+    if (compiler && (compiler->llvmOptLevel > 0 || compiler->outputPath)) {
+        tm = createHostTargetMachine(compiler->llvmOptLevel);
+        if (tm) {
+            char* triple = LLVMGetDefaultTargetTriple();
+            LLVMSetTarget(module, triple);
+            LLVMDisposeMessage(triple);
+            LLVMTargetDataRef dl = LLVMCreateTargetDataLayout(tm);
+            char* dlStr = LLVMCopyStringRepOfTargetData(dl);
+            LLVMSetDataLayout(module, dlStr);
+            LLVMDisposeMessage(dlStr);
+            LLVMDisposeTargetData(dl);
+        } else if (compiler->llvmOptLevel > 0) {
+            fprintf(stderr, "error: failed to create host target machine for LLVM optimization\n");
+            cleanup(module, builder, context, NULL);
+            return 1;
+        }
+    }
+
+    if (compiler && compiler->llvmOptLevel > 0) {
+        unsigned opt = (unsigned)compiler->llvmOptLevel;
+        if (opt > 3) opt = 3;
+
+        char pipeline[32];
+        snprintf(pipeline, sizeof(pipeline), "default<O%u>", opt);
+        LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+        LLVMPassBuilderOptionsSetVerifyEach(opts, 0);
+        LLVMPassBuilderOptionsSetDebugLogging(opts, 0);
+        LLVMPassBuilderOptionsSetLoopVectorization(opts, opt >= 2);
+        LLVMPassBuilderOptionsSetSLPVectorization(opts, opt >= 2);
+        LLVMPassBuilderOptionsSetLoopUnrolling(opts, opt >= 2);
+
+        LLVMErrorRef perr = LLVMRunPasses(module, pipeline, tm, opts);
+        if (perr) {
+            char* msg = LLVMGetErrorMessage(perr);
+            fprintf(stderr, "LLVMRunPasses failed (%s): %s\n", pipeline, msg ? msg : "(unknown)");
+            LLVMDisposeErrorMessage(msg);
+            LLVMDisposePassBuilderOptions(opts);
+            if (tm) LLVMDisposeTargetMachine(tm);
+            cleanup(module, builder, context, NULL);
+            return 1;
+        }
+        LLVMDisposePassBuilderOptions(opts);
+        if (tm) LLVMDisposeTargetMachine(tm);
+        tm = NULL;
+    }
+
 #ifdef DEBUG
     debug("call print IR\n");
     char *ir = LLVMPrintModuleToString(module);
@@ -583,6 +838,7 @@ int endLLVM(Compiler* compiler) {
     if (LLVMPrintModuleToFile(module, "bin/output.ll", &error) != 0) {
         fprintf(stderr, "Error printing IR to file: %s\n", error);
         LLVMDisposeMessage(error);
+        if (tm) LLVMDisposeTargetMachine(tm);
         cleanup(module, builder, context, ir);
         return 1;
     }
@@ -591,9 +847,17 @@ int endLLVM(Compiler* compiler) {
     executeModule(module);
     gettimeofday(&stop, NULL);
     printf("====result0: time: %fs\n",(float)((stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec)/1000000.0);
+    if (tm) LLVMDisposeTargetMachine(tm);
     cleanup(module, builder, context, ir);
 #else
+    if (compiler && compiler->outputPath) {
+        int rc = compileExecutableFromModule(compiler, module, compiler->outputPath, argv0);
+        if (tm) LLVMDisposeTargetMachine(tm);
+        cleanup(module, builder, context, NULL);
+        return rc;
+    }
     executeModule(module);
+    if (tm) LLVMDisposeTargetMachine(tm);
     cleanup(module, builder, context, NULL);
 #endif
     return 0;
@@ -724,12 +988,66 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <source file>\n", argv[0]);
+    int optLevel = 0;
+    const char* srcPath = NULL;
+    const char* outPath = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        const char* a = argv[i];
+        if (!a) continue;
+        if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] <source file>\n", argv[0]);
+            return 1;
+        }
+        if (strncmp(a, "--llvm-O", 8) == 0) {
+            const char* v = a + 8;
+            if (*v == '=') v++;
+            if (*v >= '0' && *v <= '3' && v[1] == '\0') {
+                optLevel = *v - '0';
+                continue;
+            }
+            fprintf(stderr, "Invalid flag: %s (expected --llvm-O0..--llvm-O3)\n", a);
+            return 1;
+        }
+        if (strncmp(a, "--output=", 9) == 0) {
+            outPath = a + 9;
+            if (!outPath || outPath[0] == '\0') {
+                fprintf(stderr, "Invalid output path\n");
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(a, "--output") == 0 || strcmp(a, "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            outPath = argv[++i];
+            if (!outPath || outPath[0] == '\0') {
+                fprintf(stderr, "Invalid output path\n");
+                return 1;
+            }
+            continue;
+        }
+        if (a[0] == '-') {
+            fprintf(stderr, "Unknown flag: %s\n", a);
+            return 1;
+        }
+        if (srcPath) {
+            fprintf(stderr, "Too many positional arguments (already have source file: %s)\n", srcPath);
+            return 1;
+        }
+        srcPath = a;
+    }
+
+    if (!srcPath) {
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] <source file>\n", argv[0]);
         return 1;
     }
     Compiler compiler;
     initCompiler(&compiler);
+    compiler.llvmOptLevel = optLevel;
+    compiler.outputPath = outPath;
     initLLVM(&compiler);
 
     ModuleSystem sys;
@@ -737,7 +1055,7 @@ int main(int argc, char* argv[]) {
     sys.order = listNew();
     sys.hadError = 0;
 
-    char* entryPath = ensureTuaExt(dupCStringN(argv[1], (int)strlen(argv[1])));
+    char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
     moduleLoad(&sys, entryPath);
     if (sys.hadError) return 1;
 
@@ -757,5 +1075,5 @@ int main(int argc, char* argv[]) {
 
     free(entryPath);
 
-    return endLLVM(&compiler);
+    return endLLVM(&compiler, argv[0]);
 }

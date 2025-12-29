@@ -187,7 +187,7 @@ static int atAssignable(AType* to, AType* from) {
     // Numeric promotions.
     if (atIsNumeric(to) && atIsNumeric(from)) {
         if (to->kind == AT_DOUBLE) return 1;
-        if (to->kind == AT_FLOAT) return from->kind == AT_INT || from->kind == AT_LONG || from->kind == AT_FLOAT;
+        if (to->kind == AT_FLOAT) return 1; // allow narrowing from double (will be truncated in codegen)
         if (to->kind == AT_LONG && from->kind == AT_INT) return 1;
     }
 

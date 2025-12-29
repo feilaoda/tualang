@@ -64,6 +64,8 @@ void initCompiler(Compiler* compiler) {
     compiler->expectedArrayElemType = NULL;
     compiler->expectedArrayFixedLen = -1;
     compiler->tailrec = NULL;
+    compiler->llvmOptLevel = 0;
+    compiler->outputPath = NULL;
     
     // Debug information
     compiler->hadError = false;
