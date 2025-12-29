@@ -126,7 +126,8 @@ typedef enum SymbolAliasKind {
     ALIAS_FUNC = 0,
     ALIAS_STRUCT,
     ALIAS_ENUM,
-    ALIAS_OBJECT
+    ALIAS_OBJECT,
+    ALIAS_MODULE
 } SymbolAliasKind;
 
 typedef struct SymbolAlias {

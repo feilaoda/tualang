@@ -1,0 +1,6 @@
+fn A() int { return 2 }
+
+struct User {
+  id: int = 0
+}
+

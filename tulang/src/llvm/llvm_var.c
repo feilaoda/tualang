@@ -2,6 +2,18 @@
 #include "compiler.h"
 #include "debug.h"
 
+static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
+    const int sepLen = 2;
+    int len = leftLen + sepLen + right->length;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, left, (size_t)leftLen);
+    memcpy(s + leftLen, "__", (size_t)sepLen);
+    memcpy(s + leftLen + sepLen, right->start, (size_t)right->length);
+    s[len] = '\0';
+    if (outLen) *outLen = len;
+    return s;
+}
+
 static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
     if (existing) return existing;
@@ -510,6 +522,32 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             if (info) {
                 variable->typeName = info->name;
                 variable->typeNameLength = info->nameLength;
+            } else {
+                variable->typeName = NULL;
+                variable->typeNameLength = 0;
+            }
+        } else if (call->callee && call->callee->type == EXPR_GET) {
+            // Namespace-qualified struct constructor: `import "m" as ns; let v = ns.User(...)`
+            GetExpr* get = (GetExpr*)call->callee;
+            if (get->object && get->object->type == EXPR_VARIABLE) {
+                VariableExpr* ns = (VariableExpr*)get->object;
+                SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                if (a && a->kind == ALIAS_MODULE) {
+                    int ql = 0;
+                    char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                    StructInfo* info = compilerFindStruct(compiler, q, ql);
+                    free(q);
+                    if (info) {
+                        variable->typeName = info->name;
+                        variable->typeNameLength = info->nameLength;
+                    } else {
+                        variable->typeName = NULL;
+                        variable->typeNameLength = 0;
+                    }
+                } else {
+                    variable->typeName = NULL;
+                    variable->typeNameLength = 0;
+                }
             } else {
                 variable->typeName = NULL;
                 variable->typeNameLength = 0;

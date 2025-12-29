@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <time.h>
 #include <sys/time.h>
 #include <limits.h>
@@ -53,6 +54,7 @@ typedef struct ModuleInfo {
 typedef struct ModuleSystem {
     List* modules; // List<ModuleInfo*>
     List* order;   // List<ModuleInfo*>
+    int hadError;  // import/load-time errors
 } ModuleSystem;
 
 static char* readFile(const char* path) {
@@ -255,6 +257,36 @@ static void moduleComputeExports(ModuleInfo* module) {
 
 static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path);
 
+static void moduleImportErrorAt(ModuleSystem* sys, int line, const char* fmt, ...) {
+    if (sys) sys->hadError = 1;
+    if (line > 0) {
+        fprintf(stderr, "error at line %d: ", line);
+    } else {
+        fprintf(stderr, "error: ");
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (fmt) {
+        size_t n = strlen(fmt);
+        if (n == 0 || fmt[n - 1] != '\n') fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+static int moduleHasAliasFor(ModuleInfo* module, const char* local, int localLen) {
+    if (!module || !module->aliases || !local || localLen <= 0) return 0;
+    for (ListNode* n = module->aliases->head; n != NULL; n = n->next) {
+        SymbolAlias* a = (SymbolAlias*)n->data;
+        if (!a) continue;
+        if (a->localLen != localLen) continue;
+        if (memcmp(a->local, local, (size_t)localLen) == 0) return 1;
+    }
+    return 0;
+}
+
 static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
     if (!module || !module->statements) return;
     if (!module->aliases) module->aliases = listNew();
@@ -267,8 +299,53 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
             char* raw = stripQuotesToken(imp->path);
             char* full = ensureTuaExt(joinPath(module->dir, raw));
             free(raw);
-            moduleLoad(sys, full);
+            ModuleInfo* dep = moduleLoad(sys, full);
             free(full);
+            if (!dep) continue;
+
+            if (imp->hasAlias) {
+                // Namespace import: `import "path" as ns`
+                if (moduleHasAliasFor(module, imp->alias.start, imp->alias.length)) {
+                    moduleImportErrorAt(sys, imp->alias.line,
+                        "import name conflict '%.*s' while importing %s (already defined in this module scope)",
+                        imp->alias.length, imp->alias.start, dep->path);
+                    return;
+                }
+
+                SymbolAlias* a = malloc(sizeof(SymbolAlias));
+                a->local = dupCStringN(imp->alias.start, imp->alias.length);
+                a->localLen = imp->alias.length;
+                a->qualified = dupCStringN(dep->prefix, dep->prefixLen);
+                a->qualifiedLen = dep->prefixLen;
+                a->kind = ALIAS_MODULE;
+                listAppend(module->aliases, a);
+            } else {
+                // Import-all: bring every non-private exported symbol into current module scope.
+                for (ListNode* en = dep->exports ? dep->exports->head : NULL; en != NULL; en = en->next) {
+                    ExportSymbol* ex = (ExportSymbol*)en->data;
+                    if (!ex || ex->isPrivate) continue;
+
+                    if (moduleHasAliasFor(module, ex->name, ex->nameLen)) {
+                        moduleImportErrorAt(sys, imp->keyword.line,
+                            "import name conflict '%.*s' while importing %s (already defined in this module scope)",
+                            ex->nameLen, ex->name, dep->path);
+                        return;
+                    }
+
+                    SymbolAlias* a = malloc(sizeof(SymbolAlias));
+                    a->local = dupCStringN(ex->name, ex->nameLen);
+                    a->localLen = ex->nameLen;
+                    a->qualified = dupCStringN(ex->qualified, ex->qualifiedLen);
+                    a->qualifiedLen = ex->qualifiedLen;
+                    switch (ex->kind) {
+                        case EXPORT_FUNC: a->kind = ALIAS_FUNC; break;
+                        case EXPORT_STRUCT: a->kind = ALIAS_STRUCT; break;
+                        case EXPORT_ENUM: a->kind = ALIAS_ENUM; break;
+                        case EXPORT_OBJECT: a->kind = ALIAS_OBJECT; break;
+                    }
+                    listAppend(module->aliases, a);
+                }
+            }
             continue;
         }
         if (s->type == STMT_FROM_IMPORT) {
@@ -281,21 +358,35 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
             if (!dep) continue;
 
             for (ListNode* nn = fi->names ? fi->names->head : NULL; nn != NULL; nn = nn->next) {
-                Token* nameTok = (Token*)nn->data;
-                if (!nameTok) continue;
-                ExportSymbol* ex = findExport(dep, nameTok->start, nameTok->length);
+                ImportName* in = (ImportName*)nn->data;
+                if (!in) continue;
+                Token* importTok = &in->name;
+                Token* localTok = in->hasAlias ? &in->alias : &in->name;
+
+                ExportSymbol* ex = findExport(dep, importTok->start, importTok->length);
                 if (!ex) {
-                    error("Unknown import '%.*s' from module %s\n", nameTok->length, nameTok->start, dep->path);
+                    moduleImportErrorAt(sys, importTok->line,
+                        "unknown import '%.*s' from module %s",
+                        importTok->length, importTok->start, dep->path);
                     continue;
                 }
                 if (ex->isPrivate) {
-                    error("Cannot import private symbol '%.*s' from module %s\n", nameTok->length, nameTok->start, dep->path);
+                    moduleImportErrorAt(sys, importTok->line,
+                        "cannot import private symbol '%.*s' from module %s",
+                        importTok->length, importTok->start, dep->path);
                     continue;
                 }
 
+                if (moduleHasAliasFor(module, localTok->start, localTok->length)) {
+                    moduleImportErrorAt(sys, localTok->line,
+                        "import name conflict '%.*s' while importing from %s (already defined in this module scope)",
+                        localTok->length, localTok->start, dep->path);
+                    return;
+                }
+
                 SymbolAlias* a = malloc(sizeof(SymbolAlias));
-                a->local = dupCStringN(nameTok->start, nameTok->length);
-                a->localLen = nameTok->length;
+                a->local = dupCStringN(localTok->start, localTok->length);
+                a->localLen = localTok->length;
                 a->qualified = dupCStringN(ex->qualified, ex->qualifiedLen);
                 a->qualifiedLen = ex->qualifiedLen;
                 switch (ex->kind) {
@@ -636,9 +727,11 @@ int main(int argc, char* argv[]) {
     ModuleSystem sys;
     sys.modules = listNew();
     sys.order = listNew();
+    sys.hadError = 0;
 
     char* entryPath = ensureTuaExt(dupCStringN(argv[1], (int)strlen(argv[1])));
     moduleLoad(&sys, entryPath);
+    if (sys.hadError) return 1;
 
     // Compile modules in dependency-first order into the single LLVM module's main.
     for (ListNode* node = sys.order->head; node != NULL; node = node->next) {

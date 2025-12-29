@@ -299,15 +299,23 @@ typedef struct {
 } GotoStmt;
 
 typedef struct {
+    Token name;
+    Token alias;
+    bool hasAlias;
+} ImportName;
+
+typedef struct {
     Stmt base;
     Token path; // string literal token
     Token keyword;
+    Token alias; // identifier token, for `import "path" as ns`
+    bool hasAlias;
 } ImportStmt;
 
 typedef struct {
     Stmt base;
     Token path; // string literal token
-    List* names; // List<Token*>
+    List* names; // List<ImportName*>
     Token keywordFrom;
     Token keywordImport;
 } FromImportStmt;

@@ -1,0 +1,4 @@
+struct User {
+  id: int = 0
+}
+

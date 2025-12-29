@@ -74,6 +74,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_GOTO: return "goto";
         case TOKEN_IMPORT: return "import";
         case TOKEN_FROM: return "from";
+        case TOKEN_AS: return "as";
         case TOKEN_FUNC: return "func/fn";
         case TOKEN_RETURN: return "return";
         case TOKEN_IN: return "in";
@@ -229,6 +230,11 @@ static TokenType checkKeyword(Lexer* lexer, int start, int length, const char* r
 
 static TokenType identifierType(Lexer* lexer) {
     switch (lexer->start[0]) {
+        case 'a':
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "as", 2) == 0) {
+                return TOKEN_AS;
+            }
+            break;
         case '&': return checkKeyword(lexer, 1, 1, "&", TOKEN_AND);
         case 'e':
             if (lexer->current - lexer->start > 3 && memcmp(lexer->start, "enum", 4) == 0) {

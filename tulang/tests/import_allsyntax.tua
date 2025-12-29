@@ -1,0 +1,4 @@
+import "modules/import_mod"
+assert(A() == 1)
+assert(B() == "ok")
+

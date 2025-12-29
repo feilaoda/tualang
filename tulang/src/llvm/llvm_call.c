@@ -3,6 +3,7 @@
 #include "debug.h"
 
 static int isOptionLLVMType(LLVMTypeRef t);
+static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef func, LLVMValueRef call);
 
 static int tokenEquals(const Token* token, const char* s) {
     int n = (int)strlen(s);
@@ -242,6 +243,40 @@ static char* mangleRawAndToken(const char* left, int leftLen, const Token* right
     s[len] = '\0';
     if (outLen) *outLen = len;
     return s;
+}
+
+static LLVMValueRef emitDirectFuncCall(Compiler* compiler, LLVMValueRef func, CallExpr* expr, int errLine) {
+    if (!compiler || !func || !expr) return NULL;
+    LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
+    unsigned expected = LLVMCountParamTypes(funcType);
+    unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+    if (expected != got) {
+        compilerErrorAt(compiler, errLine, "argument count mismatch");
+        return NULL;
+    }
+
+    LLVMTypeRef* paramTypes = NULL;
+    if (expected > 0) {
+        paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+        LLVMGetParamTypes(funcType, paramTypes);
+    }
+
+    LLVMValueRef* args = NULL;
+    if (expected > 0) {
+        args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+        ListNode* node = expr->arguments->head;
+        for (unsigned i = 0; i < expected; i++) {
+            LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
+            argVal = castValueToType(compiler, argVal, paramTypes[i]);
+            args[i] = argVal;
+            node = node->next;
+        }
+    }
+
+    LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
+    if (paramTypes) free(paramTypes);
+    if (args) free(args);
+    return collapseMultiReturnIfNeeded(compiler, func, call);
 }
 
 static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, CallExpr* expr) {
@@ -731,6 +766,65 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             emitDebug("Unsupported member call receiver\n");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
+        }
+
+        // Namespace-qualified calls:
+        // - `ns.Name(...)` where `ns` is imported via `import "path" as ns`
+        // - `ns.Type.method(...)` for imported object/enum/struct static methods
+        if (get->object->type == EXPR_VARIABLE) {
+            VariableExpr* ns = (VariableExpr*)get->object;
+            SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+            if (a && a->kind == ALIAS_MODULE) {
+                int ql = 0;
+                char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                LLVMValueRef func = LLVMGetNamedFunction(compiler->module, q);
+                if (func) {
+                    LLVMValueRef out = emitDirectFuncCall(compiler, func, expr, get->name.line);
+                    free(q);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+                StructInfo* info = compilerFindStruct(compiler, q, ql);
+                free(q);
+                if (info) {
+                    LLVMValueRef out = emitStructConstructor(compiler, info, expr);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+                compilerErrorAt(compiler, get->name.line, "unknown import '%.*s' in namespace '%.*s'",
+                    get->name.length, get->name.start, ns->name.length, ns->name.start);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+        }
+        if (get->object->type == EXPR_GET) {
+            GetExpr* inner = (GetExpr*)get->object;
+            if (inner->object && inner->object->type == EXPR_VARIABLE) {
+                VariableExpr* ns = (VariableExpr*)inner->object;
+                SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                if (a && a->kind == ALIAS_MODULE) {
+                    int ql1 = 0;
+                    char* q1 = mangleRawAndToken(a->qualified, a->qualifiedLen, &inner->name, &ql1);
+                    int ql2 = 0;
+                    char* q2 = mangleRawAndToken(q1, ql1, &get->name, &ql2);
+                    free(q1);
+
+                    LLVMValueRef func = LLVMGetNamedFunction(compiler->module, q2);
+                    if (!func) {
+                        compilerErrorAt(compiler, get->name.line, "undefined method '%.*s' on '%.*s.%.*s'",
+                            get->name.length, get->name.start,
+                            ns->name.length, ns->name.start,
+                            inner->name.length, inner->name.start);
+                        free(q2);
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef out = emitDirectFuncCall(compiler, func, expr, get->name.line);
+                    free(q2);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+            }
         }
 
         // Built-in member calls can accept non-variable receivers.

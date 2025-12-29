@@ -1,0 +1,3 @@
+import "modules/ns_obj" as m
+assert(m.Obj.f() == 42)
+

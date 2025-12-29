@@ -50,7 +50,10 @@
 - [x] 函数：闭包（upvalue）
 - [x] 函数：多返回值
 - [x] 模块与加载器：`import` / `from xx import yy`（TypeScript 风格）
-- [x] 模块系统细节：默认全部导出；`private fn/struct/...` 不导出；模块作用域/命名空间；相对/绝对路径与扩展名；循环依赖顺序；模块缓存（同一模块只执行一次）
+- [x] 模块系统细节：默认全部导出；`private fn/struct/...` 不导出；相对/绝对路径与扩展名；循环依赖顺序；模块缓存（同一模块只执行一次）
+  - [x] import-all：`import "path"`
+  - [x] named import + 重命名：`import A as A1, B from "path"`
+  - [x] 命名空间导入：`import "path" as ns`，使用 `ns.Name`
 - [x] 作用域：块级作用域（变量仅在 `{}` 内可见），支持同名遮蔽（shadowing）
 - [ ] 绑定语义：闭包捕获语义（按值/按引用）的完整规则 + 诊断（当前默认按引用捕获）
 - [x] 多返回值：在赋值/参数传递中的解构规则（`let a,b = f()` / `a,b = f()`）

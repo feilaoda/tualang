@@ -148,8 +148,12 @@
 ### 8. 模块（Status: Implemented）
 - 默认全部导出；声明前加 `private` 则不导出（`private fn/struct/object/enum`）
 - 语法：
-  - `import "relative/or/absolute/path.tua"`：仅执行模块（副作用导入），不引入名字
-  - `from "path.tua" import A,B,C`：把导出的符号引入到当前模块作用域
+  - `import "relative/or/absolute/path.tua"`：执行模块，并把该模块所有可导出符号引入到当前作用域（import-all）
+  - `import "path.tua" as ns`：执行模块，但不把符号直接引入当前作用域；后续通过 `ns.Name` 访问（命名空间导入）
+  - `import A,B,C from "path.tua"`：把导出的符号引入到当前模块作用域
+    - 支持重命名：`import A as A1, B as B1 from "path.tua"`
+    - 兼容旧写法：`from "path.tua" import A,B,C`
+      - 同样支持 `as`：`from "path.tua" import A as A1, B`
 - 规则：
   - 相对路径以当前文件所在目录为基准
   - 若省略后缀，会自动补 `.tua`
@@ -158,6 +162,7 @@
 - 当前限制：
   - 只支持字符串字面量路径（不支持表达式路径）
   - 仅支持导入 `fn/struct/object/enum`；不支持导入模块级变量
+  - 任何导入形式（import-all / named import / namespace import）若引入同名符号（或同名命名空间别名）冲突，会直接报错并停止（可用 `as` 或命名空间导入来消歧义）
 
 ### 9. 数据结构、Option 与空值（Status: Partial）
 

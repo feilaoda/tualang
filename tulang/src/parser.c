@@ -1573,11 +1573,51 @@ static Stmt* declaration(Parser* parser) {
     if (check(parser, TOKEN_EOF) || check(parser, TOKEN_RBRACE)) return NULL;
 
     if (match(parser, TOKEN_IMPORT)) {
-        ImportStmt* stmt = malloc(sizeof(ImportStmt));
-        stmt->base.type = STMT_IMPORT;
-        stmt->keyword = parser->previous;
-        stmt->path = consume(parser, TOKEN_STRING_LITERAL, "Expect module path string after 'import'");
-        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after import");
+        Token kwImport = parser->previous;
+
+        // Two supported forms:
+        // - Import-all: `import "path.tua"`
+        // - Namespace import: `import "path.tua" as ns`
+        // - Named import: `import A,B,C from "path.tua"`
+        if (check(parser, TOKEN_STRING_LITERAL)) {
+            ImportStmt* stmt = malloc(sizeof(ImportStmt));
+            stmt->base.type = STMT_IMPORT;
+            stmt->keyword = kwImport;
+            stmt->path = consume(parser, TOKEN_STRING_LITERAL, "Expect module path string after 'import'");
+            stmt->hasAlias = false;
+            stmt->alias = (Token){0};
+            if (match(parser, TOKEN_AS)) {
+                stmt->alias = consume(parser, TOKEN_IDENTIFIER, "Expect namespace identifier after 'as'");
+                stmt->hasAlias = true;
+            }
+            if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after import");
+            return (Stmt*)stmt;
+        }
+
+        // Named import form.
+        FromImportStmt* stmt = malloc(sizeof(FromImportStmt));
+        stmt->base.type = STMT_FROM_IMPORT;
+        stmt->keywordImport = kwImport;
+
+        List* names = listNew();
+        do {
+            Token name = consume(parser, TOKEN_IDENTIFIER, "Expect imported name after 'import'");
+            ImportName* in = malloc(sizeof(ImportName));
+            in->name = name;
+            in->hasAlias = false;
+            in->alias = (Token){0};
+            if (match(parser, TOKEN_AS)) {
+                in->alias = consume(parser, TOKEN_IDENTIFIER, "Expect alias identifier after 'as'");
+                in->hasAlias = true;
+            }
+            listAppend(names, in);
+        } while (match(parser, TOKEN_COMMA));
+        stmt->names = names;
+
+        stmt->keywordFrom = consume(parser, TOKEN_FROM, "Expect 'from' after import names");
+        stmt->path = consume(parser, TOKEN_STRING_LITERAL, "Expect module path string after 'from'");
+
+        if (check(parser, TOKEN_SEMICOLON)) consume(parser, TOKEN_SEMICOLON, "Expect statement separator after import-from");
         return (Stmt*)stmt;
     }
 
@@ -1591,9 +1631,15 @@ static Stmt* declaration(Parser* parser) {
         List* names = listNew();
         do {
             Token name = consume(parser, TOKEN_IDENTIFIER, "Expect imported name");
-            Token* np = malloc(sizeof(Token));
-            *np = name;
-            listAppend(names, np);
+            ImportName* in = malloc(sizeof(ImportName));
+            in->name = name;
+            in->hasAlias = false;
+            in->alias = (Token){0};
+            if (match(parser, TOKEN_AS)) {
+                in->alias = consume(parser, TOKEN_IDENTIFIER, "Expect alias identifier after 'as'");
+                in->hasAlias = true;
+            }
+            listAppend(names, in);
         } while (match(parser, TOKEN_COMMA));
         stmt->names = names;
 

@@ -19,6 +19,7 @@ typedef enum {
     TOKEN_GOTO,
     TOKEN_IMPORT,
     TOKEN_FROM,
+    TOKEN_AS,
     TOKEN_FUNC,
     TOKEN_RETURN,
     TOKEN_IN,
