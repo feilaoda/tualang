@@ -51,20 +51,33 @@ typedef struct Compiler{
     // Closure / lambda (LLVM JIT path)
     int boxAllLocals;        // when true, locals/params stored in heap boxes
     int lambdaCount;         // unique lambda id
-    LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
-    LLVMTypeRef mapType;     // cached %tua_map* type
-    LLVMTypeRef tuaValueType; // cached {i32, i64} tagged value type
-    List* closureSigs;       // List<ClosureSig*>, variable name -> function type
-    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
-    LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
+	    LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
+	    LLVMTypeRef mapType;     // cached %tua_map* type
+	    LLVMTypeRef arrayType;   // cached %tua_array* type
+	    LLVMTypeRef tuaValueType; // cached {i32, i64} tagged value type
+	    List* closureSigs;       // List<ClosureSig*>, variable name -> function type
+	    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
+	    LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 
     const char* lastSetFilePath; // last emitted runtime file path (may be NULL)
     int lastSetLine;             // last emitted runtime line
     int lastSetCol;              // last emitted runtime column
 
-    // Side-channel: when compiling a map literal for a typed map variable, enforce K/V.
-    LLVMTypeRef expectedMapKeyType;
-    LLVMTypeRef expectedMapValueType;
+	    // Side-channel: when compiling a map literal for a typed map variable, enforce K/V.
+	    LLVMTypeRef expectedMapKeyType;
+	    LLVMTypeRef expectedMapValueType;
+
+	    // Side-channel: when compiling an array literal for a typed array variable, enforce element type/length.
+	    LLVMTypeRef expectedArrayElemType;
+	    int64_t expectedArrayFixedLen; // -1 => dynamic / unknown
+
+    // Tail recursion elimination (self tail calls): `return f(args...)` -> param stores + branch.
+    LLVMBasicBlockRef tailrecLoop;
+    int tailrecParamCount;
+    LLVMValueRef* tailrecParamSlots;      // alloca slots (or box pointer slots if boxed)
+    LLVMTypeRef* tailrecParamTypes;       // value types (T)
+    int* tailrecParamIsBoxed;             // 1 if slot stores T*
+    LLVMTypeRef* tailrecParamBoxPtrTypes; // T* when boxed, else NULL
 } Compiler;
 
 typedef struct MultiReturnInfo {
@@ -173,10 +186,11 @@ void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);
 void compileEnumStmt(Compiler* compiler, EnumStmt* stmt);
 void initCompiler(Compiler* compiler);
 
-LLVMTypeRef compilerGetClosureType(Compiler* compiler);
-LLVMTypeRef compilerGetMapType(Compiler* compiler);
-LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
-LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner);
+	LLVMTypeRef compilerGetClosureType(Compiler* compiler);
+	LLVMTypeRef compilerGetMapType(Compiler* compiler);
+	LLVMTypeRef compilerGetArrayType(Compiler* compiler);
+	LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
+	LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner);
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);

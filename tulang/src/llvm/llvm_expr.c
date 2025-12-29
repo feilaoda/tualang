@@ -4,6 +4,14 @@
 
 static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
 
+static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_panic", fnType);
+}
+
 static char* dupTokenCString(const Token* token) {
     if (!token || !token->start || token->length <= 0) return NULL;
     char* s = malloc((size_t)token->length + 1);
@@ -64,6 +72,8 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_ARRAY:
+            return compilerGetArrayType(compiler);
         case TYPE_NAMED: {
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
@@ -278,6 +288,25 @@ static LLVMValueRef getOrCreateTuaMapSet(Compiler* compiler) {
     LLVMTypeRef params[3] = { mapType, vt, vt };
     LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 3, 0);
     return LLVMAddFunction(compiler->module, "tua_map_set", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaArrayNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_new");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef params[4] = { i64, i64, i64, i64 };
+    LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_new", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaArrayClone(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_clone");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_clone", fnType);
 }
 
 static LLVMValueRef getOrCreateTuaValueToInt(Compiler* compiler) {
@@ -1235,7 +1264,7 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
     emitDebug("emitVariableExpr\n");
     
-    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0, 0, NULL};
+    VariableRef var = (VariableRef){0};
 
     // Resolve in current block chain
     Block* block = compiler->current;
@@ -1408,21 +1437,183 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
     return mapVal;
 }
 
+LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+    if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+    int elemCount = expr->elements ? expr->elements->length : 0;
+    int64_t fixedLen = compiler->expectedArrayFixedLen;
+    if (fixedLen >= 0 && elemCount > fixedLen) {
+        compilerErrorAt(compiler, expr->base.token.line, "array literal has too many elements for fixed array");
+        return NULL;
+    }
+
+    LLVMTypeRef elemTy = compiler->expectedArrayElemType;
+    if (!elemTy) {
+        // Best-effort default: `int`.
+        elemTy = LLVMInt32TypeInContext(context);
+    }
+
+    int64_t len64 = (fixedLen >= 0) ? fixedLen : (int64_t)elemCount;
+    LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)len64, 1);
+    LLVMValueRef capV = lenV;
+    LLVMValueRef elemSizeV = LLVMSizeOf(elemTy);
+    LLVMValueRef fixedV = LLVMConstInt(i64, (uint64_t)(fixedLen >= 0 ? fixedLen : -1), 1);
+
+    LLVMValueRef newFn = getOrCreateTuaArrayNew(compiler);
+    LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+    LLVMValueRef args4[4] = { lenV, capV, elemSizeV, fixedV };
+    LLVMValueRef arr = LLVMBuildCall2(builder, newTy, newFn, args4, 4, "arr");
+    arr = castToType(compiler, arr, arrType);
+
+    // data pointer
+    LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, arr, 2, "arr_data_p");
+    LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "arr_data");
+    LLVMTypeRef elemPtrTy = LLVMPointerType(elemTy, 0);
+    LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, elemPtrTy, "arr_tdata");
+
+    // Fixed-length fill sugar: `T[N] = [x]`
+    if (fixedLen >= 0 && elemCount == 1) {
+        Expr* e0 = (Expr*)expr->elements->head->data;
+        LLVMValueRef v0 = compileExpr(compiler, e0);
+        if (!v0) return NULL;
+        v0 = castToType(compiler, v0, elemTy);
+
+        if (fixedLen <= 0) return arr;
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMValueRef idxAlloca = LLVMBuildAlloca(builder, i64, "i");
+        LLVMBuildStore(builder, LLVMConstInt(i64, 0, 0), idxAlloca);
+
+        LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(fn, "arr.fill.cond");
+        LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(fn, "arr.fill.body");
+        LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(fn, "arr.fill.end");
+        LLVMBuildBr(builder, condBB);
+
+        LLVMPositionBuilderAtEnd(builder, condBB);
+        LLVMValueRef iV = LLVMBuildLoad2(builder, i64, idxAlloca, "iv");
+        LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntSLT, iV, lenV, "icnd");
+        LLVMBuildCondBr(builder, ok, bodyBB, endBB);
+
+        LLVMPositionBuilderAtEnd(builder, bodyBB);
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &iV, 1, "ep");
+        LLVMBuildStore(builder, v0, ep);
+        LLVMValueRef inc = LLVMBuildAdd(builder, iV, LLVMConstInt(i64, 1, 0), "inc");
+        LLVMBuildStore(builder, inc, idxAlloca);
+        LLVMBuildBr(builder, condBB);
+
+        LLVMPositionBuilderAtEnd(builder, endBB);
+        return arr;
+    }
+
+    // Element-wise initializer.
+    int idx = 0;
+    for (ListNode* n = expr->elements ? expr->elements->head : NULL; n != NULL; n = n->next, idx++) {
+        LLVMValueRef vv = compileExpr(compiler, (Expr*)n->data);
+        if (!vv) return NULL;
+        vv = castToType(compiler, vv, elemTy);
+        LLVMValueRef iV = LLVMConstInt(i64, (uint64_t)idx, 0);
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &iV, 1, "ep");
+        LLVMBuildStore(builder, vv, ep);
+    }
+
+    (void)i32;
+    return arr;
+}
+
 LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     if (!compiler || !expr) return NULL;
     LLVMBuilderRef builder = compiler->builder;
     LLVMValueRef obj = compileExpr(compiler, expr->object);
     if (!obj) return NULL;
-    if (LLVMTypeOf(obj) != compilerGetMapType(compiler)) {
-        error("Indexing is only supported on map for now\n");
-        return NULL;
-    }
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
 
+    VariableRef recvVar = (VariableRef){0};
+    int isArray = 0;
+    int isMap = 0;
+    if (expr->object && expr->object->type == EXPR_VARIABLE) {
+        recvVar = findVariableExpr(compiler, expr->object);
+        if (recvVar.value) {
+            isArray = recvVar.isArray ? 1 : 0;
+            isMap = recvVar.isMap ? 1 : 0;
+        }
+    }
+
+    // Array indexing: returns T and panics on OOB.
+    if (isArray) {
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        LLVMTypeRef elemTy = recvVar.arrayElemType;
+        if (!elemTy) {
+            compilerErrorAt(compiler, expr->base.token.line, "missing array element type metadata");
+            return NULL;
+        }
+
+        LLVMContextRef context = compiler->context;
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+        // idx: i64
+        LLVMValueRef idxV = castToType(compiler, keyExpr, i64);
+
+        // null check
+        LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, obj, LLVMConstNull(arrType), "anull");
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "arr.ok");
+        LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "arr.null");
+        LLVMBuildCondBr(builder, isNull, badBB, okBB);
+
+        LLVMPositionBuilderAtEnd(builder, badBB);
+        LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+        LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+        LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "null array", "amsg");
+        LLVMValueRef args1[1] = { msg };
+        LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+        LLVMBuildUnreachable(builder);
+
+        LLVMPositionBuilderAtEnd(builder, okBB);
+
+        // len check
+        LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+        if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+        LLVMValueRef lenPtr = LLVMBuildStructGEP2(builder, arrStruct, obj, 0, "lenp");
+        LLVMValueRef len = LLVMBuildLoad2(builder, i64, lenPtr, "len");
+        LLVMValueRef neg = LLVMBuildICmp(builder, LLVMIntSLT, idxV, LLVMConstInt(i64, 0, 0), "neg");
+        LLVMValueRef ge = LLVMBuildICmp(builder, LLVMIntSGE, idxV, len, "ge");
+        LLVMValueRef oob = LLVMBuildOr(builder, neg, ge, "oob");
+        LLVMBasicBlockRef inBB = LLVMAppendBasicBlock(fn, "arr.in");
+        LLVMBasicBlockRef oobBB = LLVMAppendBasicBlock(fn, "arr.oob");
+        LLVMBuildCondBr(builder, oob, oobBB, inBB);
+
+        LLVMPositionBuilderAtEnd(builder, oobBB);
+        LLVMValueRef msg2 = LLVMBuildGlobalStringPtr(builder, "array index out of bounds", "aomsg");
+        LLVMValueRef args2[1] = { msg2 };
+        LLVMBuildCall2(builder, panicTy, panicFn, args2, 1, "");
+        LLVMBuildUnreachable(builder);
+
+        LLVMPositionBuilderAtEnd(builder, inBB);
+        LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, obj, 2, "datap");
+        LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "data");
+        LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(elemTy, 0), "adata");
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &idxV, 1, "ep");
+        return LLVMBuildLoad2(builder, elemTy, ep, "av");
+    }
+
+    if (!isMap) {
+        compilerErrorAt(compiler, expr->base.token.line, "indexing is only supported on map/array variables for now");
+        return NULL;
+    }
+
     // Typed map key check when receiver is a simple variable.
     if (expr->object && expr->object->type == EXPR_VARIABLE) {
-        VariableRef recvVar = findVariableExpr(compiler, expr->object);
         if (recvVar.value && recvVar.isTypedMap && recvVar.mapKeyType) {
             if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
                 compilerErrorAt(compiler, expr->index ? expr->index->token.line : expr->base.token.line,
@@ -1438,7 +1629,6 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     // Determine V for typed maps when receiver is a simple variable.
     LLVMTypeRef innerType = compilerGetTuaValueType(compiler);
     if (expr->object && expr->object->type == EXPR_VARIABLE) {
-        VariableRef recvVar = findVariableExpr(compiler, expr->object);
         if (recvVar.value && recvVar.isTypedMap && recvVar.mapValueType) {
             innerType = recvVar.mapValueType;
         }
@@ -1492,6 +1682,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
     LLVMBuilderRef builder = compiler->builder;
     LLVMContextRef context = compiler->context;
     LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
 
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
@@ -1501,75 +1692,157 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
 
     LLVMValueRef objVal = NULL;
     int canAutoInit = expr->object && expr->object->type == EXPR_VARIABLE;
+    int targetIsMap = 0;
+    int targetIsArray = 0;
     LLVMTypeRef expectedKeyTy = NULL;
     LLVMTypeRef expectedValTy = NULL;
+    LLVMTypeRef expectedElemTy = NULL;
 
     if (canAutoInit) {
         VariableExpr* ve = (VariableExpr*)expr->object;
         VariableRef var = findVariableExpr(compiler, (Expr*)ve);
         if (!var.value || !var.type) {
-            error("Undefined map variable\n");
+            error("Undefined indexed variable\n");
             return NULL;
         }
-        if (var.isConst) {
-            error("Cannot assign into const map\n");
+        targetIsMap = var.isMap ? 1 : 0;
+        targetIsArray = var.isArray ? 1 : 0;
+        if (!targetIsMap && !targetIsArray) {
+            error("Index assignment target is not a map/array\n");
             return NULL;
         }
-        if (var.type != mapType) {
-            error("Index assignment target is not a map\n");
-            return NULL;
-        }
-        if (var.isTypedMap) {
+        if (targetIsMap && var.isTypedMap) {
             expectedKeyTy = var.mapKeyType;
             expectedValTy = var.mapValueType;
         }
+        if (targetIsArray) {
+            expectedElemTy = var.arrayElemType;
+        }
 
-        // Load current map pointer.
+        // Load current pointer.
         if (var.isBoxed) {
             LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell");
-            objVal = LLVMBuildLoad2(builder, mapType, cell, "mval");
+            objVal = LLVMBuildLoad2(builder, var.type, cell, "ival");
         } else {
-            objVal = LLVMBuildLoad2(builder, mapType, var.value, "mval");
+            objVal = LLVMBuildLoad2(builder, var.type, var.value, "ival");
         }
 
-        LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, objVal, LLVMConstNull(mapType), "isnull");
+        // Array does not auto-init; map may auto-init (non-const only).
+        LLVMValueRef isNull = LLVMBuildICmp(
+            builder,
+            LLVMIntEQ,
+            objVal,
+            LLVMConstNull(var.type),
+            "isnull"
+        );
 
-        LLVMBasicBlockRef current = LLVMGetInsertBlock(builder);
-        LLVMValueRef fn = compiler->current->func;
-        LLVMBasicBlockRef initBB = LLVMAppendBasicBlock(fn, "map.init");
-        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "map.cont");
-        LLVMBuildCondBr(builder, isNull, initBB, contBB);
+        if (targetIsMap) {
+            // `const` means the binding cannot be re-assigned, but the map object itself is mutable.
+            // Keep auto-init-on-write only for non-const maps. For const maps, writing into a null map is an error.
+            if (var.isConst) {
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "map.const.ok");
+                LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "map.const.null");
+                LLVMBuildCondBr(builder, isNull, badBB, okBB);
 
-        // initBB: m = tua_map_new()
-        LLVMPositionBuilderAtEnd(builder, initBB);
-        LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
-        LLVMValueRef newMap = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "newmap");
-        newMap = castToType(compiler, newMap, mapType);
-        if (var.isBoxed) {
-            LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell2");
-            LLVMBuildStore(builder, newMap, cell);
+                LLVMPositionBuilderAtEnd(builder, badBB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "cannot assign into null const map", "mmsg");
+                LLVMValueRef args1[1] = { msg };
+                LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+                LLVMBuildUnreachable(builder);
+
+                LLVMPositionBuilderAtEnd(builder, okBB);
+            } else {
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef initBB = LLVMAppendBasicBlock(fn, "map.init");
+                LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "map.cont");
+                LLVMBuildCondBr(builder, isNull, initBB, contBB);
+
+                // initBB: m = tua_map_new()
+                LLVMPositionBuilderAtEnd(builder, initBB);
+                LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+                LLVMValueRef newMap = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "newmap");
+                newMap = castToType(compiler, newMap, mapType);
+                if (var.isBoxed) {
+                    LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell2");
+                    LLVMBuildStore(builder, newMap, cell);
+                } else {
+                    LLVMBuildStore(builder, newMap, var.value);
+                }
+                LLVMBuildBr(builder, contBB);
+
+                // contBB: reload map pointer (now guaranteed non-null)
+                LLVMPositionBuilderAtEnd(builder, contBB);
+                if (var.isBoxed) {
+                    LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell3");
+                    objVal = LLVMBuildLoad2(builder, mapType, cell, "mval2");
+                } else {
+                    objVal = LLVMBuildLoad2(builder, mapType, var.value, "mval2");
+                }
+            }
         } else {
-            LLVMBuildStore(builder, newMap, var.value);
-        }
-        LLVMBuildBr(builder, contBB);
+            // Array: do not auto-init; writing into a null array is a runtime error.
+            LLVMValueRef fn = compiler->current->func;
+            LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "arr.set.ok");
+            LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "arr.set.null");
+            LLVMBuildCondBr(builder, isNull, badBB, okBB);
 
-        // contBB: reload map pointer (now guaranteed non-null)
-        LLVMPositionBuilderAtEnd(builder, contBB);
-        if (var.isBoxed) {
-            LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell3");
-            objVal = LLVMBuildLoad2(builder, mapType, cell, "mval2");
-        } else {
-            objVal = LLVMBuildLoad2(builder, mapType, var.value, "mval2");
-        }
+            LLVMPositionBuilderAtEnd(builder, badBB);
+            LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+            LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+            LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "cannot assign into null array", "amsg");
+            LLVMValueRef args1[1] = { msg };
+            LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+            LLVMBuildUnreachable(builder);
 
-        (void)current;
+            LLVMPositionBuilderAtEnd(builder, okBB);
+        }
     } else {
-        objVal = compileExpr(compiler, expr->object);
-        if (!objVal) return NULL;
-        if (LLVMTypeOf(objVal) != mapType) {
-            error("Index assignment target is not a map\n");
+        error("Index assignment is only supported on map/array variables for now\n");
+        return NULL;
+    }
+
+    // Array index assignment
+    if (targetIsArray) {
+        if (!expectedElemTy) {
+            compilerErrorAt(compiler, expr->base.token.line, "cannot infer array element type; use a typed array variable");
             return NULL;
         }
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        LLVMValueRef idxV = castToType(compiler, keyExpr, i64);
+        LLVMValueRef valV = castToType(compiler, rawValue, expectedElemTy);
+
+        LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+        if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+        LLVMValueRef lenPtr = LLVMBuildStructGEP2(builder, arrStruct, objVal, 0, "lenp");
+        LLVMValueRef len = LLVMBuildLoad2(builder, i64, lenPtr, "len");
+        LLVMValueRef neg = LLVMBuildICmp(builder, LLVMIntSLT, idxV, LLVMConstInt(i64, 0, 0), "neg");
+        LLVMValueRef ge = LLVMBuildICmp(builder, LLVMIntSGE, idxV, len, "ge");
+        LLVMValueRef oob = LLVMBuildOr(builder, neg, ge, "oob");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef inBB = LLVMAppendBasicBlock(fn, "arr.set.in");
+        LLVMBasicBlockRef oobBB = LLVMAppendBasicBlock(fn, "arr.set.oob");
+        LLVMBuildCondBr(builder, oob, oobBB, inBB);
+
+        LLVMPositionBuilderAtEnd(builder, oobBB);
+        LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+        LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+        LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "array index out of bounds", "aomsg");
+        LLVMValueRef args1[1] = { msg };
+        LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+        LLVMBuildUnreachable(builder);
+
+        LLVMPositionBuilderAtEnd(builder, inBB);
+        LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, objVal, 2, "datap");
+        LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "data");
+        LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(expectedElemTy, 0), "adata");
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, data, &idxV, 1, "ep");
+        LLVMBuildStore(builder, valV, ep);
+        return valV;
     }
 
     if (expectedKeyTy) {
@@ -1613,7 +1886,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
     emitDebug("emitAssignExpr\n");
     
     // Find variable reference
-    VariableRef var = (VariableRef){NULL, 0, NULL, NULL, NULL, 0, 0, 0, 0, NULL};
+    VariableRef var = (VariableRef){0};
     Block* block = compiler->current;
     while (block != NULL) {
         var = findVariableWithLength(block->variables, expr->name.start, expr->name.length);

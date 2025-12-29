@@ -11,6 +11,7 @@
 #include "list.h"
 #include "debug.h"
 #include "llvm/llvm.h"
+#include "opt/tailrec.h"
 
 #define compilerDebug(...) debug(__VA_ARGS__)
 
@@ -34,6 +35,7 @@ void initCompiler(Compiler* compiler) {
     compiler->lambdaCount = 0;
     compiler->closureType = NULL;
     compiler->mapType = NULL;
+    compiler->arrayType = NULL;
     compiler->tuaValueType = NULL;
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
@@ -43,6 +45,14 @@ void initCompiler(Compiler* compiler) {
     compiler->lastSetCol = 0;
     compiler->expectedMapKeyType = NULL;
     compiler->expectedMapValueType = NULL;
+    compiler->expectedArrayElemType = NULL;
+    compiler->expectedArrayFixedLen = -1;
+    compiler->tailrecLoop = NULL;
+    compiler->tailrecParamCount = 0;
+    compiler->tailrecParamSlots = NULL;
+    compiler->tailrecParamTypes = NULL;
+    compiler->tailrecParamIsBoxed = NULL;
+    compiler->tailrecParamBoxPtrTypes = NULL;
     
     // Debug information
     compiler->hadError = false;
@@ -219,6 +229,22 @@ LLVMTypeRef compilerGetMapType(Compiler* compiler) {
     if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_map");
     compiler->mapType = LLVMPointerType(t, 0);
     return compiler->mapType;
+}
+
+LLVMTypeRef compilerGetArrayType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    if (compiler->arrayType) return compiler->arrayType;
+    LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, "tua_array");
+    if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_array");
+    // Layout must match `struct tua_array` in runtime.
+    if (LLVMIsOpaqueStruct(t)) {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef fields[5] = { i64, i64, i8ptr, i64, i64 };
+        LLVMStructSetBody(t, fields, 5, 0);
+    }
+    compiler->arrayType = LLVMPointerType(t, 0);
+    return compiler->arrayType;
 }
 
 LLVMTypeRef compilerGetTuaValueType(Compiler* compiler) {
@@ -424,6 +450,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             LLVMTypeRef inner = typeToLLVMType(compiler, type->inner, false);
             return LLVMPointerType(inner, 0);
         }
+        case TYPE_ARRAY:
+            return compilerGetArrayType(compiler);
         case TYPE_FUNC:
             return compilerGetClosureType(compiler);
         case TYPE_VOID:
@@ -656,6 +684,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_MAP_LITERAL:
             return emitMapLiteralExpr(compiler, (MapLiteralExpr*)expr);
             break;
+        case EXPR_ARRAY_LITERAL:
+            return emitArrayLiteralExpr(compiler, (ArrayLiteralExpr*)expr);
+            break;
         case EXPR_INDEX:
             return emitIndexExpr(compiler, (IndexExpr*)expr);
             break;
@@ -720,6 +751,13 @@ static int exprHasLambdaLiteral(Expr* e) {
             for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
                 MapEntry* me = (MapEntry*)n->data;
                 if (me && exprHasLambdaLiteral(me->value)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                if (exprHasLambdaLiteral((Expr*)n->data)) return 1;
             }
             return 0;
         }
@@ -937,6 +975,11 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
 
     LLVMTypeRef funcType = LLVMGlobalGetValueType(compiler->current->func);
     LLVMTypeRef returnType = LLVMGetReturnType(funcType);
+
+    // Tail recursion elimination (self tail call): `return f(args...)`
+    if (tailrecTryRewriteReturn(compiler, stmt)) {
+        return;
+    }
 
     if (LLVMGetTypeKind(returnType) == LLVMVoidTypeKind) {
         LLVMBuildRetVoid(builder);
@@ -1217,6 +1260,13 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isGlobal = 0;
             variable->isBoxed = isBoxed;
             variable->boxPtrType = isBoxed ? boxPtrType : NULL;
+            variable->isTypedMap = 0;
+            variable->mapKeyType = NULL;
+            variable->mapValueType = NULL;
+            variable->isArray = 0;
+            variable->arrayElemType = NULL;
+            variable->arrayFixedLen = -1;
+            variable->isMap = 0;
             listAppend(compiler->current->variables, variable);
         }
     } else {
@@ -1306,12 +1356,24 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     // Save current insertion point (main)
     LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
     Block* savedCurrent = compiler->current;
+    const char* savedLastSetFilePath = compiler->lastSetFilePath;
     int savedLastSetLine = compiler->lastSetLine;
+    int savedLastSetCol = compiler->lastSetCol;
+
+    // Save tailrec state (nested function compile)
+    LLVMBasicBlockRef savedTailrecLoop = compiler->tailrecLoop;
+    int savedTailrecParamCount = compiler->tailrecParamCount;
+    LLVMValueRef* savedTailrecParamSlots = compiler->tailrecParamSlots;
+    LLVMTypeRef* savedTailrecParamTypes = compiler->tailrecParamTypes;
+    int* savedTailrecParamIsBoxed = compiler->tailrecParamIsBoxed;
+    LLVMTypeRef* savedTailrecParamBoxPtrTypes = compiler->tailrecParamBoxPtrTypes;
 
     // Create function entry
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(func, "entry");
     LLVMPositionBuilderAtEnd(compiler->builder, entry);
+    compiler->lastSetFilePath = compiler->currentFilePath;
     compiler->lastSetLine = 0;
+    compiler->lastSetCol = 0;
 
     Block* funcBlock = malloc(sizeof(Block));
     funcBlock->parent = savedCurrent; // allow lookup of globals (no closures yet)
@@ -1319,6 +1381,26 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     funcBlock->variables = listNew();
     funcBlock->labels = listNew();
     compiler->current = funcBlock;
+
+    // Init tailrec state for this function.
+    compiler->tailrecLoop = NULL;
+    compiler->tailrecParamCount = paramCount;
+    compiler->tailrecParamSlots = NULL;
+    compiler->tailrecParamTypes = NULL;
+    compiler->tailrecParamIsBoxed = NULL;
+    compiler->tailrecParamBoxPtrTypes = NULL;
+    if (paramCount > 0) {
+        compiler->tailrecParamSlots = malloc(sizeof(LLVMValueRef) * (size_t)paramCount);
+        compiler->tailrecParamTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
+        compiler->tailrecParamIsBoxed = malloc(sizeof(int) * (size_t)paramCount);
+        compiler->tailrecParamBoxPtrTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
+        for (int i = 0; i < paramCount; i++) {
+            compiler->tailrecParamSlots[i] = NULL;
+            compiler->tailrecParamTypes[i] = NULL;
+            compiler->tailrecParamIsBoxed[i] = 0;
+            compiler->tailrecParamBoxPtrTypes[i] = NULL;
+        }
+    }
 
     // Bind parameters into local allocas
     for (int i = 0; i < paramCount; i++) {
@@ -1352,6 +1434,14 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             LLVMBuildStore(compiler->builder, arg, slot);
         }
 
+        // Record parameter slots for tail recursion elimination.
+        if (compiler->tailrecParamSlots && compiler->tailrecParamTypes && compiler->tailrecParamIsBoxed && compiler->tailrecParamBoxPtrTypes) {
+            compiler->tailrecParamSlots[i] = slot;
+            compiler->tailrecParamTypes[i] = valueType;
+            compiler->tailrecParamIsBoxed[i] = isBoxed ? 1 : 0;
+            compiler->tailrecParamBoxPtrTypes[i] = isBoxed ? boxPtrType : NULL;
+        }
+
         VariableRef* variable = malloc(sizeof(VariableRef));
         variable->name = paramName;
         variable->length = p->name.length;
@@ -1383,13 +1473,18 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->isGlobal = 0;
         variable->isBoxed = isBoxed;
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
+        variable->isMap = 0;
         variable->isTypedMap = 0;
         variable->mapKeyType = NULL;
         variable->mapValueType = NULL;
+        variable->isArray = 0;
+        variable->arrayElemType = NULL;
+        variable->arrayFixedLen = -1;
 
         if (p->type && p->type->kind == TYPE_NAMED &&
             p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&
             p->type->typeArgs && p->type->typeArgs->length == 2) {
+            variable->isMap = 1;
             Type* kAst = (Type*)p->type->typeArgs->head->data;
             Type* vAst = (Type*)p->type->typeArgs->head->next->data;
             int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
@@ -1405,6 +1500,19 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
                 variable->mapValueType = typeToLLVMType(compiler, vAst, false);
             }
         }
+
+        if (p->type && p->type->kind == TYPE_NAMED &&
+            p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&
+            (!p->type->typeArgs || p->type->typeArgs->length == 0)) {
+            variable->isMap = 1;
+        }
+
+        if (p->type && p->type->kind == TYPE_ARRAY && valueType == compilerGetArrayType(compiler)) {
+            variable->isArray = 1;
+            variable->arrayElemType = p->type->inner ? typeToLLVMType(compiler, p->type->inner, false)
+                                                     : LLVMInt32TypeInContext(compiler->context);
+            variable->arrayFixedLen = p->type->arrayLen;
+        }
         listAppend(funcBlock->variables, variable);
 
         // If parameter is annotated as a function type, record the closure call signature
@@ -1414,6 +1522,12 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             if (sig) compilerRegisterClosureSig(compiler, variable->name, variable->length, sig);
         }
     }
+
+    // Jump into the body loop block so self tail calls can branch back without re-running entry allocas.
+    LLVMBasicBlockRef tailLoop = LLVMAppendBasicBlock(func, "tailrecurse");
+    compiler->tailrecLoop = tailLoop;
+    LLVMBuildBr(compiler->builder, tailLoop);
+    LLVMPositionBuilderAtEnd(compiler->builder, tailLoop);
 
     // Compile function body
     for (ListNode* node = stmt->body ? stmt->body->head : NULL; node != NULL; node = node->next) {
@@ -1434,7 +1548,20 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compiler->current = savedCurrent;
     LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
     compiler->boxAllLocals = savedBox;
+    compiler->lastSetFilePath = savedLastSetFilePath;
     compiler->lastSetLine = savedLastSetLine;
+    compiler->lastSetCol = savedLastSetCol;
+
+    if (compiler->tailrecParamSlots) free(compiler->tailrecParamSlots);
+    if (compiler->tailrecParamTypes) free(compiler->tailrecParamTypes);
+    if (compiler->tailrecParamIsBoxed) free(compiler->tailrecParamIsBoxed);
+    if (compiler->tailrecParamBoxPtrTypes) free(compiler->tailrecParamBoxPtrTypes);
+    compiler->tailrecLoop = savedTailrecLoop;
+    compiler->tailrecParamCount = savedTailrecParamCount;
+    compiler->tailrecParamSlots = savedTailrecParamSlots;
+    compiler->tailrecParamTypes = savedTailrecParamTypes;
+    compiler->tailrecParamIsBoxed = savedTailrecParamIsBoxed;
+    compiler->tailrecParamBoxPtrTypes = savedTailrecParamBoxPtrTypes;
 
     if (paramTypes) free(paramTypes);
     free(funcName);

@@ -1,0 +1,29 @@
+let a:int[] = []
+assert(a.len() == 0)
+
+let b:int[] = [1, 2]
+assert(b.len() == 2)
+assert(b[0] == 1)
+assert(b[1] == 2)
+
+let c = b
+c[0] = 10
+assert(b[0] == 10)
+
+let d = b.clone()
+d[0] = 7
+assert(b[0] == 10)
+assert(d[0] == 7)
+
+let f:int[3] = [7]
+assert(f[0] == 7)
+assert(f[2] == 7)
+
+let g:int[5] = [10, 20]
+assert(g[0] == 10)
+assert(g[1] == 20)
+assert(g[2] == 0)
+
+let h:int[5]
+assert(h[4] == 0)
+

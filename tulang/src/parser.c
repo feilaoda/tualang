@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "debug.h"
 #include "list.h"
 
@@ -35,6 +36,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_SET: return "Set";
         case EXPR_LAMBDA: return "Lambda";
         case EXPR_MAP_LITERAL: return "MapLiteral";
+        case EXPR_ARRAY_LITERAL: return "ArrayLiteral";
         case EXPR_INDEX: return "Index";
         case EXPR_INDEX_SET: return "IndexSet";
         default: return "Unknown";
@@ -291,6 +293,14 @@ static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
     return (Expr*)expr;
 }
 
+static Expr* newArrayLiteralExpr(Token lbracket, List* elements) {
+    ArrayLiteralExpr* expr = malloc(sizeof(ArrayLiteralExpr));
+    expr->base.type = EXPR_ARRAY_LITERAL;
+    expr->base.token = lbracket;
+    expr->elements = elements;
+    return (Expr*)expr;
+}
+
 static Expr* newIndexExpr(Expr* object, Expr* index) {
     IndexExpr* expr = malloc(sizeof(IndexExpr));
     expr->base.type = EXPR_INDEX;
@@ -485,6 +495,25 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         }
         consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
         expr = newMapLiteralExpr(lbrace, entries);
+    } else if (match(parser, TOKEN_LBRACKET)) {
+        // Array literal: [] or [e1, e2, ...]
+        Token lbracket = parser->previous;
+        List* elements = listNew();
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (!check(parser, TOKEN_RBRACKET)) {
+            while (true) {
+                Expr* e = parseExpression(parser);
+                listAppend(elements, e);
+                if (match(parser, TOKEN_COMMA)) {
+                    while (match(parser, TOKEN_SEMICOLON)) {}
+                    if (check(parser, TOKEN_RBRACKET)) break; // allow trailing comma
+                    continue;
+                }
+                break;
+            }
+        }
+        consume(parser, TOKEN_RBRACKET, "Expect ']' after array literal");
+        expr = newArrayLiteralExpr(lbracket, elements);
     } else if (match(parser, TOKEN_THIS)) {
         expr = newVariableExpr(parser->previous);
     } else if (match(parser, TOKEN_IDENTIFIER)) {
@@ -1396,6 +1425,7 @@ static Stmt* parseImplDeclaration(Parser* parser) {
 static Type* parseType(Parser* parser) {
     // Function type: `(T1, T2, ...) -> R` or `(T1, ...) -> (R1, R2, ...)`
     // Note: standalone tuple types like `(int, string)` are not a general type form yet.
+    Type* base = NULL;
     if (match(parser, TOKEN_LPAREN)) {
         List* paramTypes = listNew();
         if (!check(parser, TOKEN_RPAREN)) {
@@ -1432,10 +1462,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = paramTypes;
         type->returnTypes = returnTypes;
-        return type;
-    }
-
-    if (match(parser, TOKEN_AMP)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_AMP)) {
         Type* inner = parseType(parser);
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_REF;
@@ -1444,9 +1473,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_INT)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_INT)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_INT;
         type->name = (Token){0};
@@ -1454,9 +1483,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_LONG)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_LONG)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_LONG;
         type->name = (Token){0};
@@ -1464,9 +1493,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_DOUBLE)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_DOUBLE)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_DOUBLE;
         type->name = (Token){0};
@@ -1474,9 +1503,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_STRING)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_STRING)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_STRING;
         type->name = (Token){0};
@@ -1484,9 +1513,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_BOOL)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_BOOL)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_BOOL;
         type->name = (Token){0};
@@ -1494,9 +1523,9 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
-        return type;
-    }
-    if (match(parser, TOKEN_IDENTIFIER)) {
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_IDENTIFIER)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_NAMED;
         type->name = parser->previous;
@@ -1504,6 +1533,7 @@ static Type* parseType(Parser* parser) {
         type->typeArgs = NULL;
         type->paramTypes = NULL;
         type->returnTypes = NULL;
+        type->arrayLen = 0;
 
         // Generic type args: Name<Arg1, Arg2, ...>
         if (match(parser, TOKEN_LT)) {
@@ -1517,10 +1547,53 @@ static Type* parseType(Parser* parser) {
             consume(parser, TOKEN_GT, "Expect '>' after generic type arguments");
             type->typeArgs = args;
         }
-        return type;
+        base = type;
+    } else {
+        printError(parser, "Expect type name");
+        return NULL;
     }
-    printError(parser, "Expect type name");
-    return NULL;
+
+    // Array suffix types: `T[]` (dynamic) and `T[N]` (fixed N)
+    while (match(parser, TOKEN_LBRACKET)) {
+        if (match(parser, TOKEN_RBRACKET)) {
+            Type* arr = malloc(sizeof(Type));
+            arr->kind = TYPE_ARRAY;
+            arr->name = (Token){0};
+            arr->inner = base;
+            arr->typeArgs = NULL;
+            arr->paramTypes = NULL;
+            arr->returnTypes = NULL;
+            arr->arrayLen = -1;
+            base = arr;
+            continue;
+        }
+
+        if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG)) {
+            Token nTok = parser->previous;
+            char* s = malloc((size_t)nTok.length + 1);
+            memcpy(s, nTok.start, (size_t)nTok.length);
+            s[nTok.length] = '\0';
+            int64_t n = (int64_t)strtoll(s, NULL, 10);
+            free(s);
+            consume(parser, TOKEN_RBRACKET, "Expect ']' after array length");
+
+            Type* arr = malloc(sizeof(Type));
+            arr->kind = TYPE_ARRAY;
+            arr->name = (Token){0};
+            arr->inner = base;
+            arr->typeArgs = NULL;
+            arr->paramTypes = NULL;
+            arr->returnTypes = NULL;
+            arr->arrayLen = n;
+            base = arr;
+            continue;
+        }
+
+        printError(parser, "Expect ']' or integer length in array type");
+        return NULL;
+    }
+
+    return base;
 }
 
 static Stmt* parseObjectDeclaration(Parser* parser) {

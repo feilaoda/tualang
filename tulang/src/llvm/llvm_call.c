@@ -410,6 +410,15 @@ static LLVMValueRef getOrCreateTuaMapClear(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_clear", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaArrayClone(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_clone");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_clone", fnType);
+}
+
 enum {
     TUA_VAL_NIL = 0,
     TUA_VAL_INT = 1,
@@ -837,8 +846,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             LLVMTypeRef recvType = LLVMTypeOf(recvVal);
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
 
-            // Map built-in methods (untyped receiver): `expr.len()`, `expr.get(k)`, ...
-            if (recvType == compilerGetMapType(compiler)) {
+            // Map built-in methods on non-variable receivers are intentionally disabled for now:
+            // LLVM opaque pointers make it impossible to reliably distinguish `%tua_map*` from other pointers here.
+            if (0 && recvType == compilerGetMapType(compiler)) {
                 LLVMValueRef mapPtr = recvVal;
 
                 if (tokenEquals(&get->name, "len")) {
@@ -942,6 +952,42 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
             }
 
+            // Array built-in methods on non-variable receivers are intentionally disabled for now
+            // for the same reason as map methods (LLVM opaque pointers).
+            if (0 && recvType == compilerGetArrayType(compiler)) {
+                LLVMTypeRef arrType = compilerGetArrayType(compiler);
+                LLVMTypeRef arrStruct = LLVMGetElementType(arrType);
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+
+                if (tokenEquals(&get->name, "len")) {
+                    if (got != 0) {
+                        emitDebug("array.len expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, recvVal, 0, "alenp");
+                    LLVMValueRef len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "alen64");
+                    LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "alen");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
+                if (tokenEquals(&get->name, "clone")) {
+                    if (got != 0) {
+                        emitDebug("array.clone expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaArrayClone(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { recvVal };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "aclone");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+            }
+
             // Option built-in methods: `opt.isSome()`, `opt.unwrap()`, ...
             if (isOptionLLVMType(recvType)) {
                 LLVMTypeRef innerType = LLVMStructGetTypeAtIndex(recvType, 1);
@@ -1038,8 +1084,57 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // If receiver resolves to a local and has a struct type, treat as instance method call.
         VariableRef recvVar = findVariableExpr(compiler, get->object);
 
+        // Array built-in methods: `a.len()`, `a.clone()`
+        if (recvVar.value && recvVar.isArray) {
+            LLVMTypeRef arrType = compilerGetArrayType(compiler);
+            LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
+            LLVMValueRef arrPtr = NULL;
+            if (recvVar.isBoxed) {
+                if (!recvVar.boxPtrType) {
+                    emitDebug("Missing boxed pointer type for array receiver\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cell");
+                arrPtr = LLVMBuildLoad2(compiler->builder, arrType, cell, "aval");
+            } else {
+                arrPtr = LLVMBuildLoad2(compiler->builder, arrType, recvVar.value, "aval");
+            }
+
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("array.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arrPtr, 0, "alenp");
+                LLVMValueRef len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "alen64");
+                LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "alen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "clone")) {
+                if (got != 0) {
+                    emitDebug("array.clone expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaArrayClone(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { arrPtr };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "aclone");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+        }
+
         // Map built-in methods: `m.hasKey(k)`, `m.get(k)`, `m.len()`
-        if (recvVar.value && recvVar.type == compilerGetMapType(compiler)) {
+        if (recvVar.value && recvVar.isMap) {
             LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef mapPtr = NULL;
             if (recvVar.isBoxed) {
@@ -1502,22 +1597,44 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
-        LLVMValueRef arg0 = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        Expr* argAst = (Expr*)expr->arguments->head->data;
+        if (!argAst || argAst->type != EXPR_VARIABLE) {
+            emitDebug("len currently only supports map/array variables\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        VariableRef v = findVariableExpr(compiler, argAst);
+        LLVMValueRef arg0 = compileExpr(compiler, argAst);
         if (!arg0) {
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
-        if (LLVMTypeOf(arg0) != compilerGetMapType(compiler)) {
-            emitDebug("len currently only supports map\n");
+        if (v.value && v.isMap) {
+            LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+            LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+            LLVMValueRef args1[1] = { arg0 };
+            LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "len");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-            return NULL;
+            return out;
         }
-        LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
-        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-        LLVMValueRef args1[1] = { arg0 };
-        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "len");
+        if (v.value && v.isArray) {
+            LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
+            if (!arrStruct) {
+                emitDebug("missing tua_array type\n");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+            LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arg0, 0, "alenp");
+            LLVMValueRef len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "alen64");
+            LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "len");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return out;
+        }
+        emitDebug("len expects a map/array variable\n");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-        return out;
+        return NULL;
     }
 
     if (!isPrintln && !isPrint) {

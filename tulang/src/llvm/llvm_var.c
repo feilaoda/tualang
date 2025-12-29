@@ -2,6 +2,12 @@
 #include "compiler.h"
 #include "debug.h"
 
+static int tokenEquals(const Token* token, const char* s) {
+    if (!token || !s) return 0;
+    int len = (int)strlen(s);
+    return token->length == len && memcmp(token->start, s, (size_t)len) == 0;
+}
+
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
     const int sepLen = 2;
     int len = leftLen + sepLen + right->length;
@@ -21,6 +27,33 @@ static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
     LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
     return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaArrayNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_new");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef params[4] = { i64, i64, i64, i64 };
+    LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_new", fnType);
+}
+
+static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef type, const char* name) {
+    if (!compiler || !compiler->current || !compiler->current->func) return NULL;
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(compiler->current->func);
+    if (!entry) return NULL;
+
+    LLVMBuilderRef tmp = LLVMCreateBuilderInContext(compiler->context);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first) {
+        LLVMPositionBuilderBefore(tmp, first);
+    } else {
+        LLVMPositionBuilderAtEnd(tmp, entry);
+    }
+    LLVMValueRef out = LLVMBuildAlloca(tmp, type, name);
+    LLVMDisposeBuilder(tmp);
+    return out;
 }
 
 static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
@@ -69,6 +102,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             LLVMTypeRef inner = toLLVMType(compiler, type->inner);
             return LLVMPointerType(inner, 0);
         }
+        case TYPE_ARRAY:
+            return compilerGetArrayType(compiler);
         case TYPE_FUNC:
             return compilerGetClosureType(compiler);
         default:
@@ -85,14 +120,24 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
     if (initializer->type == EXPR_MAP_LITERAL) {
         return compilerGetMapType(compiler);
     }
+    if (initializer->type == EXPR_ARRAY_LITERAL) {
+        return compilerGetArrayType(compiler);
+    }
     if (initializer->type == EXPR_INDEX) {
-        // Default to Option<tua_value>; if receiver is a typed map variable, infer Option<V>.
+        // Default to Option<tua_value>; if receiver is an array variable, infer element type;
+        // if receiver is a typed map variable, infer Option<V>.
         IndexExpr* ix = (IndexExpr*)initializer;
         LLVMTypeRef vt = compilerGetTuaValueType(compiler);
         if (ix->object && ix->object->type == EXPR_VARIABLE) {
             VariableRef rv = findVariableExpr(compiler, ix->object);
+            if (rv.value && rv.isArray && rv.arrayElemType) {
+                return rv.arrayElemType;
+            }
             if (rv.value && rv.isTypedMap && rv.mapValueType) {
                 return compilerGetOptionType(compiler, rv.mapValueType);
+            }
+            if (rv.value && rv.isMap) {
+                return compilerGetOptionType(compiler, vt);
             }
         }
         return compilerGetOptionType(compiler, vt);
@@ -110,17 +155,21 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         CallExpr* call = (CallExpr*)initializer;
         if (call->callee && call->callee->type == EXPR_GET) {
             GetExpr* get = (GetExpr*)call->callee;
-            // m.get(k) -> Option<V>
-            if (get->object) {
-                LLVMTypeRef mapType = compilerGetMapType(compiler);
-                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-
-                if (get->object->type == EXPR_VARIABLE) {
-                    VariableRef rv = findVariableExpr(compiler, get->object);
-                    if (rv.value && rv.type == mapType) {
-                        LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;
-                        return compilerGetOptionType(compiler, inner);
-                    }
+            if (get->object && get->object->type == EXPR_VARIABLE) {
+                VariableRef rv = findVariableExpr(compiler, get->object);
+                if (rv.value && rv.isMap && tokenEquals(&get->name, "get")) {
+                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;
+                    return compilerGetOptionType(compiler, inner);
+                }
+                if (rv.value && rv.isMap && tokenEquals(&get->name, "len")) {
+                    return LLVMInt32TypeInContext(compiler->context);
+                }
+                if (rv.value && rv.isArray && tokenEquals(&get->name, "len")) {
+                    return LLVMInt32TypeInContext(compiler->context);
+                }
+                if (rv.value && rv.isArray && tokenEquals(&get->name, "clone")) {
+                    return compilerGetArrayType(compiler);
                 }
             }
         }
@@ -407,6 +456,15 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         }
     }
 
+    int hasAnnotatedArray = 0;
+    LLVMTypeRef annotatedElemTy = NULL;
+    int64_t annotatedFixedLen = -1;
+    if (stmt->type && stmt->type->kind == TYPE_ARRAY && valueType == compilerGetArrayType(compiler)) {
+        hasAnnotatedArray = 1;
+        annotatedFixedLen = stmt->type->arrayLen;
+        annotatedElemTy = stmt->type->inner ? toLLVMType(compiler, stmt->type->inner) : LLVMInt32TypeInContext(compiler->context);
+    }
+
     int inferredTypedMap = 0;
     LLVMTypeRef inferredKeyTy = NULL;
     LLVMTypeRef inferredValTy = NULL;
@@ -417,7 +475,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     int shouldBox = compiler && compiler->boxAllLocals;
     LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
     LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
-    LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, slotElemType, var);
+    LLVMValueRef slot = buildEntryAlloca(compiler, slotElemType, var);
 
     LLVMTypeRef compiledLambdaSig = NULL;
     LLVMTypeRef declaredSig = NULL;
@@ -428,6 +486,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
         LLVMTypeRef savedKey = compiler->expectedMapKeyType;
         LLVMTypeRef savedVal = compiler->expectedMapValueType;
+        LLVMTypeRef savedAElem = compiler->expectedArrayElemType;
+        int64_t savedAFixed = compiler->expectedArrayFixedLen;
         if (valueType == compilerGetMapType(compiler) && stmt->initializer->type == EXPR_MAP_LITERAL) {
             if (hasAnnotatedTypedMap) {
                 compiler->expectedMapKeyType = annotatedKeyTy;
@@ -437,11 +497,22 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 compiler->expectedMapValueType = inferredValTy;
             }
         }
+        if (valueType == compilerGetArrayType(compiler) && stmt->initializer->type == EXPR_ARRAY_LITERAL) {
+            if (hasAnnotatedArray) {
+                compiler->expectedArrayElemType = annotatedElemTy;
+                compiler->expectedArrayFixedLen = annotatedFixedLen;
+            } else {
+                compiler->expectedArrayElemType = LLVMInt32TypeInContext(compiler->context);
+                compiler->expectedArrayFixedLen = -1;
+            }
+        }
 
         LLVMValueRef initValue = compileExpr(compiler, stmt->initializer);
 
         compiler->expectedMapKeyType = savedKey;
         compiler->expectedMapValueType = savedVal;
+        compiler->expectedArrayElemType = savedAElem;
+        compiler->expectedArrayFixedLen = savedAFixed;
         if (stmt->initializer->type == EXPR_LAMBDA) {
             compiledLambdaSig = compiler->lastLambdaFuncType;
             if (declaredSig && compiledLambdaSig && declaredSig != compiledLambdaSig) {
@@ -470,6 +541,39 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         } else {
             if (initValue) LLVMBuildStore(compiler->builder, initValue, slot);
         }
+    } else if (valueType == compilerGetArrayType(compiler) && hasAnnotatedArray && annotatedFixedLen >= 0) {
+        // Default init for fixed arrays: allocate and zero-initialize.
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)annotatedFixedLen, 1);
+        LLVMValueRef capV = lenV;
+        LLVMValueRef elemSizeV = LLVMSizeOf(annotatedElemTy ? annotatedElemTy : LLVMInt32TypeInContext(compiler->context));
+        LLVMValueRef fixedV = LLVMConstInt(i64, (uint64_t)annotatedFixedLen, 1);
+        LLVMValueRef newFn = getOrCreateTuaArrayNew(compiler);
+        LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+        LLVMValueRef args4[4] = { lenV, capV, elemSizeV, fixedV };
+        LLVMValueRef initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, args4, 4, "arr");
+        initValue = castIfNeeded(compiler, initValue, valueType);
+        if (shouldBox) {
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(valueType);
+            LLVMValueRef raw = LLVMBuildCall2(
+                compiler->builder,
+                LLVMGlobalGetValueType(mallocFn),
+                mallocFn,
+                &sizeV,
+                1,
+                "malloc"
+            );
+            LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
+            LLVMBuildStore(compiler->builder, initValue, cell);
+            LLVMBuildStore(compiler->builder, cell, slot);
+        } else {
+            LLVMBuildStore(compiler->builder, initValue, slot);
+        }
+    } else if (valueType == compilerGetArrayType(compiler) && hasAnnotatedArray && annotatedFixedLen < 0) {
+        compilerErrorAt(compiler, stmt->name.line, "dynamic array must have an initializer (use [] or [..])");
+        free(var);
+        return;
     } else if (shouldBox) {
         LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
         LLVMValueRef sizeV = LLVMSizeOf(valueType);
@@ -588,13 +692,18 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
+    variable->isMap = 0;
     variable->isTypedMap = 0;
     variable->mapKeyType = NULL;
     variable->mapValueType = NULL;
+    variable->isArray = 0;
+    variable->arrayElemType = NULL;
+    variable->arrayFixedLen = -1;
 
     if (stmt->type && stmt->type->kind == TYPE_NAMED &&
         stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
         stmt->type->typeArgs && stmt->type->typeArgs->length == 2) {
+        variable->isMap = 1;
         Type* kAst = (Type*)stmt->type->typeArgs->head->data;
         Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
         int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
@@ -611,10 +720,60 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         }
     }
 
+    if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+        stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
+        (!stmt->type->typeArgs || stmt->type->typeArgs->length == 0)) {
+        variable->isMap = 1;
+    }
+
     if (!stmt->type && inferredTypedMap && valueType == compilerGetMapType(compiler) && inferredKeyTy && inferredValTy) {
+        variable->isMap = 1;
         variable->isTypedMap = 1;
         variable->mapKeyType = inferredKeyTy;
         variable->mapValueType = inferredValTy;
+    }
+
+    if (valueType == compilerGetMapType(compiler) && stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
+        variable->isMap = 1;
+    }
+
+    if (hasAnnotatedArray && valueType == compilerGetArrayType(compiler) && annotatedElemTy) {
+        variable->isArray = 1;
+        variable->arrayElemType = annotatedElemTy;
+        variable->arrayFixedLen = annotatedFixedLen;
+    }
+
+    // Best-effort container metadata propagation for aliasing:
+    // `let b = a` / `let b = a.clone()`
+    if (stmt->initializer && stmt->initializer->type == EXPR_VARIABLE) {
+        VariableRef base = findVariableExpr(compiler, stmt->initializer);
+        if (base.value) {
+            if (!variable->isMap && base.isMap) {
+                variable->isMap = 1;
+                variable->isTypedMap = base.isTypedMap;
+                variable->mapKeyType = base.mapKeyType;
+                variable->mapValueType = base.mapValueType;
+            }
+            if (!variable->isArray && base.isArray) {
+                variable->isArray = 1;
+                variable->arrayElemType = base.arrayElemType;
+                variable->arrayFixedLen = base.arrayFixedLen;
+            }
+        }
+    } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
+        CallExpr* call = (CallExpr*)stmt->initializer;
+        if (call->callee && call->callee->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)call->callee;
+            if (get->object && get->object->type == EXPR_VARIABLE &&
+                get->name.length == 5 && memcmp(get->name.start, "clone", 5) == 0) {
+                VariableRef base = findVariableExpr(compiler, get->object);
+                if (base.value && base.isArray && !variable->isArray) {
+                    variable->isArray = 1;
+                    variable->arrayElemType = base.arrayElemType;
+                    variable->arrayFixedLen = base.arrayFixedLen;
+                }
+            }
+        }
     }
     listAppend(block->variables, variable);
 

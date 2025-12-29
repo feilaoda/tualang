@@ -16,6 +16,7 @@ typedef enum {
     AT_STRING,
     AT_OPTION,
     AT_MAP,
+    AT_ARRAY,
     AT_NAMED
 } ATypeKind;
 
@@ -24,6 +25,7 @@ typedef struct AType {
     struct AType* inner; // Option<T>
     struct AType* key;   // map<K,V>
     struct AType* value; // map<K,V>
+    int64_t arrayLen;    // array: -1 => dynamic (T[]), >=0 => fixed (T[N])
     const char* name;    // Named types (struct/object/enum/custom)
     int nameLen;
 } AType;
@@ -59,6 +61,13 @@ static AType* atMap(AType* key, AType* value) {
     return t;
 }
 
+static AType* atArray(AType* inner, int64_t len) {
+    AType* t = atNew(AT_ARRAY);
+    t->inner = inner ? inner : atNew(AT_ANY);
+    t->arrayLen = len;
+    return t;
+}
+
 static AType* atNamed(const char* name, int len) {
     AType* t = atNew(AT_NAMED);
     t->name = name;
@@ -68,6 +77,7 @@ static AType* atNamed(const char* name, int len) {
 
 static int atIsOption(const AType* t) { return t && t->kind == AT_OPTION; }
 static int atIsMap(const AType* t) { return t && t->kind == AT_MAP; }
+static int atIsArray(const AType* t) { return t && t->kind == AT_ARRAY; }
 static int atIsAny(const AType* t) { return !t || t->kind == AT_ANY; }
 static int atIsNull(const AType* t) { return t && t->kind == AT_NULL; }
 static int atIsNumeric(const AType* t) { return t && (t->kind == AT_INT || t->kind == AT_LONG || t->kind == AT_DOUBLE); }
@@ -128,6 +138,9 @@ static AType* atFromAstType(Type* t) {
             }
             return atNew(AT_ANY);
         }
+        case TYPE_ARRAY: {
+            return atArray(atFromAstType(t->inner), t->arrayLen);
+        }
         case TYPE_NAMED: {
             if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
@@ -157,6 +170,11 @@ static int atAssignable(AType* to, AType* from) {
     if (to->kind == from->kind) {
         if (to->kind == AT_OPTION) return atAssignable(to->inner, from->inner);
         if (to->kind == AT_MAP) return atAssignable(to->key, from->key) && atAssignable(to->value, from->value);
+        if (to->kind == AT_ARRAY) {
+            if (!atAssignable(to->inner, from->inner)) return 0;
+            if (to->arrayLen >= 0) return from->arrayLen == to->arrayLen;
+            return 1;
+        }
         if (to->kind == AT_NAMED) {
             if (to->nameLen != from->nameLen) return 0;
             return memcmp(to->name, from->name, (size_t)to->nameLen) == 0;
@@ -174,6 +192,7 @@ static int atAssignable(AType* to, AType* from) {
     if (atIsNull(from)) {
         if (to->kind == AT_STRING) return 1;
         if (to->kind == AT_MAP) return 1;
+        if (to->kind == AT_ARRAY) return 1;
         if (to->kind == AT_NAMED) return 1;
         return 0;
     }
@@ -216,6 +235,7 @@ static int isValueLiteralNull(const Expr* e) {
 }
 
 static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char* modulePath);
+static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralExpr* al, AType* expectedArray, const char* modulePath);
 
 static void analyzeErrorAt(Compiler* compiler, const char* modulePath, int line, const char* fmt, ...) {
     (void)modulePath;
@@ -232,11 +252,56 @@ static void analyzeErrorAt(Compiler* compiler, const char* modulePath, int line,
 static AType* inferIndex(Compiler* compiler, Scope* scope, IndexExpr* idx, const char* modulePath) {
     AType* objTy = inferExpr(compiler, scope, idx->object, modulePath);
     AType* keyTy = inferExpr(compiler, scope, idx->index, modulePath);
+    if (atIsArray(objTy)) {
+        if (!atIsNumeric(keyTy) && !atIsAny(keyTy)) {
+            analyzeErrorAt(compiler, modulePath, idx->base.token.line, "array index must be numeric");
+        }
+        return objTy->inner ? objTy->inner : atNew(AT_ANY);
+    }
     if (!atIsMap(objTy)) return atOption(atNew(AT_ANY));
     if (!typedMapKeyAllows(objTy->key, keyTy)) {
         analyzeErrorAt(compiler, modulePath, idx->base.token.line, "typed map key type mismatch");
     }
     return atOption(objTy->value ? objTy->value : atNew(AT_ANY));
+}
+
+static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralExpr* al, AType* expectedArray, const char* modulePath) {
+    if (!al) return atArray(atNew(AT_ANY), -1);
+    AType* expectedInner = NULL;
+    int expectedLen = -1;
+    if (expectedArray && expectedArray->kind == AT_ARRAY) {
+        expectedInner = expectedArray->inner;
+        expectedLen = expectedArray->arrayLen;
+    }
+
+    int count = 0;
+    AType* inferred = atNew(AT_ANY);
+    for (ListNode* n = al->elements ? al->elements->head : NULL; n != NULL; n = n->next) {
+        count++;
+        AType* et = inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+        if (expectedInner && !atIsAny(expectedInner) && !atAssignable(expectedInner, et)) {
+            analyzeErrorAt(compiler, modulePath, al->base.token.line, "array element type mismatch");
+        }
+
+        if (atIsAny(inferred)) {
+            inferred = et;
+            continue;
+        }
+        if (atIsNumeric(inferred) && atIsNumeric(et)) {
+            if (inferred->kind == AT_DOUBLE || et->kind == AT_DOUBLE) inferred = atNew(AT_DOUBLE);
+            else if (inferred->kind == AT_LONG || et->kind == AT_LONG) inferred = atNew(AT_LONG);
+            else inferred = atNew(AT_INT);
+        } else if (inferred->kind != et->kind) {
+            inferred = atNew(AT_ANY);
+        }
+    }
+
+    if (expectedLen >= 0 && count > expectedLen) {
+        analyzeErrorAt(compiler, modulePath, al->base.token.line, "too many elements for fixed-length array");
+    }
+
+    AType* inner = (expectedInner && !atIsAny(expectedInner)) ? expectedInner : inferred;
+    return atArray(inner, expectedLen);
 }
 
 static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const char* modulePath) {
@@ -272,6 +337,12 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             if (tokenTextEquals(&get->name, "hasKey")) return atNew(AT_BOOL);
             if (tokenTextEquals(&get->name, "delete")) return atNew(AT_BOOL);
             if (tokenTextEquals(&get->name, "clear")) return atNew(AT_INT);
+        }
+        if (atIsArray(recvTy)) {
+            if (tokenTextEquals(&get->name, "len")) return atNew(AT_INT);
+            if (tokenTextEquals(&get->name, "clone")) {
+                return atArray(recvTy->inner ? recvTy->inner : atNew(AT_ANY), recvTy->arrayLen);
+            }
         }
     }
 
@@ -376,6 +447,9 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             return inferExpr(compiler, scope, ((GroupingExpr*)expr)->expression, modulePath);
         case EXPR_CALL:
             return inferCall(compiler, scope, (CallExpr*)expr, modulePath);
+        case EXPR_ARRAY_LITERAL: {
+            return inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)expr, NULL, modulePath);
+        }
         case EXPR_GET: {
             // Member access type inference is incomplete; keep permissive.
             GetExpr* g = (GetExpr*)expr;
@@ -395,6 +469,13 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 }
                 if (!typedMapValueAllows(objTy->value, valTy)) {
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "typed map value type mismatch");
+                }
+            } else if (atIsArray(objTy)) {
+                if (!atIsNumeric(keyTy) && !atIsAny(keyTy)) {
+                    analyzeErrorAt(compiler, modulePath, is->base.token.line, "array index must be numeric");
+                }
+                if (objTy->inner && !atAssignable(objTy->inner, valTy)) {
+                    analyzeErrorAt(compiler, modulePath, is->base.token.line, "array element type mismatch");
                 }
             }
             return atNew(AT_VOID);
@@ -501,8 +582,14 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
 
             if (v->initializer && v->initializer->type == EXPR_MAP_LITERAL) {
                 initTy = inferMapLiteral(compiler, scope, (MapLiteralExpr*)v->initializer, annotated, modulePath);
+            } else if (v->initializer && v->initializer->type == EXPR_ARRAY_LITERAL) {
+                initTy = inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)v->initializer, annotated, modulePath);
             } else {
                 initTy = inferExpr(compiler, scope, v->initializer, modulePath);
+            }
+
+            if (annotated && annotated->kind == AT_ARRAY && annotated->arrayLen < 0 && !v->initializer) {
+                analyzeErrorAt(compiler, modulePath, v->name.line, "dynamic array must have an initializer (use [] or [..])");
             }
 
             if (annotated && !atAssignable(annotated, initTy)) {

@@ -296,9 +296,12 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
         error("Failed to compile for-in iterable\n");
         return;
     }
-
-    LLVMTypeRef mapType = compilerGetMapType(compiler);
-    if (LLVMTypeOf(iterable) != mapType) {
+    if (!stmt->range || stmt->range->type != EXPR_VARIABLE) {
+        error("for-in currently only supports map variables\n");
+        return;
+    }
+    VariableRef rangeVar = findVariableExpr(compiler, stmt->range);
+    if (!rangeVar.value || !rangeVar.isMap) {
         error("for-in currently only supports map\n");
         return;
     }

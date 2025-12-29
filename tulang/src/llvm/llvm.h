@@ -24,10 +24,18 @@ typedef struct VariableRef {
     int isBoxed;
     LLVMTypeRef boxPtrType; // T* for boxed variables; slot stores T*
 
+    // Optional: container type tags for pointer-like runtime types (LLVM opaque pointers can't distinguish).
+    int isMap;
+
     // Optional: typed map metadata for `map<K,V>` variables/params.
     int isTypedMap;
     LLVMTypeRef mapKeyType;
     LLVMTypeRef mapValueType;
+
+    // Optional: array metadata for `T[]` / `T[N]` variables/params.
+    int isArray;
+    LLVMTypeRef arrayElemType;
+    int64_t arrayFixedLen; // -1 => dynamic
 }VariableRef;
 
 
@@ -60,9 +68,10 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr);
 LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr);
 LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr);
 LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
-LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);
-LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr);
-LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
-LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
+	LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);
+	LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr);
+	LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr);
+	LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
+	LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
 
 #endif

@@ -3,6 +3,7 @@
 
 #include "lexer.h"
 #include "list.h"
+#include <stdint.h>
 typedef struct {
     Lexer* lexer;
     const char* currentFilePath;
@@ -27,6 +28,7 @@ typedef enum {
     EXPR_SET,
     EXPR_LAMBDA,
     EXPR_MAP_LITERAL,
+    EXPR_ARRAY_LITERAL,
     EXPR_INDEX,
     EXPR_INDEX_SET
 } ExprType;
@@ -69,6 +71,7 @@ typedef enum {
     TYPE_ANY,
     TYPE_NAMED,
     TYPE_REF,
+    TYPE_ARRAY,
     // Function type syntax: `(args...) -> ret[,ret2...]` or `(args...) -> (ret, ret2, ...)`
     TYPE_FUNC
 } TypeKind;
@@ -80,6 +83,7 @@ typedef struct Type {
     List* typeArgs;     // List<Type*>, for TYPE_NAMED generic args (e.g. map<K,V>, Option<T>)
     List* paramTypes;   // List<Type*>, for TYPE_FUNC
     List* returnTypes;  // List<Type*>, for TYPE_FUNC
+    int64_t arrayLen;   // for TYPE_ARRAY: -1 => dynamic (T[]), >=0 => fixed (T[N])
 } Type;
 
 // List structure for parameters and blocks
@@ -173,6 +177,11 @@ typedef struct {
     Expr base;
     List* entries; // List<MapEntry*>
 } MapLiteralExpr;
+
+typedef struct {
+    Expr base;
+    List* elements; // List<Expr*>
+} ArrayLiteralExpr;
 
 typedef struct {
     Expr base;
