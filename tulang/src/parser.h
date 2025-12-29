@@ -5,6 +5,7 @@
 #include "list.h"
 typedef struct {
     Lexer* lexer;
+    const char* currentFilePath;
     Token current;
     Token previous;
     bool hadError;
@@ -380,7 +381,7 @@ typedef struct FieldDeclaration {
     bool isConst;
 } FieldDeclaration;
 
-void initParser(Parser* parser, Lexer *lexer);
+void initParser(Parser* parser, Lexer *lexer, const char* currentFilePath);
 bool parse(Parser* parser, List** statements);
 static Stmt* parseStatement(Parser* parser);
 static Expr* parseExpression(Parser* parser);

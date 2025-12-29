@@ -22,6 +22,7 @@ int32_t tua_map_len(tua_map* map);
 int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue);
 
 void tua_panic(const char* msg);
+void tua_set_loc(const char* file, int32_t line, int32_t col);
 void tua_set_line(int32_t line);
 
 void tua_print_value(tua_value value, int32_t newline);

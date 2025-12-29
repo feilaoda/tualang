@@ -1604,7 +1604,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return out;
             }
-            emitDebug("Undefined function\n");
+            compilerErrorAtToken(compiler, &callee->name, "undefined function '%.*s'",
+                callee->name.length, callee->name.start);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }

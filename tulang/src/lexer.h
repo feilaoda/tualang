@@ -86,6 +86,7 @@ typedef struct {
     const char* start;
     int length;
     int line;
+    int col;   // 1-based column within the line
     int hasDot;
 } Token;
 
@@ -94,6 +95,7 @@ typedef struct {
     const char* start;
     const char* current;
     int line;
+    const char* lineStart;
 } Lexer;
 
 void initLexer(Lexer* lexer, const char* source);

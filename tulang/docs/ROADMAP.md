@@ -43,7 +43,10 @@
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化
-- [ ] 体验与工程化：统一诊断格式、补 examples 覆盖边界、脚本批量跑 examples
+- [ ] 体验与工程化：
+  - [x] 统一诊断格式（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时）
+  - [ ] 补 examples 覆盖边界
+  - [ ] 脚本批量跑 examples
 
 ### 8. Lua 能力对齐（如果目标是“具备 Lua 的所有能力”）
 - [x] 控制流：`while/do/for`、`break/goto/continue`
@@ -72,7 +75,8 @@
 - [ ] 内存管理（中长期）：后续切换/替换为增量 GC（标记-清扫/分代，配写屏障）
 
 ### 9. 错误与入口（建议）
-- [ ] 诊断统一格式：`file:line:col: error: message` + 源码片段 + 指示箭头（词法/语法/语义/运行时一致）
+- [x] 诊断统一（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时一致）
+- [ ] 诊断增强：源码片段 + 指示箭头（词法/语法/语义/运行时一致）
 - [x] 运行时错误：输出行号（best-effort，先解决“哪一行炸了”）
 - [ ] 运行时错误：`panic/throw` 语义 + 栈回溯（至少函数名 + 行号）
 - [ ] CLI 入口：`tuac run <entry.tua>`（支持 `--module-path`/`--dump-ir`/`--debug`）

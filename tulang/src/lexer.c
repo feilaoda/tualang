@@ -198,6 +198,7 @@ static Token makeToken(Lexer* lexer, TokenType type) {
     token.start = lexer->start;
     token.length = (int)(lexer->current - lexer->start);
     token.line = lexer->line;
+    token.col = lexer->lineStart ? (int)(lexer->start - lexer->lineStart) + 1 : 0;
     token.hasDot = 0;
     return token;
 }
@@ -209,6 +210,7 @@ static Token errorToken(Lexer* lexer, const char* message) {
     token.start = message;
     token.length = (int)strlen(message);
     token.line = lexer->line;
+    token.col = lexer->lineStart ? (int)(lexer->current - lexer->lineStart) + 1 : 0;
     return token;
 }
 
@@ -430,8 +432,13 @@ static Token number(Lexer* lexer) {
 
 static Token string(Lexer* lexer) {
     while (peek(lexer) != '"' && !isAtEnd(lexer)) {
-        if (peek(lexer) == '\n') lexer->line++;
-        advance(lexer);
+        if (peek(lexer) == '\n') {
+            advance(lexer);
+            lexer->line++;
+            lexer->lineStart = lexer->current;
+        } else {
+            advance(lexer);
+        }
     }
     if (isAtEnd(lexer)) return errorToken(lexer, "Unterminated string.");
     advance(lexer);
@@ -469,6 +476,7 @@ void initLexer(Lexer* lexer, const char* source) {
     lexer->start = source;
     lexer->current = source;
     lexer->line = 1;
+    lexer->lineStart = source;
 }
 
 
@@ -486,6 +494,7 @@ Token scanToken(Lexer* lexer) {
     if (peek(lexer) == '\n') {
         advance(lexer);
         lexer->line++;
+        lexer->lineStart = lexer->current;
         return makeToken(lexer, TOKEN_SEMICOLON);
     }
     

@@ -19,7 +19,7 @@ for f in tests/*.tua; do
       echo "[FAIL] $base (expected failure, got success)"
       fail=1
     else
-      if grep -q "at line" "$tmp"; then
+      if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
         echo "[PASS] $base (expected failure)"
       else
         echo "[FAIL] $base (expected failure, missing line info)"

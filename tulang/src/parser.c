@@ -17,7 +17,7 @@ int traceId = 0;
 #define parserDebug(...) ((void)0)
 #endif
 
-#define printError(p,msg) fprintf(stderr,"ERROR: %d", __LINE__); errorPrint(p,msg)
+#define printError(p,msg) errorPrint((p),(msg))
 
 
 const char* exprTypeToString(ExprType type) {
@@ -42,8 +42,9 @@ const char* exprTypeToString(ExprType type) {
 }
 
 // Parser initialization
-void initParser(Parser* parser, Lexer* lexer) {
+void initParser(Parser* parser, Lexer* lexer, const char* currentFilePath) {
     parser->lexer = lexer;
+    parser->currentFilePath = currentFilePath;
     parser->hadError = false;
     parser->panicMode = false;
     parser->previous.type = TOKEN_ERROR;
@@ -56,11 +57,20 @@ static Stmt* declaration(Parser* parser);
 void errorAtCurrent(Parser* parser, const char* message) {
     if (parser->panicMode) return;
     parser->panicMode = true;
-    fprintf(stderr, "[line %d] Error at '%.*s': %s\n",
-            parser->current.line,
-            parser->current.length,
-            parser->current.start,
-            message);
+    const char* file = parser->currentFilePath;
+    int line = parser->current.line;
+    int col = parser->current.col;
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: at '%.*s': %s\n", file, line, col, parser->current.length, parser->current.start, message);
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: at '%.*s': %s\n", file, line, parser->current.length, parser->current.start, message);
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: at '%.*s': %s\n", line, col, parser->current.length, parser->current.start, message);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: at '%.*s': %s\n", line, parser->current.length, parser->current.start, message);
+    } else {
+        fprintf(stderr, "error: at '%.*s': %s\n", parser->current.length, parser->current.start, message);
+    }
     parser->hadError = true;
 }
 
@@ -69,8 +79,20 @@ void errorAtCurrent(Parser* parser, const char* message) {
 static void errorPrint(Parser* parser, const char* message) {
     if (parser->panicMode) return;
     parser->panicMode = true;
-    fprintf(stderr, "***********[line %d]******** Error: %s\n", 
-            parser->current.line, message);
+    const char* file = parser->currentFilePath;
+    int line = parser->current.line;
+    int col = parser->current.col;
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: %s\n", file, line, col, message);
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: %s\n", file, line, message);
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: %s\n", line, col, message);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: %s\n", line, message);
+    } else {
+        fprintf(stderr, "error: %s\n", message);
+    }
     parser->hadError = true;
 }
 
@@ -103,13 +125,14 @@ static Token consume(Parser* parser, TokenType type, const char* message) {
         return token;
     }
     printError(parser, message);
-    return (Token){TOKEN_ERROR, NULL, 0, 0};
+    return (Token){TOKEN_ERROR, NULL, 0, 0, 0, 0};
 }
 
 static void synchronize(Parser* parser) {
     parser->panicMode = false;
+    bool advancedOnce = false;
     while (parser->current.type != TOKEN_EOF) {
-        if (parser->previous.type == TOKEN_SEMICOLON) return;
+        if (advancedOnce && parser->previous.type == TOKEN_SEMICOLON) return;
         
         switch (parser->current.type) {
             case TOKEN_FUNC:
@@ -121,6 +144,7 @@ static void synchronize(Parser* parser) {
                 return;
             default:
                 advance(parser);
+                advancedOnce = true;
         }
     }
 }
@@ -542,7 +566,7 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         if (match(parser, TOKEN_LPAREN)) {
             expr = finishCall(parser, expr);
         }
-    } else if (match(parser, TOKEN_PRINTLN)){
+    } else if (match(parser, TOKEN_PRINTLN) || match(parser, TOKEN_PRINT)){
         expr = newVariableExpr(parser->previous);
         if (match(parser, TOKEN_LPAREN)) {
             expr = finishCall(parser, expr);
@@ -688,7 +712,7 @@ static Stmt* parseStatement(Parser* parser) {
 
                 DestructureStmt* ds = malloc(sizeof(DestructureStmt));
                 ds->base.type = STMT_DESTRUCTURE;
-                ds->keyword = (Token){TOKEN_ERROR, NULL, 0, firstName.line, 0};
+                ds->keyword = (Token){TOKEN_ERROR, NULL, 0, firstName.line, firstName.col, 0};
                 ds->names = names;
                 ds->types = types;
                 ds->value = value;
@@ -965,6 +989,10 @@ static Stmt* parseReturnStatement(Parser* parser) {
 static Stmt* parseExpressionStatement(Parser* parser) {
     parserDebugStart("parseExpressionStatement");
     Expr* expr = parseExpression(parser);
+    if (!expr) {
+        parserDebugEnd("parseExpressionStatement");
+        return NULL;
+    }
     parserDebug("expr type: [%d]\n", expr->type);
     if(check(parser, TOKEN_SEMICOLON)){
         consume(parser, TOKEN_SEMICOLON, "Expect ';' after expression");

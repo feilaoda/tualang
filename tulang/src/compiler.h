@@ -28,6 +28,8 @@ typedef struct Compiler{
     bool hadError;
     bool panicMode;
 
+    const char* currentFilePath; // for diagnostics (may be NULL)
+
     LLVMBuilderRef builder;
     LLVMContextRef context;
     LLVMModuleRef module;
@@ -56,7 +58,9 @@ typedef struct Compiler{
     List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
     LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 
-    int lastSetLine; // last emitted tua_set_line(...) value
+    const char* lastSetFilePath; // last emitted runtime file path (may be NULL)
+    int lastSetLine;             // last emitted runtime line
+    int lastSetCol;              // last emitted runtime column
 
     // Side-channel: when compiling a map literal for a typed map variable, enforce K/V.
     LLVMTypeRef expectedMapKeyType;
@@ -143,6 +147,8 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr);
 LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr);
 
 void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...);
+void compilerErrorAtEx(Compiler* compiler, const char* file, int line, int col, const char* fmt, ...);
+void compilerErrorAtToken(Compiler* compiler, const Token* token, const char* fmt, ...);
 
 // Function to compile statements
 void compileStmt(Compiler* compiler, Stmt* stmt);

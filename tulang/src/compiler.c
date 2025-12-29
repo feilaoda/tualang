@@ -21,6 +21,8 @@ void initCompiler(Compiler* compiler) {
     compiler->enums = listNew();
     compiler->loopStack = listNew();
 
+    compiler->currentFilePath = NULL;
+
     compiler->currentModulePrefix = NULL;
     compiler->currentModulePrefixLen = 0;
     compiler->currentAliases = NULL;
@@ -36,7 +38,9 @@ void initCompiler(Compiler* compiler) {
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
     compiler->lastLambdaFuncType = NULL;
+    compiler->lastSetFilePath = NULL;
     compiler->lastSetLine = 0;
+    compiler->lastSetCol = 0;
     compiler->expectedMapKeyType = NULL;
     compiler->expectedMapValueType = NULL;
     
@@ -46,9 +50,66 @@ void initCompiler(Compiler* compiler) {
 }
 
 void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
     if (compiler) compiler->hadError = true;
-    if (line > 0) {
-        fprintf(stderr, "error at line %d: ", line);
+
+    const char* file = compiler ? compiler->currentFilePath : NULL;
+    if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: ", file, line);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: ", line);
+    } else {
+        fprintf(stderr, "error: ");
+    }
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (fmt) {
+        size_t n = strlen(fmt);
+        if (n == 0 || fmt[n - 1] != '\n') fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+void compilerErrorAtEx(Compiler* compiler, const char* file, int line, int col, const char* fmt, ...) {
+    if (compiler) compiler->hadError = true;
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: ", file, line, col);
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: ", file, line);
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: ", line, col);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: ", line);
+    } else {
+        fprintf(stderr, "error: ");
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (fmt) {
+        size_t n = strlen(fmt);
+        if (n == 0 || fmt[n - 1] != '\n') fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+void compilerErrorAtToken(Compiler* compiler, const Token* token, const char* fmt, ...) {
+    const char* file = compiler ? compiler->currentFilePath : NULL;
+    int line = token ? token->line : 0;
+    int col = token ? token->col : 0;
+    if (compiler) compiler->hadError = true;
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: ", file, line, col);
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: ", file, line);
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: ", line, col);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: ", line);
     } else {
         fprintf(stderr, "error: ");
     }
@@ -511,29 +572,39 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     return value;
 }
 
-static LLVMValueRef getOrCreateTuaSetLine(Compiler* compiler) {
-    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_set_line");
+static LLVMValueRef getOrCreateTuaSetLoc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_set_loc");
     if (existing) return existing;
     LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
-    LLVMTypeRef params[1] = { i32 };
-    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
-    return LLVMAddFunction(compiler->module, "tua_set_line", fnType);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[3] = { i8ptr, i32, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_set_loc", fnType);
 }
 
-static void emitSetLineIfNeeded(Compiler* compiler, int line) {
+static void emitSetLocIfNeeded(Compiler* compiler, int line, int col) {
     if (!compiler) return;
     if (line <= 0) return;
-    if (compiler->lastSetLine == line) return;
+    const char* file = compiler->currentFilePath;
+    if (compiler->lastSetFilePath == file && compiler->lastSetLine == line && compiler->lastSetCol == col) return;
     if (!compiler->builder) return;
     LLVMBasicBlockRef bb = LLVMGetInsertBlock(compiler->builder);
     if (!bb) return;
     if (LLVMGetBasicBlockTerminator(bb)) return;
 
+    compiler->lastSetFilePath = file;
     compiler->lastSetLine = line;
-    LLVMValueRef fn = getOrCreateTuaSetLine(compiler);
+    compiler->lastSetCol = col;
+
+    LLVMValueRef fn = getOrCreateTuaSetLoc(compiler);
     LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-    LLVMValueRef lineV = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), (unsigned)line, 0);
-    LLVMBuildCall2(compiler->builder, fnType, fn, &lineV, 1, "");
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMValueRef fileV = file ? LLVMBuildGlobalStringPtr(compiler->builder, file, "tua_file") : LLVMConstNull(i8ptr);
+    LLVMValueRef lineV = LLVMConstInt(i32, (unsigned)line, 0);
+    LLVMValueRef colV = LLVMConstInt(i32, (unsigned)(col > 0 ? col : 0), 0);
+    LLVMValueRef args[3] = { fileV, lineV, colV };
+    LLVMBuildCall2(compiler->builder, fnType, fn, args, 3, "");
 }
 
 LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
@@ -541,7 +612,7 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         error("compileExpr got NULL\n");
         return NULL;
     }
-    emitSetLineIfNeeded(compiler, expr->token.line);
+    emitSetLocIfNeeded(compiler, expr->token.line, expr->token.col);
     compilerDebug("Compiling expression type:%s\n", exprTypeToString(expr->type));
     switch (expr->type) {
         case EXPR_BINARY:
@@ -1020,7 +1091,7 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
 
         // Build params: this + original params
         List* params = listNew();
-        Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, 0};
+        Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
 
         Type* thisInner = malloc(sizeof(Type));
         thisInner->kind = TYPE_NAMED;
@@ -1421,7 +1492,7 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
 
             // Build params: this + original params
             List* params = listNew();
-            Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, 0};
+            Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
             Type* thisInner = malloc(sizeof(Type));
             thisInner->kind = TYPE_NAMED;
             thisInner->name = stmt->name;

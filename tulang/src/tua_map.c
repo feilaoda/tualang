@@ -39,17 +39,34 @@ struct tua_map {
     MapEntry* entries;
 };
 
+static const char* tua_current_file = NULL;
 static int32_t tua_current_line = 0;
+static int32_t tua_current_col = 0;
 
 void tua_set_line(int32_t line) {
     tua_current_line = line;
 }
 
+void tua_set_loc(const char* file, int32_t line, int32_t col) {
+    if (file) tua_current_file = file;
+    tua_current_line = line;
+    tua_current_col = col;
+}
+
 void tua_panic(const char* msg) {
-    if (tua_current_line > 0) {
-        fprintf(stderr, "tua runtime error at line %d: %s\n", (int)tua_current_line, msg ? msg : "(null)");
+    const char* file = tua_current_file;
+    int32_t line = tua_current_line;
+    int32_t col = tua_current_col;
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: %s\n", file, (int)line, (int)col, msg ? msg : "(null)");
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: %s\n", file, (int)line, msg ? msg : "(null)");
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: %s\n", (int)line, (int)col, msg ? msg : "(null)");
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: %s\n", (int)line, msg ? msg : "(null)");
     } else {
-        fprintf(stderr, "tua runtime error: %s\n", msg ? msg : "(null)");
+        fprintf(stderr, "error: %s\n", msg ? msg : "(null)");
     }
     abort();
 }
@@ -430,10 +447,21 @@ char* tua_str_concat(const char* a, const char* b) {
 }
 
 void tua_assert_fail(const char* msg, int32_t line) {
-    if (msg && msg[0] != '\0') {
-        fprintf(stderr, "assert failed at line %d: %s\n", (int)line, msg);
+    const char* file = tua_current_file;
+    int32_t useLine = line > 0 ? line : tua_current_line;
+    int32_t col = tua_current_col;
+    if (file && useLine > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: assert failed: %s\n", file, (int)useLine, (int)col, (msg && msg[0] != '\0') ? msg : "");
+    } else if (file && useLine > 0) {
+        fprintf(stderr, "%s:%d: error: assert failed: %s\n", file, (int)useLine, (msg && msg[0] != '\0') ? msg : "");
+    } else if (useLine > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: assert failed: %s\n", (int)useLine, (int)col, (msg && msg[0] != '\0') ? msg : "");
+    } else if (useLine > 0) {
+        fprintf(stderr, "error:%d: assert failed: %s\n", (int)useLine, (msg && msg[0] != '\0') ? msg : "");
+    } else if (msg && msg[0] != '\0') {
+        fprintf(stderr, "error: assert failed: %s\n", msg);
     } else {
-        fprintf(stderr, "assert failed at line %d\n", (int)line);
+        fprintf(stderr, "error: assert failed\n");
     }
     abort();
 }

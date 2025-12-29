@@ -258,10 +258,16 @@ static void moduleComputeExports(ModuleInfo* module) {
 
 static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path);
 
-static void moduleImportErrorAt(ModuleSystem* sys, int line, const char* fmt, ...) {
+static void moduleImportErrorAt(ModuleSystem* sys, const char* file, int line, int col, const char* fmt, ...) {
     if (sys) sys->hadError = 1;
-    if (line > 0) {
-        fprintf(stderr, "error at line %d: ", line);
+    if (file && line > 0 && col > 0) {
+        fprintf(stderr, "%s:%d:%d: error: ", file, line, col);
+    } else if (file && line > 0) {
+        fprintf(stderr, "%s:%d: error: ", file, line);
+    } else if (line > 0 && col > 0) {
+        fprintf(stderr, "error:%d:%d: ", line, col);
+    } else if (line > 0) {
+        fprintf(stderr, "error:%d: ", line);
     } else {
         fprintf(stderr, "error: ");
     }
@@ -307,7 +313,7 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
             if (imp->hasAlias) {
                 // Namespace import: `import "path" as ns`
                 if (moduleHasAliasFor(module, imp->alias.start, imp->alias.length)) {
-                    moduleImportErrorAt(sys, imp->alias.line,
+                    moduleImportErrorAt(sys, module->path, imp->alias.line, imp->alias.col,
                         "import name conflict '%.*s' while importing %s (already defined in this module scope)",
                         imp->alias.length, imp->alias.start, dep->path);
                     return;
@@ -327,7 +333,7 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
                     if (!ex || ex->isPrivate) continue;
 
                     if (moduleHasAliasFor(module, ex->name, ex->nameLen)) {
-                        moduleImportErrorAt(sys, imp->keyword.line,
+                        moduleImportErrorAt(sys, module->path, imp->keyword.line, imp->keyword.col,
                             "import name conflict '%.*s' while importing %s (already defined in this module scope)",
                             ex->nameLen, ex->name, dep->path);
                         return;
@@ -366,20 +372,20 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
 
                 ExportSymbol* ex = findExport(dep, importTok->start, importTok->length);
                 if (!ex) {
-                    moduleImportErrorAt(sys, importTok->line,
+                    moduleImportErrorAt(sys, module->path, importTok->line, importTok->col,
                         "unknown import '%.*s' from module %s",
                         importTok->length, importTok->start, dep->path);
                     continue;
                 }
                 if (ex->isPrivate) {
-                    moduleImportErrorAt(sys, importTok->line,
+                    moduleImportErrorAt(sys, module->path, importTok->line, importTok->col,
                         "cannot import private symbol '%.*s' from module %s",
                         importTok->length, importTok->start, dep->path);
                     continue;
                 }
 
                 if (moduleHasAliasFor(module, localTok->start, localTok->length)) {
-                    moduleImportErrorAt(sys, localTok->line,
+                    moduleImportErrorAt(sys, module->path, localTok->line, localTok->col,
                         "import name conflict '%.*s' while importing from %s (already defined in this module scope)",
                         localTok->length, localTok->start, dep->path);
                     return;
@@ -426,7 +432,7 @@ static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path) {
     Lexer lexer;
     initLexer(&lexer, module->source);
     Parser parser;
-    initParser(&parser, &lexer);
+    initParser(&parser, &lexer, module->path);
 
     List* statements = NULL;
     if (!parse(&parser, &statements)) {
@@ -594,6 +600,7 @@ int endLLVM(Compiler* compiler) {
 }
 
 static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
+    compiler->currentFilePath = module->path;
     compiler->currentModulePrefix = module->prefix;
     compiler->currentModulePrefixLen = module->prefixLen;
     compiler->currentAliases = module->aliases;

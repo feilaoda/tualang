@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
     initLexer(&lexer, source);
 
     Parser parser;
-    initParser(&parser, &lexer);
+    initParser(&parser, &lexer, argv[1]);
 
     List* statements = NULL;
     if (!parse(&parser, &statements)) {
@@ -64,4 +64,3 @@ int main(int argc, char* argv[]) {
     free(source);
     return 0;
 }
-
