@@ -35,6 +35,10 @@ double tua_value_to_double(tua_value v);
 int32_t tua_value_to_bool(tua_value v);
 char* tua_value_to_string(tua_value v);
 
+// Parse base-10 `int` from string.
+// Returns 1 on success and writes to `out`, otherwise returns 0 and leaves `out` unchanged.
+int32_t tua_parse_int(const char* s, int32_t* out);
+
 char* tua_str_concat(const char* a, const char* b);
 
 #endif

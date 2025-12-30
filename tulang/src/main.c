@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #include "lexer.h"
 #include "parser.h"
@@ -61,6 +62,7 @@ typedef struct ModuleSystem {
     List* modules; // List<ModuleInfo*>
     List* order;   // List<ModuleInfo*>
     int hadError;  // import/load-time errors
+    char* stdDir;  // absolute path to `std/` directory (may be NULL)
 } ModuleSystem;
 
 static char* readFile(const char* path) {
@@ -299,6 +301,50 @@ static int moduleHasAliasFor(ModuleInfo* module, const char* local, int localLen
     return 0;
 }
 
+static int pathIsDir(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+static char* discoverStdDir(const char* argv0) {
+    const char* env = getenv("TUA_STDLIB_DIR");
+    if (env && env[0] != '\0') return canonicalizePath(env);
+
+    if (!argv0 || argv0[0] == '\0') return NULL;
+    char* exe = canonicalizePath(argv0);
+    char* binDir = dirOfPath(exe);
+    char* cand = joinPath(binDir, "../std");
+    free(exe);
+    free(binDir);
+
+    if (!pathIsDir(cand)) {
+        free(cand);
+        return NULL;
+    }
+    char* out = canonicalizePath(cand);
+    free(cand);
+    return out;
+}
+
+static int isStdImportPath(const char* raw) {
+    return raw && strncmp(raw, "std/", 4) == 0;
+}
+
+static char* resolveImportPath(ModuleSystem* sys, ModuleInfo* module, const char* raw, Token pathTok) {
+    if (!raw) return NULL;
+    if (isStdImportPath(raw)) {
+        if (!sys || !sys->stdDir) {
+            moduleImportErrorAt(sys, module ? module->path : NULL, pathTok.line, pathTok.col,
+                                "cannot resolve std import \"%s\" (set TUA_STDLIB_DIR or place std/ next to tuac)", raw);
+            return NULL;
+        }
+        return ensureTuaExt(joinPath(sys->stdDir, raw + 4));
+    }
+    return ensureTuaExt(joinPath(module->dir, raw));
+}
+
 static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
     if (!module || !module->statements) return;
     if (!module->aliases) module->aliases = listNew();
@@ -309,8 +355,9 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
         if (s->type == STMT_IMPORT) {
             ImportStmt* imp = (ImportStmt*)s;
             char* raw = stripQuotesToken(imp->path);
-            char* full = ensureTuaExt(joinPath(module->dir, raw));
+            char* full = resolveImportPath(sys, module, raw, imp->path);
             free(raw);
+            if (!full) return;
             ModuleInfo* dep = moduleLoad(sys, full);
             free(full);
             if (!dep) continue;
@@ -363,8 +410,9 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
         if (s->type == STMT_FROM_IMPORT) {
             FromImportStmt* fi = (FromImportStmt*)s;
             char* raw = stripQuotesToken(fi->path);
-            char* full = ensureTuaExt(joinPath(module->dir, raw));
+            char* full = resolveImportPath(sys, module, raw, fi->path);
             free(raw);
+            if (!full) return;
             ModuleInfo* dep = moduleLoad(sys, full);
             free(full);
             if (!dep) continue;
@@ -593,7 +641,7 @@ void initLLVM(Compiler* compiler) {
     listAppend(block->variables, argvVar);
 }
 
-int executeModule(LLVMModuleRef module) {
+int executeModule(LLVMModuleRef module, int argc, char** argv) {
     char *error = NULL;
     
     // Create execution engine
@@ -611,9 +659,9 @@ int executeModule(LLVMModuleRef module) {
         return 1;
     }
 
-    // Execute main function (no script args in JIT mode: argc=0, argv=NULL).
+    // Execute main function.
     int (*mainFn)(int, char**) = (int (*)(int, char**))LLVMGetFunctionAddress(engine, "main");
-    int result = mainFn(0, NULL);
+    int result = mainFn(argc, argv);
 #ifdef DEBUG
     printf("result: %d\n", result);
 #endif
@@ -940,7 +988,7 @@ int endLLVM(Compiler* compiler, const char* argv0) {
     }
     struct timeval stop, start;
     gettimeofday(&start, NULL);
-    executeModule(module);
+    executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
     gettimeofday(&stop, NULL);
     printf("====result0: time: %fs\n",(float)((stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec)/1000000.0);
     if (tm) LLVMDisposeTargetMachine(tm);
@@ -952,7 +1000,7 @@ int endLLVM(Compiler* compiler, const char* argv0) {
         cleanup(module, builder, context, NULL);
         return rc;
     }
-    executeModule(module);
+    executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
     if (tm) LLVMDisposeTargetMachine(tm);
     cleanup(module, builder, context, NULL);
 #endif
@@ -1090,12 +1138,21 @@ int main(int argc, char* argv[]) {
     int uncheckedIndex = 0;
     int stackFixedArrays = 0;
     int emitLoc = 1;
+    int runArgc = 0;
+    char** runArgv = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         if (!a) continue;
+        if (srcPath) {
+            // After the source file, everything is treated as a script argument.
+            // (Compiler flags must appear before the source file.)
+            runArgv = realloc(runArgv, sizeof(char*) * (size_t)(runArgc + 1));
+            runArgv[runArgc++] = argv[i];
+            continue;
+        }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
@@ -1152,15 +1209,11 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "Unknown flag: %s\n", a);
             return 1;
         }
-        if (srcPath) {
-            fprintf(stderr, "Too many positional arguments (already have source file: %s)\n", srcPath);
-            return 1;
-        }
         srcPath = a;
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
         return 1;
     }
     Compiler compiler;
@@ -1170,12 +1223,18 @@ int main(int argc, char* argv[]) {
     compiler.uncheckedIndex = uncheckedIndex;
     compiler.stackFixedArrays = stackFixedArrays;
     compiler.emitLoc = emitLoc;
+    // Pass argv0 + script args into JIT execution so `ARGV` works consistently.
+    compiler.runArgc = runArgc + 1;
+    compiler.runArgv = malloc(sizeof(char*) * (size_t)compiler.runArgc);
+    compiler.runArgv[0] = argv[0];
+    for (int i = 0; i < runArgc; i++) compiler.runArgv[i + 1] = runArgv[i];
     initLLVM(&compiler);
 
     ModuleSystem sys;
     sys.modules = listNew();
     sys.order = listNew();
     sys.hadError = 0;
+    sys.stdDir = discoverStdDir(argv[0]);
 
     char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
     moduleLoad(&sys, entryPath);
@@ -1197,5 +1256,8 @@ int main(int argc, char* argv[]) {
 
     free(entryPath);
 
-    return endLLVM(&compiler, argv[0]);
+    int rc = endLLVM(&compiler, argv[0]);
+    if (compiler.runArgv) free(compiler.runArgv);
+    if (runArgv) free(runArgv);
+    return rc;
 }

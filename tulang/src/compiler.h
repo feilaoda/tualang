@@ -81,6 +81,10 @@ typedef struct Compiler{
     // When set, compile to native executable at this path instead of running via JIT.
     const char* outputPath;
 
+    // Script args for JIT execution (passed to generated `main(argc, argv)`).
+    int runArgc;
+    char** runArgv;
+
     // Performance/unsafe modes (must be explicitly enabled via CLI flags).
     int uncheckedIndex;      // when true, array indexing skips null/oob checks (UB on invalid access)
     int stackFixedArrays;    // when true, eligible local T[N] use stack storage

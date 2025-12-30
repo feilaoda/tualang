@@ -453,6 +453,17 @@ static LLVMValueRef getOrCreateTuaArrayPush(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_array_push", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaParseInt(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_parse_int");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+    LLVMTypeRef params[2] = { i8ptr, i32ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_parse_int", fnType);
+}
+
 enum {
     TUA_VAL_NIL = 0,
     TUA_VAL_INT = 1,
@@ -1590,6 +1601,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isLen = tokenEquals(&callee->name, "len");
     int isSomeCtor = tokenEquals(&callee->name, "Some");
     int isNoneCtor = tokenEquals(&callee->name, "None");
+    int isTuaParseInt = tokenEquals(&callee->name, "tua_parse_int");
 
     if (isSomeCtor) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
@@ -1723,6 +1735,32 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         emitDebug("len expects a map/array variable\n");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
+    }
+
+    if (isTuaParseInt) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_parse_int expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef s = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef outPtr = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!s || !outPtr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+        s = castValueToType(compiler, s, i8ptr);
+        outPtr = castValueToType(compiler, outPtr, i32ptr);
+        LLVMValueRef fn = getOrCreateTuaParseInt(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { s, outPtr };
+        LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "ok32");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return ok32;
     }
 
     if (!isPrintln && !isPrint) {

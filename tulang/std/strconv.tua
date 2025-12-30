@@ -1,0 +1,13 @@
+// String <-> number conversions.
+
+object Int {
+    // Parse base-10 int. Returns None() on invalid input or overflow.
+    fn parse(s: string) -> Option<int> {
+        let out: int = 0
+        if tua_parse_int(s, &out) {
+            return Some(out)
+        }
+        return None()
+    }
+}
+

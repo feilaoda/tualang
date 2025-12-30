@@ -1,6 +1,8 @@
 #include "tua_map.h"
 
+#include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -505,4 +507,38 @@ char* tua_value_to_string(tua_value v) {
     if (v.tag == TUA_VAL_NIL) return NULL;
     tua_panic("cannot convert value to string");
     return NULL;
+}
+
+int32_t tua_parse_int(const char* s, int32_t* out) {
+    if (!s || !out) return 0;
+
+    const unsigned char* p = (const unsigned char*)s;
+    while (*p && isspace(*p)) p++;
+    if (!*p) return 0;
+
+    int sign = 1;
+    if (*p == (unsigned char)'+') {
+        p++;
+    } else if (*p == (unsigned char)'-') {
+        sign = -1;
+        p++;
+    }
+
+    if (!*p || !isdigit(*p)) return 0;
+
+    int64_t acc = 0;
+    while (*p && isdigit(*p)) {
+        acc = acc * 10 + (int64_t)(*p - (unsigned char)'0');
+        if (sign > 0 && acc > (int64_t)INT32_MAX) return 0;
+        if (sign < 0 && -acc < (int64_t)INT32_MIN) return 0;
+        p++;
+    }
+
+    while (*p && isspace(*p)) p++;
+    if (*p) return 0;
+
+    int64_t v = sign > 0 ? acc : -acc;
+    if (v < (int64_t)INT32_MIN || v > (int64_t)INT32_MAX) return 0;
+    *out = (int32_t)v;
+    return 1;
 }

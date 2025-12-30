@@ -66,6 +66,8 @@ void initCompiler(Compiler* compiler) {
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
     compiler->outputPath = NULL;
+    compiler->runArgc = 0;
+    compiler->runArgv = NULL;
     compiler->uncheckedIndex = 0;
     compiler->stackFixedArrays = 0;
     compiler->emitLoc = 1;
