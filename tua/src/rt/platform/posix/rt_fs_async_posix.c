@@ -265,16 +265,6 @@ tua_err_t tua_fs_readdir_async(
     void* arg
 );
 
-void tua_fs_dirlist_free(char** names, size_t count) {
-    if (names == NULL) {
-        return;
-    }
-    for (size_t i = 0; i < count; i++) {
-        tua_free(names[i]);
-    }
-    tua_free(names);
-}
-
 typedef struct {
     tua_loop_t* loop;
     char* path;

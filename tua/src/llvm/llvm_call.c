@@ -671,6 +671,74 @@ static LLVMValueRef getOrCreateTuaFsReadfileAllocAsyncCl(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_fs_readfile_alloc_async_cl", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaFsReadfileAlloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_readfile_alloc");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+    LLVMTypeRef params[3] = { i8ptr, i8ptrptr, i32ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_readfile_alloc", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsWritefileStr(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_writefile_str");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { i8ptr, i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_writefile_str", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsStatSimple(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_stat_simple");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+    LLVMTypeRef i64ptr = LLVMPointerType(i64, 0);
+    LLVMTypeRef params[5] = { i8ptr, i32ptr, i64ptr, i64ptr, i32ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 5, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_stat_simple", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsMkdir(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_mkdir");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { i8ptr, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_mkdir", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsRealpathAlloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_realpath_alloc");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef params[2] = { i8ptr, i8ptrptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_realpath_alloc", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsReaddirArr(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_readdir_arr");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[2] = { i8ptr, i32ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_readdir_arr", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaFsWritefileStrAsyncCl(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_writefile_str_async_cl");
     if (existing) return existing;
@@ -1087,6 +1155,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
                 LLVMValueRef func = LLVMGetNamedFunction(compiler->module, q);
                 if (func) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     LLVMValueRef out = emitDirectFuncCall(compiler, func, expr, get->name.line);
                     free(q);
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1127,6 +1196,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                         return NULL;
                     }
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     LLVMValueRef out = emitDirectFuncCall(compiler, func, expr, get->name.line);
                     free(q2);
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1872,6 +1942,13 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isTuaTcpReadAllocAsyncCl = tokenEquals(&callee->name, "tua_tcp_read_alloc_async_cl");
     int isTuaTcpWriteStrAsyncCl = tokenEquals(&callee->name, "tua_tcp_write_str_async_cl");
 
+    int isTuaFsReadfileAlloc = tokenEquals(&callee->name, "tua_fs_readfile_alloc");
+    int isTuaFsWritefileStr = tokenEquals(&callee->name, "tua_fs_writefile_str");
+    int isTuaFsStatSimple = tokenEquals(&callee->name, "tua_fs_stat_simple");
+    int isTuaFsMkdir = tokenEquals(&callee->name, "tua_fs_mkdir");
+    int isTuaFsRealpathAlloc = tokenEquals(&callee->name, "tua_fs_realpath_alloc");
+    int isTuaFsReaddirArr = tokenEquals(&callee->name, "tua_fs_readdir_arr");
+
     int isTuaFsReadfileAllocAsyncCl = tokenEquals(&callee->name, "tua_fs_readfile_alloc_async_cl");
     int isTuaFsWritefileStrAsyncCl = tokenEquals(&callee->name, "tua_fs_writefile_str_async_cl");
     int isTuaFsStatAsyncCl = tokenEquals(&callee->name, "tua_fs_stat_async_cl");
@@ -2261,6 +2338,169 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMBuildCall2(compiler->builder, fnType, fn, &p, 1, "");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaFsReadfileAlloc) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 3) {
+            emitDebug("tua_fs_readfile_alloc expects 3 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef outData = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef outLen = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        if (!path || !outData || !outLen) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+        path = castValueToType(compiler, path, i8ptr);
+        outData = castValueToType(compiler, outData, i8ptrptr);
+        outLen = castValueToType(compiler, outLen, i32ptr);
+        LLVMValueRef fn = getOrCreateTuaFsReadfileAlloc(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args3[3] = { path, outData, outLen };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsWritefileStr) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_fs_writefile_str expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef data = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!path || !data) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        path = castValueToType(compiler, path, i8ptr);
+        data = castValueToType(compiler, data, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaFsWritefileStr(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { path, data };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsStatSimple) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 5) {
+            emitDebug("tua_fs_stat_simple expects 5 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef outKind = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef outSize = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef outMtime = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        LLVMValueRef outMode = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->next->data);
+        if (!path || !outKind || !outSize || !outMtime || !outMode) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+        LLVMTypeRef i64ptr = LLVMPointerType(i64, 0);
+        path = castValueToType(compiler, path, i8ptr);
+        outKind = castValueToType(compiler, outKind, i32ptr);
+        outSize = castValueToType(compiler, outSize, i64ptr);
+        outMtime = castValueToType(compiler, outMtime, i64ptr);
+        outMode = castValueToType(compiler, outMode, i32ptr);
+        LLVMValueRef fn = getOrCreateTuaFsStatSimple(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args5[5] = { path, outKind, outSize, outMtime, outMode };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsMkdir) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_fs_mkdir expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef mode = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!path || !mode) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        path = castValueToType(compiler, path, i8ptr);
+        mode = castValueToType(compiler, mode, i32);
+        LLVMValueRef fn = getOrCreateTuaFsMkdir(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { path, mode };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsRealpathAlloc) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_fs_realpath_alloc expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef outPath = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!path || !outPath) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        path = castValueToType(compiler, path, i8ptr);
+        outPath = castValueToType(compiler, outPath, i8ptrptr);
+        LLVMValueRef fn = getOrCreateTuaFsRealpathAlloc(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { path, outPath };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsReaddirArr) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_fs_readdir_arr expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef outErr = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!path || !outErr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+        path = castValueToType(compiler, path, i8ptr);
+        outErr = castValueToType(compiler, outErr, i32ptr);
+        LLVMValueRef fn = getOrCreateTuaFsReaddirArr(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { path, outErr };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "arr");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
     }
 
     if (isTuaTcpAcceptStartCl) {

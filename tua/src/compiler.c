@@ -1396,12 +1396,12 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isTypedMap = 0;
             variable->mapKeyType = NULL;
             variable->mapValueType = NULL;
-            variable->isArray = 0;
+            variable->isArray = (targetType == compilerGetArrayType(compiler));
             variable->arrayElemType = NULL;
             variable->arrayFixedLen = -1;
             variable->isStackArray = 0;
             variable->stackArrayData = NULL;
-            variable->isMap = 0;
+            variable->isMap = (targetType == compilerGetMapType(compiler));
             listAppend(compiler->current->variables, variable);
         }
     } else {

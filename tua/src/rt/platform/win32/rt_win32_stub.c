@@ -1,8 +1,73 @@
 #ifdef _WIN32
 
+#include "rt/rt_fs.h"
 #include "rt/rt_loop.h"
 #include "rt/rt_net.h"
 #include "rt/rt_thread.h"
+
+#include "tua_array.h"
+
+tua_err_t tua_fs_readfile_alloc(const char* path_utf8, char** out_data, int32_t* out_len) {
+    (void)path_utf8;
+    if (out_data) *out_data = NULL;
+    if (out_len) *out_len = 0;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_fs_writefile_str(const char* path_utf8, const char* data_utf8) {
+    (void)path_utf8;
+    (void)data_utf8;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_fs_stat_simple(
+    const char* path_utf8,
+    int32_t* out_kind,
+    int64_t* out_size,
+    int64_t* out_mtime_ns,
+    int32_t* out_mode
+) {
+    (void)path_utf8;
+    if (out_kind) *out_kind = 0;
+    if (out_size) *out_size = 0;
+    if (out_mtime_ns) *out_mtime_ns = 0;
+    if (out_mode) *out_mode = 0;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_fs_mkdir(const char* path_utf8, int32_t mode) {
+    (void)path_utf8;
+    (void)mode;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_fs_realpath_alloc(const char* path_utf8, char** out_path_utf8) {
+    (void)path_utf8;
+    if (out_path_utf8) *out_path_utf8 = NULL;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_fs_readdir(const char* path_utf8, char*** out_names, size_t* out_count) {
+    (void)path_utf8;
+    if (out_names) *out_names = NULL;
+    if (out_count) *out_count = 0;
+    return TUA_E_NOTSUP;
+}
+
+void tua_fs_dirlist_free(char** names, size_t count) {
+    (void)names;
+    (void)count;
+}
+
+tua_array* tua_fs_readdir_arr(const char* path_utf8, int32_t* out_err) {
+    (void)path_utf8;
+    if (out_err) *out_err = TUA_E_NOTSUP;
+    return NULL;
+}
+
+void tua_fs_string_array_free(tua_array* arr) {
+    (void)arr;
+}
 
 tua_err_t tua_thread_create(tua_thread_t** out, tua_thread_fn fn, void* arg) {
     (void)out;

@@ -108,8 +108,8 @@
 - [x] `rt_time`：monotonic/realtime/sleep（macOS 用 mach/gettimeofday，其他用 clock_gettime）
 
 #### 10.4 文件系统（同步，R1-fs-sync）
-- [ ] `rt_fs`：open/read/write/close/stat/mkdir/readdir/realpath（POSIX 后端）
-- [ ] `std.fs`（Tua）：Path/Dir/File 的高层封装，只调用 `rt_fs_*`
+- [x] `rt_fs`：readFile/writeFile/stat/mkdir/readdir/realpath（POSIX 后端，第一版）
+- [x] `std.fs`（Tua）：同步文件系统 API（第一版，readFile/writeFile/stat/mkdir/readdir/realpath）
 
 #### 10.5 事件循环（R2-loop）
 - [x] `rt_loop`：基础 loop API（create/run/stop）

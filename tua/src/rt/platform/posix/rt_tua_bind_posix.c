@@ -6,6 +6,7 @@
 #include "rt/rt_cancel.h"
 #include "rt/rt_err.h"
 #include "rt/rt_fs_async.h"
+#include "rt/rt_fs.h"
 #include "rt/rt_loop.h"
 #include "rt/rt_net.h"
 #include "rt/rt_workqueue.h"
@@ -400,6 +401,49 @@ void tua_fs_string_array_free(tua_array* arr) {
         }
     }
     tua_array_free(arr);
+}
+
+// Synchronous helper: returns a `tua_array*` of `char*` and stores the error in `out_err`.
+tua_array* tua_fs_readdir_arr(const char* path_utf8, int32_t* out_err) {
+    if (out_err == NULL) {
+        return NULL;
+    }
+    *out_err = (int32_t)TUA_E_INVALID;
+    if (path_utf8 == NULL) {
+        return NULL;
+    }
+
+    char** names = NULL;
+    size_t count = 0;
+    tua_err_t err = tua_fs_readdir(path_utf8, &names, &count);
+    if (err != TUA_OK) {
+        if (names) tua_fs_dirlist_free(names, count);
+        *out_err = (int32_t)err;
+        return NULL;
+    }
+
+    tua_array* arr = tua_array_new(0, (int64_t)count, (int64_t)sizeof(char*), -1);
+    if (arr == NULL) {
+        tua_fs_dirlist_free(names, count);
+        *out_err = (int32_t)TUA_E_NOMEM;
+        return NULL;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        char* s = names[i];
+        if (s == NULL) continue;
+        size_t sl = strlen(s);
+        char* copy = (char*)tua_malloc(sl + 1);
+        if (copy == NULL) {
+            break;
+        }
+        memcpy(copy, s, sl + 1);
+        (void)tua_array_push(arr, &copy);
+    }
+
+    tua_fs_dirlist_free(names, count);
+    *out_err = (int32_t)TUA_OK;
+    return arr;
 }
 
 #endif

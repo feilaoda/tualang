@@ -32,6 +32,7 @@ RT_SRCS = \
 	src/rt/rt_alloc.c \
 	src/rt/rt_cancel.c \
 	src/rt/rt_err.c \
+	src/rt/platform/posix/rt_fs_posix.c \
 	src/rt/rt_workqueue.c \
 	src/rt/rt_time.c \
 	src/rt/platform/posix/rt_thread_posix.c \

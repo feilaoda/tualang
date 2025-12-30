@@ -7,6 +7,7 @@
 #include "rt/rt_alloc.h"
 #include "rt/rt_cancel.h"
 #include "rt/rt_err.h"
+#include "rt/rt_fs.h"
 #include "rt/rt_handle.h"
 #include "rt/rt_platform.h"
 #include "rt/rt_fs_async.h"
