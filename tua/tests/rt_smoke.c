@@ -64,7 +64,7 @@ int main(void) {
     (void)set_nonblocking(ctx.rfd);
     (void)set_nonblocking(ctx.wfd);
 
-    err = tua_io_start(loop, NULL, ctx.rfd, TUA_IO_READ, on_read, &ctx);
+    err = tua_io_start_handle(loop, NULL, tua_handle_from_fd(ctx.rfd), TUA_IO_READ, on_read, &ctx);
     if (err != TUA_OK) {
         fprintf(stderr, "tua_io_start failed: %s\n", tua_err_name(err));
         close(ctx.rfd);

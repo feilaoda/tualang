@@ -33,7 +33,8 @@ struct tua_timer {
 
 struct tua_io {
     struct tua_loop* loop;
-    tua_fd_t fd;
+    tua_handle_t handle;
+    int fd;
     int events;
     tua_io_fn fn;
     void* arg;
@@ -359,10 +360,10 @@ static void tua_loop_kevent_delete_io(tua_loop_t* loop, tua_io_t* io) {
     }
 }
 
-tua_err_t tua_io_start(
+tua_err_t tua_io_start_handle(
     tua_loop_t* loop,
     tua_io_t** out,
-    tua_fd_t fd,
+    tua_handle_t handle,
     int events,
     tua_io_fn fn,
     void* arg
@@ -373,12 +374,17 @@ tua_err_t tua_io_start(
     if ((events & (TUA_IO_READ | TUA_IO_WRITE)) == 0) {
         return TUA_E_INVALID;
     }
+    int fd = -1;
+    if (!tua_handle_to_fd(handle, &fd) || fd < 0) {
+        return TUA_E_INVALID;
+    }
 
     tua_io_t* io = (tua_io_t*)tua_malloc(sizeof(*io));
     if (io == NULL) {
         return TUA_E_NOMEM;
     }
     io->loop = loop;
+    io->handle = handle;
     io->fd = fd;
     io->events = events;
     io->fn = fn;
@@ -413,6 +419,17 @@ tua_err_t tua_io_start(
         *out = io;
     }
     return TUA_OK;
+}
+
+tua_err_t tua_io_start(
+    tua_loop_t* loop,
+    tua_io_t** out,
+    tua_fd_t fd,
+    int events,
+    tua_io_fn fn,
+    void* arg
+) {
+    return tua_io_start_handle(loop, out, tua_handle_from_fd(fd), events, fn, arg);
 }
 
 void tua_io_cancel(tua_io_t* io) {

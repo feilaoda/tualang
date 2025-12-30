@@ -28,6 +28,18 @@ void tua_loop_stop(tua_loop_t* loop);
 
 tua_err_t tua_loop_post(tua_loop_t* loop, tua_task_fn fn, void* arg);
 
+// Preferred API: register an OS handle with the event loop.
+tua_err_t tua_io_start_handle(
+    tua_loop_t* loop,
+    tua_io_t** out,
+    tua_handle_t handle,
+    int events,
+    tua_io_fn fn,
+    void* arg
+);
+
+// Compatibility API (POSIX-only semantics): register a file descriptor.
+// Prefer `tua_io_start_handle` to keep the API portable to Windows/IOCP.
 tua_err_t tua_io_start(
     tua_loop_t* loop,
     tua_io_t** out,

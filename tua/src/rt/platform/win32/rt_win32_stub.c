@@ -154,6 +154,23 @@ tua_err_t tua_loop_post(tua_loop_t* loop, tua_task_fn fn, void* arg) {
     return TUA_E_NOTSUP;
 }
 
+tua_err_t tua_io_start_handle(
+    tua_loop_t* loop,
+    tua_io_t** out,
+    tua_handle_t handle,
+    int events,
+    tua_io_fn fn,
+    void* arg
+) {
+    (void)loop;
+    (void)out;
+    (void)handle;
+    (void)events;
+    (void)fn;
+    (void)arg;
+    return TUA_E_NOTSUP;
+}
+
 tua_err_t tua_io_start(
     tua_loop_t* loop,
     tua_io_t** out,
@@ -162,13 +179,7 @@ tua_err_t tua_io_start(
     tua_io_fn fn,
     void* arg
 ) {
-    (void)loop;
-    (void)out;
-    (void)fd;
-    (void)events;
-    (void)fn;
-    (void)arg;
-    return TUA_E_NOTSUP;
+    return tua_io_start_handle(loop, out, tua_handle_from_fd(fd), events, fn, arg);
 }
 
 void tua_io_cancel(tua_io_t* io) {
@@ -194,6 +205,16 @@ tua_err_t tua_timer_start(
 
 void tua_timer_cancel(tua_timer_t* timer) {
     (void)timer;
+}
+
+tua_handle_t tua_tcp_socket_handle(const tua_tcp_socket_t* sock) {
+    (void)sock;
+    return tua_handle_invalid();
+}
+
+tua_handle_t tua_tcp_listener_handle(const tua_tcp_listener_t* lst) {
+    (void)lst;
+    return tua_handle_invalid();
 }
 
 tua_fd_t tua_tcp_socket_fd(const tua_tcp_socket_t* sock) {

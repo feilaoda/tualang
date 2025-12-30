@@ -97,6 +97,9 @@
 - [x] 新增 `src/rt/` 目录结构：`rt.h` + `platform/posix` + `platform/win32`（先占位）
 - [x] 统一错误码：`TUA_E_*`（映射 errno；Windows 后续映射 GetLastError/WSAGetLastError）
 - [ ] 统一句柄模型：文件/目录/Socket/线程句柄类型（避免上层直接依赖 fd/HANDLE）
+  - [x] 基础：引入 `tua_handle_t` + `tua_io_start_handle`（loop watcher 先完成）
+  - [x] 网络：补齐 `tua_tcp_socket_handle`/`tua_tcp_listener_handle`（先提供 accessor，后续再移除 fd 暴露）
+  - [ ] 兼容期收敛：std/rt 与测试不再依赖 fd API（逐步废弃 `tua_io_start`/`tua_tcp_socket_fd`）
 - [x] 路径与编码约束：上层一律 UTF-8（已写约束）
 - [ ] Windows 路径：UTF-16 转换 + 测试用例
 - [x] 取消模型：`tua_cancel_t`（为 async/协程预留）

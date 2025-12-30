@@ -19,6 +19,11 @@ typedef void (*tua_tcp_connect_cb)(tua_err_t err, tua_tcp_socket_t* sock, void* 
 typedef void (*tua_tcp_accept_cb)(tua_err_t err, tua_tcp_socket_t* sock, void* arg);
 typedef void (*tua_tcp_io_cb)(tua_err_t err, size_t n, void* arg);
 
+tua_handle_t tua_tcp_socket_handle(const tua_tcp_socket_t* sock);
+tua_handle_t tua_tcp_listener_handle(const tua_tcp_listener_t* lst);
+
+// Compatibility API (POSIX-only semantics): expose an underlying fd.
+// Prefer `tua_tcp_socket_handle` to keep the API portable to Windows/IOCP.
 tua_fd_t tua_tcp_socket_fd(const tua_tcp_socket_t* sock);
 void tua_tcp_socket_close(tua_tcp_socket_t* sock);
 

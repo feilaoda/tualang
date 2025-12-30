@@ -36,8 +36,27 @@ struct tua_tcp_accept {
     int active;
 };
 
+tua_handle_t tua_tcp_socket_handle(const tua_tcp_socket_t* sock) {
+    if (sock == NULL || (int)sock->fd < 0) {
+        return tua_handle_invalid();
+    }
+    return tua_handle_from_fd(sock->fd);
+}
+
+tua_handle_t tua_tcp_listener_handle(const tua_tcp_listener_t* lst) {
+    if (lst == NULL || (int)lst->fd < 0) {
+        return tua_handle_invalid();
+    }
+    return tua_handle_from_fd(lst->fd);
+}
+
 tua_fd_t tua_tcp_socket_fd(const tua_tcp_socket_t* sock) {
-    return sock == NULL ? (tua_fd_t)-1 : sock->fd;
+    tua_handle_t h = tua_tcp_socket_handle(sock);
+    int fd = -1;
+    if (!tua_handle_to_fd(h, &fd)) {
+        return (tua_fd_t)-1;
+    }
+    return (tua_fd_t)fd;
 }
 
 void tua_tcp_socket_close(tua_tcp_socket_t* sock) {
@@ -223,7 +242,7 @@ static void tua_connect_try_next(void* p) {
         }
 
         at->fd = fd;
-        tua_err_t err = tua_io_start(st->loop, &at->io, (tua_fd_t)fd, TUA_IO_WRITE, tua_connect_on_writable, at);
+        tua_err_t err = tua_io_start_handle(st->loop, &at->io, tua_handle_from_fd(fd), TUA_IO_WRITE, tua_connect_on_writable, at);
         if (err != TUA_OK) {
             tua_connect_attempt_cleanup(at);
             at->cur = at->cur->ai_next;
@@ -474,7 +493,7 @@ tua_err_t tua_tcp_read_async(
     op->timer = NULL;
     op->done = 0;
 
-    tua_err_t err = tua_io_start(loop, &op->io, sock->fd, TUA_IO_READ, tua_read_on_ready, op);
+    tua_err_t err = tua_io_start_handle(loop, &op->io, tua_tcp_socket_handle(sock), TUA_IO_READ, tua_read_on_ready, op);
     if (err != TUA_OK) {
         tua_free(op);
         return err;
@@ -609,7 +628,7 @@ tua_err_t tua_tcp_write_async(
     op->timer = NULL;
     op->done = 0;
 
-    tua_err_t err = tua_io_start(loop, &op->io, sock->fd, TUA_IO_WRITE, tua_write_on_ready, op);
+    tua_err_t err = tua_io_start_handle(loop, &op->io, tua_tcp_socket_handle(sock), TUA_IO_WRITE, tua_write_on_ready, op);
     if (err != TUA_OK) {
         tua_free(op);
         return err;
@@ -779,7 +798,7 @@ tua_err_t tua_tcp_accept_start(
     ac->io = NULL;
     ac->active = 1;
 
-    tua_err_t err = tua_io_start(loop, &ac->io, lst->fd, TUA_IO_READ, tua_accept_on_ready, ac);
+    tua_err_t err = tua_io_start_handle(loop, &ac->io, tua_tcp_listener_handle(lst), TUA_IO_READ, tua_accept_on_ready, ac);
     if (err != TUA_OK) {
         tua_free(ac);
         return err;
