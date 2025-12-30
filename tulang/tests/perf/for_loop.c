@@ -19,6 +19,7 @@ int loop(int u, int r) {
 }
 int main(int argc, char **argv) {
     int u = atoi(argv[1]);
-    printf("%d\n", loop(u, 1));
+    int r = atoi(argv[2]);
+    printf("%d\n", loop(u, r));
     return 0;
 }

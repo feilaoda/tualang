@@ -8,6 +8,14 @@ static int tokenEquals(const Token* token, const char* s) {
     return token->length == len && memcmp(token->start, s, (size_t)len) == 0;
 }
 
+static char* tokenToCString(const Token* token) {
+    if (!token) return NULL;
+    char* s = malloc((size_t)token->length + 1);
+    memcpy(s, token->start, (size_t)token->length);
+    s[token->length] = '\0';
+    return s;
+}
+
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
     const int sepLen = 2;
     int len = leftLen + sepLen + right->length;
@@ -129,6 +137,107 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     }
 }
 
+static LLVMTypeRef inferReturnTypeFromCall(Compiler* compiler, CallExpr* call) {
+    if (!compiler || !call || !call->callee) return NULL;
+
+    LLVMValueRef func = NULL;
+
+    if (call->callee->type == EXPR_VARIABLE) {
+        VariableExpr* callee = (VariableExpr*)call->callee;
+
+        // Prefer module-local qualified name.
+        if (compiler->currentModulePrefix) {
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+            if (q) {
+                func = LLVMGetNamedFunction(compiler->module, q);
+                free(q);
+            }
+        }
+
+        // Imported alias.
+        if (!func) {
+            SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+            if (a && a->kind == ALIAS_FUNC) {
+                func = LLVMGetNamedFunction(compiler->module, a->qualified);
+            }
+        }
+
+        // Plain name.
+        if (!func) {
+            char* name = tokenToCString(&callee->name);
+            if (name) {
+                func = LLVMGetNamedFunction(compiler->module, name);
+                free(name);
+            }
+        }
+    } else if (call->callee->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)call->callee;
+        if (!get->object) return NULL;
+
+        // Namespace-qualified: `ns.Name(...)` / `ns.Obj.method(...)`
+        if (get->object->type == EXPR_VARIABLE) {
+            VariableExpr* recv = (VariableExpr*)get->object;
+            SymbolAlias* a = compilerFindAlias(compiler, recv->name.start, recv->name.length);
+
+            if (a && a->kind == ALIAS_MODULE) {
+                int ql = 0;
+                char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                if (q) {
+                    func = LLVMGetNamedFunction(compiler->module, q);
+                    free(q);
+                }
+            } else {
+                int mangledLen = 0;
+                char* mangled = NULL;
+
+                // Imported object/enum/struct static method: `Obj.method(...)`
+                if (a && (a->kind == ALIAS_OBJECT || a->kind == ALIAS_ENUM || a->kind == ALIAS_STRUCT)) {
+                    mangled = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &mangledLen);
+                } else if (compiler->currentModulePrefix) {
+                    int ql = 0;
+                    char* q = compilerQualifyToken(compiler, &recv->name, &ql);
+                    if (q) {
+                        mangled = mangleRawAndToken(q, ql, &get->name, &mangledLen);
+                        free(q);
+                    }
+                }
+                if (!mangled) {
+                    mangled = mangleRawAndToken(recv->name.start, recv->name.length, &get->name, &mangledLen);
+                }
+
+                func = mangled ? LLVMGetNamedFunction(compiler->module, mangled) : NULL;
+                if (mangled) free(mangled);
+            }
+        } else if (get->object->type == EXPR_GET) {
+            // Namespace-qualified static method: `ns.Type.method(...)`
+            GetExpr* inner = (GetExpr*)get->object;
+            if (inner->object && inner->object->type == EXPR_VARIABLE) {
+                VariableExpr* ns = (VariableExpr*)inner->object;
+                SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                if (a && a->kind == ALIAS_MODULE) {
+                    int ql1 = 0;
+                    char* q1 = mangleRawAndToken(a->qualified, a->qualifiedLen, &inner->name, &ql1);
+                    int ql2 = 0;
+                    char* q2 = q1 ? mangleRawAndToken(q1, ql1, &get->name, &ql2) : NULL;
+                    if (q1) free(q1);
+                    if (q2) {
+                        func = LLVMGetNamedFunction(compiler->module, q2);
+                        free(q2);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!func) return NULL;
+    LLVMTypeRef fnType = LLVMGlobalGetValueType(func);
+    if (!fnType || LLVMGetTypeKind(fnType) != LLVMFunctionTypeKind) return NULL;
+    LLVMTypeRef ret = LLVMGetReturnType(fnType);
+    if (!ret || LLVMGetTypeKind(ret) == LLVMVoidTypeKind) return NULL;
+    return ret;
+}
+
 static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
     if (!initializer) return LLVMInt32TypeInContext(compiler->context);
 
@@ -174,6 +283,10 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
     }
 
     if (initializer->type == EXPR_CALL) {
+        // Best-effort: infer from resolved callee function return type (e.g. `Int.parse(...) -> Option<int>`).
+        LLVMTypeRef inferred = inferReturnTypeFromCall(compiler, (CallExpr*)initializer);
+        if (inferred) return inferred;
+
         CallExpr* call = (CallExpr*)initializer;
         if (call->callee && call->callee->type == EXPR_GET) {
             GetExpr* get = (GetExpr*)call->callee;

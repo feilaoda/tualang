@@ -16,5 +16,5 @@ fn loop(u:int, r:int) int {
 
 let u:int = Int.parse(ARGV[1]) ?? 10
 let r:int = Int.parse(ARGV[2]) ?? 10
-println(loop(u,r))
+println(loop(u,10))
 

@@ -408,11 +408,15 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
     }
 
     if (b->operator.type == TOKEN_COALESCE) {
+        // Keep permissive when the LHS type is unknown (AT_ANY). This avoids false positives
+        // for user-defined / imported functions that return Option<T> but aren't modeled yet.
         if (!atIsOption(l)) {
-            analyzeErrorAt(compiler, modulePath, b->operator.line, "left operand of \"??\" must be Option<T>");
+            if (!atIsAny(l)) {
+                analyzeErrorAt(compiler, modulePath, b->operator.line, "left operand of \"??\" must be Option<T>");
+            }
             return atNew(AT_ANY);
         }
-        if (!atAssignable(l->inner, r)) {
+        if (l->inner && !atIsAny(l->inner) && !atAssignable(l->inner, r)) {
             analyzeErrorAt(compiler, modulePath, b->operator.line, "type mismatch for \"??\" default value");
         }
         return l->inner ? l->inner : atNew(AT_ANY);
@@ -770,10 +774,16 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
 
 int analyzeModule(Compiler* compiler, List* statements, List* aliases, const char* modulePath) {
     (void)aliases;
+    const char* savedFile = compiler ? compiler->currentFilePath : NULL;
+    if (compiler) compiler->currentFilePath = modulePath;
     Scope* scope = scopePush(NULL);
     for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
         analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath);
-        if (compiler && compiler->hadError) return 0;
+        if (compiler && compiler->hadError) {
+            if (compiler) compiler->currentFilePath = savedFile;
+            return 0;
+        }
     }
+    if (compiler) compiler->currentFilePath = savedFile;
     return 1;
 }
