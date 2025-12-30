@@ -1,11 +1,11 @@
 import "std/strconv"
 
-fn loop(u:int, r:int) int {
+fn loop(u:int, r:int, t:int) int {
     let a:int[100000] = {1}
     let res = 0
-    for let i=0; i<100000; i++ {
+    for let i=0; i<t; i++ {
       let acc = a[i]
-      for let j=0; j<100000; j++ {
+      for let j=0; j<t; j++ {
           acc = acc + j / u
       }
       a[i] = acc + r
@@ -16,5 +16,6 @@ fn loop(u:int, r:int) int {
 
 let u:int = Int.parse(ARGV[1]) ?? 10
 let r:int = Int.parse(ARGV[2]) ?? 10
-println(loop(u,10))
+let times = Int.parse(ARGV[3]) ?? 100
+println(loop(u,10,times))
 
