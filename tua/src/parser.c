@@ -1586,6 +1586,21 @@ static Type* parseType(Parser* parser) {
         type->arrayLen = 0;
         base = type;
     } else if (match(parser, TOKEN_IDENTIFIER)) {
+        // Builtin raw pointer type: `ptr`
+        if (parser->previous.length == 3 && memcmp(parser->previous.start, "ptr", 3) == 0) {
+            Type* type = malloc(sizeof(Type));
+            type->kind = TYPE_PTR;
+            type->name = (Token){0};
+            type->inner = NULL;
+            type->typeArgs = NULL;
+            type->paramTypes = NULL;
+            type->returnTypes = NULL;
+            type->arrayLen = 0;
+            if (check(parser, TOKEN_LT)) {
+                errorAtCurrent(parser, "Type 'ptr' does not accept generic arguments");
+            }
+            base = type;
+        } else {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_NAMED;
         type->name = parser->previous;
@@ -1608,6 +1623,7 @@ static Type* parseType(Parser* parser) {
             type->typeArgs = args;
         }
         base = type;
+        }
     } else {
         printError(parser, "Expect type name");
         return NULL;

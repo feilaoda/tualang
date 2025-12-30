@@ -9,8 +9,10 @@
 #include "rt/rt_workqueue.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 typedef struct {
@@ -236,6 +238,250 @@ tua_err_t tua_fs_writefile_async(
     tua_err_t err = tua_workqueue_post(wq, tua_writefile_worker, job);
     if (err != TUA_OK) {
         tua_free(copy);
+        tua_free(path);
+        tua_free(job);
+        return err;
+    }
+    return TUA_OK;
+}
+
+static uint64_t tua_timespec_to_ns(struct timespec ts) {
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+tua_err_t tua_fs_stat_async(
+    tua_loop_t* loop,
+    tua_workqueue_t* wq,
+    const char* path_utf8,
+    tua_fs_stat_cb cb,
+    void* arg
+);
+
+tua_err_t tua_fs_readdir_async(
+    tua_loop_t* loop,
+    tua_workqueue_t* wq,
+    const char* path_utf8,
+    tua_fs_readdir_cb cb,
+    void* arg
+);
+
+void tua_fs_dirlist_free(char** names, size_t count) {
+    if (names == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        tua_free(names[i]);
+    }
+    tua_free(names);
+}
+
+typedef struct {
+    tua_loop_t* loop;
+    char* path;
+    tua_fs_stat_cb cb;
+    void* arg;
+    tua_err_t err;
+    tua_fs_stat_t st;
+} tua_stat_job_t;
+
+static void tua_stat_done_task(void* p) {
+    tua_stat_job_t* job = (tua_stat_job_t*)p;
+    job->cb(job->err, job->st, job->arg);
+    tua_free(job->path);
+    tua_free(job);
+}
+
+static void tua_stat_worker(void* p) {
+    tua_stat_job_t* job = (tua_stat_job_t*)p;
+    memset(&job->st, 0, sizeof(job->st));
+    job->st.kind = TUA_FS_UNKNOWN;
+
+    struct stat st;
+    if (stat(job->path, &st) != 0) {
+        job->err = tua_err_from_errno(errno);
+    } else {
+        job->err = TUA_OK;
+        job->st.size = (uint64_t)st.st_size;
+        job->st.mode = (uint32_t)st.st_mode;
+#if defined(__APPLE__)
+        job->st.mtime_ns = tua_timespec_to_ns(st.st_mtimespec);
+#else
+        job->st.mtime_ns = tua_timespec_to_ns(st.st_mtim);
+#endif
+        if (S_ISREG(st.st_mode)) {
+            job->st.kind = TUA_FS_FILE;
+        } else if (S_ISDIR(st.st_mode)) {
+            job->st.kind = TUA_FS_DIR;
+        } else if (S_ISLNK(st.st_mode)) {
+            job->st.kind = TUA_FS_SYMLINK;
+        } else {
+            job->st.kind = TUA_FS_UNKNOWN;
+        }
+    }
+
+    tua_err_t perr = tua_loop_post(job->loop, tua_stat_done_task, job);
+    if (perr != TUA_OK) {
+        job->cb(job->err, job->st, job->arg);
+        tua_free(job->path);
+        tua_free(job);
+    }
+}
+
+tua_err_t tua_fs_stat_async(
+    tua_loop_t* loop,
+    tua_workqueue_t* wq,
+    const char* path_utf8,
+    tua_fs_stat_cb cb,
+    void* arg
+) {
+    if (loop == NULL || wq == NULL || path_utf8 == NULL || cb == NULL) {
+        return TUA_E_INVALID;
+    }
+    size_t plen = strlen(path_utf8);
+    char* path = (char*)tua_malloc(plen + 1);
+    if (path == NULL) {
+        return TUA_E_NOMEM;
+    }
+    memcpy(path, path_utf8, plen + 1);
+
+    tua_stat_job_t* job = (tua_stat_job_t*)tua_malloc(sizeof(*job));
+    if (job == NULL) {
+        tua_free(path);
+        return TUA_E_NOMEM;
+    }
+    job->loop = loop;
+    job->path = path;
+    job->cb = cb;
+    job->arg = arg;
+    job->err = TUA_OK;
+    memset(&job->st, 0, sizeof(job->st));
+
+    tua_err_t err = tua_workqueue_post(wq, tua_stat_worker, job);
+    if (err != TUA_OK) {
+        tua_free(path);
+        tua_free(job);
+        return err;
+    }
+    return TUA_OK;
+}
+
+typedef struct {
+    tua_loop_t* loop;
+    char* path;
+    tua_fs_readdir_cb cb;
+    void* arg;
+    tua_err_t err;
+    char** names;
+    size_t count;
+} tua_readdir_job_t;
+
+static void tua_readdir_done_task(void* p) {
+    tua_readdir_job_t* job = (tua_readdir_job_t*)p;
+    job->cb(job->err, job->names, job->count, job->arg);
+    tua_free(job->path);
+    tua_free(job);
+}
+
+static int tua_is_dot_or_dotdot(const char* name) {
+    return (name[0] == '.' && name[1] == '\0') || (name[0] == '.' && name[1] == '.' && name[2] == '\0');
+}
+
+static void tua_readdir_worker(void* p) {
+    tua_readdir_job_t* job = (tua_readdir_job_t*)p;
+    job->names = NULL;
+    job->count = 0;
+
+    DIR* d = opendir(job->path);
+    if (d == NULL) {
+        job->err = tua_err_from_errno(errno);
+    } else {
+        job->err = TUA_OK;
+        size_t cap = 0;
+        for (;;) {
+            errno = 0;
+            struct dirent* ent = readdir(d);
+            if (ent == NULL) {
+                if (errno != 0) {
+                    job->err = tua_err_from_errno(errno);
+                }
+                break;
+            }
+            if (tua_is_dot_or_dotdot(ent->d_name)) {
+                continue;
+            }
+            size_t nlen = strlen(ent->d_name);
+            char* copy = (char*)tua_malloc(nlen + 1);
+            if (copy == NULL) {
+                job->err = TUA_E_NOMEM;
+                break;
+            }
+            memcpy(copy, ent->d_name, nlen + 1);
+
+            if (job->count == cap) {
+                size_t newcap = cap == 0 ? 32 : cap * 2;
+                char** nn = (char**)tua_realloc(job->names, newcap * sizeof(*nn));
+                if (nn == NULL) {
+                    tua_free(copy);
+                    job->err = TUA_E_NOMEM;
+                    break;
+                }
+                job->names = nn;
+                cap = newcap;
+            }
+            job->names[job->count++] = copy;
+        }
+        closedir(d);
+
+        if (job->err != TUA_OK) {
+            tua_fs_dirlist_free(job->names, job->count);
+            job->names = NULL;
+            job->count = 0;
+        }
+    }
+
+    tua_err_t perr = tua_loop_post(job->loop, tua_readdir_done_task, job);
+    if (perr != TUA_OK) {
+        job->cb(job->err, job->names, job->count, job->arg);
+        if (job->names != NULL) {
+            tua_fs_dirlist_free(job->names, job->count);
+        }
+        tua_free(job->path);
+        tua_free(job);
+    }
+}
+
+tua_err_t tua_fs_readdir_async(
+    tua_loop_t* loop,
+    tua_workqueue_t* wq,
+    const char* path_utf8,
+    tua_fs_readdir_cb cb,
+    void* arg
+) {
+    if (loop == NULL || wq == NULL || path_utf8 == NULL || cb == NULL) {
+        return TUA_E_INVALID;
+    }
+    size_t plen = strlen(path_utf8);
+    char* path = (char*)tua_malloc(plen + 1);
+    if (path == NULL) {
+        return TUA_E_NOMEM;
+    }
+    memcpy(path, path_utf8, plen + 1);
+
+    tua_readdir_job_t* job = (tua_readdir_job_t*)tua_malloc(sizeof(*job));
+    if (job == NULL) {
+        tua_free(path);
+        return TUA_E_NOMEM;
+    }
+    job->loop = loop;
+    job->path = path;
+    job->cb = cb;
+    job->arg = arg;
+    job->err = TUA_OK;
+    job->names = NULL;
+    job->count = 0;
+
+    tua_err_t err = tua_workqueue_post(wq, tua_readdir_worker, job);
+    if (err != TUA_OK) {
         tua_free(path);
         tua_free(job);
         return err;

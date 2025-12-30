@@ -96,6 +96,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_PTR:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);

@@ -131,11 +131,13 @@ static AType* atFromAstType(Type* t) {
         case TYPE_FLOAT: return atNew(AT_FLOAT);
         case TYPE_BOOL: return atNew(AT_BOOL);
         case TYPE_STRING: return atNew(AT_STRING);
+        case TYPE_PTR: return atNamed("ptr", 3);
         case TYPE_VOID: return atNew(AT_VOID);
         case TYPE_ANY: return atNew(AT_ANY);
         case TYPE_REF: {
             // Treat references as named/pointer-like for now; keep it permissive.
-            if (t->inner && t->inner->kind == TYPE_NAMED) {
+            if (t->inner && (t->inner->kind == TYPE_NAMED || t->inner->kind == TYPE_PTR)) {
+                if (t->inner->kind == TYPE_PTR) return atNamed("ptr", 3);
                 return atNamed(t->inner->name.start, t->inner->name.length);
             }
             return atNew(AT_ANY);

@@ -17,6 +17,13 @@ static char* tokenToCString(const Token* token) {
     return s;
 }
 
+static const char* callInstNameForFnType(LLVMTypeRef fnType) {
+    if (!fnType) return "call";
+    LLVMTypeRef ret = LLVMGetReturnType(fnType);
+    if (ret && LLVMGetTypeKind(ret) == LLVMVoidTypeKind) return "";
+    return "call";
+}
+
 static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
     if (!value) return NULL;
     LLVMTypeRef srcType = LLVMTypeOf(value);
@@ -174,7 +181,11 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
@@ -297,7 +308,7 @@ static LLVMValueRef emitDirectFuncCall(Compiler* compiler, LLVMValueRef func, Ca
         }
     }
 
-    LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
+    LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
     if (paramTypes) free(paramTypes);
     if (args) free(args);
     return collapseMultiReturnIfNeeded(compiler, func, call);
@@ -462,6 +473,244 @@ static LLVMValueRef getOrCreateTuaParseInt(Compiler* compiler) {
     LLVMTypeRef params[2] = { i8ptr, i32ptr };
     LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
     return LLVMAddFunction(compiler->module, "tua_parse_int", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_free");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_free", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaDeadlineAfterMs(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_deadline_after_ms");
+    if (existing) return existing;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef params[1] = { i64 };
+    LLVMTypeRef fnType = LLVMFunctionType(i64, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_deadline_after_ms", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaLoopCreate(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_create");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef params[1] = { i8ptrptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_loop_create", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaLoopFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_free");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_loop_free", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaLoopRun(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_run");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_loop_run", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaLoopStop(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_stop");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_loop_stop", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaWorkqueueCreate(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_workqueue_create");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef params[2] = { i8ptrptr, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_workqueue_create", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaWorkqueueFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_workqueue_free");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_workqueue_free", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpListen(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_listen");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef params[4] = { i8ptr, i8ptr, i32, i8ptrptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_listen", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpListenerLocalPort(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_listener_local_port");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_listener_local_port", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpListenerClose(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_listener_close");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_listener_close", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpSocketClose(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_socket_close");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_socket_close", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpConnectAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_connect_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[6] = { i8ptr, i8ptr, i8ptr, i8ptr, i64, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 6, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_connect_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpConnectPortAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_connect_port_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[6] = { i8ptr, i8ptr, i8ptr, i32, i64, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 6, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_connect_port_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpAcceptStartCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_accept_start_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[4] = { i8ptr, i8ptr, closure, i8ptrptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_accept_start_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpAcceptCancelCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_accept_cancel_cl");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_accept_cancel_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpReadAllocAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_read_alloc_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[5] = { i8ptr, i8ptr, i32, i64, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 5, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_read_alloc_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTcpWriteStrAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_tcp_write_str_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[5] = { i8ptr, i8ptr, i8ptr, i64, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 5, 0);
+    return LLVMAddFunction(compiler->module, "tua_tcp_write_str_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsReadfileAllocAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_readfile_alloc_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[4] = { i8ptr, i8ptr, i8ptr, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_readfile_alloc_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsWritefileStrAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_writefile_str_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[5] = { i8ptr, i8ptr, i8ptr, i8ptr, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 5, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_writefile_str_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsStatAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_stat_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[4] = { i8ptr, i8ptr, i8ptr, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_stat_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsReaddirAsyncCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_readdir_async_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[4] = { i8ptr, i8ptr, i8ptr, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_readdir_async_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaFsStringArrayFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_fs_string_array_free");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_fs_string_array_free", fnType);
 }
 
 enum {
@@ -743,7 +992,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
 
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-        LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, callInstNameForFnType(fnType));
         LLVMTypeRef retType = LLVMGetReturnType(fnType);
         LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -806,7 +1055,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
             }
 
-            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, callInstNameForFnType(fnType));
             if (paramTypes) free(paramTypes);
             if (args) free(args);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1579,7 +1828,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
         if (paramTypes) free(paramTypes);
         if (args) free(args);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1602,6 +1851,32 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     int isSomeCtor = tokenEquals(&callee->name, "Some");
     int isNoneCtor = tokenEquals(&callee->name, "None");
     int isTuaParseInt = tokenEquals(&callee->name, "tua_parse_int");
+    int isTuaFree = tokenEquals(&callee->name, "tua_free");
+    int isTuaDeadlineAfterMs = tokenEquals(&callee->name, "tua_deadline_after_ms");
+    int isTuaLoopCreate = tokenEquals(&callee->name, "tua_loop_create");
+    int isTuaLoopRun = tokenEquals(&callee->name, "tua_loop_run");
+    int isTuaLoopStop = tokenEquals(&callee->name, "tua_loop_stop");
+    int isTuaLoopFree = tokenEquals(&callee->name, "tua_loop_free");
+    int isTuaWorkqueueCreate = tokenEquals(&callee->name, "tua_workqueue_create");
+    int isTuaWorkqueueFree = tokenEquals(&callee->name, "tua_workqueue_free");
+
+    int isTuaTcpListen = tokenEquals(&callee->name, "tua_tcp_listen");
+    int isTuaTcpListenerLocalPort = tokenEquals(&callee->name, "tua_tcp_listener_local_port");
+    int isTuaTcpListenerClose = tokenEquals(&callee->name, "tua_tcp_listener_close");
+    int isTuaTcpSocketClose = tokenEquals(&callee->name, "tua_tcp_socket_close");
+
+    int isTuaTcpConnectAsyncCl = tokenEquals(&callee->name, "tua_tcp_connect_async_cl");
+    int isTuaTcpConnectPortAsyncCl = tokenEquals(&callee->name, "tua_tcp_connect_port_async_cl");
+    int isTuaTcpAcceptStartCl = tokenEquals(&callee->name, "tua_tcp_accept_start_cl");
+    int isTuaTcpAcceptCancelCl = tokenEquals(&callee->name, "tua_tcp_accept_cancel_cl");
+    int isTuaTcpReadAllocAsyncCl = tokenEquals(&callee->name, "tua_tcp_read_alloc_async_cl");
+    int isTuaTcpWriteStrAsyncCl = tokenEquals(&callee->name, "tua_tcp_write_str_async_cl");
+
+    int isTuaFsReadfileAllocAsyncCl = tokenEquals(&callee->name, "tua_fs_readfile_alloc_async_cl");
+    int isTuaFsWritefileStrAsyncCl = tokenEquals(&callee->name, "tua_fs_writefile_str_async_cl");
+    int isTuaFsStatAsyncCl = tokenEquals(&callee->name, "tua_fs_stat_async_cl");
+    int isTuaFsReaddirAsyncCl = tokenEquals(&callee->name, "tua_fs_readdir_async_cl");
+    int isTuaFsStringArrayFree = tokenEquals(&callee->name, "tua_fs_string_array_free");
 
     if (isSomeCtor) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
@@ -1763,6 +2038,523 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return ok32;
     }
 
+    if (isTuaFree) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_free expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef p = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!p) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        p = castValueToType(compiler, p, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaFree(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &p, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaDeadlineAfterMs) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_deadline_after_ms expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef ms = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!ms) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        ms = castValueToType(compiler, ms, i64);
+        LLVMValueRef fn = getOrCreateTuaDeadlineAfterMs(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &ms, 1, "deadline");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaLoopCreate) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_loop_create expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef outPtr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!outPtr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        outPtr = castValueToType(compiler, outPtr, i8ptrptr);
+        LLVMValueRef fn = getOrCreateTuaLoopCreate(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &outPtr, 1, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaLoopRun) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_loop_run expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!loopV) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaLoopRun(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &loopV, 1, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaLoopStop || isTuaLoopFree) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("%s expects 1 argument\n", isTuaLoopStop ? "tua_loop_stop" : "tua_loop_free");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!loopV) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        LLVMValueRef fn = isTuaLoopStop ? getOrCreateTuaLoopStop(compiler) : getOrCreateTuaLoopFree(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &loopV, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaWorkqueueCreate) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_workqueue_create expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef outPtr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef threads = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!outPtr || !threads) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        outPtr = castValueToType(compiler, outPtr, i8ptrptr);
+        threads = castValueToType(compiler, threads, i32);
+        LLVMValueRef fn = getOrCreateTuaWorkqueueCreate(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { outPtr, threads };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaWorkqueueFree) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_workqueue_free expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef wq = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!wq) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        wq = castValueToType(compiler, wq, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaWorkqueueFree(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &wq, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaTcpListen) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 4) {
+            emitDebug("tua_tcp_listen expects 4 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef host = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef port = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef backlog = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef outPtr = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        if (!host || !port || !backlog || !outPtr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        host = castValueToType(compiler, host, i8ptr);
+        port = castValueToType(compiler, port, i8ptr);
+        backlog = castValueToType(compiler, backlog, i32);
+        outPtr = castValueToType(compiler, outPtr, i8ptrptr);
+        LLVMValueRef fn = getOrCreateTuaTcpListen(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args4[4] = { host, port, backlog, outPtr };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpListenerLocalPort) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_tcp_listener_local_port expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef lst = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!lst) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        lst = castValueToType(compiler, lst, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaTcpListenerLocalPort(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &lst, 1, "port");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpListenerClose || isTuaTcpSocketClose) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("%s expects 1 argument\n", isTuaTcpListenerClose ? "tua_tcp_listener_close" : "tua_tcp_socket_close");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef p = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!p) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        p = castValueToType(compiler, p, i8ptr);
+        LLVMValueRef fn = isTuaTcpListenerClose ? getOrCreateTuaTcpListenerClose(compiler) : getOrCreateTuaTcpSocketClose(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &p, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaTcpAcceptStartCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 4) {
+            emitDebug("tua_tcp_accept_start_cl expects 4 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef lst = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef outPtr = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        if (!loopV || !lst || !cb || !outPtr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        lst = castValueToType(compiler, lst, i8ptr);
+        cb = castValueToType(compiler, cb, closure);
+        outPtr = castValueToType(compiler, outPtr, i8ptrptr);
+        LLVMValueRef fn = getOrCreateTuaTcpAcceptStartCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args4[4] = { loopV, lst, cb, outPtr };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpAcceptCancelCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_tcp_accept_cancel_cl expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef h = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!h) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        h = castValueToType(compiler, h, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaTcpAcceptCancelCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &h, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (isTuaTcpConnectAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 6) {
+            emitDebug("tua_tcp_connect_async_cl expects 6 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        Expr* a0 = (Expr*)expr->arguments->head->data;
+        Expr* a1 = (Expr*)expr->arguments->head->next->data;
+        Expr* a2 = (Expr*)expr->arguments->head->next->next->data;
+        Expr* a3 = (Expr*)expr->arguments->head->next->next->next->data;
+        Expr* a4 = (Expr*)expr->arguments->head->next->next->next->next->data;
+        Expr* a5 = (Expr*)expr->arguments->head->next->next->next->next->next->data;
+        LLVMValueRef loopV = compileExpr(compiler, a0);
+        LLVMValueRef wq = compileExpr(compiler, a1);
+        LLVMValueRef host = compileExpr(compiler, a2);
+        LLVMValueRef port = compileExpr(compiler, a3);
+        LLVMValueRef deadline = compileExpr(compiler, a4);
+        LLVMValueRef cb = compileExpr(compiler, a5);
+        if (!loopV || !wq || !host || !port || !deadline || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        wq = castValueToType(compiler, wq, i8ptr);
+        host = castValueToType(compiler, host, i8ptr);
+        port = castValueToType(compiler, port, i8ptr);
+        deadline = castValueToType(compiler, deadline, i64);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaTcpConnectAsyncCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args6[6] = { loopV, wq, host, port, deadline, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args6, 6, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpConnectPortAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 6) {
+            emitDebug("tua_tcp_connect_port_async_cl expects 6 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        Expr* a0 = (Expr*)expr->arguments->head->data;
+        Expr* a1 = (Expr*)expr->arguments->head->next->data;
+        Expr* a2 = (Expr*)expr->arguments->head->next->next->data;
+        Expr* a3 = (Expr*)expr->arguments->head->next->next->next->data;
+        Expr* a4 = (Expr*)expr->arguments->head->next->next->next->next->data;
+        Expr* a5 = (Expr*)expr->arguments->head->next->next->next->next->next->data;
+        LLVMValueRef loopV = compileExpr(compiler, a0);
+        LLVMValueRef wq = compileExpr(compiler, a1);
+        LLVMValueRef host = compileExpr(compiler, a2);
+        LLVMValueRef port = compileExpr(compiler, a3);
+        LLVMValueRef deadline = compileExpr(compiler, a4);
+        LLVMValueRef cb = compileExpr(compiler, a5);
+        if (!loopV || !wq || !host || !port || !deadline || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        wq = castValueToType(compiler, wq, i8ptr);
+        host = castValueToType(compiler, host, i8ptr);
+        port = castValueToType(compiler, port, i32);
+        deadline = castValueToType(compiler, deadline, i64);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaTcpConnectPortAsyncCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args6[6] = { loopV, wq, host, port, deadline, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args6, 6, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpReadAllocAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 5) {
+            emitDebug("tua_tcp_read_alloc_async_cl expects 5 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        Expr* a0 = (Expr*)expr->arguments->head->data;
+        Expr* a1 = (Expr*)expr->arguments->head->next->data;
+        Expr* a2 = (Expr*)expr->arguments->head->next->next->data;
+        Expr* a3 = (Expr*)expr->arguments->head->next->next->next->data;
+        Expr* a4 = (Expr*)expr->arguments->head->next->next->next->next->data;
+        LLVMValueRef loopV = compileExpr(compiler, a0);
+        LLVMValueRef sock = compileExpr(compiler, a1);
+        LLVMValueRef max = compileExpr(compiler, a2);
+        LLVMValueRef deadline = compileExpr(compiler, a3);
+        LLVMValueRef cb = compileExpr(compiler, a4);
+        if (!loopV || !sock || !max || !deadline || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        sock = castValueToType(compiler, sock, i8ptr);
+        max = castValueToType(compiler, max, i32);
+        deadline = castValueToType(compiler, deadline, i64);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaTcpReadAllocAsyncCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args5[5] = { loopV, sock, max, deadline, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaTcpWriteStrAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 5) {
+            emitDebug("tua_tcp_write_str_async_cl expects 5 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        Expr* a0 = (Expr*)expr->arguments->head->data;
+        Expr* a1 = (Expr*)expr->arguments->head->next->data;
+        Expr* a2 = (Expr*)expr->arguments->head->next->next->data;
+        Expr* a3 = (Expr*)expr->arguments->head->next->next->next->data;
+        Expr* a4 = (Expr*)expr->arguments->head->next->next->next->next->data;
+        LLVMValueRef loopV = compileExpr(compiler, a0);
+        LLVMValueRef sock = compileExpr(compiler, a1);
+        LLVMValueRef s = compileExpr(compiler, a2);
+        LLVMValueRef deadline = compileExpr(compiler, a3);
+        LLVMValueRef cb = compileExpr(compiler, a4);
+        if (!loopV || !sock || !s || !deadline || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        sock = castValueToType(compiler, sock, i8ptr);
+        s = castValueToType(compiler, s, i8ptr);
+        deadline = castValueToType(compiler, deadline, i64);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaTcpWriteStrAsyncCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args5[5] = { loopV, sock, s, deadline, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsReadfileAllocAsyncCl || isTuaFsStatAsyncCl || isTuaFsReaddirAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 4) {
+            emitDebug("%s expects 4 arguments\n",
+                      isTuaFsReadfileAllocAsyncCl ? "tua_fs_readfile_alloc_async_cl" :
+                      (isTuaFsStatAsyncCl ? "tua_fs_stat_async_cl" : "tua_fs_readdir_async_cl"));
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef wq = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        if (!loopV || !wq || !path || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        wq = castValueToType(compiler, wq, i8ptr);
+        path = castValueToType(compiler, path, i8ptr);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = isTuaFsReadfileAllocAsyncCl ? getOrCreateTuaFsReadfileAllocAsyncCl(compiler)
+                                                     : (isTuaFsStatAsyncCl ? getOrCreateTuaFsStatAsyncCl(compiler)
+                                                                           : getOrCreateTuaFsReaddirAsyncCl(compiler));
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args4[4] = { loopV, wq, path, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsWritefileStrAsyncCl) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 5) {
+            emitDebug("tua_fs_writefile_str_async_cl expects 5 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef wq = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef path = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef data = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->next->data);
+        if (!loopV || !wq || !path || !data || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        wq = castValueToType(compiler, wq, i8ptr);
+        path = castValueToType(compiler, path, i8ptr);
+        data = castValueToType(compiler, data, i8ptr);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaFsWritefileStrAsyncCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args5[5] = { loopV, wq, path, data, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (isTuaFsStringArrayFree) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_fs_string_array_free expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef arr = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!arr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        arr = castValueToType(compiler, arr, arrType);
+        LLVMValueRef fn = getOrCreateTuaFsStringArrayFree(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &arr, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
     if (!isPrintln && !isPrint) {
         // Closure value call: f(args...)
         VariableRef calleeVar = findVariableExpr(compiler, expr->callee);
@@ -1821,7 +2613,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
 
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, "call");
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, callInstNameForFnType(fnType));
             LLVMTypeRef retType = LLVMGetReturnType(fnType);
             LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -1915,7 +2707,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, "call");
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
         if (paramTypes) free(paramTypes);
         if (args) free(args);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;

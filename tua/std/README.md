@@ -12,4 +12,6 @@
 ## 模块列表
 
 - `std/strconv`：字符串与数字转换（`Int.parse`）
-
+- `std/rt`：运行时绑定（loop/workqueue/deadline/free）
+- `std/net`：TCP 异步网络（基于 loop + callback）
+- `std/fs/async`：文件系统异步 API（基于 workqueue offload）

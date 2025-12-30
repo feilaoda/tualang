@@ -74,6 +74,8 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_PTR:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_ARRAY:
             return compilerGetArrayType(compiler);
         case TYPE_NAMED: {
@@ -708,9 +710,15 @@ static void collectLambdaUsesExpr(List* uses, Expr* expr) {
             }
             break;
         }
-        case EXPR_ASSIGN:
-            collectLambdaUsesExpr(uses, ((AssignExpr*)expr)->value);
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)expr;
+            // Assignment updates an existing variable; treat LHS as a free-var use.
+            if (a->name.type != TOKEN_THIS) {
+                nameSetAdd(uses, a->name.start, a->name.length);
+            }
+            collectLambdaUsesExpr(uses, a->value);
             break;
+        }
         case EXPR_GET:
             collectLambdaUsesExpr(uses, ((GetExpr*)expr)->object);
             break;
@@ -2172,6 +2180,7 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
             StructInfo* inner = compilerFindStruct(compiler, f->type->name.start, f->type->name.length);
             if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
@@ -2180,6 +2189,9 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_REF: {
             // Pointer to inner type
             if (!f->type->inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (f->type->inner->kind == TYPE_PTR) {
+                return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), 0);
+            }
             if (f->type->inner->kind == TYPE_NAMED) {
                 StructInfo* inner = compilerFindStruct(compiler, f->type->inner->name.start, f->type->inner->name.length);
                 if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);

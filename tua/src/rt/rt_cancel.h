@@ -18,4 +18,9 @@ enum {
     TUA_DEADLINE_NONE = 0,
 };
 
+tua_deadline_t tua_deadline_after_ms(uint64_t ms);
+int tua_deadline_is_none(tua_deadline_t deadline);
+int tua_deadline_is_expired(tua_deadline_t deadline);
+uint64_t tua_deadline_to_delay_ms(tua_deadline_t deadline);
+
 #endif

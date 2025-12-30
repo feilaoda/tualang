@@ -99,7 +99,7 @@
 - [x] 路径与编码约束：上层一律 UTF-8（已写约束）
 - [ ] Windows 路径：UTF-16 转换 + 测试用例
 - [x] 取消模型：`tua_cancel_t`（为 async/协程预留）
-- [ ] 超时/deadline：统一 deadline 类型与辅助函数（为 async/协程预留）
+- [x] 超时/deadline：统一 deadline 类型与辅助函数（为 async/协程预留）
 
 #### 10.3 线程与同步（R1-thread）
 - [x] `rt_alloc`：`malloc/free/realloc` 抽象（后续可切换 mimalloc/jemalloc）
@@ -122,22 +122,22 @@
 - [x] `rt_task`：任务队列（post 到 loop 线程执行）
 
 #### 10.6 异步网络（R3-net-async）
-- [ ] `rt_net`：non-blocking socket + loop 集成（connect/accept/read/write）
-- [ ] 超时与取消：connect/read/write deadline + cancel
-- [ ] DNS/解析：先用线程池 offload（后续再优化）
-- [ ] `std.net`（Tua）：TCP/UDP/Addr/Resolver 的跨平台语义封装
+- [x] `rt_net`：non-blocking socket + loop 集成（connect/accept/read/write）
+- [x] 超时（第一版）：connect/read/write deadline
+- [x] DNS/解析（第一版）：线程池 offload（getaddrinfo）
+- [x] `std.net`（Tua）：TCP/UDP/Addr/Resolver 的跨平台语义封装
 
 #### 10.7 异步文件（R4-fs-async）
 说明：Unix 常规文件不适合用“就绪事件”做真正 async，第一版采用 **线程池 offload**，API 仍保持 async 形态。
 - [x] `rt_workqueue`：固定大小线程池 + 任务投递
-- [ ] `rt_fs_async`：POSIX 线程池 offload
+- [x] `rt_fs_async`：POSIX 线程池 offload
   - [x] readFile/writeFile
-  - [ ] stat/readdir
-- [ ] `std.fs.async`（Tua）：高层 async 文件 API
+  - [x] stat/readdir
+- [x] `std.fs.async`（Tua）：高层 async 文件 API
 - [ ] 后续优化（可选）：Linux io_uring / macOS 特定方案（不阻塞主线）
 
 #### 10.8 Windows（R5-win32，占位 -> 落地）
-- [ ] 先提供 win32 stub：编译通过但返回 `TUA_E_NOTSUP`（保证扩展点固定）
+- [x] 先提供 win32 stub：编译通过但返回 `TUA_E_NOTSUP`（保证扩展点固定）
 - [ ] `rt_loop` Windows 后端：IOCP
 - [ ] `rt_net` Windows：Winsock + IOCP
 - [ ] `rt_fs_async` Windows：Overlapped I/O + IOCP（或线程池过渡）

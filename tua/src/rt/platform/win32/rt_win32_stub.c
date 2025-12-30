@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "rt/rt_loop.h"
+#include "rt/rt_net.h"
 #include "rt/rt_thread.h"
 
 tua_err_t tua_thread_create(tua_thread_t** out, tua_thread_fn fn, void* arg) {
@@ -128,6 +129,113 @@ tua_err_t tua_timer_start(
 
 void tua_timer_cancel(tua_timer_t* timer) {
     (void)timer;
+}
+
+tua_fd_t tua_tcp_socket_fd(const tua_tcp_socket_t* sock) {
+    (void)sock;
+    return (tua_fd_t)0;
+}
+
+void tua_tcp_socket_close(tua_tcp_socket_t* sock) {
+    (void)sock;
+}
+
+tua_err_t tua_tcp_connect_async(
+    tua_loop_t* loop,
+    tua_workqueue_t* wq,
+    const char* host_utf8,
+    const char* port_utf8,
+    tua_deadline_t deadline,
+    tua_tcp_connect_cb cb,
+    void* arg
+) {
+    (void)loop;
+    (void)wq;
+    (void)host_utf8;
+    (void)port_utf8;
+    (void)deadline;
+    (void)cb;
+    (void)arg;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_tcp_read_async(
+    tua_loop_t* loop,
+    tua_tcp_socket_t* sock,
+    uint8_t* buf,
+    size_t len,
+    tua_deadline_t deadline,
+    tua_tcp_io_cb cb,
+    void* arg
+) {
+    (void)loop;
+    (void)sock;
+    (void)buf;
+    (void)len;
+    (void)deadline;
+    (void)cb;
+    (void)arg;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_tcp_write_async(
+    tua_loop_t* loop,
+    tua_tcp_socket_t* sock,
+    const uint8_t* buf,
+    size_t len,
+    tua_deadline_t deadline,
+    tua_tcp_io_cb cb,
+    void* arg
+) {
+    (void)loop;
+    (void)sock;
+    (void)buf;
+    (void)len;
+    (void)deadline;
+    (void)cb;
+    (void)arg;
+    return TUA_E_NOTSUP;
+}
+
+tua_err_t tua_tcp_listen(
+    const char* host_utf8,
+    const char* port_utf8,
+    int backlog,
+    tua_tcp_listener_t** out
+) {
+    (void)host_utf8;
+    (void)port_utf8;
+    (void)backlog;
+    (void)out;
+    return TUA_E_NOTSUP;
+}
+
+int32_t tua_tcp_listener_local_port(const tua_tcp_listener_t* lst) {
+    (void)lst;
+    return 0;
+}
+
+void tua_tcp_listener_close(tua_tcp_listener_t* lst) {
+    (void)lst;
+}
+
+tua_err_t tua_tcp_accept_start(
+    tua_loop_t* loop,
+    tua_tcp_listener_t* lst,
+    tua_tcp_accept_cb cb,
+    void* arg,
+    tua_tcp_accept_t** out
+) {
+    (void)loop;
+    (void)lst;
+    (void)cb;
+    (void)arg;
+    (void)out;
+    return TUA_E_NOTSUP;
+}
+
+void tua_tcp_accept_cancel(tua_tcp_accept_t* accept) {
+    (void)accept;
 }
 
 #endif

@@ -69,6 +69,8 @@ typedef enum {
     TYPE_FLOAT,
     TYPE_BOOL,
     TYPE_STRING,
+    // Raw pointer for runtime/FFI: lowered as i8* in LLVM.
+    TYPE_PTR,
     TYPE_VOID,
     TYPE_ANY,
     TYPE_NAMED,

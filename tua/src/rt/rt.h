@@ -11,6 +11,7 @@
 #include "rt/rt_platform.h"
 #include "rt/rt_fs_async.h"
 #include "rt/rt_loop.h"
+#include "rt/rt_net.h"
 #include "rt/rt_thread.h"
 #include "rt/rt_time.h"
 #include "rt/rt_workqueue.h"

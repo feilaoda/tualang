@@ -4,10 +4,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+export TUA_STDLIB_DIR="$ROOT/std"
+
 make tuac >/dev/null
 
 fail=0
 total=0
+skip=0
+
+net_ok=1
+python3 - <<'PY' >/dev/null 2>&1 || net_ok=0
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+finally:
+    s.close()
+PY
 
 for f in tests/*.tua; do
   [ -e "$f" ] || continue
@@ -46,6 +60,15 @@ for f in tests/*.tua; do
     fi
     rm -f "$tmp"
   else
+    case "$base" in
+      std_rt_net_*)
+        if [[ "$net_ok" -ne 1 ]]; then
+          echo "[SKIP] $base (network sandboxed)"
+          skip=$((skip+1))
+          continue
+        fi
+        ;;
+    esac
     if ./bin/tuac $extra "$f" >/dev/null 2>&1; then
       echo "[PASS] $base"
     else
