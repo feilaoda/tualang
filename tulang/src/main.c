@@ -477,9 +477,13 @@ void initLLVM(Compiler* compiler) {
     // LLVMValueRef printfFunc = LLVMAddFunction(module, "printf", printfType);
 
 
-    // Create main function type (int main())
+    // Create main function type: `int main(int argc, char** argv)`
     LLVMTypeRef returnType = LLVMInt32TypeInContext(context);
-    LLVMTypeRef mainFuncType = LLVMFunctionType(returnType, NULL, 0, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef mainParams[2] = { i32, i8ptrptr };
+    LLVMTypeRef mainFuncType = LLVMFunctionType(returnType, mainParams, 2, 0);
     LLVMValueRef mainFunc = LLVMAddFunction(module, "main", mainFuncType);
 
     // Create entry block
@@ -495,6 +499,98 @@ void initLLVM(Compiler* compiler) {
     block->variables = listNew();
     block->labels = listNew();
     compiler->current = block;
+
+    // Built-in `ARGV`: string[] (tua_array* of i8*), filled from process argv.
+    // Note: we intentionally keep argv[0] (program name) so the first user arg is ARGV[1].
+    LLVMValueRef argcV = LLVMGetParam(mainFunc, 0);
+    LLVMValueRef argvV = LLVMGetParam(mainFunc, 1);
+
+    // Declare runtime helpers (resolved from the host process / linked runtime).
+    LLVMValueRef tuaArrayNew = LLVMGetNamedFunction(module, "tua_array_new");
+    if (!tuaArrayNew) {
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef params[4] = { i64, i64, i64, i64 };
+        LLVMTypeRef fnType = LLVMFunctionType(arrType, params, 4, 0);
+        tuaArrayNew = LLVMAddFunction(module, "tua_array_new", fnType);
+    }
+    LLVMValueRef tuaArrayPush = LLVMGetNamedFunction(module, "tua_array_push");
+    if (!tuaArrayPush) {
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef params[2] = { arrType, i8ptr };
+        LLVMTypeRef fnType = LLVMFunctionType(i64, params, 2, 0);
+        tuaArrayPush = LLVMAddFunction(module, "tua_array_push", fnType);
+    }
+
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+
+    // ARGV slot: tua_array*
+    LLVMValueRef argvSlot = LLVMBuildAlloca(builder, arrType, "ARGV");
+
+    // Create empty array with capacity=argc and elem_size=sizeof(i8*)
+    LLVMValueRef argc64 = LLVMBuildSExt(builder, argcV, i64, "argc64");
+    LLVMValueRef zero64 = LLVMConstInt(i64, 0, 0);
+    LLVMValueRef minusOne64 = LLVMConstInt(i64, (uint64_t)-1, 1);
+    LLVMValueRef elemSize = LLVMSizeOf(i8ptr);
+    LLVMValueRef newArgs[4] = { zero64, argc64, elemSize, minusOne64 };
+    LLVMValueRef argvArr = LLVMBuildCall2(builder, LLVMGlobalGetValueType(tuaArrayNew), tuaArrayNew, newArgs, 4, "argv_arr");
+    argvArr = LLVMBuildBitCast(builder, argvArr, arrType, "argv_arr_cast");
+    LLVMBuildStore(builder, argvArr, argvSlot);
+
+    // for (i=0; i<argc; i++) { tua_array_push(argvArr, &argv[i]); }
+    LLVMValueRef iAlloca = LLVMBuildAlloca(builder, i32, "argv_i");
+    LLVMBuildStore(builder, LLVMConstInt(i32, 0, 0), iAlloca);
+    LLVMValueRef elemTmp = LLVMBuildAlloca(builder, i8ptr, "argv_tmp");
+
+    LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(mainFunc, "argv.cond");
+    LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(mainFunc, "argv.body");
+    LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(mainFunc, "argv.end");
+    LLVMBuildBr(builder, condBB);
+
+    LLVMPositionBuilderAtEnd(builder, condBB);
+    LLVMValueRef iV = LLVMBuildLoad2(builder, i32, iAlloca, "i");
+    LLVMValueRef cond = LLVMBuildICmp(builder, LLVMIntSLT, iV, argcV, "i_lt_argc");
+    LLVMBuildCondBr(builder, cond, bodyBB, endBB);
+
+    LLVMPositionBuilderAtEnd(builder, bodyBB);
+    LLVMValueRef i64v = LLVMBuildSExt(builder, iV, i64, "i64");
+    LLVMValueRef gep = LLVMBuildInBoundsGEP2(builder, i8ptr, argvV, &i64v, 1, "argv_gep");
+    LLVMValueRef s = LLVMBuildLoad2(builder, i8ptr, gep, "argv_s");
+    LLVMBuildStore(builder, s, elemTmp);
+    LLVMValueRef elemPtr = LLVMBuildBitCast(builder, elemTmp, i8ptr, "argv_elem_ptr");
+    LLVMValueRef pushArgs[2] = { argvArr, elemPtr };
+    LLVMBuildCall2(builder, LLVMGlobalGetValueType(tuaArrayPush), tuaArrayPush, pushArgs, 2, "");
+    LLVMValueRef inc = LLVMBuildAdd(builder, iV, LLVMConstInt(i32, 1, 0), "inc");
+    LLVMBuildStore(builder, inc, iAlloca);
+    LLVMBuildBr(builder, condBB);
+
+    LLVMPositionBuilderAtEnd(builder, endBB);
+
+    // Register `ARGV` as an implicit array variable for the rest of codegen.
+    VariableRef* argvVar = malloc(sizeof(VariableRef));
+    memset(argvVar, 0, sizeof(VariableRef));
+    argvVar->name = "ARGV";
+    argvVar->length = 4;
+    argvVar->value = argvSlot;
+    argvVar->type = arrType;
+    argvVar->typeName = NULL;
+    argvVar->typeNameLength = 0;
+    argvVar->isConst = 1;
+    argvVar->isGlobal = 0;
+    argvVar->isBoxed = 0;
+    argvVar->boxPtrType = NULL;
+    argvVar->isArray = 1;
+    argvVar->arrayElemType = i8ptr;
+    argvVar->arrayFixedLen = -1;
+    argvVar->isMap = 0;
+    argvVar->isTypedMap = 0;
+    argvVar->mapKeyType = NULL;
+    argvVar->mapValueType = NULL;
+    argvVar->isStackArray = 0;
+    argvVar->stackArrayData = NULL;
+    listAppend(block->variables, argvVar);
 }
 
 int executeModule(LLVMModuleRef module) {
@@ -515,9 +611,9 @@ int executeModule(LLVMModuleRef module) {
         return 1;
     }
 
-    // Execute main function
-    int (*mainFn)(void) = (int (*)(void))LLVMGetFunctionAddress(engine, "main");
-    int result = mainFn();
+    // Execute main function (no script args in JIT mode: argc=0, argv=NULL).
+    int (*mainFn)(int, char**) = (int (*)(int, char**))LLVMGetFunctionAddress(engine, "main");
+    int result = mainFn(0, NULL);
 #ifdef DEBUG
     printf("result: %d\n", result);
 #endif

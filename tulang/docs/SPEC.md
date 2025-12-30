@@ -103,6 +103,12 @@
   - 作为参数：`fn apply(x:int, f:(int)->int) -> int { return f(x) }`
   - 作为返回值：`fn makeAdder(n:int) -> (int)->int { return fn(x:int)->int { return x + n } }`，并支持 `makeAdder(5)(10)` 这种“返回闭包再调用”的写法
 
+#### 6.2 命令行参数（Status: Implemented）
+- 内建全局变量：`ARGV: string[]`
+- 下标约定：
+  - `ARGV[0]`：程序名（等价于 C 的 `argv[0]`）
+  - `ARGV[1]`：第一个用户入参
+
 ### 7. struct / object / enum（Status: Partial）
 
 #### 7.1 struct（Status: Implemented）
