@@ -5,6 +5,107 @@
 static int isOptionLLVMType(LLVMTypeRef t);
 static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef func, LLVMValueRef call);
 
+typedef enum {
+    BI_NONE = 0,
+
+    BI_PRINT,
+    BI_PRINTLN,
+    BI_ASSERT,
+    BI_LEN,
+    BI_SOME,
+    BI_NONE_CTOR,
+
+    BI_TUA_PARSE_INT,
+    BI_TUA_FREE,
+    BI_TUA_DEADLINE_AFTER_MS,
+    BI_TUA_LOOP_CREATE,
+    BI_TUA_LOOP_RUN,
+    BI_TUA_LOOP_STOP,
+    BI_TUA_LOOP_FREE,
+    BI_TUA_WORKQUEUE_CREATE,
+    BI_TUA_WORKQUEUE_FREE,
+
+    BI_TUA_TCP_LISTEN,
+    BI_TUA_TCP_LISTENER_LOCAL_PORT,
+    BI_TUA_TCP_LISTENER_CLOSE,
+    BI_TUA_TCP_SOCKET_CLOSE,
+    BI_TUA_TCP_CONNECT_ASYNC_CL,
+    BI_TUA_TCP_CONNECT_PORT_ASYNC_CL,
+    BI_TUA_TCP_ACCEPT_START_CL,
+    BI_TUA_TCP_ACCEPT_CANCEL_CL,
+    BI_TUA_TCP_READ_ALLOC_ASYNC_CL,
+    BI_TUA_TCP_WRITE_STR_ASYNC_CL,
+
+    BI_TUA_FS_READFILE_ALLOC,
+    BI_TUA_FS_WRITEFILE_STR,
+    BI_TUA_FS_STAT_SIMPLE,
+    BI_TUA_FS_MKDIR,
+    BI_TUA_FS_REALPATH_ALLOC,
+    BI_TUA_FS_READDIR_ARR,
+
+    BI_TUA_FS_READFILE_ALLOC_ASYNC_CL,
+    BI_TUA_FS_WRITEFILE_STR_ASYNC_CL,
+    BI_TUA_FS_STAT_ASYNC_CL,
+    BI_TUA_FS_READDIR_ASYNC_CL,
+    BI_TUA_FS_STRING_ARRAY_FREE,
+} BuiltinId;
+
+typedef struct {
+    const char* name;
+    uint8_t len;
+    BuiltinId id;
+} BuiltinEntry;
+
+static BuiltinId lookupBuiltinId(const Token* token) {
+    if (!token || !token->start || token->length <= 0) return BI_NONE;
+#define BI_ENTRY(s, bid) { (s), (uint8_t)(sizeof(s) - 1), (bid) }
+    static const BuiltinEntry builtins[] = {
+        BI_ENTRY("Some", BI_SOME),
+        BI_ENTRY("None", BI_NONE_CTOR),
+        BI_ENTRY("assert", BI_ASSERT),
+        BI_ENTRY("len", BI_LEN),
+        BI_ENTRY("print", BI_PRINT),
+        BI_ENTRY("println", BI_PRINTLN),
+        BI_ENTRY("tua_deadline_after_ms", BI_TUA_DEADLINE_AFTER_MS),
+        BI_ENTRY("tua_free", BI_TUA_FREE),
+        BI_ENTRY("tua_fs_mkdir", BI_TUA_FS_MKDIR),
+        BI_ENTRY("tua_fs_readfile_alloc", BI_TUA_FS_READFILE_ALLOC),
+        BI_ENTRY("tua_fs_readfile_alloc_async_cl", BI_TUA_FS_READFILE_ALLOC_ASYNC_CL),
+        BI_ENTRY("tua_fs_readdir_arr", BI_TUA_FS_READDIR_ARR),
+        BI_ENTRY("tua_fs_readdir_async_cl", BI_TUA_FS_READDIR_ASYNC_CL),
+        BI_ENTRY("tua_fs_realpath_alloc", BI_TUA_FS_REALPATH_ALLOC),
+        BI_ENTRY("tua_fs_stat_async_cl", BI_TUA_FS_STAT_ASYNC_CL),
+        BI_ENTRY("tua_fs_stat_simple", BI_TUA_FS_STAT_SIMPLE),
+        BI_ENTRY("tua_fs_string_array_free", BI_TUA_FS_STRING_ARRAY_FREE),
+        BI_ENTRY("tua_fs_writefile_str", BI_TUA_FS_WRITEFILE_STR),
+        BI_ENTRY("tua_fs_writefile_str_async_cl", BI_TUA_FS_WRITEFILE_STR_ASYNC_CL),
+        BI_ENTRY("tua_loop_create", BI_TUA_LOOP_CREATE),
+        BI_ENTRY("tua_loop_free", BI_TUA_LOOP_FREE),
+        BI_ENTRY("tua_loop_run", BI_TUA_LOOP_RUN),
+        BI_ENTRY("tua_loop_stop", BI_TUA_LOOP_STOP),
+        BI_ENTRY("tua_parse_int", BI_TUA_PARSE_INT),
+        BI_ENTRY("tua_tcp_accept_cancel_cl", BI_TUA_TCP_ACCEPT_CANCEL_CL),
+        BI_ENTRY("tua_tcp_accept_start_cl", BI_TUA_TCP_ACCEPT_START_CL),
+        BI_ENTRY("tua_tcp_connect_async_cl", BI_TUA_TCP_CONNECT_ASYNC_CL),
+        BI_ENTRY("tua_tcp_connect_port_async_cl", BI_TUA_TCP_CONNECT_PORT_ASYNC_CL),
+        BI_ENTRY("tua_tcp_listen", BI_TUA_TCP_LISTEN),
+        BI_ENTRY("tua_tcp_listener_close", BI_TUA_TCP_LISTENER_CLOSE),
+        BI_ENTRY("tua_tcp_listener_local_port", BI_TUA_TCP_LISTENER_LOCAL_PORT),
+        BI_ENTRY("tua_tcp_read_alloc_async_cl", BI_TUA_TCP_READ_ALLOC_ASYNC_CL),
+        BI_ENTRY("tua_tcp_socket_close", BI_TUA_TCP_SOCKET_CLOSE),
+        BI_ENTRY("tua_tcp_write_str_async_cl", BI_TUA_TCP_WRITE_STR_ASYNC_CL),
+        BI_ENTRY("tua_workqueue_create", BI_TUA_WORKQUEUE_CREATE),
+        BI_ENTRY("tua_workqueue_free", BI_TUA_WORKQUEUE_FREE),
+    };
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+        const BuiltinEntry* e = &builtins[i];
+        if (token->length != (int)e->len) continue;
+        if (memcmp(token->start, e->name, (size_t)e->len) == 0) return e->id;
+    }
+#undef BI_ENTRY
+    return BI_NONE;
+}
+
 static int tokenEquals(const Token* token, const char* s) {
     int n = (int)strlen(s);
     return token->length == n && memcmp(token->start, s, (size_t)n) == 0;
@@ -1914,48 +2015,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     }
 
     VariableExpr* callee = (VariableExpr*)expr->callee;
-    int isPrintln = tokenEquals(&callee->name, "println");
-    int isPrint = tokenEquals(&callee->name, "print");
-    int isAssert = tokenEquals(&callee->name, "assert");
-    int isLen = tokenEquals(&callee->name, "len");
-    int isSomeCtor = tokenEquals(&callee->name, "Some");
-    int isNoneCtor = tokenEquals(&callee->name, "None");
-    int isTuaParseInt = tokenEquals(&callee->name, "tua_parse_int");
-    int isTuaFree = tokenEquals(&callee->name, "tua_free");
-    int isTuaDeadlineAfterMs = tokenEquals(&callee->name, "tua_deadline_after_ms");
-    int isTuaLoopCreate = tokenEquals(&callee->name, "tua_loop_create");
-    int isTuaLoopRun = tokenEquals(&callee->name, "tua_loop_run");
-    int isTuaLoopStop = tokenEquals(&callee->name, "tua_loop_stop");
-    int isTuaLoopFree = tokenEquals(&callee->name, "tua_loop_free");
-    int isTuaWorkqueueCreate = tokenEquals(&callee->name, "tua_workqueue_create");
-    int isTuaWorkqueueFree = tokenEquals(&callee->name, "tua_workqueue_free");
+    BuiltinId builtinId = lookupBuiltinId(&callee->name);
+    int isPrintln = builtinId == BI_PRINTLN;
+    int isPrint = builtinId == BI_PRINT;
 
-    int isTuaTcpListen = tokenEquals(&callee->name, "tua_tcp_listen");
-    int isTuaTcpListenerLocalPort = tokenEquals(&callee->name, "tua_tcp_listener_local_port");
-    int isTuaTcpListenerClose = tokenEquals(&callee->name, "tua_tcp_listener_close");
-    int isTuaTcpSocketClose = tokenEquals(&callee->name, "tua_tcp_socket_close");
-
-    int isTuaTcpConnectAsyncCl = tokenEquals(&callee->name, "tua_tcp_connect_async_cl");
-    int isTuaTcpConnectPortAsyncCl = tokenEquals(&callee->name, "tua_tcp_connect_port_async_cl");
-    int isTuaTcpAcceptStartCl = tokenEquals(&callee->name, "tua_tcp_accept_start_cl");
-    int isTuaTcpAcceptCancelCl = tokenEquals(&callee->name, "tua_tcp_accept_cancel_cl");
-    int isTuaTcpReadAllocAsyncCl = tokenEquals(&callee->name, "tua_tcp_read_alloc_async_cl");
-    int isTuaTcpWriteStrAsyncCl = tokenEquals(&callee->name, "tua_tcp_write_str_async_cl");
-
-    int isTuaFsReadfileAlloc = tokenEquals(&callee->name, "tua_fs_readfile_alloc");
-    int isTuaFsWritefileStr = tokenEquals(&callee->name, "tua_fs_writefile_str");
-    int isTuaFsStatSimple = tokenEquals(&callee->name, "tua_fs_stat_simple");
-    int isTuaFsMkdir = tokenEquals(&callee->name, "tua_fs_mkdir");
-    int isTuaFsRealpathAlloc = tokenEquals(&callee->name, "tua_fs_realpath_alloc");
-    int isTuaFsReaddirArr = tokenEquals(&callee->name, "tua_fs_readdir_arr");
-
-    int isTuaFsReadfileAllocAsyncCl = tokenEquals(&callee->name, "tua_fs_readfile_alloc_async_cl");
-    int isTuaFsWritefileStrAsyncCl = tokenEquals(&callee->name, "tua_fs_writefile_str_async_cl");
-    int isTuaFsStatAsyncCl = tokenEquals(&callee->name, "tua_fs_stat_async_cl");
-    int isTuaFsReaddirAsyncCl = tokenEquals(&callee->name, "tua_fs_readdir_async_cl");
-    int isTuaFsStringArrayFree = tokenEquals(&callee->name, "tua_fs_string_array_free");
-
-    if (isSomeCtor) {
+    if (builtinId == BI_SOME) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("Some expects 1 argument\n");
@@ -1977,7 +2041,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return opt;
     }
 
-    if (isNoneCtor) {
+    if (builtinId == BI_NONE_CTOR) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 0) {
             emitDebug("None expects 0 arguments\n");
@@ -1995,7 +2059,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return opt;
     }
 
-    if (isAssert) {
+    if (builtinId == BI_ASSERT) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1 && got != 2) {
             emitDebug("assert expects 1 or 2 arguments\n");
@@ -2042,7 +2106,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isLen) {
+    if (builtinId == BI_LEN) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("len expects 1 argument\n");
@@ -2089,7 +2153,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return NULL;
     }
 
-    if (isTuaParseInt) {
+    if (builtinId == BI_TUA_PARSE_INT) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_parse_int expects 2 arguments\n");
@@ -2115,7 +2179,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return ok32;
     }
 
-    if (isTuaFree) {
+    if (builtinId == BI_TUA_FREE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_free expects 1 argument\n");
@@ -2136,7 +2200,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isTuaDeadlineAfterMs) {
+    if (builtinId == BI_TUA_DEADLINE_AFTER_MS) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_deadline_after_ms expects 1 argument\n");
@@ -2157,7 +2221,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaLoopCreate) {
+    if (builtinId == BI_TUA_LOOP_CREATE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_loop_create expects 1 argument\n");
@@ -2179,7 +2243,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaLoopRun) {
+    if (builtinId == BI_TUA_LOOP_RUN) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_loop_run expects 1 argument\n");
@@ -2200,10 +2264,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaLoopStop || isTuaLoopFree) {
+    if (builtinId == BI_TUA_LOOP_STOP || builtinId == BI_TUA_LOOP_FREE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
-            emitDebug("%s expects 1 argument\n", isTuaLoopStop ? "tua_loop_stop" : "tua_loop_free");
+            emitDebug("%s expects 1 argument\n", builtinId == BI_TUA_LOOP_STOP ? "tua_loop_stop" : "tua_loop_free");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -2214,14 +2278,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         loopV = castValueToType(compiler, loopV, i8ptr);
-        LLVMValueRef fn = isTuaLoopStop ? getOrCreateTuaLoopStop(compiler) : getOrCreateTuaLoopFree(compiler);
+        LLVMValueRef fn = builtinId == BI_TUA_LOOP_STOP ? getOrCreateTuaLoopStop(compiler) : getOrCreateTuaLoopFree(compiler);
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMBuildCall2(compiler->builder, fnType, fn, &loopV, 1, "");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isTuaWorkqueueCreate) {
+    if (builtinId == BI_TUA_WORKQUEUE_CREATE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_workqueue_create expects 2 arguments\n");
@@ -2247,7 +2311,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaWorkqueueFree) {
+    if (builtinId == BI_TUA_WORKQUEUE_FREE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_workqueue_free expects 1 argument\n");
@@ -2268,7 +2332,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isTuaTcpListen) {
+    if (builtinId == BI_TUA_TCP_LISTEN) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 4) {
             emitDebug("tua_tcp_listen expects 4 arguments\n");
@@ -2298,7 +2362,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpListenerLocalPort) {
+    if (builtinId == BI_TUA_TCP_LISTENER_LOCAL_PORT) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_tcp_listener_local_port expects 1 argument\n");
@@ -2319,10 +2383,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpListenerClose || isTuaTcpSocketClose) {
+    if (builtinId == BI_TUA_TCP_LISTENER_CLOSE || builtinId == BI_TUA_TCP_SOCKET_CLOSE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
-            emitDebug("%s expects 1 argument\n", isTuaTcpListenerClose ? "tua_tcp_listener_close" : "tua_tcp_socket_close");
+            emitDebug("%s expects 1 argument\n", builtinId == BI_TUA_TCP_LISTENER_CLOSE ? "tua_tcp_listener_close" : "tua_tcp_socket_close");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -2333,14 +2397,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         p = castValueToType(compiler, p, i8ptr);
-        LLVMValueRef fn = isTuaTcpListenerClose ? getOrCreateTuaTcpListenerClose(compiler) : getOrCreateTuaTcpSocketClose(compiler);
+        LLVMValueRef fn = builtinId == BI_TUA_TCP_LISTENER_CLOSE ? getOrCreateTuaTcpListenerClose(compiler) : getOrCreateTuaTcpSocketClose(compiler);
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMBuildCall2(compiler->builder, fnType, fn, &p, 1, "");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isTuaFsReadfileAlloc) {
+    if (builtinId == BI_TUA_FS_READFILE_ALLOC) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 3) {
             emitDebug("tua_fs_readfile_alloc expects 3 arguments\n");
@@ -2369,7 +2433,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsWritefileStr) {
+    if (builtinId == BI_TUA_FS_WRITEFILE_STR) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_fs_writefile_str expects 2 arguments\n");
@@ -2393,7 +2457,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsStatSimple) {
+    if (builtinId == BI_TUA_FS_STAT_SIMPLE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 5) {
             emitDebug("tua_fs_stat_simple expects 5 arguments\n");
@@ -2427,7 +2491,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsMkdir) {
+    if (builtinId == BI_TUA_FS_MKDIR) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_fs_mkdir expects 2 arguments\n");
@@ -2452,7 +2516,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsRealpathAlloc) {
+    if (builtinId == BI_TUA_FS_REALPATH_ALLOC) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_fs_realpath_alloc expects 2 arguments\n");
@@ -2477,7 +2541,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsReaddirArr) {
+    if (builtinId == BI_TUA_FS_READDIR_ARR) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 2) {
             emitDebug("tua_fs_readdir_arr expects 2 arguments\n");
@@ -2503,7 +2567,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpAcceptStartCl) {
+    if (builtinId == BI_TUA_TCP_ACCEPT_START_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 4) {
             emitDebug("tua_tcp_accept_start_cl expects 4 arguments\n");
@@ -2533,7 +2597,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpAcceptCancelCl) {
+    if (builtinId == BI_TUA_TCP_ACCEPT_CANCEL_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_tcp_accept_cancel_cl expects 1 argument\n");
@@ -2554,7 +2618,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     }
 
-    if (isTuaTcpConnectAsyncCl) {
+    if (builtinId == BI_TUA_TCP_CONNECT_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 6) {
             emitDebug("tua_tcp_connect_async_cl expects 6 arguments\n");
@@ -2594,7 +2658,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpConnectPortAsyncCl) {
+    if (builtinId == BI_TUA_TCP_CONNECT_PORT_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 6) {
             emitDebug("tua_tcp_connect_port_async_cl expects 6 arguments\n");
@@ -2635,7 +2699,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpReadAllocAsyncCl) {
+    if (builtinId == BI_TUA_TCP_READ_ALLOC_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 5) {
             emitDebug("tua_tcp_read_alloc_async_cl expects 5 arguments\n");
@@ -2673,7 +2737,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaTcpWriteStrAsyncCl) {
+    if (builtinId == BI_TUA_TCP_WRITE_STR_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 5) {
             emitDebug("tua_tcp_write_str_async_cl expects 5 arguments\n");
@@ -2710,12 +2774,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsReadfileAllocAsyncCl || isTuaFsStatAsyncCl || isTuaFsReaddirAsyncCl) {
+    if (builtinId == BI_TUA_FS_READFILE_ALLOC_ASYNC_CL || builtinId == BI_TUA_FS_STAT_ASYNC_CL ||
+        builtinId == BI_TUA_FS_READDIR_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 4) {
-            emitDebug("%s expects 4 arguments\n",
-                      isTuaFsReadfileAllocAsyncCl ? "tua_fs_readfile_alloc_async_cl" :
-                      (isTuaFsStatAsyncCl ? "tua_fs_stat_async_cl" : "tua_fs_readdir_async_cl"));
+            const char* fnName = builtinId == BI_TUA_FS_READFILE_ALLOC_ASYNC_CL ? "tua_fs_readfile_alloc_async_cl"
+                               : (builtinId == BI_TUA_FS_STAT_ASYNC_CL          ? "tua_fs_stat_async_cl"
+                                                                                : "tua_fs_readdir_async_cl");
+            emitDebug("%s expects 4 arguments\n", fnName);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -2733,9 +2799,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         wq = castValueToType(compiler, wq, i8ptr);
         path = castValueToType(compiler, path, i8ptr);
         cb = castValueToType(compiler, cb, closure);
-        LLVMValueRef fn = isTuaFsReadfileAllocAsyncCl ? getOrCreateTuaFsReadfileAllocAsyncCl(compiler)
-                                                     : (isTuaFsStatAsyncCl ? getOrCreateTuaFsStatAsyncCl(compiler)
-                                                                           : getOrCreateTuaFsReaddirAsyncCl(compiler));
+        LLVMValueRef fn = builtinId == BI_TUA_FS_READFILE_ALLOC_ASYNC_CL ? getOrCreateTuaFsReadfileAllocAsyncCl(compiler)
+                         : (builtinId == BI_TUA_FS_STAT_ASYNC_CL          ? getOrCreateTuaFsStatAsyncCl(compiler)
+                                                                          : getOrCreateTuaFsReaddirAsyncCl(compiler));
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args4[4] = { loopV, wq, path, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
@@ -2743,7 +2809,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsWritefileStrAsyncCl) {
+    if (builtinId == BI_TUA_FS_WRITEFILE_STR_ASYNC_CL) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 5) {
             emitDebug("tua_fs_writefile_str_async_cl expects 5 arguments\n");
@@ -2774,7 +2840,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (isTuaFsStringArrayFree) {
+    if (builtinId == BI_TUA_FS_STRING_ARRAY_FREE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
             emitDebug("tua_fs_string_array_free expects 1 argument\n");

@@ -148,7 +148,7 @@ tua_err_t tua_fs_stat_simple(
 
     *out_size = (int64_t)st.st_size;
     *out_mode = (int32_t)st.st_mode;
-#if defined(__APPLE__)
+#if defined(TUA_OS_DARWIN)
     *out_mtime_ns = (int64_t)tua_timespec_to_ns(st.st_mtimespec);
 #else
     *out_mtime_ns = (int64_t)tua_timespec_to_ns(st.st_mtim);
@@ -279,4 +279,3 @@ void tua_fs_dirlist_free(char** names, size_t count) {
 }
 
 #endif
-

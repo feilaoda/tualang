@@ -293,7 +293,7 @@ static void tua_stat_worker(void* p) {
         job->err = TUA_OK;
         job->st.size = (uint64_t)st.st_size;
         job->st.mode = (uint32_t)st.st_mode;
-#if defined(__APPLE__)
+#if defined(TUA_OS_DARWIN)
         job->st.mtime_ns = tua_timespec_to_ns(st.st_mtimespec);
 #else
         job->st.mtime_ns = tua_timespec_to_ns(st.st_mtim);
