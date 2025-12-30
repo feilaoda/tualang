@@ -100,7 +100,9 @@
 - [ ] 统一句柄模型：文件/目录/Socket/线程句柄类型（避免上层直接依赖 fd/HANDLE）
   - [x] 基础：引入 `tua_handle_t` + `tua_io_start_handle`（loop watcher 先完成）
   - [x] 网络：补齐 `tua_tcp_socket_handle`/`tua_tcp_listener_handle`（先提供 accessor，后续再移除 fd 暴露）
-  - [ ] 兼容期收敛：std/rt 与测试不再依赖 fd API（逐步废弃 `tua_io_start`/`tua_tcp_socket_fd`）
+  - [x] 兼容期收敛：std/rt 与测试不再依赖 fd API（逐步废弃 `tua_io_start`/`tua_tcp_socket_fd`）
+  - [ ] 破坏性升级：移除 fd API（只保留 handle API）
+  - [ ] 文件/目录句柄：补齐 `tua_file_t`/`tua_dir_t`（或统一 handle+kind），避免上层依赖 fd/`DIR*`
 - [x] 路径与编码约束：上层一律 UTF-8（已写约束）
 - [ ] Windows 路径：UTF-16 转换 + 测试用例
 - [x] 取消模型：`tua_cancel_t`（为 async/协程预留）
@@ -126,6 +128,8 @@
 - [x] `rt_loop`：跨线程唤醒（pipe），支持从其他线程 post 到 loop
 - [x] `rt_task`：任务队列（post 到 loop 线程执行）
   - [x] `std.time/async`：`afterMs` 定时回调（第一版）
+  - [x] repeating timer：`everyMs` + cancel（为心跳/重试/调度提供基础能力）
+  - [x] loop post 绑定：`tua_loop_post_cl`（Tua 侧可直接投递任务到 loop）
 
 #### 10.6 异步网络（R3-net-async）
 - [x] `rt_net`：non-blocking socket + loop 集成（connect/accept/read/write）
@@ -142,9 +146,51 @@
 - [x] `std.fs.async`（Tua）：高层 async 文件 API
 - [ ] 后续优化（可选）：Linux io_uring / macOS 特定方案（不阻塞主线）
 
-#### 10.8 Windows（R5-win32，占位 -> 落地）
+#### 10.8 Windows（R5-win32，占位 -> 以后落地）
 - [x] 先提供 win32 stub：编译通过但返回 `TUA_E_NOTSUP`（保证扩展点固定）
 - [ ] `rt_loop` Windows：先落地最小 loop（IOCP + post + timer），再逐步补齐 watcher/IO
 - [ ] `rt_loop` Windows 后端：IOCP
 - [ ] `rt_net` Windows：Winsock + IOCP
 - [ ] `rt_fs_async` Windows：Overlapped I/O + IOCP（或线程池过渡）
+
+### 11. LLM 推理（CPU-first，先跑通再优化）
+
+目标：先在 macOS/Linux 上跑通 **本地推理**（CPU），不依赖大型外部运行时；Windows 后续对齐。
+
+原则：**不把应用（LLM）逻辑耦合进编译器**。
+- 编译器只提供通用语言能力与通用 FFI/构建能力；不新增任何 “llm 专用 builtin”。
+- `tua_rt` 只提供跨平台底座（内存/线程/文件/时间/句柄/loop）；不内置模型/推理算法。
+- `std` 提供可复用的通用库（bytes/io/json/tokenizer 等）；LLM 逻辑优先放到独立的 `llm` 包/库中（Tua + 可选 C 内核）。
+
+#### 11.1 语言/编译器（通用能力，不专属于 LLM）
+- [ ] 基础数值类型：`u8/i8/f32`（至少）与明确的溢出/转换规则
+- [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器）
+- [ ] 通用 FFI：Tua 侧声明外部符号与签名（例如 `extern fn ...`），避免在编译器里维护函数名白名单
+- [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
+
+#### 11.2 `tua_rt`（跨平台底座）
+- [ ] 大文件能力：流式读取 + `mmap`（POSIX 第一版），Windows 先 stub
+- [ ] 线程/并行：workqueue + 原子/CPU feature 探测（为 SIMD/量化做准备）
+- [ ] RNG：可复现的基础随机数（用于 sampling；也可由 std/llm 自带实现）
+
+#### 11.3 `std`（通用库，LLM 可复用）
+- [ ] `std.bytes` / `std.io`：Reader/BufReader、bytes 操作、UTF-8 边界工具
+- [ ] `std.json`（轻量实现即可）：模型配置/metadata/推理参数解析
+- [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能
+
+#### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
+说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。
+- [ ] 模型格式：先支持一种主流格式（建议 GGUF），能解析 metadata 与 tensor
+- [ ] 数学内核：f32 baseline matmul/dot（可先朴素），再逐步并行化/向量化
+- [ ] KV cache：数据结构与更新（注意内存占用与布局）
+- [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
+- [ ] Runner：提供 `examples/llm/run.tua`（或独立 CLI 工具），通过 `tuac run ...` 运行
+
+#### 11.2 R-llm-1：性能与量化
+- [ ] 量化：q4/q8（至少一种）+ 对应 dot kernel
+- [ ] SIMD：SSE/AVX/NEON（按平台探测），逐步替换 baseline
+- [ ] Prefill/Decode 调度：线程划分、batch、缓存友好
+
+#### 11.3 R-llm-2：工程化与生态
+- [ ] `std.http`（可选）：模型/配置加载
+- [ ] 流式输出：token-by-token callback/iterator 语义（对接 UI/Agent）

@@ -22,9 +22,12 @@ typedef enum {
     BI_TUA_TIME_REAL_NS,
     BI_TUA_SLEEP_NS,
     BI_TUA_TIMER_AFTER_MS_CL,
+    BI_TUA_TIMER_EVERY_MS_CL,
+    BI_TUA_TIMER_EVERY_CANCEL_CL,
     BI_TUA_LOOP_CREATE,
     BI_TUA_LOOP_RUN,
     BI_TUA_LOOP_STOP,
+    BI_TUA_LOOP_POST_CL,
     BI_TUA_LOOP_FREE,
     BI_TUA_WORKQUEUE_CREATE,
     BI_TUA_WORKQUEUE_FREE,
@@ -85,11 +88,14 @@ static BuiltinId lookupBuiltinId(const Token* token) {
         BI_ENTRY("tua_fs_writefile_str_async_cl", BI_TUA_FS_WRITEFILE_STR_ASYNC_CL),
         BI_ENTRY("tua_loop_create", BI_TUA_LOOP_CREATE),
         BI_ENTRY("tua_loop_free", BI_TUA_LOOP_FREE),
+        BI_ENTRY("tua_loop_post_cl", BI_TUA_LOOP_POST_CL),
         BI_ENTRY("tua_loop_run", BI_TUA_LOOP_RUN),
         BI_ENTRY("tua_loop_stop", BI_TUA_LOOP_STOP),
         BI_ENTRY("tua_parse_int", BI_TUA_PARSE_INT),
         BI_ENTRY("tua_sleep_ns", BI_TUA_SLEEP_NS),
         BI_ENTRY("tua_timer_after_ms_cl", BI_TUA_TIMER_AFTER_MS_CL),
+        BI_ENTRY("tua_timer_every_cancel_cl", BI_TUA_TIMER_EVERY_CANCEL_CL),
+        BI_ENTRY("tua_timer_every_ms_cl", BI_TUA_TIMER_EVERY_MS_CL),
         BI_ENTRY("tua_time_mono_ns", BI_TUA_TIME_MONO_NS),
         BI_ENTRY("tua_time_real_ns", BI_TUA_TIME_REAL_NS),
         BI_ENTRY("tua_tcp_accept_cancel_cl", BI_TUA_TCP_ACCEPT_CANCEL_CL),
@@ -639,6 +645,28 @@ static LLVMValueRef getOrCreateTuaTimerAfterMsCl(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_timer_after_ms_cl", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaTimerEveryMsCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_timer_every_ms_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[4] = { i8ptr, i64, closure, i8ptrptr };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 4, 0);
+    return LLVMAddFunction(compiler->module, "tua_timer_every_ms_cl", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTimerEveryCancelCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_timer_every_cancel_cl");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_timer_every_cancel_cl", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaLoopCreate(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_create");
     if (existing) return existing;
@@ -676,6 +704,17 @@ static LLVMValueRef getOrCreateTuaLoopStop(Compiler* compiler) {
     LLVMTypeRef params[1] = { i8ptr };
     LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_loop_stop", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaLoopPostCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_loop_post_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[2] = { i8ptr, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_loop_post_cl", fnType);
 }
 
 static LLVMValueRef getOrCreateTuaWorkqueueCreate(Compiler* compiler) {
@@ -2329,6 +2368,58 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
+    if (builtinId == BI_TUA_TIMER_EVERY_MS_CL) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 4) {
+            emitDebug("tua_timer_every_ms_cl expects 4 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef interval = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        LLVMValueRef outHandlePtr = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+        if (!loopV || !interval || !cb || !outHandlePtr) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i8ptrptr = LLVMPointerType(i8ptr, 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        interval = castValueToType(compiler, interval, i64);
+        cb = castValueToType(compiler, cb, closure);
+        outHandlePtr = castValueToType(compiler, outHandlePtr, i8ptrptr);
+        LLVMValueRef fn = getOrCreateTuaTimerEveryMsCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args4[4] = { loopV, interval, cb, outHandlePtr };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (builtinId == BI_TUA_TIMER_EVERY_CANCEL_CL) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_timer_every_cancel_cl expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef handleV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!handleV) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        handleV = castValueToType(compiler, handleV, i8ptr);
+        LLVMValueRef fn = getOrCreateTuaTimerEveryCancelCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &handleV, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
     if (builtinId == BI_TUA_LOOP_CREATE) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
         if (got != 1) {
@@ -2368,6 +2459,31 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMValueRef fn = getOrCreateTuaLoopRun(compiler);
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &loopV, 1, "err");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (builtinId == BI_TUA_LOOP_POST_CL) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 2) {
+            emitDebug("tua_loop_post_cl expects 2 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        if (!loopV || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaLoopPostCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args2[2] = { loopV, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }

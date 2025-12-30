@@ -49,6 +49,28 @@ object Rt {
         return tua_timer_after_ms_cl(loop, d, cb)
     }
 
+    // Post `cb` onto the loop thread.
+    // Callback signature: `fn()`.
+    fn post(loop: ptr, cb: () -> void) int {
+        return tua_loop_post_cl(loop, cb)
+    }
+
+    // Start a repeating timer; callback signature: `fn()`.
+    // Returns an opaque timer-handle `ptr` which must be cancelled to free resources.
+    fn everyMs(loop: ptr, intervalMs: int, cb: () -> void) -> ptr {
+        let h: ptr = null
+        let d: long = intervalMs
+        let err = tua_timer_every_ms_cl(loop, d, cb, &h)
+        if err != 0 {
+            return null
+        }
+        return h
+    }
+
+    fn everyCancel(handle: ptr) {
+        tua_timer_every_cancel_cl(handle)
+    }
+
     fn loopCreate() -> ptr {
         let loop: ptr = null
         let err = tua_loop_create(&loop)

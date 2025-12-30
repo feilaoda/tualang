@@ -90,6 +90,97 @@ tua_err_t tua_timer_after_ms_cl(tua_loop_t* loop, int64_t delay_ms, tua_closure_
     return TUA_OK;
 }
 
+typedef struct {
+    tua_closure_t cb;
+} tua_post_cl_ctx_t;
+
+static void tua_post_cl_task(void* arg) {
+    tua_post_cl_ctx_t* ctx = (tua_post_cl_ctx_t*)arg;
+    if (ctx == NULL) return;
+    tua_call_void0(ctx->cb);
+    tua_free(ctx);
+}
+
+tua_err_t tua_loop_post_cl(tua_loop_t* loop, tua_closure_t cb) {
+    if (loop == NULL) {
+        return TUA_E_INVALID;
+    }
+    tua_post_cl_ctx_t* ctx = (tua_post_cl_ctx_t*)tua_malloc(sizeof(*ctx));
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
+    ctx->cb = cb;
+    tua_err_t err = tua_loop_post(loop, tua_post_cl_task, ctx);
+    if (err != TUA_OK) {
+        tua_free(ctx);
+        return err;
+    }
+    return TUA_OK;
+}
+
+typedef struct {
+    tua_loop_t* loop;
+    tua_timer_t* timer;
+    tua_closure_t cb;
+} tua_timer_every_cl_handle_t;
+
+static void tua_timer_every_cl_cb(void* arg) {
+    tua_timer_every_cl_handle_t* h = (tua_timer_every_cl_handle_t*)arg;
+    if (h == NULL) return;
+    tua_call_void0(h->cb);
+}
+
+static void tua_timer_every_free_task(void* arg) {
+    tua_timer_every_cl_handle_t* h = (tua_timer_every_cl_handle_t*)arg;
+    if (h == NULL) return;
+    tua_free(h);
+}
+
+tua_err_t tua_timer_every_ms_cl(
+    tua_loop_t* loop,
+    int64_t interval_ms,
+    tua_closure_t cb,
+    void** out_handle
+) {
+    if (loop == NULL || out_handle == NULL) {
+        return TUA_E_INVALID;
+    }
+    if (interval_ms <= 0) {
+        return TUA_E_INVALID;
+    }
+    tua_timer_every_cl_handle_t* h = (tua_timer_every_cl_handle_t*)tua_malloc(sizeof(*h));
+    if (h == NULL) {
+        return TUA_E_NOMEM;
+    }
+    h->loop = loop;
+    h->timer = NULL;
+    h->cb = cb;
+
+    tua_err_t err = tua_timer_start(loop, &h->timer, (uint64_t)interval_ms, (uint64_t)interval_ms, tua_timer_every_cl_cb, h);
+    if (err != TUA_OK) {
+        tua_free(h);
+        return err;
+    }
+    *out_handle = h;
+    return TUA_OK;
+}
+
+void tua_timer_every_cancel_cl(void* handle) {
+    tua_timer_every_cl_handle_t* h = (tua_timer_every_cl_handle_t*)handle;
+    if (h == NULL) return;
+
+    if (h->timer != NULL) {
+        tua_timer_cancel(h->timer);
+        h->timer = NULL;
+    }
+    if (h->loop == NULL) {
+        return;
+    }
+    if (tua_loop_post(h->loop, tua_timer_every_free_task, h) != TUA_OK) {
+        return;
+    }
+}
+
 tua_err_t tua_fs_readfile_alloc(const char* path_utf8, char** out_data, int32_t* out_len) {
     (void)path_utf8;
     if (out_data) *out_data = NULL;
