@@ -1,5 +1,7 @@
 // String <-> number conversions.
 
+private extern fn tua_parse_int(s: string, out: &int) int
+
 object Int {
     // Parse base-10 int. Returns None() on invalid input or overflow.
     fn parse(s: string) -> Option<int> {
@@ -10,4 +12,3 @@ object Int {
         return None()
     }
 }
-

@@ -25,6 +25,7 @@ typedef enum {
     TOKEN_IN,
     TOKEN_OBJECT,
     TOKEN_ENUM,
+    TOKEN_EXTERN,
     TOKEN_PRIVATE,
     TOKEN_THIS,
     TOKEN_DEINIT,

@@ -80,6 +80,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_IN: return "in";
         case TOKEN_OBJECT: return "object";
         case TOKEN_ENUM: return "enum";
+        case TOKEN_EXTERN: return "extern";
         case TOKEN_PRIVATE: return "private";
         case TOKEN_THIS: return "this";
         case TOKEN_DEINIT: return "deinit";
@@ -242,6 +243,9 @@ static TokenType identifierType(Lexer* lexer) {
         case 'e':
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "enum", 4) == 0) {
                 return TOKEN_ENUM;
+            }
+            if (lexer->current - lexer->start == 6 && memcmp(lexer->start, "extern", 6) == 0) {
+                return TOKEN_EXTERN;
             }
             return checkKeyword(lexer, 1, 3, "lse", TOKEN_ELSE);
         case 'w':

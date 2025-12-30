@@ -1304,6 +1304,59 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     return newFuncStmt(name, parameters, returnType, returnTypes, body);
 }
 
+static Stmt* parseExternFunctionDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect function name");
+    consume(parser, TOKEN_LPAREN, "Expect '(' after function name");
+
+    List* parameters = listNew();
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
+            Type* type = NULL;
+            if (match(parser, TOKEN_COLON)) {
+                type = parseType(parser);
+            }
+            listAppend(parameters, newParameter(param, type));
+        } while (match(parser, TOKEN_COMMA));
+    }
+    consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
+
+    Type* returnType = NULL;
+    List* returnTypes = NULL;
+    if (match(parser, TOKEN_ARROW)) {
+        returnTypes = listNew();
+        returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
+    } else if (check(parser, TOKEN_INT) ||
+               check(parser, TOKEN_LONG) ||
+               check(parser, TOKEN_DOUBLE) ||
+               check(parser, TOKEN_FLOAT) ||
+               check(parser, TOKEN_STRING) ||
+               check(parser, TOKEN_BOOL) ||
+               check(parser, TOKEN_IDENTIFIER) ||
+               check(parser, TOKEN_AMP) ||
+               check(parser, TOKEN_LPAREN)) {
+        // Support `extern fn f(...) int` as sugar for `extern fn f(...) -> int`.
+        returnTypes = listNew();
+        returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
+    }
+
+    if (check(parser, TOKEN_SEMICOLON)) {
+        consume(parser, TOKEN_SEMICOLON, "Expect statement separator after extern fn declaration");
+    }
+
+    return newFuncStmt(name, parameters, returnType, returnTypes, NULL);
+}
+
 static Stmt* parseStructDeclaration(Parser* parser) {
     parserDebugStart("parseStructDeclaration");
     
@@ -1499,10 +1552,6 @@ static Type* parseType(Parser* parser) {
         } else {
             Type* t = parseType(parser);
             listAppend(returnTypes, t);
-            while (match(parser, TOKEN_COMMA)) {
-                Type* more = parseType(parser);
-                listAppend(returnTypes, more);
-            }
         }
 
         Type* type = malloc(sizeof(Type));
@@ -1840,6 +1889,11 @@ static Stmt* declaration(Parser* parser) {
 
     if (match(parser, TOKEN_FUNC)) {
         return parseFunctionDeclaration(parser);
+    }
+
+    if (match(parser, TOKEN_EXTERN)) {
+        consume(parser, TOKEN_FUNC, "Expect 'fn' after 'extern'");
+        return parseExternFunctionDeclaration(parser);
     }
     
     if (match(parser, TOKEN_VAR) || match(parser, TOKEN_CONST)) {

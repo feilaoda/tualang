@@ -76,7 +76,7 @@ typedef enum {
     TYPE_NAMED,
     TYPE_REF,
     TYPE_ARRAY,
-    // Function type syntax: `(args...) -> ret[,ret2...]` or `(args...) -> (ret, ret2, ...)`
+    // Function type syntax: `(args...) -> ret` or `(args...) -> (ret, ret2, ...)`
     TYPE_FUNC
 } TypeKind;
 

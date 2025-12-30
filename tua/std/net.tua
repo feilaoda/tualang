@@ -1,5 +1,18 @@
 import "std/rt" as rt
 
+private extern fn tua_tcp_listen(host: string, port: string, backlog: int, outListener: &ptr) int
+private extern fn tua_tcp_listener_local_port(listener: ptr) int
+private extern fn tua_tcp_listener_close(listener: ptr)
+private extern fn tua_tcp_socket_close(sock: ptr)
+
+private extern fn tua_tcp_accept_start_cl(loop: ptr, listener: ptr, cb: (int, ptr) -> void, outHandle: &ptr) int
+private extern fn tua_tcp_accept_cancel_cl(handle: ptr)
+
+private extern fn tua_tcp_connect_async_cl(loop: ptr, wq: ptr, host: string, port: string, deadline: long, cb: (int, ptr) -> void) int
+private extern fn tua_tcp_connect_port_async_cl(loop: ptr, wq: ptr, host: string, port: int, deadline: long, cb: (int, ptr) -> void) int
+private extern fn tua_tcp_write_str_async_cl(loop: ptr, sock: ptr, data: string, deadline: long, cb: (int, long) -> void) int
+private extern fn tua_tcp_read_alloc_async_cl(loop: ptr, sock: ptr, max: int, deadline: long, cb: (int, string, int) -> void) int
+
 object Tcp {
     fn listen(host: string, port: string, backlog: int) -> ptr {
         let lst: ptr = null

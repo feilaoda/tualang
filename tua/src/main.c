@@ -1026,6 +1026,11 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
         // Qualify top-level declarations to avoid cross-module name collisions.
         if (stmt->type == STMT_FUNC) {
             FuncStmt* f = (FuncStmt*)stmt;
+            // `extern fn` binds to an external symbol and must not be qualified.
+            if (f->body == NULL) {
+                compileFuncStmt(compiler, f);
+                continue;
+            }
             int ql = 0;
             char* q = compilerQualifyToken(compiler, &f->name, &ql);
             if (q) {

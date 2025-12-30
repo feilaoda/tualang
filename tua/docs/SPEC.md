@@ -65,6 +65,10 @@
   - `fn name(a[:Type], b[:Type]) -> Type { ... }`
   - `fn name(a[:Type], b[:Type]) Type { ... }`（语法糖，省略 `->`）
   - 形参类型可省略；当前默认按 `int` 处理（完整类型检查见语义层规划）
+- 外部声明（FFI，Status: Implemented）：
+  - `extern fn name(a:Type, b:Type) -> Type`
+  - `extern fn name(a:Type, b:Type) Type`（语法糖，省略 `->`）
+  - 说明：`extern fn` 只声明签名，不包含函数体；用于链接到 `tua_rt` 或系统库符号
 - 返回：
   - `return expr`
   - `return`（void）

@@ -1488,6 +1488,13 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         if (sig) compilerRegisterClosureReturnSig(compiler, funcName, stmt->name.length, sig);
     }
 
+    // `extern fn` declaration: declare prototype only (no body).
+    if (stmt->body == NULL) {
+        if (paramTypes) free(paramTypes);
+        free(funcName);
+        return;
+    }
+
     // Save current insertion point (main)
     LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
     Block* savedCurrent = compiler->current;
