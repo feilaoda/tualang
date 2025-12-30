@@ -1,6 +1,9 @@
 // String <-> number conversions.
 
-private extern fn tua_parse_int(s: string, out: &int) int
+extern fn tua_parse_int(s: string, out: &int) int
+extern fn tua_int_to_string_alloc(i: int) string
+
+extern fn atoi(s: string) -> int
 
 object Int {
     // Parse base-10 int. Returns None() on invalid input or overflow.
@@ -10,5 +13,13 @@ object Int {
             return Some(out)
         }
         return None()
+    }
+
+    fn toString(i: int) -> string {
+        return tua_int_to_string_alloc(i)
+    }
+
+    fn atoi(s: string) -> int {
+        return atoi(s)
     }
 }

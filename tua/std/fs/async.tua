@@ -1,10 +1,10 @@
 import "std/rt" as rt
 
-private extern fn tua_fs_readfile_alloc_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, string, int) -> void) int
-private extern fn tua_fs_writefile_str_async_cl(loop: ptr, wq: ptr, path: string, data: string, cb: (int, ptr) -> void) int
-private extern fn tua_fs_stat_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, int, long, long, int) -> void) int
-private extern fn tua_fs_readdir_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, string[]) -> void) int
-private extern fn tua_fs_string_array_free(names: string[])
+extern fn tua_fs_readfile_alloc_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, string, int) -> void) int
+extern fn tua_fs_writefile_str_async_cl(loop: ptr, wq: ptr, path: string, data: string, cb: (int, ptr) -> void) int
+extern fn tua_fs_stat_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, int, long, long, int) -> void) int
+extern fn tua_fs_readdir_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, string[]) -> void) int
+extern fn tua_fs_string_array_free(names: string[])
 
 object FsAsync {
     // Allocates a NUL-terminated buffer and reads the file. Buffer must be freed via `rt.Rt.free`.

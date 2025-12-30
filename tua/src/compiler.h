@@ -81,6 +81,15 @@ typedef struct Compiler{
     // When set, compile to native executable at this path instead of running via JIT.
     const char* outputPath;
 
+    // AOT link options (passed to the system linker/clang when `--output` is used).
+    // Stored as raw argv-backed strings; lifetime is the process lifetime.
+    List* linkSearchPaths; // List<const char*> for -L
+    List* linkLibs;        // List<const char*> for -l
+    List* linkArgs;        // List<const char*> raw args (e.g. -Wl,... or /path/to/libfoo.a)
+
+    // JIT dynamic library loads (POSIX-only for now).
+    List* dlopenPaths;     // List<const char*>
+
     // Script args for JIT execution (passed to generated `main(argc, argv)`).
     int runArgc;
     char** runArgv;

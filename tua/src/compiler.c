@@ -66,6 +66,10 @@ void initCompiler(Compiler* compiler) {
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
     compiler->outputPath = NULL;
+    compiler->linkSearchPaths = listNew();
+    compiler->linkLibs = listNew();
+    compiler->linkArgs = listNew();
+    compiler->dlopenPaths = listNew();
     compiler->runArgc = 0;
     compiler->runArgv = NULL;
     compiler->uncheckedIndex = 0;

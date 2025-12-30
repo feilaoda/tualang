@@ -167,6 +167,14 @@
 - [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器）
 - [x] 通用 FFI：Tua 侧声明外部符号与签名（例如 `extern fn ...`），避免在编译器里维护函数名白名单
 - [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
+  - [x] CLI：`tuac` 支持 `--link-search/-L`、`--link-lib/-l`、`--link-arg`（透传到系统链接器）
+  - [x] AOT：`tuac --output a.out` 时把外部库链接进最终可执行文件（macOS/Linux）
+  - [ ] JIT：把外部库链接进宿主 `tuac`（或 `dlopen`）以便 JIT 解析符号
+    - [ ] macOS：支持对 `.a` 使用 `-Wl,-force_load`（类似当前 `tua_rt` 的 `RT_LINK`）
+    - [ ] Linux：支持对 `.a` 使用 `--whole-archive/--no-whole-archive`
+    - [x] 可选：运行时 `--dlopen <path>`（POSIX）加载 `.so/.dylib`（Windows 先占位）
+    - [ ] 可选：`--check-extern`（JIT）：启动前用 `dlsym` 预检本次编译单元里的 `extern fn` 符号是否可解析
+  - [ ] 诊断：链接失败/缺符号时给出清晰报错（包含库名/符号名/建议参数）
 
 #### 11.2 `tua_rt`（跨平台底座）
 - [ ] 大文件能力：流式读取 + `mmap`（POSIX 第一版），Windows 先 stub
@@ -174,6 +182,7 @@
 - [ ] RNG：可复现的基础随机数（用于 sampling；也可由 std/llm 自带实现）
 
 #### 11.3 `std`（通用库，LLM 可复用）
+- [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
 - [ ] `std.bytes` / `std.io`：Reader/BufReader、bytes 操作、UTF-8 边界工具
 - [ ] `std.json`（轻量实现即可）：模型配置/metadata/推理参数解析
 - [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能

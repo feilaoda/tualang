@@ -4,24 +4,24 @@
 // - `ptr` is an opaque pointer type (lowered as i8*).
 // - Some async functions return buffers that must be freed via `Rt.free`.
 
-private extern fn tua_free(p: ptr)
-private extern fn tua_deadline_after_ms(ms: long) long
-private extern fn tua_time_mono_ns() long
-private extern fn tua_time_real_ns() long
-private extern fn tua_sleep_ns(ns: long)
+extern fn tua_free(p: ptr)
+extern fn tua_deadline_after_ms(ms: long) long
+extern fn tua_time_mono_ns() long
+extern fn tua_time_real_ns() long
+extern fn tua_sleep_ns(ns: long)
 
-private extern fn tua_timer_after_ms_cl(loop: ptr, delayMs: long, cb: () -> void) int
-private extern fn tua_loop_post_cl(loop: ptr, cb: () -> void) int
-private extern fn tua_timer_every_ms_cl(loop: ptr, intervalMs: long, cb: () -> void, outHandle: &ptr) int
-private extern fn tua_timer_every_cancel_cl(handle: ptr)
+extern fn tua_timer_after_ms_cl(loop: ptr, delayMs: long, cb: () -> void) int
+extern fn tua_loop_post_cl(loop: ptr, cb: () -> void) int
+extern fn tua_timer_every_ms_cl(loop: ptr, intervalMs: long, cb: () -> void, outHandle: &ptr) int
+extern fn tua_timer_every_cancel_cl(handle: ptr)
 
-private extern fn tua_loop_create(outLoop: &ptr) int
-private extern fn tua_loop_run(loop: ptr) int
-private extern fn tua_loop_stop(loop: ptr)
-private extern fn tua_loop_free(loop: ptr)
+extern fn tua_loop_create(outLoop: &ptr) int
+extern fn tua_loop_run(loop: ptr) int
+extern fn tua_loop_stop(loop: ptr)
+extern fn tua_loop_free(loop: ptr)
 
-private extern fn tua_workqueue_create(outWq: &ptr, threads: int) int
-private extern fn tua_workqueue_free(wq: ptr)
+extern fn tua_workqueue_create(outWq: &ptr, threads: int) int
+extern fn tua_workqueue_free(wq: ptr)
 
 object Rt {
     fn free(p: ptr) {

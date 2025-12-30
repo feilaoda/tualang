@@ -1,0 +1,9 @@
+import "std/rt" as rt
+
+extern fn strlen(s: string) long
+
+let n = strlen("hello")
+assert(n == 5)
+// no allocations here; keep a std/rt import to ensure std path works in AOT tests
+rt.Rt.sleepMs(0)
+

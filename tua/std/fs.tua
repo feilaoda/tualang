@@ -1,12 +1,12 @@
 import "std/rt" as rt
 
-private extern fn tua_fs_readfile_alloc(path: string, outData: &string, outLen: &int) int
-private extern fn tua_fs_writefile_str(path: string, data: string) int
-private extern fn tua_fs_stat_simple(path: string, outKind: &int, outSize: &long, outMtimeNs: &long, outMode: &int) int
-private extern fn tua_fs_mkdir(path: string, mode: int) int
-private extern fn tua_fs_realpath_alloc(path: string, outPath: &string) int
-private extern fn tua_fs_readdir_arr(path: string, outErr: &int) -> string[]
-private extern fn tua_fs_string_array_free(names: string[])
+extern fn tua_fs_readfile_alloc(path: string, outData: &string, outLen: &int) int
+extern fn tua_fs_writefile_str(path: string, data: string) int
+extern fn tua_fs_stat_simple(path: string, outKind: &int, outSize: &long, outMtimeNs: &long, outMode: &int) int
+extern fn tua_fs_mkdir(path: string, mode: int) int
+extern fn tua_fs_realpath_alloc(path: string, outPath: &string) int
+extern fn tua_fs_readdir_arr(path: string, outErr: &int) -> string[]
+extern fn tua_fs_string_array_free(names: string[])
 
 object Fs {
     // Reads an entire file into a NUL-terminated buffer. Caller must free via `rt.Rt.free`.

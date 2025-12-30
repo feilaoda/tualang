@@ -10,6 +10,10 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
+
 #include "lexer.h"
 #include "parser.h"
 #include "compiler.h"
@@ -218,6 +222,12 @@ static void moduleComputeExports(ModuleInfo* module) {
         int ok = 1;
         switch (s->type) {
             case STMT_FUNC:
+                // `extern fn` declarations are internal-only bindings (like C prototypes)
+                // and are not part of the module export surface.
+                if (((FuncStmt*)s)->body == NULL) {
+                    ok = 0;
+                    break;
+                }
                 nameTok = ((FuncStmt*)s)->name;
                 kind = EXPORT_FUNC;
                 break;
@@ -777,6 +787,40 @@ static char* findRuntimeSrcDir(const char* argv0) {
     return NULL;
 }
 
+static char* findRuntimeArchivePath(const char* argv0) {
+    // Prefer current working directory layout: ./bin/libtuart.a
+    if (fileExists("bin/libtuart.a")) {
+        return dupCStringN("bin/libtuart.a", (int)strlen("bin/libtuart.a"));
+    }
+
+    // Try relative to argv0: <root>/bin/tuac => <root>/bin/libtuart.a
+    char* exePath = resolveExecutablePath(argv0);
+    const char* p = exePath ? exePath : argv0;
+    if (!p || !strchr(p, '/')) {
+        if (exePath) free(exePath);
+        return NULL;
+    }
+    char* binDir = dirOfPath(p);
+    if (exePath) free(exePath);
+
+    char* root = NULL;
+    int dl = (int)strlen(binDir);
+    if (dl >= 4 && memcmp(binDir + dl - 4, "/bin", 4) == 0) {
+        root = dupCStringN(binDir, dl - 4);
+    } else {
+        root = dupCStringN(binDir, dl);
+    }
+    free(binDir);
+
+    char* cand = joinPath(root, "bin/libtuart.a");
+    free(root);
+    if (!fileExists(cand)) {
+        free(cand);
+        return NULL;
+    }
+    return cand;
+}
+
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
     if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
 
@@ -816,6 +860,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 
     char* mapC = joinPath(srcDir, "tua_map.c");
     char* arrC = joinPath(srcDir, "tua_array.c");
+    char* rtArchive = findRuntimeArchivePath(argv0);
 
     // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC>
     const char* clangExe = "clang";
@@ -827,17 +872,47 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         default: optFlag = "-O3"; break;
     }
 
-    const char* args[16];
+    int linkSearchCount = compiler->linkSearchPaths ? compiler->linkSearchPaths->length : 0;
+    int linkLibCount = compiler->linkLibs ? compiler->linkLibs->length : 0;
+    int linkArgCount = compiler->linkArgs ? compiler->linkArgs->length : 0;
+
+    int cap = 32 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
+    char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
-    args[n++] = clangExe;
-    args[n++] = optFlag;
-    args[n++] = "-I";
+
+    args[n++] = (char*)clangExe;
+    args[n++] = (char*)optFlag;
+    args[n++] = (char*)"-I";
     args[n++] = srcDir;
-    args[n++] = "-o";
-    args[n++] = outPath;
+    args[n++] = (char*)"-o";
+    args[n++] = (char*)outPath;
+    args[n++] = (char*)"-pthread";
     args[n++] = objTemplate;
     args[n++] = mapC;
     args[n++] = arrC;
+    if (rtArchive) args[n++] = rtArchive;
+
+    // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
+    for (ListNode* it = compiler->linkArgs ? compiler->linkArgs->head : NULL; it != NULL; it = it->next) {
+        const char* a = (const char*)it->data;
+        if (!a || a[0] == '\0') continue;
+        args[n++] = (char*)a;
+    }
+
+    // Search paths, then -l libs (order matters).
+    for (ListNode* it = compiler->linkSearchPaths ? compiler->linkSearchPaths->head : NULL; it != NULL; it = it->next) {
+        const char* dir = (const char*)it->data;
+        if (!dir || dir[0] == '\0') continue;
+        args[n++] = (char*)"-L";
+        args[n++] = (char*)dir;
+    }
+    for (ListNode* it = compiler->linkLibs ? compiler->linkLibs->head : NULL; it != NULL; it = it->next) {
+        const char* lib = (const char*)it->data;
+        if (!lib || lib[0] == '\0') continue;
+        args[n++] = (char*)"-l";
+        args[n++] = (char*)lib;
+    }
+
     args[n++] = NULL;
 
     pid_t pid = fork();
@@ -846,7 +921,9 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         unlink(objTemplate);
         free(mapC);
         free(arrC);
+        free(rtArchive);
         free(srcDir);
+        free(args);
         return 1;
     }
     if (pid == 0) {
@@ -868,7 +945,9 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     unlink(objTemplate);
     free(mapC);
     free(arrC);
+    free(rtArchive);
     free(srcDir);
+    free(args);
     return status == 0 ? 0 : 1;
 }
 
@@ -1137,6 +1216,9 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
 }
 
 int main(int argc, char* argv[]) {
+    Compiler compiler;
+    initCompiler(&compiler);
+
     int optLevel = 0;
     const char* srcPath = NULL;
     const char* outPath = NULL;
@@ -1157,7 +1239,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
@@ -1190,6 +1272,84 @@ int main(int argc, char* argv[]) {
             if (optLevel < 3) optLevel = 3;
             continue;
         }
+        if (strncmp(a, "--link-arg=", 11) == 0) {
+            const char* v = a + 11;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkArgs, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "--link-arg") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkArgs, (void*)v);
+            continue;
+        }
+        if (strncmp(a, "--dlopen=", 9) == 0) {
+            const char* v = a + 9;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.dlopenPaths, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "--dlopen") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.dlopenPaths, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "-L") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* dir = argv[++i];
+            if (!dir || dir[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkSearchPaths, (void*)dir);
+            continue;
+        }
+        if (strncmp(a, "-L", 2) == 0 && a[2] != '\0') {
+            listAppend(compiler.linkSearchPaths, (void*)(a + 2));
+            continue;
+        }
+        if (strcmp(a, "-l") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* lib = argv[++i];
+            if (!lib || lib[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkLibs, (void*)lib);
+            continue;
+        }
+        if (strncmp(a, "-l", 2) == 0 && a[2] != '\0') {
+            listAppend(compiler.linkLibs, (void*)(a + 2));
+            continue;
+        }
         if (strncmp(a, "--output=", 9) == 0) {
             outPath = a + 9;
             if (!outPath || outPath[0] == '\0') {
@@ -1218,11 +1378,9 @@ int main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
         return 1;
     }
-    Compiler compiler;
-    initCompiler(&compiler);
     compiler.llvmOptLevel = optLevel;
     compiler.outputPath = outPath;
     compiler.uncheckedIndex = uncheckedIndex;
@@ -1233,6 +1391,22 @@ int main(int argc, char* argv[]) {
     compiler.runArgv = malloc(sizeof(char*) * (size_t)compiler.runArgc);
     compiler.runArgv[0] = argv[0];
     for (int i = 0; i < runArgc; i++) compiler.runArgv[i + 1] = runArgv[i];
+
+    // For JIT mode, allow loading external dynamic libraries to satisfy `extern fn` symbols.
+#if defined(__unix__) || defined(__APPLE__)
+    for (ListNode* it = compiler.dlopenPaths ? compiler.dlopenPaths->head : NULL; it != NULL; it = it->next) {
+        const char* p = (const char*)it->data;
+        if (!p || p[0] == '\0') continue;
+        void* h = dlopen(p, RTLD_NOW | RTLD_GLOBAL);
+        if (!h) {
+            fprintf(stderr, "error: dlopen failed for %s: %s\n", p, dlerror());
+            if (compiler.runArgv) free(compiler.runArgv);
+            if (runArgv) free(runArgv);
+            return 1;
+        }
+    }
+#endif
+
     initLLVM(&compiler);
 
     ModuleSystem sys;
