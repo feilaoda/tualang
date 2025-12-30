@@ -13,6 +13,8 @@
 
 - `std/strconv`：字符串与数字转换（`Int.parse`）
 - `std/rt`：运行时绑定（loop/workqueue/deadline/free）
+- `std/time`：时间与 sleep
+- `std/time/async`：基于 loop 的定时回调（第一版）
 - `std/fs`：文件系统同步 API
 - `std/net`：TCP 异步网络（基于 loop + callback）
 - `std/fs/async`：文件系统异步 API（基于 workqueue offload）

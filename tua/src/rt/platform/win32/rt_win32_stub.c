@@ -1,11 +1,94 @@
 #ifdef _WIN32
 
 #include "rt/rt_fs.h"
+#include "rt/rt_alloc.h"
 #include "rt/rt_loop.h"
 #include "rt/rt_net.h"
 #include "rt/rt_thread.h"
 
 #include "tua_array.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+typedef struct tua_task {
+    tua_task_fn fn;
+    void* arg;
+} tua_task_t;
+
+typedef struct {
+    void* fn;
+    void* env;
+} tua_closure_t;
+
+static void tua_call_void0(tua_closure_t c) {
+    if (c.fn == NULL) return;
+    union { void* p; void (*f)(void*); } u;
+    u.p = c.fn;
+    u.f(c.env);
+}
+
+struct tua_loop {
+    HANDLE iocp;
+    HANDLE timerq;
+    volatile LONG stop;
+};
+
+struct tua_timer {
+    tua_loop_t* loop;
+    HANDLE h;
+    volatile LONG active;
+    uint64_t repeat_ms;
+    tua_task_fn fn;
+    void* arg;
+};
+
+static void tua_win32_timer_cleanup_common(tua_timer_t* timer, HANDLE completion_event) {
+    if (timer == NULL) {
+        return;
+    }
+    if (timer->h != NULL && timer->loop != NULL && timer->loop->timerq != NULL) {
+        (void)DeleteTimerQueueTimer(timer->loop->timerq, timer->h, completion_event);
+    }
+    tua_free(timer);
+}
+
+static void tua_win32_timer_cleanup_task(void* p) {
+    tua_win32_timer_cleanup_common((tua_timer_t*)p, INVALID_HANDLE_VALUE);
+}
+
+typedef struct {
+    tua_closure_t cb;
+} tua_timer_after_ms_ctx_t;
+
+static void tua_timer_after_ms_cb(void* arg) {
+    tua_timer_after_ms_ctx_t* ctx = (tua_timer_after_ms_ctx_t*)arg;
+    if (ctx == NULL) return;
+    tua_call_void0(ctx->cb);
+    tua_free(ctx);
+}
+
+tua_err_t tua_timer_after_ms_cl(tua_loop_t* loop, int64_t delay_ms, tua_closure_t cb) {
+    if (loop == NULL) {
+        return TUA_E_INVALID;
+    }
+    if (delay_ms <= 0) {
+        tua_call_void0(cb);
+        return TUA_OK;
+    }
+    tua_timer_after_ms_ctx_t* ctx = (tua_timer_after_ms_ctx_t*)tua_malloc(sizeof(*ctx));
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
+    ctx->cb = cb;
+
+    tua_err_t err = tua_timer_start(loop, NULL, (uint64_t)delay_ms, 0, tua_timer_after_ms_cb, ctx);
+    if (err != TUA_OK) {
+        tua_free(ctx);
+        return err;
+    }
+    return TUA_OK;
+}
 
 tua_err_t tua_fs_readfile_alloc(const char* path_utf8, char** out_data, int32_t* out_len) {
     (void)path_utf8;
@@ -130,28 +213,102 @@ tua_err_t tua_cond_broadcast(tua_cond_t* cond) {
 }
 
 tua_err_t tua_loop_create(tua_loop_t** out) {
-    (void)out;
-    return TUA_E_NOTSUP;
+    if (out == NULL) {
+        return TUA_E_INVALID;
+    }
+    tua_loop_t* loop = (tua_loop_t*)tua_malloc(sizeof(*loop));
+    if (loop == NULL) {
+        return TUA_E_NOMEM;
+    }
+    loop->iocp = NULL;
+    loop->timerq = NULL;
+    loop->stop = 0;
+
+    loop->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+    if (loop->iocp == NULL) {
+        tua_free(loop);
+        return TUA_E_IO;
+    }
+    loop->timerq = CreateTimerQueue();
+    if (loop->timerq == NULL) {
+        CloseHandle(loop->iocp);
+        tua_free(loop);
+        return TUA_E_IO;
+    }
+
+    *out = loop;
+    return TUA_OK;
 }
 
 void tua_loop_free(tua_loop_t* loop) {
-    (void)loop;
+    if (loop == NULL) {
+        return;
+    }
+    (void)InterlockedExchange(&loop->stop, 1);
+    if (loop->timerq != NULL) {
+        (void)DeleteTimerQueueEx(loop->timerq, INVALID_HANDLE_VALUE);
+        loop->timerq = NULL;
+    }
+    if (loop->iocp != NULL) {
+        CloseHandle(loop->iocp);
+        loop->iocp = NULL;
+    }
+    tua_free(loop);
 }
 
 tua_err_t tua_loop_run(tua_loop_t* loop) {
-    (void)loop;
-    return TUA_E_NOTSUP;
+    if (loop == NULL || loop->iocp == NULL) {
+        return TUA_E_INVALID;
+    }
+
+    while (InterlockedCompareExchange(&loop->stop, 0, 0) == 0) {
+        DWORD bytes = 0;
+        ULONG_PTR key = 0;
+        LPOVERLAPPED ov = NULL;
+        BOOL ok = GetQueuedCompletionStatus(loop->iocp, &bytes, &key, &ov, INFINITE);
+        (void)ok;
+        (void)bytes;
+        (void)ov;
+
+        if (key == 0) {
+            continue;
+        }
+        tua_task_t* task = (tua_task_t*)key;
+        if (task->fn) {
+            task->fn(task->arg);
+        }
+        tua_free(task);
+    }
+
+    return TUA_OK;
 }
 
 void tua_loop_stop(tua_loop_t* loop) {
-    (void)loop;
+    if (loop == NULL || loop->iocp == NULL) {
+        return;
+    }
+    (void)InterlockedExchange(&loop->stop, 1);
+    (void)PostQueuedCompletionStatus(loop->iocp, 0, 0, NULL);
 }
 
 tua_err_t tua_loop_post(tua_loop_t* loop, tua_task_fn fn, void* arg) {
-    (void)loop;
-    (void)fn;
-    (void)arg;
-    return TUA_E_NOTSUP;
+    if (loop == NULL || loop->iocp == NULL || fn == NULL) {
+        return TUA_E_INVALID;
+    }
+    if (InterlockedCompareExchange(&loop->stop, 0, 0) != 0) {
+        return TUA_E_CANCELED;
+    }
+    tua_task_t* task = (tua_task_t*)tua_malloc(sizeof(*task));
+    if (task == NULL) {
+        return TUA_E_NOMEM;
+    }
+    task->fn = fn;
+    task->arg = arg;
+    if (!PostQueuedCompletionStatus(loop->iocp, 0, (ULONG_PTR)task, NULL)) {
+        tua_free(task);
+        return TUA_E_IO;
+    }
+    return TUA_OK;
 }
 
 tua_err_t tua_io_start_handle(
@@ -186,6 +343,26 @@ void tua_io_cancel(tua_io_t* io) {
     (void)io;
 }
 
+static VOID CALLBACK tua_timerqueue_cb(PVOID param, BOOLEAN fired) {
+    (void)fired;
+    tua_timer_t* timer = (tua_timer_t*)param;
+    if (timer == NULL) {
+        return;
+    }
+    if (InterlockedCompareExchange(&timer->active, 0, 0) == 0) {
+        return;
+    }
+    (void)tua_loop_post(timer->loop, timer->fn, timer->arg);
+    if (timer->repeat_ms == 0) {
+        (void)InterlockedExchange(&timer->active, 0);
+        // One-shot: clean up on the loop thread.
+        if (tua_loop_post(timer->loop, tua_win32_timer_cleanup_task, timer) != TUA_OK) {
+            // Best-effort cleanup without waiting (avoid deadlock inside callback).
+            tua_win32_timer_cleanup_common(timer, NULL);
+        }
+    }
+}
+
 tua_err_t tua_timer_start(
     tua_loop_t* loop,
     tua_timer_t** out,
@@ -194,17 +371,42 @@ tua_err_t tua_timer_start(
     tua_task_fn fn,
     void* arg
 ) {
-    (void)loop;
-    (void)out;
-    (void)delay_ms;
-    (void)repeat_ms;
-    (void)fn;
-    (void)arg;
-    return TUA_E_NOTSUP;
+    if (loop == NULL || loop->timerq == NULL || fn == NULL) {
+        return TUA_E_INVALID;
+    }
+    tua_timer_t* timer = (tua_timer_t*)tua_malloc(sizeof(*timer));
+    if (timer == NULL) {
+        return TUA_E_NOMEM;
+    }
+    timer->loop = loop;
+    timer->h = NULL;
+    timer->active = 1;
+    timer->repeat_ms = repeat_ms;
+    timer->fn = fn;
+    timer->arg = arg;
+
+    DWORD due = (delay_ms > 0xffffffffu) ? 0xffffffffu : (DWORD)delay_ms;
+    DWORD period = (repeat_ms > 0xffffffffu) ? 0xffffffffu : (DWORD)repeat_ms;
+    if (!CreateTimerQueueTimer(&timer->h, loop->timerq, tua_timerqueue_cb, timer, due, period, WT_EXECUTEDEFAULT)) {
+        tua_free(timer);
+        return TUA_E_IO;
+    }
+
+    if (out) {
+        *out = timer;
+    }
+    return TUA_OK;
 }
 
 void tua_timer_cancel(tua_timer_t* timer) {
-    (void)timer;
+    if (timer == NULL) {
+        return;
+    }
+    (void)InterlockedExchange(&timer->active, 0);
+    // Ensure cleanup happens on the loop thread for consistency.
+    if (tua_loop_post(timer->loop, tua_win32_timer_cleanup_task, timer) != TUA_OK) {
+        tua_win32_timer_cleanup_common(timer, INVALID_HANDLE_VALUE);
+    }
 }
 
 tua_handle_t tua_tcp_socket_handle(const tua_tcp_socket_t* sock) {

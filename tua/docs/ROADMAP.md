@@ -92,6 +92,7 @@
 - [x] 架构分层：`tua_rt`（C 运行时/平台抽象） + `std/`（Tua 标准库）
 - [x] 平台推进顺序：Unix（Linux/macOS）优先；Windows 延后但接口预留
 - [x] 异步 IO：自研事件循环与后端（不依赖 libuv），但参考其“loop + backend + workqueue”分层
+- [x] `std.time`：提供 monotonic/real time 与 sleep（第一版）
 
 #### 10.2 `tua_rt` 接口冻结（R0）
 - [x] 新增 `src/rt/` 目录结构：`rt.h` + `platform/posix` + `platform/win32`（先占位）
@@ -124,6 +125,7 @@
   - [x] 兜底后端：poll（用于 bring-up/回归）
 - [x] `rt_loop`：跨线程唤醒（pipe），支持从其他线程 post 到 loop
 - [x] `rt_task`：任务队列（post 到 loop 线程执行）
+  - [x] `std.time/async`：`afterMs` 定时回调（第一版）
 
 #### 10.6 异步网络（R3-net-async）
 - [x] `rt_net`：non-blocking socket + loop 集成（connect/accept/read/write）
@@ -142,6 +144,7 @@
 
 #### 10.8 Windows（R5-win32，占位 -> 落地）
 - [x] 先提供 win32 stub：编译通过但返回 `TUA_E_NOTSUP`（保证扩展点固定）
+- [ ] `rt_loop` Windows：先落地最小 loop（IOCP + post + timer），再逐步补齐 watcher/IO
 - [ ] `rt_loop` Windows 后端：IOCP
 - [ ] `rt_net` Windows：Winsock + IOCP
 - [ ] `rt_fs_async` Windows：Overlapped I/O + IOCP（或线程池过渡）

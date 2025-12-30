@@ -23,6 +23,13 @@ typedef struct {
     void* env;
 } tua_closure_t;
 
+static void tua_call_void0(tua_closure_t c) {
+    if (c.fn == NULL) return;
+    union { void* p; void (*f)(void*); } u;
+    u.p = c.fn;
+    u.f(c.env);
+}
+
 static void tua_call_void2(tua_closure_t c, int32_t a0, void* a1) {
     if (c.fn == NULL) return;
     union { void* p; void (*f)(void*, int32_t, void*); } u;
@@ -58,6 +65,39 @@ static int32_t tua_kind_to_i32(tua_fs_kind_t k) {
         case TUA_FS_SYMLINK: return 3;
         default: return 0;
     }
+}
+
+typedef struct {
+    tua_closure_t cb;
+} tua_timer_after_ms_ctx_t;
+
+static void tua_timer_after_ms_cb(void* arg) {
+    tua_timer_after_ms_ctx_t* ctx = (tua_timer_after_ms_ctx_t*)arg;
+    if (ctx == NULL) return;
+    tua_call_void0(ctx->cb);
+    tua_free(ctx);
+}
+
+tua_err_t tua_timer_after_ms_cl(tua_loop_t* loop, int64_t delay_ms, tua_closure_t cb) {
+    if (loop == NULL) {
+        return TUA_E_INVALID;
+    }
+    if (delay_ms <= 0) {
+        tua_call_void0(cb);
+        return TUA_OK;
+    }
+    tua_timer_after_ms_ctx_t* ctx = (tua_timer_after_ms_ctx_t*)tua_malloc(sizeof(*ctx));
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
+    ctx->cb = cb;
+
+    tua_err_t err = tua_timer_start(loop, NULL, (uint64_t)delay_ms, 0, tua_timer_after_ms_cb, ctx);
+    if (err != TUA_OK) {
+        tua_free(ctx);
+        return err;
+    }
+    return TUA_OK;
 }
 
 typedef struct {

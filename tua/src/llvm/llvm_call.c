@@ -18,6 +18,10 @@ typedef enum {
     BI_TUA_PARSE_INT,
     BI_TUA_FREE,
     BI_TUA_DEADLINE_AFTER_MS,
+    BI_TUA_TIME_MONO_NS,
+    BI_TUA_TIME_REAL_NS,
+    BI_TUA_SLEEP_NS,
+    BI_TUA_TIMER_AFTER_MS_CL,
     BI_TUA_LOOP_CREATE,
     BI_TUA_LOOP_RUN,
     BI_TUA_LOOP_STOP,
@@ -84,6 +88,10 @@ static BuiltinId lookupBuiltinId(const Token* token) {
         BI_ENTRY("tua_loop_run", BI_TUA_LOOP_RUN),
         BI_ENTRY("tua_loop_stop", BI_TUA_LOOP_STOP),
         BI_ENTRY("tua_parse_int", BI_TUA_PARSE_INT),
+        BI_ENTRY("tua_sleep_ns", BI_TUA_SLEEP_NS),
+        BI_ENTRY("tua_timer_after_ms_cl", BI_TUA_TIMER_AFTER_MS_CL),
+        BI_ENTRY("tua_time_mono_ns", BI_TUA_TIME_MONO_NS),
+        BI_ENTRY("tua_time_real_ns", BI_TUA_TIME_REAL_NS),
         BI_ENTRY("tua_tcp_accept_cancel_cl", BI_TUA_TCP_ACCEPT_CANCEL_CL),
         BI_ENTRY("tua_tcp_accept_start_cl", BI_TUA_TCP_ACCEPT_START_CL),
         BI_ENTRY("tua_tcp_connect_async_cl", BI_TUA_TCP_CONNECT_ASYNC_CL),
@@ -592,6 +600,43 @@ static LLVMValueRef getOrCreateTuaDeadlineAfterMs(Compiler* compiler) {
     LLVMTypeRef params[1] = { i64 };
     LLVMTypeRef fnType = LLVMFunctionType(i64, params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_deadline_after_ms", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTimeMonoNs(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_time_mono_ns");
+    if (existing) return existing;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i64, NULL, 0, 0);
+    return LLVMAddFunction(compiler->module, "tua_time_mono_ns", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTimeRealNs(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_time_real_ns");
+    if (existing) return existing;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i64, NULL, 0, 0);
+    return LLVMAddFunction(compiler->module, "tua_time_real_ns", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaSleepNs(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_sleep_ns");
+    if (existing) return existing;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef params[1] = { i64 };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_sleep_ns", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaTimerAfterMsCl(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_timer_after_ms_cl");
+    if (existing) return existing;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef closure = compilerGetClosureType(compiler);
+    LLVMTypeRef params[3] = { i8ptr, i64, closure };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_timer_after_ms_cl", fnType);
 }
 
 static LLVMValueRef getOrCreateTuaLoopCreate(Compiler* compiler) {
@@ -2217,6 +2262,69 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMValueRef fn = getOrCreateTuaDeadlineAfterMs(compiler);
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, &ms, 1, "deadline");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (builtinId == BI_TUA_TIME_MONO_NS || builtinId == BI_TUA_TIME_REAL_NS) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 0) {
+            emitDebug("%s expects 0 arguments\n", builtinId == BI_TUA_TIME_MONO_NS ? "tua_time_mono_ns" : "tua_time_real_ns");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef fn = builtinId == BI_TUA_TIME_MONO_NS ? getOrCreateTuaTimeMonoNs(compiler) : getOrCreateTuaTimeRealNs(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, NULL, 0, "ns");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return out;
+    }
+
+    if (builtinId == BI_TUA_SLEEP_NS) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 1) {
+            emitDebug("tua_sleep_ns expects 1 argument\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef ns = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!ns) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        ns = castValueToType(compiler, ns, i64);
+        LLVMValueRef fn = getOrCreateTuaSleepNs(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMBuildCall2(compiler->builder, fnType, fn, &ns, 1, "");
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+    }
+
+    if (builtinId == BI_TUA_TIMER_AFTER_MS_CL) {
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (got != 3) {
+            emitDebug("tua_timer_after_ms_cl expects 3 arguments\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef loopV = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        LLVMValueRef delay = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+        LLVMValueRef cb = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+        if (!loopV || !delay || !cb) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef closure = compilerGetClosureType(compiler);
+        loopV = castValueToType(compiler, loopV, i8ptr);
+        delay = castValueToType(compiler, delay, i64);
+        cb = castValueToType(compiler, cb, closure);
+        LLVMValueRef fn = getOrCreateTuaTimerAfterMsCl(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args3[3] = { loopV, delay, cb };
+        LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "err");
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }

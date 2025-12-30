@@ -39,6 +39,24 @@ static inline tua_handle_t tua_handle_from_fd(tua_fd_t fd) {
     return h;
 }
 
+#if defined(_WIN32)
+static inline tua_handle_t tua_handle_from_win_handle(uintptr_t handle_raw) {
+    tua_handle_t h;
+    h.kind = (uint32_t)TUA_HANDLE_WIN_HANDLE;
+    h.flags = 0;
+    h.raw = (intptr_t)handle_raw;
+    return h;
+}
+
+static inline tua_handle_t tua_handle_from_win_socket(uintptr_t socket_raw) {
+    tua_handle_t h;
+    h.kind = (uint32_t)TUA_HANDLE_WIN_SOCKET;
+    h.flags = 0;
+    h.raw = (intptr_t)socket_raw;
+    return h;
+}
+#endif
+
 static inline int tua_handle_to_fd(tua_handle_t h, int* out_fd) {
     if (out_fd == NULL) return 0;
     if (h.kind != (uint32_t)TUA_HANDLE_FD) return 0;

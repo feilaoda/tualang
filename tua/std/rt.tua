@@ -18,6 +18,37 @@ object Rt {
         return tua_deadline_after_ms(ms)
     }
 
+    fn monoNs() long {
+        return tua_time_mono_ns()
+    }
+
+    fn realNs() long {
+        return tua_time_real_ns()
+    }
+
+    fn sleepNs(ns: long) {
+        if ns <= 0 {
+            return
+        }
+        tua_sleep_ns(ns)
+    }
+
+    fn sleepMs(ms: int) {
+        if ms <= 0 {
+            return
+        }
+        // Keep it simple; long is i64.
+        let ns: long = ms
+        Rt.sleepNs(ns * 1000000)
+    }
+
+    // Run `cb` on the loop thread after `delayMs`.
+    // Callback signature: `fn()`.
+    fn afterMs(loop: ptr, delayMs: int, cb: () -> void) int {
+        let d: long = delayMs
+        return tua_timer_after_ms_cl(loop, d, cb)
+    }
+
     fn loopCreate() -> ptr {
         let loop: ptr = null
         let err = tua_loop_create(&loop)
@@ -52,4 +83,3 @@ object Rt {
         tua_workqueue_free(wq)
     }
 }
-
