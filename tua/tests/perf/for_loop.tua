@@ -1,6 +1,6 @@
 import "std/strconv"
 
-fn loop(u:int, r:int, t:int) int {
+fn loop(u:int, r:int, t:int) -> int {
     let a:int[100000] = {1}
     let res = 0
     for let i=0; i<t; i++ {
@@ -14,8 +14,14 @@ fn loop(u:int, r:int, t:int) int {
     return res
 }
 
-let u:int = Int.parse(ARGV[1]) ?? 10
-let r:int = Int.parse(ARGV[2]) ?? 10
+let u = Int.parse(ARGV[1]) ?? 10
+let r = Int.parse(ARGV[2]) ?? 10
 let times = Int.parse(ARGV[3]) ?? 100
-println(loop(u,10,times))
+println(loop(u,r,times))
 
+object Main {
+  fn main(argv:string[]) -> int{
+    println(loop(10,10,100))
+    return 0
+  }
+}
