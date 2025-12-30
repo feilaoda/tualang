@@ -1,18 +1,20 @@
 
-let u:int = 10
+let u:int = 100
 let r:int = 0
 fn loop(u:int, r:int) int {
-    let a:int[10000] = {1}
-    for let i=0; i<10000; i++ {
+    let a:int[100000] = {1}
+    let res = 0
+    for let i=0; i<100000; i++ {
       let acc = a[i]
-      for let j=0; j<10000; j++ {
+      for let j=0; j<100000; j++ {
           acc = acc + j / u
       }
       a[i] = acc + r
+      res = res + acc
     }
-    return a[r]
+    return res
 }
 
 
-println(loop(u,1))
+println(loop(ARGV[1],1))
 

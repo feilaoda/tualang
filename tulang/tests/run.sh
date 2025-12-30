@@ -13,10 +13,16 @@ for f in tests/*.tua; do
   [ -e "$f" ] || continue
   total=$((total+1))
   base="$(basename "$f")"
+  extra=""
+  case "$base" in
+    opt_unchecked_*|fail_opt_unchecked_*) extra="--unchecked-index" ;;
+    opt_stack_*|fail_opt_stack_*) extra="--stack-fixed-arrays" ;;
+    opt_perf_*|fail_opt_perf_*) extra="--perf" ;;
+  esac
   if [[ "$base" == aot_* ]]; then
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
-    if ./bin/tuac --output "$out" "$f" >/dev/null 2>&1 && "$out" >/dev/null 2>&1; then
+    if ./bin/tuac $extra --output "$out" "$f" >/dev/null 2>&1 && "$out" >/dev/null 2>&1; then
       echo "[PASS] $base"
     else
       echo "[FAIL] $base"
@@ -27,7 +33,7 @@ for f in tests/*.tua; do
   fi
   if [[ "$base" == fail_* ]]; then
     tmp="$(mktemp)"
-    if ./bin/tuac "$f" >/dev/null 2>"$tmp"; then
+    if ./bin/tuac $extra "$f" >/dev/null 2>"$tmp"; then
       echo "[FAIL] $base (expected failure, got success)"
       fail=1
     else
@@ -40,7 +46,7 @@ for f in tests/*.tua; do
     fi
     rm -f "$tmp"
   else
-    if ./bin/tuac "$f" >/dev/null 2>&1; then
+    if ./bin/tuac $extra "$f" >/dev/null 2>&1; then
       echo "[PASS] $base"
     else
       echo "[FAIL] $base"

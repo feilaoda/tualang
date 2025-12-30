@@ -66,6 +66,15 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
+    variable->isMap = 0;
+    variable->isTypedMap = 0;
+    variable->mapKeyType = NULL;
+    variable->mapValueType = NULL;
+    variable->isArray = 0;
+    variable->arrayElemType = NULL;
+    variable->arrayFixedLen = -1;
+    variable->isStackArray = 0;
+    variable->stackArrayData = NULL;
     listAppend(scope->variables, variable);
     return variable;
 }

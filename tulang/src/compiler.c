@@ -66,6 +66,9 @@ void initCompiler(Compiler* compiler) {
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
     compiler->outputPath = NULL;
+    compiler->uncheckedIndex = 0;
+    compiler->stackFixedArrays = 0;
+    compiler->emitLoc = 1;
     
     // Debug information
     compiler->hadError = false;
@@ -646,6 +649,7 @@ static LLVMValueRef getOrCreateTuaSetLoc(Compiler* compiler) {
 
 static void emitSetLocIfNeeded(Compiler* compiler, int line, int col) {
     if (!compiler) return;
+    if (!compiler->emitLoc) return;
     if (line <= 0) return;
     const char* file = compiler->currentFilePath;
     if (compiler->lastSetFilePath == file && compiler->lastSetLine == line && compiler->lastSetCol == col) return;
@@ -1388,6 +1392,8 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isArray = 0;
             variable->arrayElemType = NULL;
             variable->arrayFixedLen = -1;
+            variable->isStackArray = 0;
+            variable->stackArrayData = NULL;
             variable->isMap = 0;
             listAppend(compiler->current->variables, variable);
         }
@@ -1594,6 +1600,8 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->isArray = 0;
         variable->arrayElemType = NULL;
         variable->arrayFixedLen = -1;
+        variable->isStackArray = 0;
+        variable->stackArrayData = NULL;
 
         if (p->type && p->type->kind == TYPE_NAMED &&
             p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&

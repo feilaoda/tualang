@@ -36,6 +36,10 @@ typedef struct VariableRef {
     int isArray;
     LLVMTypeRef arrayElemType;
     int64_t arrayFixedLen; // -1 => dynamic
+
+    // Optional: fast-path metadata for stack-backed fixed arrays.
+    int isStackArray;
+    LLVMValueRef stackArrayData; // elemTy* (only valid when isStackArray && arrayFixedLen>=0)
 }VariableRef;
 
 

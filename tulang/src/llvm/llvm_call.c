@@ -1150,6 +1150,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
+                if (recvVar.isStackArray && recvVar.arrayFixedLen >= 0) {
+                    LLVMValueRef out = LLVMConstInt(i32, (uint64_t)recvVar.arrayFixedLen, 0);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
                 LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arrPtr, 0, "alenp");
                 LLVMValueRef len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "alen64");
                 LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "alen");

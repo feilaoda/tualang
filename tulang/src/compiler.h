@@ -80,6 +80,11 @@ typedef struct Compiler{
 
     // When set, compile to native executable at this path instead of running via JIT.
     const char* outputPath;
+
+    // Performance/unsafe modes (must be explicitly enabled via CLI flags).
+    int uncheckedIndex;      // when true, array indexing skips null/oob checks (UB on invalid access)
+    int stackFixedArrays;    // when true, eligible local T[N] use stack storage
+    int emitLoc;             // when true, emit `tua_set_loc` calls for runtime error reporting
 } Compiler;
 
 typedef struct MultiReturnInfo {

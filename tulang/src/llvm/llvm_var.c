@@ -64,6 +64,14 @@ static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef type, const
     return out;
 }
 
+static void zeroMemory(Compiler* compiler, LLVMValueRef ptrI8, LLVMValueRef bytes) {
+    if (!compiler || !ptrI8 || !bytes) return;
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(compiler->context);
+    LLVMValueRef z = LLVMConstInt(i8, 0, 0);
+    // Align=1 is conservative; LLVM can raise it with target info.
+    LLVMBuildMemSet(compiler->builder, ptrI8, z, bytes, 1);
+}
+
 static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
 
@@ -524,7 +532,155 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     if (stmt->type && stmt->type->kind == TYPE_FUNC) {
         declaredSig = compilerClosureSigFromType(compiler, stmt->type);
     }
-    if (stmt->initializer != NULL) {
+    int stackFixedOk = 0;
+    if (compiler && compiler->stackFixedArrays &&
+        valueType == compilerGetArrayType(compiler) &&
+        hasAnnotatedArray && annotatedFixedLen >= 0 &&
+        !shouldBox && !compiler->boxAllLocals) {
+        // Only handle fixed arrays created from a literal initializer or default init.
+        if (!stmt->initializer ||
+            stmt->initializer->type == EXPR_ARRAY_LITERAL ||
+            stmt->initializer->type == EXPR_BRACE_LITERAL) {
+            stackFixedOk = 1;
+        }
+    }
+
+    if (stackFixedOk) {
+        LLVMBuilderRef builder = compiler->builder;
+        LLVMContextRef context = compiler->context;
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+        LLVMTypeRef i8 = LLVMInt8TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+        if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+
+        if (!annotatedElemTy) {
+            compilerErrorAt(compiler, stmt->name.line, "missing fixed array element type");
+            free(var);
+            return;
+        }
+        if (annotatedFixedLen > (int64_t)UINT32_MAX) {
+            compilerErrorAt(compiler, stmt->name.line, "fixed array length too large for stack allocation");
+            free(var);
+            return;
+        }
+
+        LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)annotatedFixedLen, 1);
+        LLVMValueRef capV = lenV;
+        LLVMValueRef elemSizeV = LLVMSizeOf(annotatedElemTy);
+        LLVMValueRef fixedV = lenV;
+
+        // Stack storage: data buffer + header.
+        LLVMTypeRef bufTy = LLVMArrayType(annotatedElemTy, (unsigned)annotatedFixedLen);
+        LLVMValueRef buf = buildEntryAlloca(compiler, bufTy, "arr_buf");
+        if (!buf) {
+            compilerErrorAt(compiler, stmt->name.line, "failed to allocate stack buffer for array");
+            free(var);
+            return;
+        }
+        LLVMValueRef hdr = buildEntryAlloca(compiler, arrStruct, "arr_hdr");
+        if (!hdr) {
+            compilerErrorAt(compiler, stmt->name.line, "failed to allocate stack header for array");
+            free(var);
+            return;
+        }
+
+        // elem* data pointer: &buf[0][0]
+        LLVMValueRef z32 = LLVMConstInt(i32, 0, 0);
+        LLVMValueRef idxs[2] = { z32, z32 };
+        LLVMValueRef dataElemPtr = LLVMBuildInBoundsGEP2(builder, bufTy, buf, idxs, 2, "arr_data");
+        LLVMValueRef dataI8 = LLVMBuildBitCast(builder, dataElemPtr, i8ptr, "arr_data_i8");
+
+        // Zero-initialize buffer so `{e1,e2}` fills rest with 0 and default-init is 0.
+        LLVMValueRef bytes = LLVMBuildMul(builder, lenV, elemSizeV, "arr_bytes");
+        zeroMemory(compiler, dataI8, bytes);
+
+        // Populate buffer from initializer literal (if any).
+        // Note: non-empty `{...}` parses as EXPR_ARRAY_LITERAL; empty `{}` parses as EXPR_BRACE_LITERAL.
+        ArrayLiteralExpr* lit = NULL;
+        if (stmt->initializer && stmt->initializer->type == EXPR_ARRAY_LITERAL) {
+            lit = (ArrayLiteralExpr*)stmt->initializer;
+        }
+
+        int elemCount = lit && lit->elements ? lit->elements->length : 0;
+        if (elemCount > annotatedFixedLen) {
+            compilerErrorAt(compiler, stmt->name.line, "array literal has too many elements for fixed array");
+            free(var);
+            return;
+        }
+
+        if (lit && annotatedFixedLen > 0) {
+            if (elemCount == 1) {
+                // Fill sugar: `T[N] = {x}`
+                Expr* e0 = (Expr*)lit->elements->head->data;
+                LLVMValueRef v0 = compileExpr(compiler, e0);
+                if (!v0) {
+                    free(var);
+                    return;
+                }
+                v0 = castIfNeeded(compiler, v0, annotatedElemTy);
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMValueRef idxAlloca = LLVMBuildAlloca(builder, i64, "i");
+                LLVMBuildStore(builder, LLVMConstInt(i64, 0, 0), idxAlloca);
+
+                LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(fn, "arr.fill.cond");
+                LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(fn, "arr.fill.body");
+                LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(fn, "arr.fill.end");
+                LLVMBuildBr(builder, condBB);
+
+                LLVMPositionBuilderAtEnd(builder, condBB);
+                LLVMValueRef iV = LLVMBuildLoad2(builder, i64, idxAlloca, "iv");
+                LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntSLT, iV, lenV, "icnd");
+                LLVMBuildCondBr(builder, ok, bodyBB, endBB);
+
+                LLVMPositionBuilderAtEnd(builder, bodyBB);
+                LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, annotatedElemTy, dataElemPtr, &iV, 1, "ep");
+                LLVMBuildStore(builder, v0, ep);
+                LLVMValueRef inc = LLVMBuildAdd(builder, iV, LLVMConstInt(i64, 1, 0), "inc");
+                LLVMBuildStore(builder, inc, idxAlloca);
+                LLVMBuildBr(builder, condBB);
+
+                LLVMPositionBuilderAtEnd(builder, endBB);
+            } else {
+                int idx = 0;
+                for (ListNode* n = lit->elements ? lit->elements->head : NULL; n != NULL; n = n->next, idx++) {
+                    LLVMValueRef vv = compileExpr(compiler, (Expr*)n->data);
+                    if (!vv) {
+                        free(var);
+                        return;
+                    }
+                    vv = castIfNeeded(compiler, vv, annotatedElemTy);
+                    LLVMValueRef iV = LLVMConstInt(i64, (uint64_t)idx, 0);
+                    LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, annotatedElemTy, dataElemPtr, &iV, 1, "ep");
+                    LLVMBuildStore(builder, vv, ep);
+                }
+            }
+        }
+
+        // Initialize header fields.
+        LLVMValueRef lenPtr = LLVMBuildStructGEP2(builder, arrStruct, hdr, 0, "lenp");
+        LLVMValueRef capPtr = LLVMBuildStructGEP2(builder, arrStruct, hdr, 1, "capp");
+        LLVMValueRef dataPtr = LLVMBuildStructGEP2(builder, arrStruct, hdr, 2, "datap");
+        LLVMValueRef eszPtr = LLVMBuildStructGEP2(builder, arrStruct, hdr, 3, "eszp");
+        LLVMValueRef fixPtr = LLVMBuildStructGEP2(builder, arrStruct, hdr, 4, "fixp");
+        LLVMBuildStore(builder, lenV, lenPtr);
+        LLVMBuildStore(builder, capV, capPtr);
+        LLVMBuildStore(builder, dataI8, dataPtr);
+        LLVMBuildStore(builder, elemSizeV, eszPtr);
+        LLVMBuildStore(builder, fixedV, fixPtr);
+
+        // Store pointer-to-header into the variable slot.
+        if (shouldBox) {
+            // Not expected due to stackFixedOk guard, but keep safe.
+            compilerErrorAt(compiler, stmt->name.line, "stack fixed arrays are not supported in boxed scope");
+            free(var);
+            return;
+        }
+        LLVMBuildStore(builder, hdr, slot);
+    } else if (stmt->initializer != NULL) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
         LLVMTypeRef savedKey = compiler->expectedMapKeyType;
         LLVMTypeRef savedVal = compiler->expectedMapValueType;
@@ -767,6 +923,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isArray = 0;
     variable->arrayElemType = NULL;
     variable->arrayFixedLen = -1;
+    variable->isStackArray = 0;
+    variable->stackArrayData = NULL;
 
     if (stmt->type && stmt->type->kind == TYPE_NAMED &&
         stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
@@ -809,6 +967,18 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isArray = 1;
         variable->arrayElemType = annotatedElemTy;
         variable->arrayFixedLen = annotatedFixedLen;
+        if (stackFixedOk) {
+            variable->isStackArray = 1;
+            // `dataElemPtr` is in scope only when stackFixedOk; re-derive from header for safety.
+            // Keep fast-path data pointer only if we can load it from the header we stored.
+            LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
+            if (!arrStruct) arrStruct = LLVMGetElementType(compilerGetArrayType(compiler));
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            LLVMValueRef hdrPtr = LLVMBuildLoad2(compiler->builder, compilerGetArrayType(compiler), slot, "arrhdr");
+            LLVMValueRef dp = LLVMBuildStructGEP2(compiler->builder, arrStruct, hdrPtr, 2, "datap");
+            LLVMValueRef dataI8 = LLVMBuildLoad2(compiler->builder, i8ptr, dp, "data");
+            variable->stackArrayData = LLVMBuildBitCast(compiler->builder, dataI8, LLVMPointerType(annotatedElemTy, 0), "sadata");
+        }
     }
 
     // Best-effort container metadata propagation for aliasing:

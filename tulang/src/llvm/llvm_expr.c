@@ -1308,6 +1308,14 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
         error("Undefined variable, name: %.*s\n", expr->name.length, expr->name.start);
         return NULL;
     }
+
+    // In stack-fixed-array mode, stack-backed arrays are intentionally restricted:
+    // they must not escape as values (no `let b = a`, no passing/returning `a`).
+    if (compiler && compiler->stackFixedArrays && var.isStackArray) {
+        compilerErrorAt(compiler, expr->name.line,
+                        "stack-backed fixed array cannot be used as a value; use indexing/len(), or clone() to create a heap array");
+        return NULL;
+    }
     
     // 如果是局部变量，需要加载其值
     if (!var.isGlobal) {
@@ -1568,8 +1576,7 @@ LLVMValueRef emitBraceLiteralExpr(Compiler* compiler, BraceLiteralExpr* expr) {
 LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     if (!compiler || !expr) return NULL;
     LLVMBuilderRef builder = compiler->builder;
-    LLVMValueRef obj = compileExpr(compiler, expr->object);
-    if (!obj) return NULL;
+    LLVMValueRef obj = NULL;
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
 
@@ -1583,6 +1590,27 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
             isMap = recvVar.isMap ? 1 : 0;
         }
     }
+
+    // Indexing is supported only on map/array variables for now.
+    if (!isArray && !isMap) {
+        compilerErrorAt(compiler, expr->base.token.line, "indexing is only supported on map/array variables for now");
+        return NULL;
+    }
+
+    // Load receiver pointer from the variable slot.
+    if (recvVar.value && recvVar.type) {
+        if (recvVar.isBoxed) {
+            if (!recvVar.boxPtrType) {
+                compilerErrorAt(compiler, expr->base.token.line, "missing boxed pointer type metadata");
+                return NULL;
+            }
+            LLVMValueRef cell = LLVMBuildLoad2(builder, recvVar.boxPtrType, recvVar.value, "cell");
+            obj = LLVMBuildLoad2(builder, recvVar.type, cell, "recv");
+        } else {
+            obj = LLVMBuildLoad2(builder, recvVar.type, recvVar.value, "recv");
+        }
+    }
+    if (!obj) return NULL;
 
     // Array indexing: returns T and panics on OOB.
     if (isArray) {
@@ -1599,6 +1627,44 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
 
         // idx: i64
         LLVMValueRef idxV = castToType(compiler, keyExpr, i64);
+
+        // Fast path: stack-backed fixed arrays.
+        if (compiler->stackFixedArrays && recvVar.isStackArray && recvVar.stackArrayData && recvVar.arrayFixedLen >= 0) {
+            if (!compiler->uncheckedIndex) {
+                LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)recvVar.arrayFixedLen, 1);
+                LLVMValueRef neg = LLVMBuildICmp(builder, LLVMIntSLT, idxV, LLVMConstInt(i64, 0, 0), "neg");
+                LLVMValueRef ge = LLVMBuildICmp(builder, LLVMIntSGE, idxV, lenV, "ge");
+                LLVMValueRef oob = LLVMBuildOr(builder, neg, ge, "oob");
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef inBB = LLVMAppendBasicBlock(fn, "sarr.in");
+                LLVMBasicBlockRef oobBB = LLVMAppendBasicBlock(fn, "sarr.oob");
+                LLVMBuildCondBr(builder, oob, oobBB, inBB);
+
+                LLVMPositionBuilderAtEnd(builder, oobBB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "array index out of bounds", "aomsg");
+                LLVMValueRef args1[1] = { msg };
+                LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+                LLVMBuildUnreachable(builder);
+
+                LLVMPositionBuilderAtEnd(builder, inBB);
+            }
+            LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, recvVar.stackArrayData, &idxV, 1, "ep");
+            return LLVMBuildLoad2(builder, elemTy, ep, "av");
+        }
+
+        // Unchecked mode: no null/oob checks (UB on invalid access).
+        if (compiler->uncheckedIndex) {
+            LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+            if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+            LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, obj, 2, "datap");
+            LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "data");
+            LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(elemTy, 0), "adata");
+            LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &idxV, 1, "ep");
+            return LLVMBuildLoad2(builder, elemTy, ep, "av");
+        }
 
         // null check
         LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, obj, LLVMConstNull(arrType), "anull");
@@ -1641,11 +1707,6 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
         LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(elemTy, 0), "adata");
         LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &idxV, 1, "ep");
         return LLVMBuildLoad2(builder, elemTy, ep, "av");
-    }
-
-    if (!isMap) {
-        compilerErrorAt(compiler, expr->base.token.line, "indexing is only supported on map/array variables for now");
-        return NULL;
     }
 
     // Typed map key check when receiver is a simple variable.
@@ -1727,6 +1788,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
     if (!rawValue) return NULL;
 
     LLVMValueRef objVal = NULL;
+    VariableRef targetVar = (VariableRef){0};
     int canAutoInit = expr->object && expr->object->type == EXPR_VARIABLE;
     int targetIsMap = 0;
     int targetIsArray = 0;
@@ -1741,6 +1803,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
             error("Undefined indexed variable\n");
             return NULL;
         }
+        targetVar = var;
         targetIsMap = var.isMap ? 1 : 0;
         targetIsArray = var.isArray ? 1 : 0;
         if (!targetIsMap && !targetIsArray) {
@@ -1819,21 +1882,24 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
                 }
             }
         } else {
-            // Array: do not auto-init; writing into a null array is a runtime error.
-            LLVMValueRef fn = compiler->current->func;
-            LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "arr.set.ok");
-            LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "arr.set.null");
-            LLVMBuildCondBr(builder, isNull, badBB, okBB);
+            // Array: do not auto-init.
+            // In unchecked mode and for stack-backed fixed arrays, skip null checks (UB if invalid).
+            if (!compiler->uncheckedIndex && !(compiler->stackFixedArrays && var.isStackArray)) {
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "arr.set.ok");
+                LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "arr.set.null");
+                LLVMBuildCondBr(builder, isNull, badBB, okBB);
 
-            LLVMPositionBuilderAtEnd(builder, badBB);
-            LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
-            LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
-            LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "cannot assign into null array", "amsg");
-            LLVMValueRef args1[1] = { msg };
-            LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
-            LLVMBuildUnreachable(builder);
+                LLVMPositionBuilderAtEnd(builder, badBB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "cannot assign into null array", "amsg");
+                LLVMValueRef args1[1] = { msg };
+                LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+                LLVMBuildUnreachable(builder);
 
-            LLVMPositionBuilderAtEnd(builder, okBB);
+                LLVMPositionBuilderAtEnd(builder, okBB);
+            }
         }
     } else {
         error("Index assignment is only supported on map/array variables for now\n");
@@ -1850,6 +1916,46 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
         LLVMValueRef idxV = castToType(compiler, keyExpr, i64);
         LLVMValueRef valV = castToType(compiler, rawValue, expectedElemTy);
+
+        // Fast path: stack-backed fixed arrays.
+        if (compiler->stackFixedArrays && targetVar.isStackArray && targetVar.stackArrayData && targetVar.arrayFixedLen >= 0) {
+            if (!compiler->uncheckedIndex) {
+                LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)targetVar.arrayFixedLen, 1);
+                LLVMValueRef neg = LLVMBuildICmp(builder, LLVMIntSLT, idxV, LLVMConstInt(i64, 0, 0), "neg");
+                LLVMValueRef ge = LLVMBuildICmp(builder, LLVMIntSGE, idxV, lenV, "ge");
+                LLVMValueRef oob = LLVMBuildOr(builder, neg, ge, "oob");
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef inBB = LLVMAppendBasicBlock(fn, "sarr.set.in");
+                LLVMBasicBlockRef oobBB = LLVMAppendBasicBlock(fn, "sarr.set.oob");
+                LLVMBuildCondBr(builder, oob, oobBB, inBB);
+
+                LLVMPositionBuilderAtEnd(builder, oobBB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "array index out of bounds", "aomsg");
+                LLVMValueRef args1[1] = { msg };
+                LLVMBuildCall2(builder, panicTy, panicFn, args1, 1, "");
+                LLVMBuildUnreachable(builder);
+
+                LLVMPositionBuilderAtEnd(builder, inBB);
+            }
+            LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, targetVar.stackArrayData, &idxV, 1, "ep");
+            LLVMBuildStore(builder, valV, ep);
+            return valV;
+        }
+
+        // Unchecked mode: no bounds checks (UB on invalid access).
+        if (compiler->uncheckedIndex) {
+            LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+            if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+            LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, objVal, 2, "datap");
+            LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "data");
+            LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(expectedElemTy, 0), "adata");
+            LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, data, &idxV, 1, "ep");
+            LLVMBuildStore(builder, valV, ep);
+            return valV;
+        }
 
         LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
         if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
@@ -2648,6 +2754,15 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             vr->isGlobal = 0;
             vr->isBoxed = 1;
             vr->boxPtrType = cellPtrType;
+            vr->isMap = 0;
+            vr->isTypedMap = 0;
+            vr->mapKeyType = NULL;
+            vr->mapValueType = NULL;
+            vr->isArray = 0;
+            vr->arrayElemType = NULL;
+            vr->arrayFixedLen = -1;
+            vr->isStackArray = 0;
+            vr->stackArrayData = NULL;
             listAppend(funcBlock->variables, vr);
         }
     }
@@ -2703,6 +2818,15 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
         variable->isGlobal = 0;
         variable->isBoxed = 1;
         variable->boxPtrType = cellPtrType;
+        variable->isMap = 0;
+        variable->isTypedMap = 0;
+        variable->mapKeyType = NULL;
+        variable->mapValueType = NULL;
+        variable->isArray = 0;
+        variable->arrayElemType = NULL;
+        variable->arrayFixedLen = -1;
+        variable->isStackArray = 0;
+        variable->stackArrayData = NULL;
         listAppend(funcBlock->variables, variable);
     }
 

@@ -991,12 +991,15 @@ int main(int argc, char* argv[]) {
     int optLevel = 0;
     const char* srcPath = NULL;
     const char* outPath = NULL;
+    int uncheckedIndex = 0;
+    int stackFixedArrays = 0;
+    int emitLoc = 1;
 
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         if (!a) continue;
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] <source file>\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file>\n", argv[0]);
             return 1;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
@@ -1008,6 +1011,26 @@ int main(int argc, char* argv[]) {
             }
             fprintf(stderr, "Invalid flag: %s (expected --llvm-O0..--llvm-O3)\n", a);
             return 1;
+        }
+        if (strcmp(a, "--unchecked-index") == 0) {
+            uncheckedIndex = 1;
+            continue;
+        }
+        if (strcmp(a, "--stack-fixed-arrays") == 0) {
+            stackFixedArrays = 1;
+            continue;
+        }
+        if (strcmp(a, "--no-loc") == 0) {
+            emitLoc = 0;
+            continue;
+        }
+        if (strcmp(a, "--perf") == 0) {
+            // Convenience: enable aggressive opts + unsafe fast paths.
+            uncheckedIndex = 1;
+            stackFixedArrays = 1;
+            emitLoc = 0;
+            if (optLevel < 3) optLevel = 3;
+            continue;
         }
         if (strncmp(a, "--output=", 9) == 0) {
             outPath = a + 9;
@@ -1041,13 +1064,16 @@ int main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] <source file>\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file>\n", argv[0]);
         return 1;
     }
     Compiler compiler;
     initCompiler(&compiler);
     compiler.llvmOptLevel = optLevel;
     compiler.outputPath = outPath;
+    compiler.uncheckedIndex = uncheckedIndex;
+    compiler.stackFixedArrays = stackFixedArrays;
+    compiler.emitLoc = emitLoc;
     initLLVM(&compiler);
 
     ModuleSystem sys;
