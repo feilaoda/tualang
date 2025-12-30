@@ -8,8 +8,34 @@ CFLAGS = $(LLVM_CFLAGS) -I./src -Wall
 LDFLAGS = $(LLVM_LDFLAGS)
 LIBS = $(LLVM_LIBS)
 CC = clang
+AR ?= ar
 
-.PHONY: tuac tuac-debug tuaparse
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_kqueue.c
+	RT_DEFS = -DTUA_OS_DARWIN=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_KQUEUE=1
+else ifeq ($(UNAME_S),Linux)
+	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_epoll.c
+	RT_DEFS = -DTUA_OS_LINUX=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_EPOLL=1
+else
+	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_poll.c
+	RT_DEFS = -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_POLL=1
+endif
+
+RT_CFLAGS = -I./src -Wall $(RT_DEFS)
+RT_SRCS = \
+	src/rt/rt_alloc.c \
+	src/rt/rt_cancel.c \
+	src/rt/rt_err.c \
+	src/rt/rt_workqueue.c \
+	src/rt/rt_time.c \
+	src/rt/platform/posix/rt_thread_posix.c \
+	src/rt/platform/posix/rt_fs_async_posix.c \
+	$(RT_LOOP_SRC)
+RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
+
+.PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run
 .PHONY: test
 
 tuac:
@@ -34,6 +60,32 @@ tuaparse:
 	$(CC) -I./src -Wall -O0 -g \
 		src/tuaparse.c src/lexer.c src/parser.c src/list.c src/debug.c \
 		-o bin/tuaparse
+
+bin/obj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(RT_CFLAGS) -c $< -o $@
+
+bin/libtuart.a: $(RT_OBJS)
+	@mkdir -p bin
+	$(AR) rcs $@ $^
+
+librt: bin/libtuart.a
+
+bin/rt-smoke: bin/libtuart.a tests/rt_smoke.c
+	$(CC) $(RT_CFLAGS) tests/rt_smoke.c bin/libtuart.a -pthread -o $@
+
+rt-smoke: bin/rt-smoke
+
+rt-smoke-run: rt-smoke
+	./bin/rt-smoke
+
+bin/rt-fs-smoke: bin/libtuart.a tests/rt_fs_async_smoke.c
+	$(CC) $(RT_CFLAGS) tests/rt_fs_async_smoke.c bin/libtuart.a -pthread -o $@
+
+rt-fs-smoke: bin/rt-fs-smoke
+
+rt-fs-smoke-run: rt-fs-smoke
+	./bin/rt-fs-smoke
 
 test:
 	./tests/run.sh
