@@ -111,12 +111,14 @@ typedef struct BinaryExpr {
     Token operator;
 }BinaryExpr;
 
-// Cast expression: `expr as Type` or `expr as? Type`
+// Cast expression:
+// - Unchecked: `(T)expr`
+// - Checked: `expr as T` (returns Option<T>)
 typedef struct CastExpr {
     Expr base;
     Expr* value;
     Type* targetType;
-    int isChecked; // 0 => as, 1 => as?
+    int isChecked; // 0 => unchecked cast `(T)expr`, 1 => checked cast `expr as T`
 } CastExpr;
 
 // Unary Expression

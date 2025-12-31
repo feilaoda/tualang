@@ -498,13 +498,13 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 return atNew(AT_ANY);
             }
             if (!atIsNumeric(dst)) {
-                analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` target type must be numeric");
+                analyzeErrorAt(compiler, modulePath, c->base.token.line, "cast target type must be numeric");
                 return atNew(AT_ANY);
             }
 
             if (c->isChecked) {
                 if (atIsAny(src)) {
-                    analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as?` requires a known numeric source type for now");
+                    analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` (checked) requires a known numeric source type for now");
                     return atOption(dst);
                 }
                 return atOption(dst);

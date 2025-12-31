@@ -72,10 +72,10 @@
     - `extern fn` 只声明签名，不包含函数体；用于链接到 `tua_rt` 或系统库符号
     - `extern fn` 默认不导出（等价于模块内部绑定）；如需对外提供 API，请写一个普通 `fn` 包装后再导出
 - 类型转换（Status: Implemented）：
-  - `x as T`：显式转换（不检查/不报错）；用于数值类型之间的截断/扩展/浮点转换
-  - `x as? T`：可检查转换，返回 `Option<T>`：
-    - 整数窄化（如 `long as? int`）：超范围返回 `None()`
-    - 浮点转整数（如 `double as? int`）：NaN 或超范围返回 `None()`；否则按“向 0 截断”转换并返回 `Some(v)`
+  - `(T)expr`：显式转换（不检查/不报错）；用于数值类型之间的截断/扩展/浮点转换
+  - `expr as T`：可检查转换，返回 `Option<T>`：
+    - 整数窄化（如 `x:long; x as int`）：超范围返回 `None()`
+    - 浮点转整数（如 `x:double; x as int`）：NaN 或超范围返回 `None()`；否则按“向 0 截断”转换并返回 `Some(v)`
 - 返回：
   - `return expr`
   - `return`（void）

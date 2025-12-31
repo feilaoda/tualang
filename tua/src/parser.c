@@ -236,6 +236,59 @@ static Expr* newCastExpr(Token asToken, Expr* value, Type* targetType, int isChe
     return (Expr*)expr;
 }
 
+static int isCastTypeToken(TokenType t) {
+    switch (t) {
+        case TOKEN_INT:
+        case TOKEN_LONG:
+        case TOKEN_FLOAT:
+        case TOKEN_DOUBLE:
+        case TOKEN_BOOL:
+        case TOKEN_STRING:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int isExprStartToken(TokenType t) {
+    switch (t) {
+        case TOKEN_INT:
+        case TOKEN_LONG:
+        case TOKEN_DOUBLE:
+        case TOKEN_STRING_LITERAL:
+        case TOKEN_NULL:
+        case TOKEN_TRUE:
+        case TOKEN_FALSE:
+        case TOKEN_IDENTIFIER:
+        case TOKEN_LPAREN:
+        case TOKEN_LBRACE:
+        case TOKEN_LBRACKET:
+        case TOKEN_FUNC:
+        case TOKEN_THIS:
+        case TOKEN_INC:
+        case TOKEN_DEC:
+        case TOKEN_MINUS:
+        case TOKEN_NOT:
+        case TOKEN_AMP:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int isParenCastStart(Parser* parser) {
+    if (!parser || !parser->lexer) return 0;
+    if (!check(parser, TOKEN_LPAREN)) return 0;
+
+    Lexer tmp = *parser->lexer;
+    Token t1 = scanToken(&tmp);
+    if (!isCastTypeToken(t1.type)) return 0;
+    Token t2 = scanToken(&tmp);
+    if (t2.type != TOKEN_RPAREN) return 0;
+    Token t3 = scanToken(&tmp);
+    return isExprStartToken(t3.type);
+}
+
 static Expr* newUnaryExpr(Token operator, Expr* right) {
     UnaryExpr* expr = malloc(sizeof(UnaryExpr));
     expr->base.type = EXPR_UNARY;
@@ -411,13 +464,15 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
             left = finishCall(parser, left);
             continue;
         }
-        // Cast: `expr as Type` / `expr as? Type`
+        // Checked cast: `expr as T` (returns Option<T>)
         if (match(parser, TOKEN_AS)) {
             Token asTok = parser->previous;
-            int isChecked = 0;
-            if (match(parser, TOKEN_QMARK)) isChecked = 1;
+            if (match(parser, TOKEN_QMARK)) {
+                errorAtCurrent(parser, "`as?` is deprecated; use `(T)expr` for unchecked cast and `expr as T` for checked cast");
+                return NULL;
+            }
             Type* target = parseType(parser);
-            left = newCastExpr(asTok, left, target, isChecked);
+            left = newCastExpr(asTok, left, target, 1);
             continue;
         }
         // Indexing: `obj[expr]`
@@ -463,6 +518,16 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
 
 static Expr* parseUnaryExpr(Parser* parser) {
     parserDebugStart("parseUnaryExpr");
+
+    // Java-style cast: `(T)expr`
+    if (isParenCastStart(parser)) {
+        Token lparen = consume(parser, TOKEN_LPAREN, "Expect '(' for cast");
+        Type* target = parseType(parser);
+        consume(parser, TOKEN_RPAREN, "Expect ')' after cast type");
+        Expr* rhs = parseUnaryExpr(parser);
+        parserDebugEnd("parseUnaryExpr");
+        return newCastExpr(lparen, rhs, target, 0);
+    }
     
     if (match(parser, TOKEN_INC) || 
         match(parser, TOKEN_DEC) ||
