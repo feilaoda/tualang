@@ -69,6 +69,13 @@ typedef struct ModuleSystem {
     char* stdDir;  // absolute path to `std/` directory (may be NULL)
 } ModuleSystem;
 
+typedef struct ExternDecl {
+    const char* file;
+    int line;
+    int col;
+    char* symbol; // NUL-terminated
+} ExternDecl;
+
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
     if (file == NULL) {
@@ -199,6 +206,158 @@ static ExportSymbol* findExport(ModuleInfo* module, const char* name, int len) {
         if (!e) continue;
         if (e->nameLen != len) continue;
         if (memcmp(e->name, name, (size_t)len) == 0) return e;
+    }
+    return NULL;
+}
+
+static int externDeclListHasSymbol(List* decls, const char* sym) {
+    if (!decls || !sym) return 0;
+    for (ListNode* n = decls->head; n != NULL; n = n->next) {
+        ExternDecl* d = (ExternDecl*)n->data;
+        if (!d || !d->symbol) continue;
+        if (strcmp(d->symbol, sym) == 0) return 1;
+    }
+    return 0;
+}
+
+static List* collectExternDecls(ModuleSystem* sys) {
+    List* out = listNew();
+    if (!sys || !sys->order) return out;
+
+    for (ListNode* mn = sys->order->head; mn != NULL; mn = mn->next) {
+        ModuleInfo* m = (ModuleInfo*)mn->data;
+        if (!m || !m->statements) continue;
+        for (ListNode* sn = m->statements->head; sn != NULL; sn = sn->next) {
+            Stmt* s = (Stmt*)sn->data;
+            if (!s) continue;
+            if (s->type == STMT_PRIVATE) s = ((PrivateStmt*)s)->inner;
+            if (!s || s->type != STMT_FUNC) continue;
+            FuncStmt* f = (FuncStmt*)s;
+            if (f->body != NULL) continue; // not extern
+            char* sym = dupCStringN(f->name.start, f->name.length);
+            if (externDeclListHasSymbol(out, sym)) {
+                free(sym);
+                continue;
+            }
+            ExternDecl* d = (ExternDecl*)malloc(sizeof(*d));
+            d->file = m->path;
+            d->line = f->name.line;
+            d->col = f->name.col;
+            d->symbol = sym;
+            listAppend(out, d);
+        }
+    }
+    return out;
+}
+
+static int checkExternDecls(List* decls) {
+    if (!decls) return 0;
+#if !defined(__unix__) && !defined(__APPLE__)
+    fprintf(stderr, "error: --check-extern is only supported on POSIX platforms for now\n");
+    return 1;
+#else
+    int missing = 0;
+    for (ListNode* n = decls->head; n != NULL; n = n->next) {
+        ExternDecl* d = (ExternDecl*)n->data;
+        if (!d || !d->symbol) continue;
+        void* p = dlsym(RTLD_DEFAULT, d->symbol);
+        if (p) continue;
+        if (d->file && d->line > 0 && d->col > 0) {
+            fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->col, d->symbol);
+        } else if (d->file && d->line > 0) {
+            fprintf(stderr, "%s:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->symbol);
+        } else {
+            fprintf(stderr, "error: unresolved extern symbol '%s'\n", d->symbol);
+        }
+        fprintf(stderr, "note: use --dlopen <path> to load a .so/.dylib (or .a on macOS/Linux), or use AOT linking with -L/-l/--link-arg\n");
+        missing++;
+    }
+    return missing ? 1 : 0;
+#endif
+}
+
+static int cstrListHas(List* list, const char* s) {
+    if (!list || !s) return 0;
+    for (ListNode* n = list->head; n != NULL; n = n->next) {
+        const char* v = (const char*)n->data;
+        if (!v) continue;
+        if (strcmp(v, s) == 0) return 1;
+    }
+    return 0;
+}
+
+static void cstrListAddUnique(List* list, const char* start, size_t len) {
+    if (!list || !start) return;
+    while (len > 0 && (*start == ' ' || *start == '\t')) {
+        start++;
+        len--;
+    }
+    while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' || start[len - 1] == '\r')) {
+        len--;
+    }
+    if (len == 0) return;
+    if (start[0] == '_' && len > 1) {
+        start++;
+        len--;
+    }
+    char* sym = dupCStringN(start, (int)len);
+    if (cstrListHas(list, sym)) {
+        free(sym);
+        return;
+    }
+    listAppend(list, sym);
+}
+
+static List* collectUndefinedSymbols(const char* stderrText) {
+    List* out = listNew();
+    if (!stderrText || stderrText[0] == '\0') return out;
+
+    const char* p = stderrText;
+    while (*p) {
+        const char* line = p;
+        const char* nl = strchr(p, '\n');
+        size_t lineLen = nl ? (size_t)(nl - p) : strlen(p);
+
+        // GNU ld / lld: ... undefined reference to `foo'
+        const char* key = "undefined reference to";
+        const char* hit = strstr(line, key);
+        if (hit && (size_t)(hit - line) < lineLen) {
+            const char* s = hit + strlen(key);
+            while (*s == ' ' || *s == '\t') s++;
+            if (*s == '`' || *s == '\'' || *s == '"') {
+                char q = *s++;
+                const char* e = strchr(s, q == '`' ? '\'' : q);
+                if (e) {
+                    cstrListAddUnique(out, s, (size_t)(e - s));
+                }
+            }
+        }
+
+        // macOS ld64: "_foo", referenced from:
+        const char* refKey = "referenced from:";
+        const char* refHit = strstr(line, refKey);
+        if (refHit && (size_t)(refHit - line) < lineLen) {
+            const char* q1 = memchr(line, '"', lineLen);
+            if (q1) {
+                const char* q2 = memchr(q1 + 1, '"', lineLen - (size_t)((q1 + 1) - line));
+                if (q2 && q2 > q1 + 1) {
+                    cstrListAddUnique(out, q1 + 1, (size_t)(q2 - (q1 + 1)));
+                }
+            }
+        }
+
+        p = nl ? nl + 1 : (p + lineLen);
+    }
+
+    return out;
+}
+
+static ExternDecl* findExternDeclBySymbol(List* decls, const char* sym) {
+    if (!decls || !sym) return NULL;
+    for (ListNode* n = decls->head; n != NULL; n = n->next) {
+        ExternDecl* d = (ExternDecl*)n->data;
+        if (!d || !d->symbol) continue;
+        if (strcmp(d->symbol, sym) == 0) return d;
     }
     return NULL;
 }
@@ -821,6 +980,190 @@ static char* findRuntimeArchivePath(const char* argv0) {
     return cand;
 }
 
+static int spawnAndWait(const char* exe, char* const* args) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "error: fork failed: %s\n", strerror(errno));
+        return 1;
+    }
+    if (pid == 0) {
+        execvp(exe, args);
+        fprintf(stderr, "error: exec %s failed: %s\n", exe, strerror(errno));
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "error: waitpid failed: %s\n", strerror(errno));
+        return 1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 1;
+}
+
+static int spawnAndWaitCaptureStderr(const char* exe, char* const* args, char** outStderr) {
+    if (outStderr) *outStderr = NULL;
+
+    int pfds[2];
+    if (pipe(pfds) != 0) {
+        fprintf(stderr, "error: pipe failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "error: fork failed: %s\n", strerror(errno));
+        close(pfds[0]);
+        close(pfds[1]);
+        return 1;
+    }
+    if (pid == 0) {
+        // Child: redirect stderr to pipe.
+        close(pfds[0]);
+        dup2(pfds[1], STDERR_FILENO);
+        close(pfds[1]);
+        execvp(exe, args);
+        fprintf(stderr, "error: exec %s failed: %s\n", exe, strerror(errno));
+        _exit(127);
+    }
+
+    // Parent: read stderr.
+    close(pfds[1]);
+    size_t cap = 4096;
+    size_t len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) {
+        close(pfds[0]);
+        return 1;
+    }
+
+    for (;;) {
+        if (len + 2048 + 1 > cap) {
+            cap *= 2;
+            char* nb = (char*)realloc(buf, cap);
+            if (!nb) {
+                free(buf);
+                close(pfds[0]);
+                return 1;
+            }
+            buf = nb;
+        }
+        ssize_t r = read(pfds[0], buf + len, 2048);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;
+        len += (size_t)r;
+    }
+    close(pfds[0]);
+    buf[len] = '\0';
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "error: waitpid failed: %s\n", strerror(errno));
+        free(buf);
+        return 1;
+    }
+
+    if (outStderr) *outStderr = buf;
+    else free(buf);
+
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 1;
+}
+
+static char* buildSharedFromArchive(Compiler* compiler, const char* archivePath) {
+    if (!archivePath || archivePath[0] == '\0') return NULL;
+
+#if !defined(__unix__) && !defined(__APPLE__)
+    (void)compiler;
+    fprintf(stderr, "error: loading static archives is not supported on this platform\n");
+    return NULL;
+#else
+    char dirTemplate[] = "/tmp/tuac_dlopen_XXXXXX";
+    char* tmpDir = mkdtemp(dirTemplate);
+    if (!tmpDir) {
+        fprintf(stderr, "error: mkdtemp failed: %s\n", strerror(errno));
+        return NULL;
+    }
+
+#if defined(__APPLE__)
+    const char* outName = "libtuac_dlopen.dylib";
+#else
+    const char* outName = "libtuac_dlopen.so";
+#endif
+
+    char* outPath = joinPath(tmpDir, outName);
+
+    int linkSearchCount = compiler && compiler->linkSearchPaths ? compiler->linkSearchPaths->length : 0;
+    int linkLibCount = compiler && compiler->linkLibs ? compiler->linkLibs->length : 0;
+    int linkArgCount = compiler && compiler->linkArgs ? compiler->linkArgs->length : 0;
+
+    int cap = 32 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
+    char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
+    int n = 0;
+
+    args[n++] = (char*)"clang";
+#if defined(__APPLE__)
+    args[n++] = (char*)"-dynamiclib";
+#else
+    args[n++] = (char*)"-shared";
+#endif
+    args[n++] = (char*)"-o";
+    args[n++] = outPath;
+    args[n++] = (char*)"-pthread";
+
+#if defined(__APPLE__)
+    // ld64 syntax: -Wl,-force_load,<archive>
+    size_t alen = strlen(archivePath);
+    char* fl = (char*)malloc(alen + 1 + strlen("-Wl,-force_load,") + 1);
+    sprintf(fl, "-Wl,-force_load,%s", archivePath);
+    args[n++] = fl;
+#else
+    args[n++] = (char*)"-Wl,--whole-archive";
+    args[n++] = (char*)archivePath;
+    args[n++] = (char*)"-Wl,--no-whole-archive";
+#endif
+
+    for (ListNode* it = compiler && compiler->linkArgs ? compiler->linkArgs->head : NULL; it != NULL; it = it->next) {
+        const char* a = (const char*)it->data;
+        if (!a || a[0] == '\0') continue;
+        args[n++] = (char*)a;
+    }
+    for (ListNode* it = compiler && compiler->linkSearchPaths ? compiler->linkSearchPaths->head : NULL; it != NULL; it = it->next) {
+        const char* dir = (const char*)it->data;
+        if (!dir || dir[0] == '\0') continue;
+        args[n++] = (char*)"-L";
+        args[n++] = (char*)dir;
+    }
+    for (ListNode* it = compiler && compiler->linkLibs ? compiler->linkLibs->head : NULL; it != NULL; it = it->next) {
+        const char* lib = (const char*)it->data;
+        if (!lib || lib[0] == '\0') continue;
+        args[n++] = (char*)"-l";
+        args[n++] = (char*)lib;
+    }
+    args[n++] = NULL;
+
+    char* stderrText = NULL;
+    int rc = spawnAndWaitCaptureStderr("clang", args, &stderrText);
+
+#if defined(__APPLE__)
+    free(fl);
+#endif
+    free(args);
+
+    if (rc != 0) {
+        if (stderrText && stderrText[0] != '\0') fputs(stderrText, stderr);
+        fprintf(stderr, "error: failed to build shared library from archive: %s\n", archivePath);
+        if (stderrText) free(stderrText);
+        free(outPath);
+        return NULL;
+    }
+    if (stderrText) free(stderrText);
+    return outPath;
+#endif
+}
+
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
     if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
 
@@ -914,33 +1257,8 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     }
 
     args[n++] = NULL;
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "error: fork failed: %s\n", strerror(errno));
-        unlink(objTemplate);
-        free(mapC);
-        free(arrC);
-        free(rtArchive);
-        free(srcDir);
-        free(args);
-        return 1;
-    }
-    if (pid == 0) {
-        execvp(clangExe, (char* const*)args);
-        fprintf(stderr, "error: exec clang failed: %s\n", strerror(errno));
-        _exit(127);
-    }
-
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
-        fprintf(stderr, "error: waitpid failed: %s\n", strerror(errno));
-        status = 1;
-    } else if (WIFEXITED(status)) {
-        status = WEXITSTATUS(status);
-    } else {
-        status = 1;
-    }
+    char* stderrText = NULL;
+    int status = spawnAndWaitCaptureStderr(clangExe, args, &stderrText);
 
     unlink(objTemplate);
     free(mapC);
@@ -948,7 +1266,36 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     free(rtArchive);
     free(srcDir);
     free(args);
-    return status == 0 ? 0 : 1;
+    if (status == 0) {
+        if (stderrText) free(stderrText);
+        return 0;
+    }
+
+    if (stderrText && stderrText[0] != '\0') fputs(stderrText, stderr);
+
+    // Best-effort: map unresolved link symbols back to `extern fn` declarations for actionable diagnostics.
+    List* miss = collectUndefinedSymbols(stderrText);
+    if (miss && miss->length > 0) {
+        for (ListNode* n = miss->head; n != NULL; n = n->next) {
+            char* sym = (char*)n->data;
+            if (!sym) continue;
+            ExternDecl* d = findExternDeclBySymbol(compiler ? compiler->externDecls : NULL, sym);
+            if (d && d->file && d->line > 0 && d->col > 0) {
+                fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->col, sym);
+            }
+        }
+    }
+    if (miss) {
+        for (ListNode* n = miss->head; n != NULL; n = n->next) {
+            free(n->data);
+        }
+        listFree(miss);
+    }
+    fprintf(stderr, "error: AOT link failed\n");
+    fprintf(stderr, "note: add -L/--link-search, -l/--link-lib, or --link-arg to link external libraries\n");
+    fprintf(stderr, "note: for JIT, use --dlopen <path> (supports .so/.dylib and .a on macOS/Linux)\n");
+    if (stderrText) free(stderrText);
+    return 1;
 }
 
 void cleanup(LLVMModuleRef module, LLVMBuilderRef builder, LLVMContextRef context, char* ir) {
@@ -1225,6 +1572,7 @@ int main(int argc, char* argv[]) {
     int uncheckedIndex = 0;
     int stackFixedArrays = 0;
     int emitLoc = 1;
+    int checkExtern = 0;
     int runArgc = 0;
     char** runArgv = NULL;
 
@@ -1239,7 +1587,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
@@ -1294,6 +1642,50 @@ int main(int argc, char* argv[]) {
             listAppend(compiler.linkArgs, (void*)v);
             continue;
         }
+        if (strncmp(a, "--link-search=", 14) == 0) {
+            const char* v = a + 14;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkSearchPaths, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "--link-search") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkSearchPaths, (void*)v);
+            continue;
+        }
+        if (strncmp(a, "--link-lib=", 11) == 0) {
+            const char* v = a + 11;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkLibs, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "--link-lib") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            listAppend(compiler.linkLibs, (void*)v);
+            continue;
+        }
         if (strncmp(a, "--dlopen=", 9) == 0) {
             const char* v = a + 9;
             if (!v || v[0] == '\0') {
@@ -1314,6 +1706,10 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             listAppend(compiler.dlopenPaths, (void*)v);
+            continue;
+        }
+        if (strcmp(a, "--check-extern") == 0) {
+            checkExtern = 1;
             continue;
         }
         if (strcmp(a, "-L") == 0) {
@@ -1378,7 +1774,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
         return 1;
     }
     compiler.llvmOptLevel = optLevel;
@@ -1397,13 +1793,26 @@ int main(int argc, char* argv[]) {
     for (ListNode* it = compiler.dlopenPaths ? compiler.dlopenPaths->head : NULL; it != NULL; it = it->next) {
         const char* p = (const char*)it->data;
         if (!p || p[0] == '\0') continue;
-        void* h = dlopen(p, RTLD_NOW | RTLD_GLOBAL);
+        const char* loadPath = p;
+        char* built = NULL;
+        if (endsWith(p, ".a")) {
+            built = buildSharedFromArchive(&compiler, p);
+            if (!built) {
+                if (compiler.runArgv) free(compiler.runArgv);
+                if (runArgv) free(runArgv);
+                return 1;
+            }
+            loadPath = built;
+        }
+        void* h = dlopen(loadPath, RTLD_NOW | RTLD_GLOBAL);
         if (!h) {
-            fprintf(stderr, "error: dlopen failed for %s: %s\n", p, dlerror());
+            fprintf(stderr, "error: dlopen failed for %s: %s\n", loadPath, dlerror());
+            if (built) free(built);
             if (compiler.runArgv) free(compiler.runArgv);
             if (runArgv) free(runArgv);
             return 1;
         }
+        if (built) free(built);
     }
 #endif
 
@@ -1418,6 +1827,14 @@ int main(int argc, char* argv[]) {
     char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
     moduleLoad(&sys, entryPath);
     if (sys.hadError) return 1;
+
+    compiler.externDecls = collectExternDecls(&sys);
+
+    // Optional JIT-time preflight: verify that every `extern fn` symbol is resolvable in the host process.
+    if (checkExtern && !compiler.outputPath) {
+        int bad = checkExternDecls(compiler.externDecls);
+        if (bad) return 1;
+    }
 
     // Compile modules in dependency-first order into the single LLVM module's main.
     for (ListNode* node = sys.order->head; node != NULL; node = node->next) {

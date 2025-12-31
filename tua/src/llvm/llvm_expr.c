@@ -2,7 +2,10 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include <limits.h>
+
 static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
+static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type);
 
 static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
@@ -2249,6 +2252,168 @@ static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeR
         return LLVMBuildFPTrunc(compiler->builder, value, targetType, "fptrunc");
     }
     return value;
+}
+
+static LLVMValueRef buildOption(Compiler* compiler, LLVMTypeRef innerTy, LLVMValueRef ok, LLVMValueRef payload) {
+    LLVMTypeRef optTy = compilerGetOptionType(compiler, innerTy);
+    LLVMValueRef out = LLVMGetUndef(optTy);
+    out = LLVMBuildInsertValue(compiler->builder, out, ok, 0, "opt_ok");
+    out = LLVMBuildInsertValue(compiler->builder, out, payload, 1, "opt_v");
+    return out;
+}
+
+static LLVMValueRef checkedCastToOption(Compiler* compiler, LLVMValueRef value, LLVMTypeRef dstTy) {
+    if (!compiler || !value || !dstTy) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+
+    // Try to decode from tua_value if needed (best-effort).
+    value = castFromTuaValue(compiler, value, LLVMTypeOf(value));
+
+    LLVMTypeRef srcTy = LLVMTypeOf(value);
+    LLVMTypeKind sk = LLVMGetTypeKind(srcTy);
+    LLVMTypeKind dk = LLVMGetTypeKind(dstTy);
+
+    LLVMValueRef ok = LLVMConstInt(LLVMInt1TypeInContext(context), 1, 0);
+    LLVMValueRef payload = LLVMConstNull(dstTy);
+
+    // Integer -> integer.
+    if (sk == LLVMIntegerTypeKind && dk == LLVMIntegerTypeKind) {
+        unsigned sb = LLVMGetIntTypeWidth(srcTy);
+        unsigned db = LLVMGetIntTypeWidth(dstTy);
+        if (db >= sb) {
+            payload = castToType(compiler, value, dstTy);
+            return buildOption(compiler, dstTy, ok, payload);
+        }
+
+        // Narrowing: range-check then trunc.
+        int64_t min = -(1LL << (db - 1));
+        int64_t max = (1LL << (db - 1)) - 1;
+        LLVMValueRef minC = LLVMConstInt(srcTy, (uint64_t)min, 1);
+        LLVMValueRef maxC = LLVMConstInt(srcTy, (uint64_t)max, 1);
+        LLVMValueRef ge = LLVMBuildICmp(builder, LLVMIntSGE, value, minC, "cast_ge");
+        LLVMValueRef le = LLVMBuildICmp(builder, LLVMIntSLE, value, maxC, "cast_le");
+        ok = LLVMBuildAnd(builder, ge, le, "cast_ok");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "cast.ok");
+        LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "cast.bad");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "cast.cont");
+        LLVMBuildCondBr(builder, ok, okBB, badBB);
+
+        LLVMPositionBuilderAtEnd(builder, okBB);
+        LLVMValueRef good = LLVMBuildTrunc(builder, value, dstTy, "cast_trunc");
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef okEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, badBB);
+        LLVMValueRef bad = LLVMConstNull(dstTy);
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef badEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(builder, dstTy, "cast_v");
+        LLVMAddIncoming(phi, &good, &okEnd, 1);
+        LLVMAddIncoming(phi, &bad, &badEnd, 1);
+
+        return buildOption(compiler, dstTy, ok, phi);
+    }
+
+    // Float/double -> integer.
+    if ((sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) && dk == LLVMIntegerTypeKind) {
+        unsigned db = LLVMGetIntTypeWidth(dstTy);
+        if (db != 32 && db != 64) {
+            ok = LLVMConstInt(LLVMInt1TypeInContext(context), 0, 0);
+            return buildOption(compiler, dstTy, ok, LLVMConstNull(dstTy));
+        }
+        int64_t min = db == 32 ? (int64_t)INT32_MIN : (int64_t)INT64_MIN;
+        int64_t max = db == 32 ? (int64_t)INT32_MAX : (int64_t)INT64_MAX;
+
+        LLVMValueRef minF = LLVMConstReal(srcTy, (double)min);
+        LLVMValueRef maxF = LLVMConstReal(srcTy, (double)max);
+
+        LLVMValueRef isNaN = LLVMBuildFCmp(builder, LLVMRealUNO, value, value, "isnan");
+        LLVMValueRef ge = LLVMBuildFCmp(builder, LLVMRealOGE, value, minF, "cast_ge");
+        LLVMValueRef le = LLVMBuildFCmp(builder, LLVMRealOLE, value, maxF, "cast_le");
+        LLVMValueRef inRange = LLVMBuildAnd(builder, ge, le, "cast_inrange");
+        ok = LLVMBuildAnd(builder, LLVMBuildNot(builder, isNaN, "notnan"), inRange, "cast_ok");
+
+        LLVMValueRef fn = compiler->current->func;
+        LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "f2i.ok");
+        LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "f2i.bad");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "f2i.cont");
+        LLVMBuildCondBr(builder, ok, okBB, badBB);
+
+        LLVMPositionBuilderAtEnd(builder, okBB);
+        LLVMValueRef good = LLVMBuildFPToSI(builder, value, dstTy, "f2i");
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef okEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, badBB);
+        LLVMValueRef bad = LLVMConstNull(dstTy);
+        LLVMBuildBr(builder, contBB);
+        LLVMBasicBlockRef badEnd = LLVMGetInsertBlock(builder);
+
+        LLVMPositionBuilderAtEnd(builder, contBB);
+        LLVMValueRef phi = LLVMBuildPhi(builder, dstTy, "cast_v");
+        LLVMAddIncoming(phi, &good, &okEnd, 1);
+        LLVMAddIncoming(phi, &bad, &badEnd, 1);
+
+        return buildOption(compiler, dstTy, ok, phi);
+    }
+
+    // Integer -> float/double, float<->double: always ok.
+    if ((sk == LLVMIntegerTypeKind && (dk == LLVMFloatTypeKind || dk == LLVMDoubleTypeKind)) ||
+        ((sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) && (dk == LLVMFloatTypeKind || dk == LLVMDoubleTypeKind))) {
+        payload = castToType(compiler, value, dstTy);
+        return buildOption(compiler, dstTy, ok, payload);
+    }
+
+    // Fallback: attempt best-effort cast; always Some for now.
+    payload = castToType(compiler, value, dstTy);
+    return buildOption(compiler, dstTy, ok, payload);
+}
+
+static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type) {
+    if (!compiler || !type) return LLVMInt32TypeInContext(compiler->context);
+    switch (type->kind) {
+        case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
+        case TYPE_STRING:
+        case TYPE_PTR:
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        case TYPE_NAMED:
+            if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
+            if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
+            if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) inner = (Type*)type->typeArgs->head->data;
+                LLVMTypeRef innerTy = inner ? astTypeToLLVMType(compiler, inner) : compilerGetTuaValueType(compiler);
+                return compilerGetOptionType(compiler, innerTy);
+            }
+            // Unknown named type: treat as pointer-like for now.
+            return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        default:
+            return LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+LLVMValueRef emitCastExpr(Compiler* compiler, CastExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMValueRef v = compileExpr(compiler, expr->value);
+    if (!v) return NULL;
+    LLVMTypeRef dstTy = astTypeToLLVMType(compiler, expr->targetType);
+    if (!expr->isChecked) {
+        return castToType(compiler, v, dstTy);
+    }
+    return checkedCastToOption(compiler, v, dstTy);
 }
 
 LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {

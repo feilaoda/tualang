@@ -21,6 +21,7 @@ typedef enum {
     EXPR_VARIABLE,
     EXPR_GROUPING,
     EXPR_CALL,
+    EXPR_CAST,
     EXPR_POSTFIX,
     EXPR_PREFIX,
     EXPR_ASSIGN,
@@ -109,6 +110,14 @@ typedef struct BinaryExpr {
     Expr *right;
     Token operator;
 }BinaryExpr;
+
+// Cast expression: `expr as Type` or `expr as? Type`
+typedef struct CastExpr {
+    Expr base;
+    Expr* value;
+    Type* targetType;
+    int isChecked; // 0 => as, 1 => as?
+} CastExpr;
 
 // Unary Expression
 typedef struct {

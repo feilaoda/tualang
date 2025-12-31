@@ -70,6 +70,7 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr);
 LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr);
 LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr);
 LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr);
+LLVMValueRef emitCastExpr(Compiler* compiler, CastExpr* expr);
 LLVMValueRef emitPrefixExpr(Compiler* compiler, PrefixExpr* expr);
 LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 	LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr);

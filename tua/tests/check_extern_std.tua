@@ -1,0 +1,18 @@
+import "std/rt" as rt
+import "std/fs" as fs
+import "std/strconv" as strconv
+
+extern fn strlen(s: string) long
+
+let n = strlen("hello")
+assert(n == 5)
+
+// Exercise a few std externs so the declarations exist.
+let err, s = fs.Fs.realpath(".")
+assert(err == 0)
+rt.Rt.free(s)
+
+let t = strconv.Int.toString(7)
+assert(t == "7")
+rt.Rt.free(t)
+

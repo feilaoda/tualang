@@ -487,6 +487,30 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         }
         case EXPR_GROUPING:
             return inferExpr(compiler, scope, ((GroupingExpr*)expr)->expression, modulePath);
+        case EXPR_CAST: {
+            CastExpr* c = (CastExpr*)expr;
+            AType* src = inferExpr(compiler, scope, c->value, modulePath);
+            AType* dst = atFromAstType(c->targetType);
+
+            // First version: only numeric casts are supported.
+            if (!atIsAny(src) && !atIsNumeric(src)) {
+                analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` only supports numeric casts for now");
+                return atNew(AT_ANY);
+            }
+            if (!atIsNumeric(dst)) {
+                analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` target type must be numeric");
+                return atNew(AT_ANY);
+            }
+
+            if (c->isChecked) {
+                if (atIsAny(src)) {
+                    analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as?` requires a known numeric source type for now");
+                    return atOption(dst);
+                }
+                return atOption(dst);
+            }
+            return dst;
+        }
         case EXPR_CALL:
             return inferCall(compiler, scope, (CallExpr*)expr, modulePath);
         case EXPR_ARRAY_LITERAL: {

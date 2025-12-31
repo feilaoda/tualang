@@ -70,6 +70,7 @@ void initCompiler(Compiler* compiler) {
     compiler->linkLibs = listNew();
     compiler->linkArgs = listNew();
     compiler->dlopenPaths = listNew();
+    compiler->externDecls = NULL;
     compiler->runArgc = 0;
     compiler->runArgv = NULL;
     compiler->uncheckedIndex = 0;
@@ -709,6 +710,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
             break;
         case EXPR_CALL:
             return emitCallExpr(compiler, (CallExpr*)expr);
+            break;
+        case EXPR_CAST:
+            return emitCastExpr(compiler, (CastExpr*)expr);
             break;
         case EXPR_GROUPING:
             return compileExpr(compiler, ((GroupingExpr*)expr)->expression);

@@ -29,6 +29,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_VARIABLE: return "Variable";
         case EXPR_GROUPING: return "Grouping";
         case EXPR_CALL: return "Call";
+        case EXPR_CAST: return "Cast";
         case EXPR_POSTFIX: return "Postfix";
         case EXPR_PREFIX: return "Prefix";
         case EXPR_ASSIGN: return "Assign";
@@ -225,6 +226,16 @@ static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
     return (Expr*)expr;
 }
 
+static Expr* newCastExpr(Token asToken, Expr* value, Type* targetType, int isChecked) {
+    CastExpr* expr = malloc(sizeof(CastExpr));
+    expr->base.type = EXPR_CAST;
+    expr->base.token = asToken;
+    expr->value = value;
+    expr->targetType = targetType;
+    expr->isChecked = isChecked;
+    return (Expr*)expr;
+}
+
 static Expr* newUnaryExpr(Token operator, Expr* right) {
     UnaryExpr* expr = malloc(sizeof(UnaryExpr));
     expr->base.type = EXPR_UNARY;
@@ -398,6 +409,15 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
         // Call chaining: `callee(args...)(args...)`
         if (match(parser, TOKEN_LPAREN)) {
             left = finishCall(parser, left);
+            continue;
+        }
+        // Cast: `expr as Type` / `expr as? Type`
+        if (match(parser, TOKEN_AS)) {
+            Token asTok = parser->previous;
+            int isChecked = 0;
+            if (match(parser, TOKEN_QMARK)) isChecked = 1;
+            Type* target = parseType(parser);
+            left = newCastExpr(asTok, left, target, isChecked);
             continue;
         }
         // Indexing: `obj[expr]`

@@ -169,12 +169,12 @@
 - [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
   - [x] CLI：`tuac` 支持 `--link-search/-L`、`--link-lib/-l`、`--link-arg`（透传到系统链接器）
   - [x] AOT：`tuac --output a.out` 时把外部库链接进最终可执行文件（macOS/Linux）
-  - [ ] JIT：把外部库链接进宿主 `tuac`（或 `dlopen`）以便 JIT 解析符号
-    - [ ] macOS：支持对 `.a` 使用 `-Wl,-force_load`（类似当前 `tua_rt` 的 `RT_LINK`）
-    - [ ] Linux：支持对 `.a` 使用 `--whole-archive/--no-whole-archive`
-    - [x] 可选：运行时 `--dlopen <path>`（POSIX）加载 `.so/.dylib`（Windows 先占位）
-    - [ ] 可选：`--check-extern`（JIT）：启动前用 `dlsym` 预检本次编译单元里的 `extern fn` 符号是否可解析
-  - [ ] 诊断：链接失败/缺符号时给出清晰报错（包含库名/符号名/建议参数）
+  - [x] JIT：把外部库加载进宿主 `tuac`（或 `dlopen`）以便 JIT 解析符号
+    - [x] macOS：`--dlopen libfoo.a` 内部用 `-Wl,-force_load` 构建临时 `.dylib` 并加载
+    - [x] Linux：`--dlopen libfoo.a` 内部用 `--whole-archive/--no-whole-archive` 构建临时 `.so` 并加载
+    - [x] 运行时 `--dlopen <path>`（POSIX）加载 `.so/.dylib`（Windows 先占位）
+    - [x] `--check-extern`（JIT）：启动前用 `dlsym` 预检本次编译单元里的 `extern fn` 符号是否可解析
+  - [x] 诊断：链接失败/缺符号时给出清晰报错（包含缺失符号与 `extern fn` 声明位置，并提示 `-L/-l/--link-arg` 或 `--dlopen`）
 
 #### 11.2 `tua_rt`（跨平台底座）
 - [ ] 大文件能力：流式读取 + `mmap`（POSIX 第一版），Windows 先 stub

@@ -1,0 +1,5 @@
+extern fn definitely_missing_symbol() int
+
+let x = definitely_missing_symbol()
+assert(x == 0)
+

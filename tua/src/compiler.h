@@ -90,6 +90,10 @@ typedef struct Compiler{
     // JIT dynamic library loads (POSIX-only for now).
     List* dlopenPaths;     // List<const char*>
 
+    // `extern fn` declarations discovered during module loading (for diagnostics).
+    // Element type is opaque to the core compiler; currently populated by `tuac` driver.
+    List* externDecls;     // List<void*>
+
     // Script args for JIT execution (passed to generated `main(argc, argv)`).
     int runArgc;
     char** runArgv;

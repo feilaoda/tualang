@@ -52,6 +52,7 @@ typedef enum {
     TOKEN_OR,        // ||
     TOKEN_AND,       // &&
     TOKEN_COALESCE,  // ??
+    TOKEN_QMARK,     // ?
     TOKEN_AMP,       // &
     TOKEN_ARROW,     // ->
     TOKEN_COLON,     // :

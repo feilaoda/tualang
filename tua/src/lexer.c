@@ -109,6 +109,7 @@ const char* tokenToString(TokenType type) {
         case TOKEN_OR: return "||";
         case TOKEN_AND: return "&&";
         case TOKEN_COALESCE: return "??";
+        case TOKEN_QMARK: return "?";
         case TOKEN_AMP: return "&";
         case TOKEN_ARROW: return "->";
         case TOKEN_COLON: return ":";
@@ -575,7 +576,7 @@ Token scanToken(Lexer* lexer) {
             break;
         case '?':
             if (match(lexer, '?')) return makeToken(lexer, TOKEN_COALESCE);
-            return errorToken(lexer, "Unexpected '?' (did you mean '??'?)");
+            return makeToken(lexer, TOKEN_QMARK);
         
         // String literals
         case '"': return string(lexer);
