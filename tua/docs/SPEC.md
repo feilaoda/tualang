@@ -78,6 +78,7 @@
 - 外部声明（FFI，Status: Implemented）：
   - `extern fn name(a:Type, b:Type) -> Type`
   - `extern fn name(a:Type, b:Type) Type`（语法糖，省略 `->`）
+  - `extern fn symbol(a:Type, b:Type) Type as localName`（语法糖）：声明外部符号 `symbol`，并自动生成模块内联的转发函数 `localName(...)` 以便避免命名冲突/递归歧义
   - 说明：
     - `extern fn` 只声明签名，不包含函数体；用于链接到 `tua_rt` 或系统库符号
     - `extern fn` 默认不导出（等价于模块内部绑定）；如需对外提供 API，请写一个普通 `fn` 包装后再导出

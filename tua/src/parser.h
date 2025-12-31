@@ -268,6 +268,7 @@ typedef struct {
     Type* returnType;
     List* returnTypes; // List<Type*>, NULL or empty => void
     List* body;
+    Token externAlias; // only for `extern fn ... as <alias>`; otherwise {0}
 } FuncStmt;
 
 // If statement structure

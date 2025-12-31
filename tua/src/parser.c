@@ -195,6 +195,7 @@ static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* retur
     stmt->returnType = returnType;
     stmt->returnTypes = returnTypes;
     stmt->body = body;
+    stmt->externAlias = (Token){0};
     return (Stmt*)stmt;
 }
 
@@ -1482,11 +1483,19 @@ static Stmt* parseExternFunctionDeclaration(Parser* parser) {
         }
     }
 
+    // `extern fn symbol(...) T as localName`
+    Token alias = (Token){0};
+    if (match(parser, TOKEN_AS)) {
+        alias = consume(parser, TOKEN_IDENTIFIER, "Expect alias name after 'as'");
+    }
+
     if (check(parser, TOKEN_SEMICOLON)) {
         consume(parser, TOKEN_SEMICOLON, "Expect statement separator after extern fn declaration");
     }
 
-    return newFuncStmt(name, parameters, returnType, returnTypes, NULL);
+    FuncStmt* stmt = (FuncStmt*)newFuncStmt(name, parameters, returnType, returnTypes, NULL);
+    stmt->externAlias = alias;
+    return (Stmt*)stmt;
 }
 
 static Stmt* parseStructDeclaration(Parser* parser) {

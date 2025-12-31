@@ -4,7 +4,7 @@ extern fn atoi (s: string) int as c_atoi;
 object Foo {
     fn atoi(s: string) int {
         println("Foo.object.atoi");
-        return c_atoi(s);
+        return atoi(s);
     }
 
     fn fib(n: int) int {

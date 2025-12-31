@@ -1541,6 +1541,74 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
 
     // `extern fn` declaration: declare prototype only (no body).
     if (stmt->body == NULL) {
+        // `extern fn symbol(...) T as localName`
+        // Sugar: declare the external symbol (as-is), then generate a module-local wrapper
+        // `<modulePrefix>__localName` that forwards to `symbol`.
+        if (stmt->externAlias.length > 0) {
+            int wlen = 0;
+            char* wname = NULL;
+            if (compiler && compiler->currentModulePrefix) {
+                const int sepLen = 2;
+                wlen = compiler->currentModulePrefixLen + sepLen + stmt->externAlias.length;
+                wname = malloc((size_t)wlen + 1);
+                memcpy(wname, compiler->currentModulePrefix, (size_t)compiler->currentModulePrefixLen);
+                memcpy(wname + compiler->currentModulePrefixLen, "__", (size_t)sepLen);
+                memcpy(wname + compiler->currentModulePrefixLen + sepLen, stmt->externAlias.start, (size_t)stmt->externAlias.length);
+                wname[wlen] = '\0';
+            } else {
+                wlen = stmt->externAlias.length;
+                wname = malloc((size_t)wlen + 1);
+                memcpy(wname, stmt->externAlias.start, (size_t)stmt->externAlias.length);
+                wname[wlen] = '\0';
+            }
+
+            // Avoid duplicate wrapper emission if the same extern declaration is visited twice.
+            LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, wname);
+            if (!existing) {
+                LLVMValueRef wrapper = LLVMAddFunction(compiler->module, wname, funcType);
+                LLVMSetLinkage(wrapper, LLVMInternalLinkage);
+
+                // Mirror multi-return and closure-return metadata onto the wrapper
+                // so calling the alias behaves like calling the extern directly.
+                if (stmt->returnTypes && stmt->returnTypes->length > 1) {
+                    compilerRegisterMultiReturn(compiler, wname, wlen, stmt->returnTypes->length);
+                }
+                if (stmt->returnType && stmt->returnType->kind == TYPE_FUNC) {
+                    LLVMTypeRef sig = compilerClosureSigFromType(compiler, stmt->returnType);
+                    if (sig) compilerRegisterClosureReturnSig(compiler, wname, wlen, sig);
+                }
+
+                LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+                Block* savedCurrent = compiler->current;
+
+                LLVMBasicBlockRef entry = LLVMAppendBasicBlock(wrapper, "entry");
+                LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+                // Forward all arguments to the external function prototype.
+                LLVMValueRef* args = NULL;
+                if (paramCount > 0) {
+                    args = malloc(sizeof(LLVMValueRef) * (size_t)paramCount);
+                    for (int i = 0; i < paramCount; i++) {
+                        args[i] = LLVMGetParam(wrapper, (unsigned)i);
+                    }
+                }
+
+                LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, (unsigned)paramCount, "");
+                if (args) free(args);
+
+                if (LLVMGetTypeKind(retType) == LLVMVoidTypeKind) {
+                    LLVMBuildRetVoid(compiler->builder);
+                } else {
+                    LLVMBuildRet(compiler->builder, call);
+                }
+
+                if (savedBlock) LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+                compiler->current = savedCurrent;
+            }
+
+            free(wname);
+        }
+
         if (paramTypes) free(paramTypes);
         free(funcName);
         return;

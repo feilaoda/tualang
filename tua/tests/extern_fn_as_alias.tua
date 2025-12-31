@@ -1,0 +1,15 @@
+extern fn atoi(s: string) int as c_atoi
+
+object Foo {
+  fn atoi(s: string) int {
+    return c_atoi(s)
+  }
+
+  fn fib(n: int) int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+  }
+}
+
+assert(Foo.atoi("10") == 10)
+assert(Foo.fib(10) == 55)
