@@ -1,12 +1,25 @@
 
-native fn atoi(s: string) int;
+extern fn atoi (s: string) int as c_atoi;
 
-struct Foo {
+object Foo {
+    fn atoi(s: string) int {
+        println("Foo.object.atoi");
+        return c_atoi(s);
+    }
+
+    fn fib(n: int) int {
+        if n < 2 {
+            return n;
+        }
+        return fib(n - 1) + fib(n - 2);
+    }
+}
+struct Foo1 {
     a: int
 
     fn atoi(s: string) int {
         println("Foo.atoi");
-        return native.atoi(s);
+        return atoi(s);
     }
 
     fn bar() {
@@ -15,25 +28,10 @@ struct Foo {
     }
 }
 
-object Foo2 {
-    fn atoi(s: string) int {
-        println("Foo.object.atoi");
-        return native.atoi(s);
-    }
+let foo = Foo1();
+//foo.bar();
 
-    fn hello() {
-        println("Foo.object.hello");
-    }
+println(Foo.atoi("1234"));
+//Foo2.bar();
 
-    fn bar() {
-        println("Foo.object.bar");
-        //Foo2.atoi("123");
-        hello();
-    }
-}
-
-let foo = Foo();
-foo.bar();
-
-Foo2.atoi("1234");
-Foo2.bar();
+println(Foo.fib(10));

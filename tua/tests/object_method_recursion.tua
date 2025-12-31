@@ -1,0 +1,8 @@
+object Foo {
+  fn fib(n: int) int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+  }
+}
+
+assert(Foo.fib(10) == 55)

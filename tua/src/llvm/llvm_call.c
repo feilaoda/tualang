@@ -354,10 +354,11 @@ static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, Call
 
     // Inside an `object` method, allow unqualified calls to refer to sibling methods,
     // enabling patterns like `makeAdder(1)(2)` where `makeAdder` is an object method.
-    if (compiler->currentObjectPrefix &&
-        !(compiler->currentObjectMethodName &&
-          compiler->currentObjectMethodNameLen == callee->name.length &&
-          memcmp(compiler->currentObjectMethodName, callee->name.start, (size_t)callee->name.length) == 0)) {
+    int isSelf = compiler->currentObjectPrefix &&
+                 compiler->currentObjectMethodName &&
+                 compiler->currentObjectMethodNameLen == callee->name.length &&
+                 memcmp(compiler->currentObjectMethodName, callee->name.start, (size_t)callee->name.length) == 0;
+    if (compiler->currentObjectPrefix && !isSelf) {
         int ql = 0;
         char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
         if (q) {
@@ -375,6 +376,18 @@ static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, Call
     if (compiler->currentModulePrefix) {
         int ql = 0;
         char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+        if (q) {
+            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            free(q);
+            if (t) return t;
+        }
+    }
+
+    // For self-recursion inside an object method, prefer module/global resolution first
+    // (so wrappers can call same-named `extern fn`), then fall back to the object method.
+    if (compiler->currentObjectPrefix && isSelf) {
+        int ql = 0;
+        char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
         if (q) {
             LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
             free(q);
@@ -3157,7 +3170,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
         // Implicit object-method call inside the same `object`:
         // In `object O { fn a(){ b() } fn b(){...} }`, `b()` resolves to `O.b()`.
-        // To call the current method recursively, write `O.name(...)` explicitly.
+        // For self-calls `fn f(){ f() }`, prefer module/global resolution first
+        // (so wrappers can call same-named `extern fn`), and only fall back to `O.f()` if needed.
         if (compiler && compiler->currentObjectPrefix) {
             int isSelf =
                 compiler->currentObjectMethodName &&
@@ -3222,6 +3236,31 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return out;
             }
+
+            // Self-recursion fallback for object methods: if we are in `object O { fn f(){ f() } }`
+            // and there's no global `f`, resolve to `O.f()` here.
+            if (compiler && compiler->currentObjectPrefix) {
+                int isSelf =
+                    compiler->currentObjectMethodName &&
+                    compiler->currentObjectMethodNameLen == callee->name.length &&
+                    memcmp(compiler->currentObjectMethodName, callee->name.start, (size_t)callee->name.length) == 0;
+                if (isSelf) {
+                    int ql = 0;
+                    char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
+                    if (q) {
+                        LLVMValueRef objFunc = LLVMGetNamedFunction(compiler->module, q);
+                        if (objFunc) {
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            LLVMValueRef out = emitDirectFuncCall(compiler, objFunc, expr, callee->name.line);
+                            free(q);
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return out;
+                        }
+                        free(q);
+                    }
+                }
+            }
+
             compilerErrorAtToken(compiler, &callee->name, "undefined function '%.*s'",
                 callee->name.length, callee->name.start);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
