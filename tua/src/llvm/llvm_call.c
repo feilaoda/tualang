@@ -344,11 +344,28 @@ static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
     return value;
 }
 
+static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen);
+
 static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, CallExpr* call) {
     if (!compiler || !call || !call->callee) return NULL;
     if (call->callee->type != EXPR_VARIABLE) return NULL;
 
     VariableExpr* callee = (VariableExpr*)call->callee;
+
+    // Inside an `object` method, allow unqualified calls to refer to sibling methods,
+    // enabling patterns like `makeAdder(1)(2)` where `makeAdder` is an object method.
+    if (compiler->currentObjectPrefix &&
+        !(compiler->currentObjectMethodName &&
+          compiler->currentObjectMethodNameLen == callee->name.length &&
+          memcmp(compiler->currentObjectMethodName, callee->name.start, (size_t)callee->name.length) == 0)) {
+        int ql = 0;
+        char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
+        if (q) {
+            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            free(q);
+            if (t) return t;
+        }
+    }
 
     SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
     if (a && a->kind == ALIAS_FUNC) {
@@ -3136,6 +3153,31 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (paramTypes) free(paramTypes);
             if (args) free(args);
             return out;
+        }
+
+        // Implicit object-method call inside the same `object`:
+        // In `object O { fn a(){ b() } fn b(){...} }`, `b()` resolves to `O.b()`.
+        // To call the current method recursively, write `O.name(...)` explicitly.
+        if (compiler && compiler->currentObjectPrefix) {
+            int isSelf =
+                compiler->currentObjectMethodName &&
+                compiler->currentObjectMethodNameLen == callee->name.length &&
+                memcmp(compiler->currentObjectMethodName, callee->name.start, (size_t)callee->name.length) == 0;
+            if (!isSelf) {
+                int ql = 0;
+                char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
+                if (q) {
+                    LLVMValueRef objFunc = LLVMGetNamedFunction(compiler->module, q);
+                    if (objFunc) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        LLVMValueRef out = emitDirectFuncCall(compiler, objFunc, expr, callee->name.line);
+                        free(q);
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return out;
+                    }
+                    free(q);
+                }
+            }
         }
 
         // Resolve functions with module-local qualified names taking precedence

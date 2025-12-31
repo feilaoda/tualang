@@ -159,6 +159,8 @@
 #### 7.3 object（Status: Implemented）
 - `object O { fn f(...) ... }`
 - `O.f(a,b)` 编译为 `O__f(a,b)`（静态方法）
+- 在 `object O` 的方法体内允许省略 `O.`：`f(a,b)` 会优先解析为同一个 `object` 内的 `O.f(a,b)`；若不存在该方法，则按普通规则继续解析为模块顶层函数/`extern fn`/导入别名等
+  - 为避免误把 `f()` 解析成当前方法自身导致意外递归：在 `fn f(){ ... }` 内写 `f()` 不会走隐式 `O.f()`；如需递归请显式写 `O.f()`
 
 #### 7.4 enum（Status: Implemented）
 - 声明：`enum E { A, B = 10, C, D = "raw" }`

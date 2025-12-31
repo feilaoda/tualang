@@ -44,6 +44,14 @@ typedef struct Compiler{
     int currentModulePrefixLen;
     List* currentAliases; // List<SymbolAlias*>
 
+    // When compiling an `object O { ... }` method, this is set to the (already-qualified)
+    // object name so unqualified calls like `f()` inside the object can resolve to `O.f`.
+    const char* currentObjectPrefix;
+    int currentObjectPrefixLen;
+    // Short (unmangled) current method name for disambiguation.
+    const char* currentObjectMethodName;
+    int currentObjectMethodNameLen;
+
     // Multi-return function tracking (LLVM JIT path)
     List* multiReturns; // List<MultiReturnInfo*>
     int wantMultiValue; // when true, calls return full tuple value

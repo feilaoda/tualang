@@ -1,0 +1,14 @@
+extern fn atoi(s: string) int
+
+object C {
+  fn atoi(s: string) int {
+    return atoi(s)
+  }
+
+  fn test() {
+    assert(atoi("10") == 10)
+    assert(C.atoi("11") == 11)
+  }
+}
+
+C.test()

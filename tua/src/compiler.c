@@ -43,6 +43,10 @@ void initCompiler(Compiler* compiler) {
     compiler->currentModulePrefix = NULL;
     compiler->currentModulePrefixLen = 0;
     compiler->currentAliases = NULL;
+    compiler->currentObjectPrefix = NULL;
+    compiler->currentObjectPrefixLen = 0;
+    compiler->currentObjectMethodName = NULL;
+    compiler->currentObjectMethodNameLen = 0;
 
     compiler->multiReturns = listNew();
     compiler->wantMultiValue = 0;
@@ -1941,9 +1945,23 @@ void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt) {
     // Compile object methods as top-level functions with mangled names: Object__method
     if (!stmt || !stmt->methods) return;
 
+    const char* savedObj = compiler ? compiler->currentObjectPrefix : NULL;
+    int savedObjLen = compiler ? compiler->currentObjectPrefixLen : 0;
+    const char* savedMethod = compiler ? compiler->currentObjectMethodName : NULL;
+    int savedMethodLen = compiler ? compiler->currentObjectMethodNameLen : 0;
+
     for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
         FuncStmt* method = (FuncStmt*)node->data;
         if (!method) continue;
+
+        // Allow unqualified calls inside `object` methods to resolve to sibling methods:
+        // inside `object O { fn a(){ b() } fn b(){...} }`, `b()` resolves to `O.b()`.
+        if (compiler) {
+            compiler->currentObjectPrefix = stmt->name.start;
+            compiler->currentObjectPrefixLen = stmt->name.length;
+            compiler->currentObjectMethodName = method->name.start;
+            compiler->currentObjectMethodNameLen = method->name.length;
+        }
 
         int mangledLen = 0;
         char* mangled = mangleTwo(&stmt->name, &method->name, "__", &mangledLen);
@@ -1956,5 +1974,12 @@ void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt) {
         compileFuncStmt(compiler, &tmp);
 
         free(mangled);
+
+        if (compiler) {
+            compiler->currentObjectPrefix = savedObj;
+            compiler->currentObjectPrefixLen = savedObjLen;
+            compiler->currentObjectMethodName = savedMethod;
+            compiler->currentObjectMethodNameLen = savedMethodLen;
+        }
     }
 }
