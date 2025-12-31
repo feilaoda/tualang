@@ -66,9 +66,12 @@ typedef struct Compiler{
 	    // Side-channel: when compiling a map literal for a typed map variable, enforce K/V.
 	    LLVMTypeRef expectedMapKeyType;
 	    LLVMTypeRef expectedMapValueType;
+	    TypeKind expectedMapKeyKind;
+	    TypeKind expectedMapValueKind;
 
 	    // Side-channel: when compiling an array literal for a typed array variable, enforce element type/length.
 	    LLVMTypeRef expectedArrayElemType;
+	    TypeKind expectedArrayElemKind;
 	    int64_t expectedArrayFixedLen; // -1 => dynamic / unknown
 
     // Tail recursion elimination (self tail calls) state for the currently compiled function.

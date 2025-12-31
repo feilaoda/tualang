@@ -17,6 +17,8 @@ typedef struct VariableRef {
     int length;
     LLVMValueRef value;
     LLVMTypeRef type;
+    // Best-effort semantic type kind (for signed/unsigned codegen decisions).
+    TypeKind typeKind;
     const char* typeName;
     int typeNameLength;
     int isConst;
@@ -31,10 +33,13 @@ typedef struct VariableRef {
     int isTypedMap;
     LLVMTypeRef mapKeyType;
     LLVMTypeRef mapValueType;
+    TypeKind mapKeyKind;
+    TypeKind mapValueKind;
 
     // Optional: array metadata for `T[]` / `T[N]` variables/params.
     int isArray;
     LLVMTypeRef arrayElemType;
+    TypeKind arrayElemKind;
     int64_t arrayFixedLen; // -1 => dynamic
 
     // Optional: fast-path metadata for stack-backed fixed arrays.

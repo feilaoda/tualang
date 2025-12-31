@@ -92,6 +92,21 @@ const char* tokenToString(TokenType type) {
         case TOKEN_LONG: return "long";
         case TOKEN_STRING: return "string";
         case TOKEN_BOOL: return "bool";
+        case TOKEN_BYTE: return "byte";
+        case TOKEN_U8: return "u8";
+        case TOKEN_I8: return "i8";
+        case TOKEN_U16: return "u16";
+        case TOKEN_I16: return "i16";
+        case TOKEN_U32: return "u32";
+        case TOKEN_U64: return "u64";
+        case TOKEN_USIZE: return "usize";
+        case TOKEN_ISIZE: return "isize";
+        case TOKEN_F8: return "f8";
+        case TOKEN_F16: return "f16";
+        case TOKEN_F32: return "f32";
+        case TOKEN_F64: return "f64";
+        case TOKEN_BF8: return "bf8";
+        case TOKEN_BF16: return "bf16";
         case TOKEN_NULL: return "null";
         case TOKEN_TRUE: return "true";
         case TOKEN_FALSE: return "false";
@@ -240,6 +255,26 @@ static TokenType identifierType(Lexer* lexer) {
                 return TOKEN_AS;
             }
             break;
+        case 'b':
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "bool", 4) == 0) {
+                return TOKEN_BOOL;
+            }
+            if (lexer->current - lexer->start == 7 && memcmp(lexer->start, "boolean", 7) == 0) {
+                return TOKEN_BOOL;
+            }
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "bf16", 4) == 0) {
+                return TOKEN_BF16;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "bf8", 3) == 0) {
+                return TOKEN_BF8;
+            }
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "byte", 4) == 0) {
+                return TOKEN_BYTE;
+            }
+            if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "break", 5) == 0) {
+                return TOKEN_BREAK;
+            }
+            break;
         case '&': return checkKeyword(lexer, 1, 1, "&", TOKEN_AND);
         case 'e':
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "enum", 4) == 0) {
@@ -257,6 +292,18 @@ static TokenType identifierType(Lexer* lexer) {
         case 'f':
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "from", 4) == 0) {
                 return TOKEN_FROM;
+            }
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "f8", 2) == 0) {
+                return TOKEN_F8;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "f16", 3) == 0) {
+                return TOKEN_F16;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "f32", 3) == 0) {
+                return TOKEN_F32;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "f64", 3) == 0) {
+                return TOKEN_F64;
             }
             if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "float", 5) == 0) {
                 return TOKEN_FLOAT;
@@ -277,6 +324,52 @@ static TokenType identifierType(Lexer* lexer) {
             }
             
             break;
+        case 'i':
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "int", 3) == 0) {
+                return TOKEN_INT;
+            }
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "i8", 2) == 0) {
+                return TOKEN_I8;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "i16", 3) == 0) {
+                return TOKEN_I16;
+            }
+            if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "isize", 5) == 0) {
+                return TOKEN_ISIZE;
+            }
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "if", 2) == 0) {
+                return TOKEN_IF;
+            }
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "init", 4) == 0) {
+                return TOKEN_INIT;
+            }
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "impl", 4) == 0) {
+                return TOKEN_IMPL;
+            }
+            if (lexer->current - lexer->start == 6 && memcmp(lexer->start, "import", 6) == 0) {
+                return TOKEN_IMPORT;
+            }
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "in", 2) == 0) {
+                return TOKEN_IN;
+            }
+            break;
+        case 'u':
+            if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "u8", 2) == 0) {
+                return TOKEN_U8;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "u16", 3) == 0) {
+                return TOKEN_U16;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "u32", 3) == 0) {
+                return TOKEN_U32;
+            }
+            if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "u64", 3) == 0) {
+                return TOKEN_U64;
+            }
+            if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "usize", 5) == 0) {
+                return TOKEN_USIZE;
+            }
+            break;
         case 'd':
             if (lexer->current - lexer->start == 2 && memcmp(lexer->start, "do", 2) == 0) {
                 return TOKEN_DO;
@@ -288,29 +381,7 @@ static TokenType identifierType(Lexer* lexer) {
                 return TOKEN_DOUBLE;
             }
             break;
-        case 'i': ;
-          if (lexer->current - lexer->start == 6 && memcmp(lexer->start, "import", 6) == 0) {
-              return TOKEN_IMPORT;
-          }
-          if (lexer->current - lexer->start > 1) {
-                switch (lexer->start[1]) {
-                    case 'n': {
-                        if (lexer->current - lexer->start == 3 && memcmp(lexer->start, "int", 3) == 0) {
-                            return TOKEN_INT;
-                        }
-                        if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "init", 4) == 0) {
-                            return TOKEN_INIT;
-                        }
-                        if (checkEqWord(lexer, 1, 1, "n")) {
-                            return TOKEN_IN;
-                        }
-                        break;
-                    }
-                    case 'f': return checkKeyword(lexer, 1, 1, "f", TOKEN_IF);
-                    case 'm': return checkKeyword(lexer, 2, 2, "pl", TOKEN_IMPL);
-                }
-          }
-          break;
+        // (handled above)
         case 'v': return checkKeyword(lexer, 1, 2, "ar", TOKEN_VAR);
         case 'c':
             if (lexer->current - lexer->start == 8 && memcmp(lexer->start, "continue", 8) == 0) {
@@ -325,17 +396,7 @@ static TokenType identifierType(Lexer* lexer) {
                 return TOKEN_LONG;
             }
             break;
-        case 'b':
-            if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "break", 5) == 0) {
-                return TOKEN_BREAK;
-            }
-            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "bool", 4) == 0) {
-                return TOKEN_BOOL;
-            }
-            if (lexer->current - lexer->start == 7 && memcmp(lexer->start, "boolean", 7) == 0) {
-                return TOKEN_BOOL;
-            }
-            break;
+        // (handled above)
         case 'n':
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "null", 4) == 0) {
                 return TOKEN_NULL;

@@ -60,6 +60,7 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->length = nameTok.length;
     variable->value = slot;
     variable->type = valueType;
+    variable->typeKind = TYPE_ANY;
     variable->typeName = NULL;
     variable->typeNameLength = 0;
     variable->isConst = 0;
@@ -70,8 +71,11 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->isTypedMap = 0;
     variable->mapKeyType = NULL;
     variable->mapValueType = NULL;
+    variable->mapKeyKind = TYPE_ANY;
+    variable->mapValueKind = TYPE_ANY;
     variable->isArray = 0;
     variable->arrayElemType = NULL;
+    variable->arrayElemKind = TYPE_ANY;
     variable->arrayFixedLen = -1;
     variable->isStackArray = 0;
     variable->stackArrayData = NULL;

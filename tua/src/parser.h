@@ -64,16 +64,36 @@ typedef enum {
 
 // Type definitions
 typedef enum {
-    TYPE_INT,
-    TYPE_LONG,
-    TYPE_DOUBLE,
-    TYPE_FLOAT,
+    TYPE_ANY,
+    TYPE_VOID,
     TYPE_BOOL,
     TYPE_STRING,
     // Raw pointer for runtime/FFI: lowered as i8* in LLVM.
     TYPE_PTR,
-    TYPE_VOID,
-    TYPE_ANY,
+
+    // Signed integers
+    TYPE_I8,
+    TYPE_I16,
+    TYPE_INT,
+    TYPE_LONG,
+    TYPE_ISIZE,
+
+    // Unsigned integers
+    TYPE_U8,
+    TYPE_U16,
+    TYPE_U32,
+    TYPE_U64,
+    TYPE_USIZE,
+    TYPE_BYTE, // alias of u8 (semantic: unsigned)
+
+    // Floats
+    TYPE_F8,   // reserved (storage-only for now)
+    TYPE_F16,
+    TYPE_FLOAT,  // f32
+    TYPE_DOUBLE, // f64
+    TYPE_BF8,  // reserved (storage-only for now)
+    TYPE_BF16,
+
     TYPE_NAMED,
     TYPE_REF,
     TYPE_ARRAY,
@@ -102,6 +122,8 @@ typedef struct Stmt {
 typedef struct Expr {
     ExprType type;
     Token token;
+    // Best-effort inferred type kind (populated by analyzer). Defaults to TYPE_ANY.
+    TypeKind inferredType;
 } Expr;
 
 typedef struct BinaryExpr {

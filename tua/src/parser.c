@@ -211,6 +211,7 @@ static Expr* newPostfixExpr(Expr* operand, Token operator) {
     PostfixExpr* expr = malloc(sizeof(PostfixExpr));
     expr->base.type = EXPR_POSTFIX;
     expr->base.token = operator;
+    expr->base.inferredType = TYPE_ANY;
     expr->operand = operand;
     expr->operator = operator;
     return (Expr*)expr;
@@ -220,6 +221,7 @@ static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right) {
     BinaryExpr* expr = malloc(sizeof(BinaryExpr));
     expr->base.type = EXPR_BINARY;
     expr->base.token = operator;
+    expr->base.inferredType = TYPE_ANY;
     expr->left = left;
     expr->operator = operator;
     expr->right = right;
@@ -230,6 +232,7 @@ static Expr* newCastExpr(Token asToken, Expr* value, Type* targetType, int isChe
     CastExpr* expr = malloc(sizeof(CastExpr));
     expr->base.type = EXPR_CAST;
     expr->base.token = asToken;
+    expr->base.inferredType = TYPE_ANY;
     expr->value = value;
     expr->targetType = targetType;
     expr->isChecked = isChecked;
@@ -240,8 +243,23 @@ static int isCastTypeToken(TokenType t) {
     switch (t) {
         case TOKEN_INT:
         case TOKEN_LONG:
+        case TOKEN_I8:
+        case TOKEN_I16:
+        case TOKEN_ISIZE:
+        case TOKEN_U8:
+        case TOKEN_U16:
+        case TOKEN_U32:
+        case TOKEN_U64:
+        case TOKEN_USIZE:
+        case TOKEN_BYTE:
         case TOKEN_FLOAT:
         case TOKEN_DOUBLE:
+        case TOKEN_F8:
+        case TOKEN_F16:
+        case TOKEN_F32:
+        case TOKEN_F64:
+        case TOKEN_BF8:
+        case TOKEN_BF16:
         case TOKEN_BOOL:
         case TOKEN_STRING:
             return 1;
@@ -293,6 +311,7 @@ static Expr* newUnaryExpr(Token operator, Expr* right) {
     UnaryExpr* expr = malloc(sizeof(UnaryExpr));
     expr->base.type = EXPR_UNARY;
     expr->base.token = operator;
+    expr->base.inferredType = TYPE_ANY;
     expr->operator = operator;
     expr->right = right;
     return (Expr*)expr;
@@ -302,6 +321,7 @@ static Expr* newLiteralExpr(Token value) {
     LiteralExpr* expr = malloc(sizeof(LiteralExpr));
     expr->base.type = EXPR_LITERAL;
     expr->base.token = value;
+    expr->base.inferredType = TYPE_ANY;
     expr->value = value;
     return (Expr*)expr;
 }
@@ -310,6 +330,7 @@ static Expr* newVariableExpr(Token name) {
     VariableExpr* expr = malloc(sizeof(VariableExpr));
     expr->base.type = EXPR_VARIABLE;
     expr->base.token = name;
+    expr->base.inferredType = TYPE_ANY;
     expr->name = name;
     return (Expr*)expr;
 }
@@ -318,6 +339,7 @@ static Expr* newGroupingExpr(Expr* expression) {
     GroupingExpr* expr = malloc(sizeof(GroupingExpr));
     expr->base.type = EXPR_GROUPING;
     if (expression) expr->base.token = expression->token;
+    expr->base.inferredType = TYPE_ANY;
     expr->expression = expression;
     return (Expr*)expr;
 }
@@ -326,6 +348,7 @@ static Expr* newAssignExpr(Token name, Expr* value) {
     AssignExpr* expr = malloc(sizeof(AssignExpr));
     expr->base.type = EXPR_ASSIGN;
     expr->base.token = name;
+    expr->base.inferredType = TYPE_ANY;
     expr->name = name;
     expr->value = value;
     return (Expr*)expr;
@@ -335,6 +358,7 @@ static Expr* newGetExpr(Expr* object, Token name) {
     GetExpr* expr = malloc(sizeof(GetExpr));
     expr->base.type = EXPR_GET;
     expr->base.token = name;
+    expr->base.inferredType = TYPE_ANY;
     expr->object = object;
     expr->name = name;
     return (Expr*)expr;
@@ -344,6 +368,7 @@ static Expr* newSetExpr(Expr* object, Token name, Expr* value) {
     SetExpr* expr = malloc(sizeof(SetExpr));
     expr->base.type = EXPR_SET;
     expr->base.token = name;
+    expr->base.inferredType = TYPE_ANY;
     expr->object = object;
     expr->name = name;
     expr->value = value;
@@ -354,6 +379,7 @@ static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
     MapLiteralExpr* expr = malloc(sizeof(MapLiteralExpr));
     expr->base.type = EXPR_MAP_LITERAL;
     expr->base.token = lbrace;
+    expr->base.inferredType = TYPE_ANY;
     expr->entries = entries;
     return (Expr*)expr;
 }
@@ -362,6 +388,7 @@ static Expr* newArrayLiteralExpr(Token lbracket, List* elements) {
     ArrayLiteralExpr* expr = malloc(sizeof(ArrayLiteralExpr));
     expr->base.type = EXPR_ARRAY_LITERAL;
     expr->base.token = lbracket;
+    expr->base.inferredType = TYPE_ANY;
     expr->elements = elements;
     return (Expr*)expr;
 }
@@ -370,6 +397,7 @@ static Expr* newBraceLiteralExpr(Token lbrace) {
     BraceLiteralExpr* expr = malloc(sizeof(BraceLiteralExpr));
     expr->base.type = EXPR_BRACE_LITERAL;
     expr->base.token = lbrace;
+    expr->base.inferredType = TYPE_ANY;
     expr->lbrace = lbrace;
     return (Expr*)expr;
 }
@@ -379,6 +407,7 @@ static Expr* newIndexExpr(Expr* object, Expr* index) {
     expr->base.type = EXPR_INDEX;
     if (object) expr->base.token = object->token;
     else if (index) expr->base.token = index->token;
+    expr->base.inferredType = TYPE_ANY;
     expr->object = object;
     expr->index = index;
     return (Expr*)expr;
@@ -389,6 +418,7 @@ static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value) {
     expr->base.type = EXPR_INDEX_SET;
     if (object) expr->base.token = object->token;
     else if (index) expr->base.token = index->token;
+    expr->base.inferredType = TYPE_ANY;
     expr->object = object;
     expr->index = index;
     expr->value = value;
@@ -700,6 +730,21 @@ static Expr* parsePrimaryExpr(Parser* parser) {
             check(parser, TOKEN_LONG) ||
             check(parser, TOKEN_DOUBLE) ||
             check(parser, TOKEN_FLOAT) ||
+            check(parser, TOKEN_I8) ||
+            check(parser, TOKEN_I16) ||
+            check(parser, TOKEN_ISIZE) ||
+            check(parser, TOKEN_U8) ||
+            check(parser, TOKEN_U16) ||
+            check(parser, TOKEN_U32) ||
+            check(parser, TOKEN_U64) ||
+            check(parser, TOKEN_USIZE) ||
+            check(parser, TOKEN_BYTE) ||
+            check(parser, TOKEN_F8) ||
+            check(parser, TOKEN_F16) ||
+            check(parser, TOKEN_F32) ||
+            check(parser, TOKEN_F64) ||
+            check(parser, TOKEN_BF8) ||
+            check(parser, TOKEN_BF16) ||
             check(parser, TOKEN_STRING) ||
             check(parser, TOKEN_BOOL) ||
             check(parser, TOKEN_IDENTIFIER) ||
@@ -718,6 +763,7 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         LambdaExpr* lam = malloc(sizeof(LambdaExpr));
         lam->base.type = EXPR_LAMBDA;
         lam->base.token = keyword;
+        lam->base.inferredType = TYPE_ANY;
         lam->keyword = keyword;
         lam->params = parameters;
         lam->returnType = returnType;
@@ -758,6 +804,7 @@ static Expr* finishCall(Parser* parser, Expr* callee) {
     CallExpr* expr = malloc(sizeof(CallExpr));
     expr->base.type = EXPR_CALL;
     expr->base.token = parser->previous;
+    expr->base.inferredType = TYPE_ANY;
     expr->callee = callee;
     expr->arguments = arguments;
     parserDebugEnd("finishCall");
@@ -1669,9 +1716,99 @@ static Type* parseType(Parser* parser) {
         type->returnTypes = NULL;
         type->arrayLen = 0;
         base = type;
+    } else if (match(parser, TOKEN_I8)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_I8;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_I16)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_I16;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
     } else if (match(parser, TOKEN_LONG)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_LONG;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_ISIZE)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_ISIZE;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_U8)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_U8;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_U16)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_U16;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_U32)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_U32;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_U64)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_U64;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_USIZE)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_USIZE;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_BYTE)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_BYTE;
         type->name = (Token){0};
         type->inner = NULL;
         type->typeArgs = NULL;
@@ -1692,6 +1829,66 @@ static Type* parseType(Parser* parser) {
     } else if (match(parser, TOKEN_FLOAT)) {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_FLOAT;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_F32)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_FLOAT;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_F64)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_DOUBLE;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_F8)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_F8;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_F16)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_F16;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_BF8)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_BF8;
+        type->name = (Token){0};
+        type->inner = NULL;
+        type->typeArgs = NULL;
+        type->paramTypes = NULL;
+        type->returnTypes = NULL;
+        type->arrayLen = 0;
+        base = type;
+    } else if (match(parser, TOKEN_BF16)) {
+        Type* type = malloc(sizeof(Type));
+        type->kind = TYPE_BF16;
         type->name = (Token){0};
         type->inner = NULL;
         type->typeArgs = NULL;

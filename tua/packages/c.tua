@@ -1,0 +1,10 @@
+object C {
+
+    fn atoi(s: string) int {
+        return atoi(s);
+    }
+
+}
+
+
+extern fn atoi(s: string) int

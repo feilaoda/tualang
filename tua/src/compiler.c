@@ -61,7 +61,10 @@ void initCompiler(Compiler* compiler) {
     compiler->lastSetCol = 0;
     compiler->expectedMapKeyType = NULL;
     compiler->expectedMapValueType = NULL;
+    compiler->expectedMapKeyKind = TYPE_ANY;
+    compiler->expectedMapValueKind = TYPE_ANY;
     compiler->expectedArrayElemType = NULL;
+    compiler->expectedArrayElemKind = TYPE_ANY;
     compiler->expectedArrayFixedLen = -1;
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
@@ -431,14 +434,34 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
     }
 
     switch (type->kind) {
+        case TYPE_I8:
+        case TYPE_U8:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_BF8:
+            return LLVMInt8TypeInContext(compiler->context);
+        case TYPE_I16:
+        case TYPE_U16:
+            return LLVMInt16TypeInContext(compiler->context);
         case TYPE_INT:
+        case TYPE_U32:
             return LLVMInt32TypeInContext(compiler->context);
         case TYPE_LONG:
+        case TYPE_U64:
             return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_ISIZE:
+        case TYPE_USIZE: {
+            unsigned bits = (unsigned)(sizeof(void*) * 8);
+            return LLVMIntTypeInContext(compiler->context, bits);
+        }
+        case TYPE_F16:
+            return LLVMHalfTypeInContext(compiler->context);
         case TYPE_DOUBLE:
             return LLVMDoubleTypeInContext(compiler->context);
         case TYPE_FLOAT:
             return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_BF16:
+            return LLVMBFloatTypeInContext(compiler->context);
         case TYPE_BOOL:
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
@@ -1201,10 +1224,26 @@ static const char* typeToLLVM(Type* type) {
     if (type == NULL) return "i8*";  // Any type
     
     switch (type->kind) {
+        case TYPE_I8:
+        case TYPE_U8:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_BF8:
+            return "i8";
+        case TYPE_I16:
+        case TYPE_U16:
+            return "i16";
         case TYPE_INT:    return "i32";
+        case TYPE_U32:    return "i32";
         case TYPE_LONG:   return "i64";
+        case TYPE_U64:    return "i64";
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+            return (sizeof(void*) == 8) ? "i64" : "i32";
+        case TYPE_F16:    return "half";
         case TYPE_DOUBLE: return "double";
         case TYPE_FLOAT:  return "float";
+        case TYPE_BF16:   return "bfloat";
         case TYPE_STRING: return "i8*";
         case TYPE_BOOL:   return "i1";
         default:         return "UNKNOWN";

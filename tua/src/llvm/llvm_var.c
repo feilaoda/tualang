@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
+
 static int tokenEquals(const Token* token, const char* s) {
     if (!token || !s) return 0;
     int len = (int)strlen(s);
@@ -84,14 +86,32 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
 
     switch (type->kind) {
+        case TYPE_I8:
+        case TYPE_U8:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_BF8:
+            return LLVMInt8TypeInContext(compiler->context);
+        case TYPE_I16:
+        case TYPE_U16:
+            return LLVMInt16TypeInContext(compiler->context);
         case TYPE_INT:
+        case TYPE_U32:
             return LLVMInt32TypeInContext(compiler->context);
         case TYPE_LONG:
+        case TYPE_U64:
             return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+            return LLVMIntTypeInContext(compiler->context, (unsigned)(sizeof(void*) * 8));
+        case TYPE_F16:
+            return LLVMHalfTypeInContext(compiler->context);
         case TYPE_DOUBLE:
             return LLVMDoubleTypeInContext(compiler->context);
         case TYPE_FLOAT:
             return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_BF16:
+            return LLVMBFloatTypeInContext(compiler->context);
         case TYPE_BOOL:
             return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING:
@@ -137,6 +157,139 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         default:
             return LLVMInt32TypeInContext(compiler->context);
     }
+}
+
+static int typeKindIsFp8(TypeKind k) { return k == TYPE_F8 || k == TYPE_BF8; }
+
+static int typeKindIsUnsignedInt(TypeKind k) {
+    switch (k) {
+        case TYPE_U8:
+        case TYPE_U16:
+        case TYPE_U32:
+        case TYPE_U64:
+        case TYPE_USIZE:
+        case TYPE_BYTE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int typeKindIsSignedInt(TypeKind k) {
+    switch (k) {
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_INT:
+        case TYPE_LONG:
+        case TYPE_ISIZE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int typeKindIsInt(TypeKind k) { return typeKindIsSignedInt(k) || typeKindIsUnsignedInt(k); }
+
+static int typeKindIsFloat(TypeKind k) {
+    switch (k) {
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF16:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static LLVMTypeRef llvmNumericTypeFromKind(Compiler* compiler, TypeKind k) {
+    if (!compiler) return NULL;
+    switch (k) {
+        case TYPE_I8:
+        case TYPE_U8:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_BF8:
+            return LLVMInt8TypeInContext(compiler->context);
+        case TYPE_I16:
+        case TYPE_U16:
+            return LLVMInt16TypeInContext(compiler->context);
+        case TYPE_INT:
+        case TYPE_U32:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG:
+        case TYPE_U64:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+            return LLVMIntTypeInContext(compiler->context, (unsigned)(sizeof(void*) * 8));
+        case TYPE_F16:
+            return LLVMHalfTypeInContext(compiler->context);
+        case TYPE_FLOAT:
+            return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_BF16:
+            return LLVMBFloatTypeInContext(compiler->context);
+        default:
+            return NULL;
+    }
+}
+
+static LLVMValueRef castNumericToKind(Compiler* compiler, LLVMValueRef value, TypeKind srcKind, TypeKind dstKind) {
+    if (!compiler || !value) return NULL;
+    if (srcKind == TYPE_ANY || dstKind == TYPE_ANY) return NULL;
+
+    // FP8 is storage-only for now. Allow only u8/byte and fp8/bf8 reinterprets.
+    if (typeKindIsFp8(srcKind) || typeKindIsFp8(dstKind)) {
+        int srcOk = typeKindIsFp8(srcKind) || srcKind == TYPE_U8 || srcKind == TYPE_BYTE;
+        int dstOk = typeKindIsFp8(dstKind) || dstKind == TYPE_U8 || dstKind == TYPE_BYTE;
+        if (!srcOk || !dstOk) return NULL;
+        LLVMTypeRef i8 = LLVMInt8TypeInContext(compiler->context);
+        return castIfNeeded(compiler, value, i8);
+    }
+
+    LLVMTypeRef dstTy = llvmNumericTypeFromKind(compiler, dstKind);
+    if (!dstTy) return NULL;
+
+    // Decode from tua_value when the source kind is known.
+    if (LLVMTypeOf(value) == compilerGetTuaValueType(compiler)) {
+        LLVMTypeRef srcTyHint = llvmNumericTypeFromKind(compiler, srcKind);
+        if (srcTyHint) value = castIfNeeded(compiler, value, srcTyHint);
+    }
+
+    LLVMTypeRef srcTy = LLVMTypeOf(value);
+    if (srcTy == dstTy) return value;
+    LLVMTypeKind sk = LLVMGetTypeKind(srcTy);
+    LLVMTypeKind dk = LLVMGetTypeKind(dstTy);
+
+    if (sk == LLVMIntegerTypeKind && dk == LLVMIntegerTypeKind) {
+        unsigned sb = LLVMGetIntTypeWidth(srcTy);
+        unsigned db = LLVMGetIntTypeWidth(dstTy);
+        if (sb == db) return value;
+        if (sb > db) return LLVMBuildTrunc(compiler->builder, value, dstTy, "itrunc");
+        if (typeKindIsUnsignedInt(srcKind)) return LLVMBuildZExt(compiler->builder, value, dstTy, "izext");
+        return LLVMBuildSExt(compiler->builder, value, dstTy, "isext");
+    }
+
+    if (sk == LLVMIntegerTypeKind &&
+        (dk == LLVMHalfTypeKind || dk == LLVMBFloatTypeKind || dk == LLVMFloatTypeKind || dk == LLVMDoubleTypeKind)) {
+        if (typeKindIsUnsignedInt(srcKind)) return LLVMBuildUIToFP(compiler->builder, value, dstTy, "uitofp");
+        return LLVMBuildSIToFP(compiler->builder, value, dstTy, "sitofp");
+    }
+
+    if ((sk == LLVMHalfTypeKind || sk == LLVMBFloatTypeKind || sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) &&
+        dk == LLVMIntegerTypeKind) {
+        if (typeKindIsUnsignedInt(dstKind)) return LLVMBuildFPToUI(compiler->builder, value, dstTy, "fptoui");
+        return LLVMBuildFPToSI(compiler->builder, value, dstTy, "fptosi");
+    }
+
+    if ((sk == LLVMHalfTypeKind || sk == LLVMBFloatTypeKind || sk == LLVMFloatTypeKind || sk == LLVMDoubleTypeKind) &&
+        (dk == LLVMHalfTypeKind || dk == LLVMBFloatTypeKind || dk == LLVMFloatTypeKind || dk == LLVMDoubleTypeKind)) {
+        return castIfNeeded(compiler, value, dstTy);
+    }
+
+    return NULL;
 }
 
 static LLVMTypeRef inferReturnTypeFromCall(Compiler* compiler, CallExpr* call) {
@@ -539,7 +692,7 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
             fnType = LLVMGlobalGetValueType(fn);
             return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "d");
         }
-        if (dstKind == LLVMFloatTypeKind) {
+        if (dstKind == LLVMFloatTypeKind || dstKind == LLVMHalfTypeKind || dstKind == LLVMBFloatTypeKind) {
             // Decode as double then truncate to float (runtime stores floats as doubles in tua_value).
             fn = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
             if (!fn) {
@@ -578,17 +731,42 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
         return value;
     }
 
-    if (srcKind == LLVMIntegerTypeKind && (dstKind == LLVMFloatTypeKind || dstKind == LLVMDoubleTypeKind)) {
+    if (srcKind == LLVMIntegerTypeKind &&
+        (dstKind == LLVMHalfTypeKind || dstKind == LLVMBFloatTypeKind || dstKind == LLVMFloatTypeKind || dstKind == LLVMDoubleTypeKind)) {
         return LLVMBuildSIToFP(compiler->builder, value, targetType, "sitofp");
     }
-    if ((srcKind == LLVMFloatTypeKind || srcKind == LLVMDoubleTypeKind) && dstKind == LLVMIntegerTypeKind) {
+    if ((srcKind == LLVMHalfTypeKind || srcKind == LLVMBFloatTypeKind || srcKind == LLVMFloatTypeKind || srcKind == LLVMDoubleTypeKind) &&
+        dstKind == LLVMIntegerTypeKind) {
         return LLVMBuildFPToSI(compiler->builder, value, targetType, "fptosi");
     }
-    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMDoubleTypeKind) {
+    if ((srcKind == LLVMHalfTypeKind || srcKind == LLVMBFloatTypeKind || srcKind == LLVMFloatTypeKind) && dstKind == LLVMDoubleTypeKind) {
         return LLVMBuildFPExt(compiler->builder, value, targetType, "fpext");
     }
-    if (srcKind == LLVMDoubleTypeKind && dstKind == LLVMFloatTypeKind) {
+    if (srcKind == LLVMDoubleTypeKind &&
+        (dstKind == LLVMHalfTypeKind || dstKind == LLVMBFloatTypeKind || dstKind == LLVMFloatTypeKind)) {
         return LLVMBuildFPTrunc(compiler->builder, value, targetType, "fptrunc");
+    }
+
+    // half <-> float
+    if (srcKind == LLVMHalfTypeKind && dstKind == LLVMFloatTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, targetType, "h2f");
+    }
+    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMHalfTypeKind) {
+        return LLVMBuildFPTrunc(compiler->builder, value, targetType, "f2h");
+    }
+    // bfloat <-> float
+    if (srcKind == LLVMBFloatTypeKind && dstKind == LLVMFloatTypeKind) {
+        return LLVMBuildFPExt(compiler->builder, value, targetType, "bf2f");
+    }
+    if (srcKind == LLVMFloatTypeKind && dstKind == LLVMBFloatTypeKind) {
+        return LLVMBuildFPTrunc(compiler->builder, value, targetType, "f2bf");
+    }
+    // half <-> bfloat via float32
+    if ((srcKind == LLVMHalfTypeKind && dstKind == LLVMBFloatTypeKind) ||
+        (srcKind == LLVMBFloatTypeKind && dstKind == LLVMHalfTypeKind)) {
+        LLVMTypeRef f32 = LLVMFloatTypeInContext(compiler->context);
+        LLVMValueRef mid = LLVMBuildFPExt(compiler->builder, value, f32, "fp16mid");
+        return LLVMBuildFPTrunc(compiler->builder, mid, targetType, "fp16cvt");
     }
 
     // Keep it simple for now; extend as language grows.
@@ -799,16 +977,25 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         emitDebug("emitVarStmt: init %.*s type:%d\n", stmt->name.length, stmt->name.start, stmt->initializer->type);
         LLVMTypeRef savedKey = compiler->expectedMapKeyType;
         LLVMTypeRef savedVal = compiler->expectedMapValueType;
+        TypeKind savedKeyK = compiler->expectedMapKeyKind;
+        TypeKind savedValK = compiler->expectedMapValueKind;
         LLVMTypeRef savedAElem = compiler->expectedArrayElemType;
+        TypeKind savedAElemK = compiler->expectedArrayElemKind;
         int64_t savedAFixed = compiler->expectedArrayFixedLen;
         if (valueType == compilerGetMapType(compiler) &&
             (stmt->initializer->type == EXPR_MAP_LITERAL || stmt->initializer->type == EXPR_BRACE_LITERAL)) {
             if (hasAnnotatedTypedMap) {
                 compiler->expectedMapKeyType = annotatedKeyTy;
                 compiler->expectedMapValueType = annotatedValTy;
+                compiler->expectedMapKeyKind = (stmt->type && stmt->type->typeArgs) ? ((Type*)stmt->type->typeArgs->head->data)->kind : TYPE_ANY;
+                compiler->expectedMapValueKind = (stmt->type && stmt->type->typeArgs && stmt->type->typeArgs->head && stmt->type->typeArgs->head->next)
+                                                     ? ((Type*)stmt->type->typeArgs->head->next->data)->kind
+                                                     : TYPE_ANY;
             } else if (inferredTypedMap) {
                 compiler->expectedMapKeyType = inferredKeyTy;
                 compiler->expectedMapValueType = inferredValTy;
+                compiler->expectedMapKeyKind = TYPE_ANY;
+                compiler->expectedMapValueKind = TYPE_ANY;
             }
         }
         if (valueType == compilerGetArrayType(compiler) &&
@@ -816,9 +1003,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             if (hasAnnotatedArray) {
                 compiler->expectedArrayElemType = annotatedElemTy;
                 compiler->expectedArrayFixedLen = annotatedFixedLen;
+                compiler->expectedArrayElemKind = (stmt->type && stmt->type->kind == TYPE_ARRAY && stmt->type->inner) ? stmt->type->inner->kind : TYPE_ANY;
             } else {
                 compiler->expectedArrayElemType = LLVMInt32TypeInContext(compiler->context);
                 compiler->expectedArrayFixedLen = -1;
+                compiler->expectedArrayElemKind = TYPE_INT;
             }
         }
 
@@ -826,7 +1015,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
 
         compiler->expectedMapKeyType = savedKey;
         compiler->expectedMapValueType = savedVal;
+        compiler->expectedMapKeyKind = savedKeyK;
+        compiler->expectedMapValueKind = savedValK;
         compiler->expectedArrayElemType = savedAElem;
+        compiler->expectedArrayElemKind = savedAElemK;
         compiler->expectedArrayFixedLen = savedAFixed;
         if (stmt->initializer->type == EXPR_LAMBDA) {
             compiledLambdaSig = compiler->lastLambdaFuncType;
@@ -838,7 +1030,16 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             LLVMTypeRef baseSig = compilerFindClosureSig(compiler, ve->name.start, ve->name.length);
             if (baseSig) compiledLambdaSig = baseSig;
         }
-        initValue = castIfNeeded(compiler, initValue, valueType);
+        {
+            TypeKind srcK = stmt->initializer ? stmt->initializer->inferredType : TYPE_ANY;
+            TypeKind dstK = stmt->type ? stmt->type->kind : TYPE_ANY;
+            LLVMValueRef nv = NULL;
+            if ((typeKindIsInt(dstK) || typeKindIsFloat(dstK) || typeKindIsFp8(dstK)) &&
+                (typeKindIsInt(srcK) || typeKindIsFloat(srcK) || typeKindIsFp8(srcK))) {
+                nv = castNumericToKind(compiler, initValue, srcK, dstK);
+            }
+            initValue = nv ? nv : castIfNeeded(compiler, initValue, valueType);
+        }
         if (shouldBox) {
             LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
             LLVMValueRef sizeV = LLVMSizeOf(valueType);
@@ -939,6 +1140,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->length = stmt->name.length;
     variable->value = slot;
     variable->type = valueType;
+    variable->typeKind = stmt->type ? stmt->type->kind : (stmt->initializer ? stmt->initializer->inferredType : TYPE_ANY);
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
         StructInfo* info = compilerResolveStructByToken(compiler, &stmt->type->name);
         if (info) {
@@ -1035,8 +1237,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isTypedMap = 0;
     variable->mapKeyType = NULL;
     variable->mapValueType = NULL;
+    variable->mapKeyKind = TYPE_ANY;
+    variable->mapValueKind = TYPE_ANY;
     variable->isArray = 0;
     variable->arrayElemType = NULL;
+    variable->arrayElemKind = TYPE_ANY;
     variable->arrayFixedLen = -1;
     variable->isStackArray = 0;
     variable->stackArrayData = NULL;
@@ -1058,6 +1263,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->isTypedMap = 1;
             variable->mapKeyType = toLLVMType(compiler, kAst);
             variable->mapValueType = toLLVMType(compiler, vAst);
+            variable->mapKeyKind = kAst ? kAst->kind : TYPE_ANY;
+            variable->mapValueKind = vAst ? vAst->kind : TYPE_ANY;
         }
     }
 
@@ -1082,6 +1289,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isArray = 1;
         variable->arrayElemType = annotatedElemTy;
         variable->arrayFixedLen = annotatedFixedLen;
+        if (stmt->type && stmt->type->kind == TYPE_ARRAY && stmt->type->inner) {
+            variable->arrayElemKind = stmt->type->inner->kind;
+        }
         if (stackFixedOk) {
             variable->isStackArray = 1;
             // `dataElemPtr` is in scope only when stackFixedOk; re-derive from header for safety.
@@ -1106,11 +1316,14 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->isTypedMap = base.isTypedMap;
                 variable->mapKeyType = base.mapKeyType;
                 variable->mapValueType = base.mapValueType;
+                variable->mapKeyKind = base.mapKeyKind;
+                variable->mapValueKind = base.mapValueKind;
             }
             if (!variable->isArray && base.isArray) {
                 variable->isArray = 1;
                 variable->arrayElemType = base.arrayElemType;
                 variable->arrayFixedLen = base.arrayFixedLen;
+                variable->arrayElemKind = base.arrayElemKind;
             }
         }
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
@@ -1124,6 +1337,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                     variable->isArray = 1;
                     variable->arrayElemType = base.arrayElemType;
                     variable->arrayFixedLen = base.arrayFixedLen;
+                    variable->arrayElemKind = base.arrayElemKind;
                 }
             }
         }

@@ -253,10 +253,32 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
     switch (type->kind) {
-        case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
-        case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
-        case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
-        case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_I8:
+        case TYPE_U8:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_BF8:
+            return LLVMInt8TypeInContext(compiler->context);
+        case TYPE_I16:
+        case TYPE_U16:
+            return LLVMInt16TypeInContext(compiler->context);
+        case TYPE_INT:
+        case TYPE_U32:
+            return LLVMInt32TypeInContext(compiler->context);
+        case TYPE_LONG:
+        case TYPE_U64:
+            return LLVMInt64TypeInContext(compiler->context);
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+            return LLVMIntTypeInContext(compiler->context, (unsigned)(sizeof(void*) * 8));
+        case TYPE_F16:
+            return LLVMHalfTypeInContext(compiler->context);
+        case TYPE_DOUBLE:
+            return LLVMDoubleTypeInContext(compiler->context);
+        case TYPE_FLOAT:
+            return LLVMFloatTypeInContext(compiler->context);
+        case TYPE_BF16:
+            return LLVMBFloatTypeInContext(compiler->context);
         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);

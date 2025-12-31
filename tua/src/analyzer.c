@@ -9,10 +9,26 @@ typedef enum {
     AT_ANY = 0,
     AT_VOID,
     AT_NULL,
+    // Signed integers
+    AT_I8,
+    AT_I16,
     AT_INT,
     AT_LONG,
+    AT_ISIZE,
+    // Unsigned integers
+    AT_U8,
+    AT_U16,
+    AT_U32,
+    AT_U64,
+    AT_USIZE,
+    AT_BYTE,
+    // Floats
+    AT_F8,   // reserved
+    AT_F16,
     AT_DOUBLE,
     AT_FLOAT,
+    AT_BF8,  // reserved
+    AT_BF16,
     AT_BOOL,
     AT_STRING,
     AT_OPTION,
@@ -81,9 +97,125 @@ static int atIsMap(const AType* t) { return t && t->kind == AT_MAP; }
 static int atIsArray(const AType* t) { return t && t->kind == AT_ARRAY; }
 static int atIsAny(const AType* t) { return !t || t->kind == AT_ANY; }
 static int atIsNull(const AType* t) { return t && t->kind == AT_NULL; }
-static int atIsNumeric(const AType* t) { return t && (t->kind == AT_INT || t->kind == AT_LONG || t->kind == AT_FLOAT || t->kind == AT_DOUBLE); }
 static int atIsBool(const AType* t) { return t && t->kind == AT_BOOL; }
 static int atIsString(const AType* t) { return t && t->kind == AT_STRING; }
+
+static int atIsSignedInt(const AType* t) {
+    if (!t) return 0;
+    return (t->kind == AT_I8 || t->kind == AT_I16 || t->kind == AT_INT || t->kind == AT_LONG || t->kind == AT_ISIZE);
+}
+
+static int atIsUnsignedInt(const AType* t) {
+    if (!t) return 0;
+    return (t->kind == AT_U8 || t->kind == AT_U16 || t->kind == AT_U32 || t->kind == AT_U64 || t->kind == AT_USIZE || t->kind == AT_BYTE);
+}
+
+static int atIsInt(const AType* t) { return atIsSignedInt(t) || atIsUnsignedInt(t); }
+
+static int atIsFloat(const AType* t) {
+    if (!t) return 0;
+    return (t->kind == AT_F8 || t->kind == AT_F16 || t->kind == AT_FLOAT || t->kind == AT_DOUBLE || t->kind == AT_BF8 || t->kind == AT_BF16);
+}
+
+static int atIsNumeric(const AType* t) { return atIsInt(t) || atIsFloat(t); }
+
+static int atKindIsNumeric(ATypeKind k) {
+    switch (k) {
+        case AT_I8:
+        case AT_I16:
+        case AT_INT:
+        case AT_LONG:
+        case AT_ISIZE:
+        case AT_U8:
+        case AT_U16:
+        case AT_U32:
+        case AT_U64:
+        case AT_USIZE:
+        case AT_BYTE:
+        case AT_F8:
+        case AT_F16:
+        case AT_FLOAT:
+        case AT_DOUBLE:
+        case AT_BF8:
+        case AT_BF16:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int atIntBits(const AType* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case AT_I8:
+        case AT_U8:
+        case AT_BYTE:
+            return 8;
+        case AT_I16:
+        case AT_U16:
+            return 16;
+        case AT_INT:
+        case AT_U32:
+            return 32;
+        case AT_LONG:
+        case AT_U64:
+            return 64;
+        case AT_ISIZE:
+        case AT_USIZE:
+            return (int)(sizeof(void*) * 8);
+        default:
+            return 0;
+    }
+}
+
+static int atFloatBits(const AType* t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case AT_F8:
+        case AT_BF8:
+            return 8;
+        case AT_F16:
+        case AT_BF16:
+            return 16;
+        case AT_FLOAT:
+            return 32;
+        case AT_DOUBLE:
+            return 64;
+        default:
+            return 0;
+    }
+}
+
+static TypeKind atToTypeKind(AType* t) {
+    if (!t) return TYPE_ANY;
+    switch (t->kind) {
+        case AT_I8: return TYPE_I8;
+        case AT_I16: return TYPE_I16;
+        case AT_INT: return TYPE_INT;
+        case AT_LONG: return TYPE_LONG;
+        case AT_ISIZE: return TYPE_ISIZE;
+        case AT_U8: return TYPE_U8;
+        case AT_U16: return TYPE_U16;
+        case AT_U32: return TYPE_U32;
+        case AT_U64: return TYPE_U64;
+        case AT_USIZE: return TYPE_USIZE;
+        case AT_BYTE: return TYPE_BYTE;
+        case AT_F8: return TYPE_F8;
+        case AT_F16: return TYPE_F16;
+        case AT_FLOAT: return TYPE_FLOAT;
+        case AT_DOUBLE: return TYPE_DOUBLE;
+        case AT_BF8: return TYPE_BF8;
+        case AT_BF16: return TYPE_BF16;
+        case AT_BOOL: return TYPE_BOOL;
+        case AT_STRING: return TYPE_STRING;
+        default: return TYPE_ANY;
+    }
+}
+
+static AType* inferReturn(Expr* expr, AType* t) {
+    if (expr) expr->inferredType = atToTypeKind(t);
+    return t;
+}
 
 static Scope* scopePush(Scope* parent) {
     Scope* s = (Scope*)malloc(sizeof(Scope));
@@ -125,10 +257,23 @@ static int tokenTextEquals(const Token* tok, const char* s) {
 static AType* atFromAstType(Type* t) {
     if (!t) return atNew(AT_ANY);
     switch (t->kind) {
+        case TYPE_I8: return atNew(AT_I8);
+        case TYPE_I16: return atNew(AT_I16);
         case TYPE_INT: return atNew(AT_INT);
         case TYPE_LONG: return atNew(AT_LONG);
+        case TYPE_ISIZE: return atNew(AT_ISIZE);
+        case TYPE_U8: return atNew(AT_U8);
+        case TYPE_U16: return atNew(AT_U16);
+        case TYPE_U32: return atNew(AT_U32);
+        case TYPE_U64: return atNew(AT_U64);
+        case TYPE_USIZE: return atNew(AT_USIZE);
+        case TYPE_BYTE: return atNew(AT_BYTE);
+        case TYPE_F8: return atNew(AT_F8);
+        case TYPE_F16: return atNew(AT_F16);
         case TYPE_DOUBLE: return atNew(AT_DOUBLE);
         case TYPE_FLOAT: return atNew(AT_FLOAT);
+        case TYPE_BF8: return atNew(AT_BF8);
+        case TYPE_BF16: return atNew(AT_BF16);
         case TYPE_BOOL: return atNew(AT_BOOL);
         case TYPE_STRING: return atNew(AT_STRING);
         case TYPE_PTR: return atNamed("ptr", 3);
@@ -188,9 +333,27 @@ static int atAssignable(AType* to, AType* from) {
 
     // Numeric promotions.
     if (atIsNumeric(to) && atIsNumeric(from)) {
-        if (to->kind == AT_DOUBLE) return 1;
-        if (to->kind == AT_FLOAT) return 1; // allow narrowing from double (will be truncated in codegen)
-        if (to->kind == AT_LONG && from->kind == AT_INT) return 1;
+        // FP8 is treated as an opaque storage type for now; only allow bitwise moves with u8/byte.
+        if (to->kind == AT_F8 || to->kind == AT_BF8) {
+            return from->kind == to->kind || from->kind == AT_U8 || from->kind == AT_BYTE;
+        }
+        if (to->kind == AT_U8 || to->kind == AT_BYTE) {
+            if (from->kind == AT_F8 || from->kind == AT_BF8) return 1; // bitwise move
+        }
+
+        // Float targets accept any numeric source (may truncate).
+        if (atIsFloat(to) && to->kind != AT_F8 && to->kind != AT_BF8) {
+            return 1;
+        }
+
+        // Integer targets accept only integer sources; no implicit signed/unsigned mixing.
+        if (atIsInt(to) && atIsInt(from)) {
+            int toBits = atIntBits(to);
+            int fromBits = atIntBits(from);
+            if (toBits <= 0 || fromBits <= 0) return 0;
+            if (atIsSignedInt(to) != atIsSignedInt(from)) return 0;
+            return fromBits <= toBits;
+        }
     }
 
     // null is allowed for string / named / map (pointer-like), but not for numeric/bool.
@@ -210,8 +373,8 @@ static int typedMapKeyAllows(AType* keyTy, AType* keyExprTy) {
     if (!keyTy || !keyExprTy) return 1;
     if (atIsAny(keyTy) || atIsAny(keyExprTy)) return 1;
     if (keyTy->kind == AT_STRING) return keyExprTy->kind == AT_STRING;
-    // int/long: accept both as "numeric key"
-    if (keyTy->kind == AT_INT || keyTy->kind == AT_LONG) return keyExprTy->kind == AT_INT || keyExprTy->kind == AT_LONG;
+    // Integer key: accept any integer (signed/unsigned).
+    if (atIsInt(keyTy)) return atIsInt(keyExprTy);
     return 0;
 }
 
@@ -220,9 +383,8 @@ static int typedMapValueAllows(AType* valTy, AType* exprTy) {
     if (atIsAny(valTy) || atIsAny(exprTy)) return 1;
     if (valTy->kind == AT_STRING) return exprTy->kind == AT_STRING || exprTy->kind == AT_NULL;
     if (valTy->kind == AT_BOOL) return exprTy->kind == AT_BOOL;
-    if (valTy->kind == AT_DOUBLE) return atIsNumeric(exprTy);
-    if (valTy->kind == AT_FLOAT) return atIsNumeric(exprTy);
-    if (valTy->kind == AT_INT || valTy->kind == AT_LONG) return atIsNumeric(exprTy);
+    if (atIsFloat(valTy) && valTy->kind != AT_F8 && valTy->kind != AT_BF8) return atIsNumeric(exprTy);
+    if (atIsInt(valTy)) return atIsNumeric(exprTy);
     return atAssignable(valTy, exprTy);
 }
 
@@ -230,7 +392,7 @@ static int isKeyLiteralCompatible(const Token* key, AType* keyTy) {
     if (!key || !keyTy) return 1;
     if (atIsAny(keyTy)) return 1;
     if (keyTy->kind == AT_STRING) return key->type == TOKEN_STRING_LITERAL;
-    if (keyTy->kind == AT_INT || keyTy->kind == AT_LONG) return key->type == TOKEN_INT || key->type == TOKEN_LONG;
+    if (atIsInt(keyTy)) return key->type == TOKEN_INT || key->type == TOKEN_LONG;
     return 0;
 }
 
@@ -345,6 +507,16 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
     if (call->callee->type == EXPR_GET) {
         GetExpr* get = (GetExpr*)call->callee;
         AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
+        if (atIsOption(recvTy)) {
+            if (tokenTextEquals(&get->name, "isSome")) return atNew(AT_BOOL);
+            if (tokenTextEquals(&get->name, "isNone")) return atNew(AT_BOOL);
+            if (tokenTextEquals(&get->name, "unwrap")) return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+            if (tokenTextEquals(&get->name, "unwrapOr")) {
+                Expr* arg0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
+                inferExpr(compiler, scope, arg0, modulePath);
+                return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+            }
+        }
         if (atIsMap(recvTy)) {
             if (tokenTextEquals(&get->name, "get")) {
                 Expr* key0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
@@ -397,6 +569,16 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
     AType* l = inferExpr(compiler, scope, b->left, modulePath);
     AType* r = inferExpr(compiler, scope, b->right, modulePath);
 
+    int opIsEq = (b->operator.type == TOKEN_EQ || b->operator.type == TOKEN_NEQ);
+    int opIsOrd = (b->operator.type == TOKEN_LT ||
+                   b->operator.type == TOKEN_GT ||
+                   b->operator.type == TOKEN_LE ||
+                   b->operator.type == TOKEN_GE);
+    int opIsArith = (b->operator.type == TOKEN_PLUS ||
+                     b->operator.type == TOKEN_MINUS ||
+                     b->operator.type == TOKEN_STAR ||
+                     b->operator.type == TOKEN_SLASH);
+
     if (b->operator.type == TOKEN_EQ || b->operator.type == TOKEN_NEQ) {
         if (atIsOption(l) != atIsOption(r)) {
             analyzeErrorAt(
@@ -424,15 +606,57 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
         return l->inner ? l->inner : atNew(AT_ANY);
     }
 
-    // Best-effort: propagate numeric promotion.
-    if (atIsNumeric(l) && atIsNumeric(r)) {
-        if (l->kind == AT_DOUBLE || r->kind == AT_DOUBLE) return atNew(AT_DOUBLE);
-        if (l->kind == AT_FLOAT || r->kind == AT_FLOAT) return atNew(AT_FLOAT);
-        if (l->kind == AT_LONG || r->kind == AT_LONG) return atNew(AT_LONG);
-        return atNew(AT_INT);
+    if (opIsArith && atIsString(l) && atIsString(r) && b->operator.type == TOKEN_PLUS) return atNew(AT_STRING);
+
+    if ((opIsArith || opIsOrd || opIsEq) && atIsNumeric(l) && atIsNumeric(r)) {
+        // FP8 is storage-only for now: disallow scalar ops/comparisons.
+        if (l->kind == AT_F8 || l->kind == AT_BF8 || r->kind == AT_F8 || r->kind == AT_BF8) {
+            analyzeErrorAt(compiler, modulePath, b->operator.line, "f8/bf8 scalar ops are not supported yet (treat as storage; cast to f16/f32 first)");
+            return opIsOrd || opIsEq ? atNew(AT_BOOL) : atNew(AT_ANY);
+        }
+
+        // Float promotions.
+        if (atIsFloat(l) || atIsFloat(r)) {
+            if (l->kind == AT_DOUBLE || r->kind == AT_DOUBLE) return opIsOrd ? atNew(AT_BOOL) : atNew(AT_DOUBLE);
+            if (l->kind == AT_FLOAT || r->kind == AT_FLOAT) return opIsOrd ? atNew(AT_BOOL) : atNew(AT_FLOAT);
+
+            // f16/bf16: if mixed, promote to f32; otherwise keep the same 16-bit format.
+            if ((l->kind == AT_F16 && r->kind == AT_BF16) || (l->kind == AT_BF16 && r->kind == AT_F16)) {
+                return opIsOrd ? atNew(AT_BOOL) : atNew(AT_FLOAT);
+            }
+            if (l->kind == AT_F16 || r->kind == AT_F16) return opIsOrd ? atNew(AT_BOOL) : atNew(AT_F16);
+            if (l->kind == AT_BF16 || r->kind == AT_BF16) return opIsOrd ? atNew(AT_BOOL) : atNew(AT_BF16);
+            return opIsOrd ? atNew(AT_BOOL) : atNew(AT_FLOAT);
+        }
+
+        // Integer promotions: no implicit signed/unsigned mixing.
+        if (atIsInt(l) && atIsInt(r)) {
+            int lSigned = atIsSignedInt(l);
+            int rSigned = atIsSignedInt(r);
+            if (lSigned != rSigned) {
+                analyzeErrorAt(compiler, modulePath, b->operator.line, "cannot mix signed and unsigned integers; cast explicitly");
+                return opIsOrd ? atNew(AT_BOOL) : atNew(AT_ANY);
+            }
+
+            int lb = atIntBits(l);
+            int rb = atIntBits(r);
+            int cb = lb > rb ? lb : rb;
+            if (cb < 32) cb = 32;
+            int wantSize = (l->kind == AT_ISIZE || r->kind == AT_ISIZE || l->kind == AT_USIZE || r->kind == AT_USIZE);
+            int ptrBits = (int)(sizeof(void*) * 8);
+
+            if (lSigned) {
+                ATypeKind out = (cb == ptrBits && wantSize) ? AT_ISIZE : (cb >= 64 ? AT_LONG : AT_INT);
+                return opIsOrd ? atNew(AT_BOOL) : atNew(out);
+            }
+
+            ATypeKind out = (cb == ptrBits && wantSize) ? AT_USIZE : (cb >= 64 ? AT_U64 : AT_U32);
+            return opIsOrd ? atNew(AT_BOOL) : atNew(out);
+        }
     }
+
     if (atIsBool(l) && atIsBool(r)) return atNew(AT_BOOL);
-    if (atIsString(l) && atIsString(r) && b->operator.type == TOKEN_PLUS) return atNew(AT_STRING);
+    if (opIsOrd) return atNew(AT_BOOL);
 
     return atNew(AT_ANY);
 }
@@ -444,22 +668,22 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_LITERAL: {
             LiteralExpr* lit = (LiteralExpr*)expr;
             switch (lit->value.type) {
-                case TOKEN_INT: return atNew(AT_INT);
-                case TOKEN_LONG: return atNew(AT_LONG);
-                case TOKEN_DOUBLE: return atNew(AT_DOUBLE);
+                case TOKEN_INT: return inferReturn(expr, atNew(AT_INT));
+                case TOKEN_LONG: return inferReturn(expr, atNew(AT_LONG));
+                case TOKEN_DOUBLE: return inferReturn(expr, atNew(AT_DOUBLE));
                 case TOKEN_TRUE:
-                case TOKEN_FALSE: return atNew(AT_BOOL);
-                case TOKEN_STRING_LITERAL: return atNew(AT_STRING);
-                case TOKEN_NULL: return atNew(AT_NULL);
-                default: return atNew(AT_ANY);
+                case TOKEN_FALSE: return inferReturn(expr, atNew(AT_BOOL));
+                case TOKEN_STRING_LITERAL: return inferReturn(expr, atNew(AT_STRING));
+                case TOKEN_NULL: return inferReturn(expr, atNew(AT_NULL));
+                default: return inferReturn(expr, atNew(AT_ANY));
             }
         }
         case EXPR_VARIABLE: {
             VariableExpr* v = (VariableExpr*)expr;
             VarInfo* vi = scopeFind(scope, &v->name);
-            if (vi && vi->type) return vi->type;
+            if (vi && vi->type) return inferReturn(expr, vi->type);
             // Unknown identifier: keep permissive (imports/functions/structs handled in codegen).
-            return atNew(AT_ANY);
+            return inferReturn(expr, atNew(AT_ANY));
         }
         case EXPR_ASSIGN: {
             AssignExpr* a = (AssignExpr*)expr;
@@ -477,16 +701,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     analyzeErrorAt(compiler, modulePath, a->name.line, "type mismatch in assignment");
                 }
             }
-            return vi && vi->type ? vi->type : atNew(AT_ANY);
+            return inferReturn(expr, vi && vi->type ? vi->type : atNew(AT_ANY));
         }
         case EXPR_BINARY:
-            return inferBinary(compiler, scope, (BinaryExpr*)expr, modulePath);
+            return inferReturn(expr, inferBinary(compiler, scope, (BinaryExpr*)expr, modulePath));
         case EXPR_UNARY: {
             UnaryExpr* u = (UnaryExpr*)expr;
-            return inferExpr(compiler, scope, u->right, modulePath);
+            return inferReturn(expr, inferExpr(compiler, scope, u->right, modulePath));
         }
         case EXPR_GROUPING:
-            return inferExpr(compiler, scope, ((GroupingExpr*)expr)->expression, modulePath);
+            return inferReturn(expr, inferExpr(compiler, scope, ((GroupingExpr*)expr)->expression, modulePath));
         case EXPR_CAST: {
             CastExpr* c = (CastExpr*)expr;
             AType* src = inferExpr(compiler, scope, c->value, modulePath);
@@ -495,37 +719,49 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             // First version: only numeric casts are supported.
             if (!atIsAny(src) && !atIsNumeric(src)) {
                 analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` only supports numeric casts for now");
-                return atNew(AT_ANY);
+                return inferReturn(expr, atNew(AT_ANY));
             }
             if (!atIsNumeric(dst)) {
                 analyzeErrorAt(compiler, modulePath, c->base.token.line, "cast target type must be numeric");
-                return atNew(AT_ANY);
+                return inferReturn(expr, atNew(AT_ANY));
+            }
+
+            // FP8 is storage-only for now: only allow bitwise casts with u8/byte.
+            int srcIsFp8 = (src->kind == AT_F8 || src->kind == AT_BF8);
+            int dstIsFp8 = (dst->kind == AT_F8 || dst->kind == AT_BF8);
+            if (srcIsFp8 || dstIsFp8) {
+                int srcOk = srcIsFp8 || src->kind == AT_U8 || src->kind == AT_BYTE || atIsAny(src);
+                int dstOk = dstIsFp8 || dst->kind == AT_U8 || dst->kind == AT_BYTE;
+                if (!(srcOk && dstOk)) {
+                    analyzeErrorAt(compiler, modulePath, c->base.token.line, "casts involving f8/bf8 are limited to u8/byte for now");
+                    return inferReturn(expr, c->isChecked ? atOption(atNew(AT_ANY)) : atNew(AT_ANY));
+                }
             }
 
             if (c->isChecked) {
                 if (atIsAny(src)) {
                     analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` (checked) requires a known numeric source type for now");
-                    return atOption(dst);
+                    return inferReturn(expr, atOption(dst));
                 }
-                return atOption(dst);
+                return inferReturn(expr, atOption(dst));
             }
-            return dst;
+            return inferReturn(expr, dst);
         }
         case EXPR_CALL:
-            return inferCall(compiler, scope, (CallExpr*)expr, modulePath);
+            return inferReturn(expr, inferCall(compiler, scope, (CallExpr*)expr, modulePath));
         case EXPR_ARRAY_LITERAL: {
-            return inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)expr, NULL, modulePath);
+            return inferReturn(expr, inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)expr, NULL, modulePath));
         }
         case EXPR_BRACE_LITERAL:
-            return inferBraceLiteral(compiler, scope, (BraceLiteralExpr*)expr, NULL, modulePath);
+            return inferReturn(expr, inferBraceLiteral(compiler, scope, (BraceLiteralExpr*)expr, NULL, modulePath));
         case EXPR_GET: {
             // Member access type inference is incomplete; keep permissive.
             GetExpr* g = (GetExpr*)expr;
             inferExpr(compiler, scope, g->object, modulePath);
-            return atNew(AT_ANY);
+            return inferReturn(expr, atNew(AT_ANY));
         }
         case EXPR_INDEX:
-            return inferIndex(compiler, scope, (IndexExpr*)expr, modulePath);
+            return inferReturn(expr, inferIndex(compiler, scope, (IndexExpr*)expr, modulePath));
         case EXPR_INDEX_SET: {
             IndexSetExpr* is = (IndexSetExpr*)expr;
             AType* objTy = inferExpr(compiler, scope, is->object, modulePath);
@@ -546,10 +782,10 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "array element type mismatch");
                 }
             }
-            return atNew(AT_VOID);
+            return inferReturn(expr, atNew(AT_VOID));
         }
         default:
-            return atNew(AT_ANY);
+            return inferReturn(expr, atNew(AT_ANY));
     }
 }
 
@@ -599,14 +835,15 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
 
         AType* vTy = inferExpr(compiler, scope, e->value, modulePath);
         if (vTy->kind == AT_NULL) { ok = 0; break; }
-        if (!(vTy->kind == AT_INT || vTy->kind == AT_LONG || vTy->kind == AT_FLOAT || vTy->kind == AT_DOUBLE || vTy->kind == AT_BOOL || vTy->kind == AT_STRING)) {
+        if (!(atIsNumeric(vTy) || vTy->kind == AT_BOOL || vTy->kind == AT_STRING)) {
             ok = 0;
             break;
         }
         if (inferredVal == AT_ANY) inferredVal = vTy->kind;
         else {
             // numeric promotion for inference
-            if (atIsNumeric(vTy) && (inferredVal == AT_INT || inferredVal == AT_LONG || inferredVal == AT_FLOAT || inferredVal == AT_DOUBLE)) {
+            if (atIsNumeric(vTy) && atKindIsNumeric(inferredVal)) {
+                // Keep the old simple promotion strategy for now: prefer f64 > f32 > i64 > i32.
                 if (inferredVal == AT_DOUBLE || vTy->kind == AT_DOUBLE) inferredVal = AT_DOUBLE;
                 else if (inferredVal == AT_FLOAT || vTy->kind == AT_FLOAT) inferredVal = AT_FLOAT;
                 else if (inferredVal == AT_LONG || vTy->kind == AT_LONG) inferredVal = AT_LONG;
