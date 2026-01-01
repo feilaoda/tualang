@@ -1,0 +1,9 @@
+let a:int[] = {1, 2, 3, 4}
+let sum:int = 0
+
+for v in a {
+    sum = sum + v
+}
+
+assert(sum == 10)
+

@@ -22,6 +22,14 @@ static LLVMValueRef getOrCreateTuaMapIterNext(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_iter_next", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_panic", fnType);
+}
+
 static char* tokenToHeapCString(Token tok) {
     char* s = malloc((size_t)tok.length + 1);
     memcpy(s, tok.start, (size_t)tok.length);
@@ -81,6 +89,40 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->stackArrayData = NULL;
     listAppend(scope->variables, variable);
     return variable;
+}
+
+static LLVMValueRef loadLocalVarValue(Compiler* compiler, VariableRef var, const char* name) {
+    if (!compiler || !var.value || !var.type) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    if (var.isBoxed) {
+        if (!var.boxPtrType) return NULL;
+        LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell");
+        return LLVMBuildLoad2(builder, var.type, cell, name ? name : "load");
+    }
+    return LLVMBuildLoad2(builder, var.type, var.value, name ? name : "load");
+}
+
+static int storeLoopVarValue(Compiler* compiler, Block* scope, Token nameTok, LLVMValueRef value, LLVMTypeRef valueType) {
+    if (!compiler || !scope || !value) return 0;
+    LLVMBuilderRef builder = compiler->builder;
+    VariableRef var = findVariableWithLength(scope->variables, nameTok.start, nameTok.length);
+    if (!var.value || !var.type) return 0;
+    LLVMValueRef v = value;
+    if (valueType && var.type != valueType) {
+        // Best-effort cast for numeric widening/truncation and pointer casts.
+        v = LLVMBuildBitCast(builder, value, var.type, "lc"); // safe for pointers only; for non-ptr mismatch keep original
+        if (LLVMGetTypeKind(LLVMTypeOf(value)) != LLVMPointerTypeKind || LLVMGetTypeKind(var.type) != LLVMPointerTypeKind) {
+            v = value;
+        }
+    }
+    if (var.isBoxed) {
+        if (!var.boxPtrType) return 0;
+        LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell");
+        LLVMBuildStore(builder, v, cell);
+    } else {
+        LLVMBuildStore(builder, v, var.value);
+    }
+    return 1;
 }
 
 
@@ -304,18 +346,18 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
     LLVMContextRef context = compiler->context;
     LLVMValueRef function = compiler->current->func;
 
-    LLVMValueRef iterable = compileExpr(compiler, stmt->range);
-    if (!iterable) {
-        error("Failed to compile for-in iterable\n");
-        return;
-    }
     if (!stmt->range || stmt->range->type != EXPR_VARIABLE) {
-        error("for-in currently only supports map variables\n");
+        error("for-in currently only supports map/array variables\n");
         return;
     }
     VariableRef rangeVar = findVariableExpr(compiler, stmt->range);
-    if (!rangeVar.value || !rangeVar.isMap) {
-        error("for-in currently only supports map\n");
+    if (!rangeVar.value || (!rangeVar.isMap && !rangeVar.isArray)) {
+        error("for-in currently only supports map/array\n");
+        return;
+    }
+    LLVMValueRef iterable = loadLocalVarValue(compiler, rangeVar, "iterable");
+    if (!iterable) {
+        error("Failed to load for-in iterable\n");
         return;
     }
 
@@ -328,72 +370,169 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
     scope->labels = saved ? saved->labels : listNew();
     compiler->current = scope;
 
-    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-    defineLoopValue(compiler, scope, stmt->loopVar, vt);
-    if (stmt->hasValueVar) {
-        defineLoopValue(compiler, scope, stmt->valueVar, vt);
-    }
+    if (rangeVar.isMap) {
+        LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+        defineLoopValue(compiler, scope, stmt->loopVar, vt);
+        if (stmt->hasValueVar) {
+            defineLoopValue(compiler, scope, stmt->valueVar, vt);
+        }
 
-    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
-    LLVMValueRef idx = LLVMBuildAlloca(builder, i32, "iter_idx");
-    LLVMBuildStore(builder, LLVMConstInt(i32, 0, 0), idx);
-    LLVMValueRef keyTmp = LLVMBuildAlloca(builder, vt, "iter_key");
-    LLVMValueRef valTmp = LLVMBuildAlloca(builder, vt, "iter_val");
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+        LLVMValueRef idx = LLVMBuildAlloca(builder, i32, "iter_idx");
+        LLVMBuildStore(builder, LLVMConstInt(i32, 0, 0), idx);
+        LLVMValueRef keyTmp = LLVMBuildAlloca(builder, vt, "iter_key");
+        LLVMValueRef valTmp = LLVMBuildAlloca(builder, vt, "iter_val");
 
-    LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(function, "forin.cond");
-    LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(function, "forin.body");
-    LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(function, "forin.end");
+        LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(function, "forin.cond");
+        LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(function, "forin.body");
+        LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(function, "forin.end");
 
-    LLVMBuildBr(builder, condBB);
+        LLVMBuildBr(builder, condBB);
 
-    LLVMPositionBuilderAtEnd(builder, condBB);
-    LLVMValueRef iterFn = getOrCreateTuaMapIterNext(compiler);
-    LLVMTypeRef iterType = LLVMGlobalGetValueType(iterFn);
-    LLVMValueRef args[4] = { iterable, idx, keyTmp, valTmp };
-    LLVMValueRef ok32 = LLVMBuildCall2(builder, iterType, iterFn, args, 4, "iterok");
-    LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntNE, ok32, LLVMConstInt(i32, 0, 0), "ok");
-    LLVMBuildCondBr(builder, ok, bodyBB, endBB);
+        LLVMPositionBuilderAtEnd(builder, condBB);
+        LLVMValueRef iterFn = getOrCreateTuaMapIterNext(compiler);
+        LLVMTypeRef iterType = LLVMGlobalGetValueType(iterFn);
+        LLVMValueRef args[4] = { iterable, idx, keyTmp, valTmp };
+        LLVMValueRef ok32 = LLVMBuildCall2(builder, iterType, iterFn, args, 4, "iterok");
+        LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntNE, ok32, LLVMConstInt(i32, 0, 0), "ok");
+        LLVMBuildCondBr(builder, ok, bodyBB, endBB);
 
-    LLVMPositionBuilderAtEnd(builder, bodyBB);
-    // Update loop variables for this iteration.
-    VariableRef keyVar = findVariableWithLength(scope->variables, stmt->loopVar.start, stmt->loopVar.length);
-    if (!keyVar.value || !keyVar.type) {
-        error("Failed to resolve loop var\n");
+        LLVMPositionBuilderAtEnd(builder, bodyBB);
+        LLVMValueRef k = LLVMBuildLoad2(builder, vt, keyTmp, "k");
+        LLVMValueRef v = LLVMBuildLoad2(builder, vt, valTmp, "v");
+
+        // Binding rules:
+        // - for value in map: bind loopVar to value
+        // - for key,value in map: bind loopVar=key, valueVar=value
+        if (stmt->hasValueVar) {
+            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, k, vt) ||
+                !storeLoopVarValue(compiler, scope, stmt->valueVar, v, vt)) {
+                error("Failed to bind for-in loop vars\n");
+                compiler->current = saved;
+                return;
+            }
+        } else {
+            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, v, vt)) {
+                error("Failed to bind for-in loop var\n");
+                compiler->current = saved;
+                return;
+            }
+        }
+
+        llvmPushLoop(compiler, endBB, condBB);
+        compileStmt(compiler, stmt->body);
+        llvmPopLoop(compiler);
+
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+            LLVMBuildBr(builder, condBB);
+        }
+
+        LLVMPositionBuilderAtEnd(builder, endBB);
         compiler->current = saved;
         return;
     }
-    LLVMValueRef k = LLVMBuildLoad2(builder, vt, keyTmp, "k");
-    if (keyVar.isBoxed) {
-        LLVMValueRef cell = LLVMBuildLoad2(builder, keyVar.boxPtrType, keyVar.value, "kcell");
-        LLVMBuildStore(builder, k, cell);
-    } else {
-        LLVMBuildStore(builder, k, keyVar.value);
-    }
 
-    if (stmt->hasValueVar) {
-        VariableRef valVar = findVariableWithLength(scope->variables, stmt->valueVar.start, stmt->valueVar.length);
-        if (!valVar.value || !valVar.type) {
-            error("Failed to resolve value loop var\n");
+    if (rangeVar.isArray) {
+        LLVMTypeRef arrType = compilerGetArrayType(compiler);
+        LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+        if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+        LLVMTypeRef elemTy = rangeVar.arrayElemType ? rangeVar.arrayElemType : LLVMInt32TypeInContext(context);
+
+        // Binding rules:
+        // - for value in array: bind loopVar=value
+        // - for value,index in array: bind loopVar=value, valueVar=index
+        defineLoopValue(compiler, scope, stmt->loopVar, elemTy);
+        if (stmt->hasValueVar) {
+            defineLoopValue(compiler, scope, stmt->valueVar, i32);
+        }
+
+        // null check (skip for stack-backed fixed arrays; header pointer is always valid)
+        if (!rangeVar.isStackArray) {
+            LLVMValueRef nullPtr = LLVMConstNull(arrType);
+            LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, iterable, nullPtr, "arr_null");
+            LLVMValueRef fn = compiler->current->func;
+            LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "forin.arr.ok");
+            LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "forin.arr.bad");
+            LLVMBuildCondBr(builder, isNull, badBB, okBB);
+
+            LLVMPositionBuilderAtEnd(builder, badBB);
+            LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+            LLVMTypeRef panicTy = LLVMGlobalGetValueType(panicFn);
+            LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "null array", "amsg");
+            LLVMBuildCall2(builder, panicTy, panicFn, &msg, 1, "");
+            LLVMBuildUnreachable(builder);
+
+            LLVMPositionBuilderAtEnd(builder, okBB);
+        }
+
+        LLVMValueRef data = NULL;
+        if (rangeVar.isStackArray && rangeVar.stackArrayData) {
+            data = rangeVar.stackArrayData;
+        } else {
+            LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, iterable, 2, "datap");
+            LLVMValueRef dataI8 = LLVMBuildLoad2(builder, i8ptr, dataPtrPtr, "data");
+            data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(elemTy, 0), "adata");
+        }
+
+        LLVMValueRef lenV = NULL;
+        if (rangeVar.arrayFixedLen >= 0) {
+            lenV = LLVMConstInt(i64, (uint64_t)rangeVar.arrayFixedLen, 1);
+        } else {
+            LLVMValueRef lenPtr = LLVMBuildStructGEP2(builder, arrStruct, iterable, 0, "lenp");
+            lenV = LLVMBuildLoad2(builder, i64, lenPtr, "len");
+        }
+
+        LLVMValueRef idx = LLVMBuildAlloca(builder, i32, "iter_i");
+        LLVMBuildStore(builder, LLVMConstInt(i32, 0, 0), idx);
+
+        LLVMBasicBlockRef condBB = LLVMAppendBasicBlock(function, "forin.cond");
+        LLVMBasicBlockRef bodyBB = LLVMAppendBasicBlock(function, "forin.body");
+        LLVMBasicBlockRef incBB = LLVMAppendBasicBlock(function, "forin.inc");
+        LLVMBasicBlockRef endBB = LLVMAppendBasicBlock(function, "forin.end");
+        LLVMBuildBr(builder, condBB);
+
+        LLVMPositionBuilderAtEnd(builder, condBB);
+        LLVMValueRef i32v = LLVMBuildLoad2(builder, i32, idx, "i");
+        LLVMValueRef i64v = LLVMBuildSExt(builder, i32v, i64, "i64");
+        LLVMValueRef ok = LLVMBuildICmp(builder, LLVMIntSLT, i64v, lenV, "ok");
+        LLVMBuildCondBr(builder, ok, bodyBB, endBB);
+
+        LLVMPositionBuilderAtEnd(builder, bodyBB);
+        LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &i64v, 1, "ep");
+        LLVMValueRef ev = LLVMBuildLoad2(builder, elemTy, ep, "v");
+        if (!storeLoopVarValue(compiler, scope, stmt->loopVar, ev, elemTy)) {
+            error("Failed to bind array value var\n");
             compiler->current = saved;
             return;
         }
-        LLVMValueRef v = LLVMBuildLoad2(builder, vt, valTmp, "v");
-        if (valVar.isBoxed) {
-            LLVMValueRef cell = LLVMBuildLoad2(builder, valVar.boxPtrType, valVar.value, "vcell");
-            LLVMBuildStore(builder, v, cell);
-        } else {
-            LLVMBuildStore(builder, v, valVar.value);
+        if (stmt->hasValueVar) {
+            if (!storeLoopVarValue(compiler, scope, stmt->valueVar, i32v, i32)) {
+                error("Failed to bind array index var\n");
+                compiler->current = saved;
+                return;
+            }
         }
-    }
 
-    llvmPushLoop(compiler, endBB, condBB);
-    compileStmt(compiler, stmt->body);
-    llvmPopLoop(compiler);
+        llvmPushLoop(compiler, endBB, incBB);
+        compileStmt(compiler, stmt->body);
+        llvmPopLoop(compiler);
 
-    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+            LLVMBuildBr(builder, incBB);
+        }
+
+        LLVMPositionBuilderAtEnd(builder, incBB);
+        LLVMValueRef cur = LLVMBuildLoad2(builder, i32, idx, "i");
+        LLVMValueRef inc = LLVMBuildAdd(builder, cur, LLVMConstInt(i32, 1, 0), "inc");
+        LLVMBuildStore(builder, inc, idx);
         LLVMBuildBr(builder, condBB);
-    }
 
-    LLVMPositionBuilderAtEnd(builder, endBB);
-    compiler->current = saved;
+        LLVMPositionBuilderAtEnd(builder, endBB);
+        compiler->current = saved;
+        return;
+    }
 }

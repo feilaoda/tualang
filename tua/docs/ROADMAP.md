@@ -37,7 +37,7 @@
 - 测试：增加 `examples/` 对应的“可运行用例”，并能在脚本中批量跑
 
 ### 7. TODO List（下一阶段，按执行顺序）
-- [ ] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则
+- [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
 - [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）
 - [x] 增加语义/类型分析层（第一版）：在 LLVM codegen 前做基础类型推断/检查（Option/map 相关），避免 LLVMVerify 才报错
 - [x] 尾递归优化（self tail call）：`return f(args...)` 复用当前栈帧（当函数启用闭包 boxing 时禁用）

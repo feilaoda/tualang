@@ -1,0 +1,10 @@
+let m: map<int, int> = { 1: 10, 2: 20, 3: 30 }
+let sum:int = 0
+
+for v in m {
+    let vi:int = v
+    sum = sum + vi
+}
+
+assert(sum == 60)
+
