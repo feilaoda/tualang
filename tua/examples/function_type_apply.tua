@@ -23,14 +23,18 @@ fn foo1(x:int) -> int {
 }
 
 
-fn bar(x:int) -> (int) int {
-    return (x) int {
+fn bar(x:int) -> (int) -> int {
+    return fn (y) int {
+        return y + 10
+    }
+}
+
+fn bar2(x:int) -> (int) -> int {
+    return fn (x) int {
         return x + 10
     }
 }
 
-fn bar(x:int) (int) int {
-    return (x) int {
-        return x + 10
-    }
+let f:(int)->int = fn (x:int) int {
+    return x + 10
 }

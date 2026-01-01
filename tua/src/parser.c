@@ -140,6 +140,7 @@ static void synchronize(Parser* parser) {
         if (advancedOnce && parser->previous.type == TOKEN_SEMICOLON) return;
         
         switch (parser->current.type) {
+            case TOKEN_RBRACE:
             case TOKEN_FUNC:
             case TOKEN_VAR:
             case TOKEN_CONST:
@@ -538,11 +539,10 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
             continue;
         }
         // Named struct init: `TypeName{ field: expr, ... }` or `ns.TypeName{ ... }`
-        if (match(parser, TOKEN_LBRACE)) {
-            if (left->type != EXPR_VARIABLE && left->type != EXPR_GET) {
-                printError(parser, "Struct initializer must follow a type name");
-                return NULL;
-            }
+        // Important: only treat `{` as struct init when the LHS is a type name expression.
+        // Otherwise `{` may start a statement block (e.g. `for ... {`) and must not be consumed here.
+        if (check(parser, TOKEN_LBRACE) && (left->type == EXPR_VARIABLE || left->type == EXPR_GET)) {
+            advance(parser); // consume '{'
             left = finishStructInit(parser, left);
             continue;
         }
@@ -1430,9 +1430,21 @@ static List* parseBlock(Parser* parser) {
     consume(parser, TOKEN_LBRACE, "Expect '{' before block");
     
     while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        Token before = parser->current;
         Stmt* stmt = declaration(parser);
         if (stmt != NULL) {
             listAppend(statements, stmt);
+        }
+        if (parser->panicMode) {
+            synchronize(parser);
+        } else if (stmt == NULL &&
+                   parser->current.type == before.type &&
+                   parser->current.start == before.start &&
+                   parser->current.length == before.length &&
+                   parser->current.line == before.line &&
+                   parser->current.col == before.col) {
+            // Ensure progress to avoid infinite loops on unexpected tokens.
+            advance(parser);
         }
     }
     
