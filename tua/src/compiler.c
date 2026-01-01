@@ -335,7 +335,8 @@ void compilerRegisterClosureReturnSig(Compiler* compiler, const char* name, int 
         if (!s) continue;
         if (s->nameLen != nameLen) continue;
         if (memcmp(s->name, name, (size_t)nameLen) == 0) {
-            s->funcType = funcType;
+            if (!s->funcTypes) s->funcTypes = listNew();
+            listAppend(s->funcTypes, funcType);
             return;
         }
     }
@@ -344,17 +345,26 @@ void compilerRegisterClosureReturnSig(Compiler* compiler, const char* name, int 
     memcpy(s->name, name, (size_t)nameLen);
     s->name[nameLen] = '\0';
     s->nameLen = nameLen;
-    s->funcType = funcType;
+    s->funcTypes = listNew();
+    listAppend(s->funcTypes, funcType);
     listAppend(compiler->closureReturnSigs, s);
 }
 
 LLVMTypeRef compilerFindClosureReturnSig(Compiler* compiler, const char* name, int nameLen) {
+    return compilerFindClosureReturnSigAt(compiler, name, nameLen, 0);
+}
+
+LLVMTypeRef compilerFindClosureReturnSigAt(Compiler* compiler, const char* name, int nameLen, int level) {
     if (!compiler || !compiler->closureReturnSigs || !name) return NULL;
     for (int i = 0; i < compiler->closureReturnSigs->length; i++) {
         ClosureReturnSig* s = listGet(compiler->closureReturnSigs, i);
         if (!s) continue;
         if (s->nameLen != nameLen) continue;
-        if (memcmp(s->name, name, (size_t)nameLen) == 0) return s->funcType;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) {
+            if (!s->funcTypes) return NULL;
+            if (level < 0 || level >= s->funcTypes->length) return NULL;
+            return (LLVMTypeRef)listGet(s->funcTypes, level);
+        }
     }
     return NULL;
 }
@@ -516,6 +526,21 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         default:
             return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
                                  : LLVMInt32TypeInContext(compiler->context);
+    }
+}
+
+static void compilerRegisterClosureReturnSigChain(Compiler* compiler, const char* name, int nameLen, Type* type) {
+    if (!compiler || !name || nameLen <= 0) return;
+    Type* t = type;
+    while (t && t->kind == TYPE_FUNC) {
+        LLVMTypeRef sig = compilerClosureSigFromType(compiler, t);
+        if (sig) compilerRegisterClosureReturnSig(compiler, name, nameLen, sig);
+
+        // Advance only for single-return nested function types.
+        if (!t->returnTypes || t->returnTypes->length != 1) break;
+        Type* next = (Type*)listGet(t->returnTypes, 0);
+        if (!next || next->kind != TYPE_FUNC) break;
+        t = next;
     }
 }
 
@@ -1535,11 +1560,10 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     LLVMTypeRef funcType = LLVMFunctionType(retType, paramTypes, (unsigned)paramCount, 0);
     LLVMValueRef func = LLVMAddFunction(compiler->module, funcName, funcType);
 
-    // If this function returns a closure value, record the expected closure call signature
-    // so expressions like `makeAdder(1)(2)` can be compiled.
+    // If this function returns a closure value (possibly nested), record the expected closure call signature(s)
+    // so expressions like `makeAdder(1)(2)` and deeper chains like `bar(1)(2)(3)` can be compiled.
     if (stmt->returnType && stmt->returnType->kind == TYPE_FUNC) {
-        LLVMTypeRef sig = compilerClosureSigFromType(compiler, stmt->returnType);
-        if (sig) compilerRegisterClosureReturnSig(compiler, funcName, stmt->name.length, sig);
+        compilerRegisterClosureReturnSigChain(compiler, funcName, stmt->name.length, stmt->returnType);
     }
 
     // `extern fn` declaration: declare prototype only (no body).
@@ -1586,8 +1610,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
                     compilerRegisterMultiReturn(compiler, wname, wlen, stmt->returnTypes->length);
                 }
                 if (stmt->returnType && stmt->returnType->kind == TYPE_FUNC) {
-                    LLVMTypeRef sig = compilerClosureSigFromType(compiler, stmt->returnType);
-                    if (sig) compilerRegisterClosureReturnSig(compiler, wname, wlen, sig);
+                    compilerRegisterClosureReturnSigChain(compiler, wname, wlen, stmt->returnType);
                 }
 
                 LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);

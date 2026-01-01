@@ -297,6 +297,60 @@ static int isExprStartToken(TokenType t) {
     }
 }
 
+static int isTypeStartToken(TokenType t) {
+    switch (t) {
+        case TOKEN_LPAREN:
+        case TOKEN_AMP:
+        case TOKEN_IDENTIFIER:
+        case TOKEN_INT:
+        case TOKEN_LONG:
+        case TOKEN_DOUBLE:
+        case TOKEN_FLOAT:
+        case TOKEN_STRING:
+        case TOKEN_BOOL:
+        case TOKEN_BYTE:
+        case TOKEN_U8:
+        case TOKEN_I8:
+        case TOKEN_U16:
+        case TOKEN_I16:
+        case TOKEN_U32:
+        case TOKEN_U64:
+        case TOKEN_USIZE:
+        case TOKEN_ISIZE:
+        case TOKEN_F8:
+        case TOKEN_F16:
+        case TOKEN_F32:
+        case TOKEN_F64:
+        case TOKEN_BF8:
+        case TOKEN_BF16:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// When parsing a function type `(args...) -> ...`, the return part may start with `(`.
+// That `(` is ambiguous:
+// - multi-return group: `-> (int, string)`
+// - function return type: `-> (int) -> int` or `-> (int) int`
+// We treat it as a function return type iff the token after the matching `)` is
+// another type token (sugar) or `->` (function type).
+static int isParenFunctionTypeAfterArrow(Parser* parser) {
+    if (!parser || !parser->lexer) return 0;
+    if (!check(parser, TOKEN_LPAREN)) return 0;
+
+    Lexer tmp = *parser->lexer; // lexer is already positioned after current '('
+    int depth = 1;
+    while (depth > 0) {
+        Token t = scanToken(&tmp);
+        if (t.type == TOKEN_EOF || t.type == TOKEN_ERROR) return 0;
+        if (t.type == TOKEN_LPAREN) depth++;
+        else if (t.type == TOKEN_RPAREN) depth--;
+    }
+    Token next = scanToken(&tmp);
+    return next.type == TOKEN_ARROW || isTypeStartToken(next.type);
+}
+
 static int isParenCastStart(Parser* parser) {
     if (!parser || !parser->lexer) return 0;
     if (!check(parser, TOKEN_LPAREN)) return 0;
@@ -488,6 +542,25 @@ static Expr* parseExpression(Parser* parser) {
     return expr;
 }
 
+static int tokenLooksLikeTypeName(const Token* tok) {
+    if (!tok || !tok->start || tok->length <= 0) return 0;
+    unsigned char c = (unsigned char)tok->start[0];
+    return c >= 'A' && c <= 'Z';
+}
+
+static int exprLooksLikeTypeNameExpr(Expr* e) {
+    if (!e) return 0;
+    if (e->type == EXPR_VARIABLE) {
+        VariableExpr* v = (VariableExpr*)e;
+        return tokenLooksLikeTypeName(&v->name);
+    }
+    if (e->type == EXPR_GET) {
+        GetExpr* g = (GetExpr*)e;
+        return tokenLooksLikeTypeName(&g->name);
+    }
+    return 0;
+}
+
 static Expr* finishStructInit(Parser* parser, Expr* callee) {
     parserDebugStart("finishStructInit");
 
@@ -541,7 +614,7 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
         // Named struct init: `TypeName{ field: expr, ... }` or `ns.TypeName{ ... }`
         // Important: only treat `{` as struct init when the LHS is a type name expression.
         // Otherwise `{` may start a statement block (e.g. `for ... {`) and must not be consumed here.
-        if (check(parser, TOKEN_LBRACE) && (left->type == EXPR_VARIABLE || left->type == EXPR_GET)) {
+        if (check(parser, TOKEN_LBRACE) && exprLooksLikeTypeNameExpr(left)) {
             advance(parser); // consume '{'
             left = finishStructInit(parser, left);
             continue;
@@ -777,30 +850,15 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         // Support both:
         // - `fn(...) -> int {}` (preferred)
         // - `fn(...) int {}` (sugar)
-        if (match(parser, TOKEN_ARROW) ||
-            check(parser, TOKEN_INT) ||
-            check(parser, TOKEN_LONG) ||
-            check(parser, TOKEN_DOUBLE) ||
-            check(parser, TOKEN_FLOAT) ||
-            check(parser, TOKEN_I8) ||
-            check(parser, TOKEN_I16) ||
-            check(parser, TOKEN_ISIZE) ||
-            check(parser, TOKEN_U8) ||
-            check(parser, TOKEN_U16) ||
-            check(parser, TOKEN_U32) ||
-            check(parser, TOKEN_U64) ||
-            check(parser, TOKEN_USIZE) ||
-            check(parser, TOKEN_BYTE) ||
-            check(parser, TOKEN_F8) ||
-            check(parser, TOKEN_F16) ||
-            check(parser, TOKEN_F32) ||
-            check(parser, TOKEN_F64) ||
-            check(parser, TOKEN_BF8) ||
-            check(parser, TOKEN_BF16) ||
-            check(parser, TOKEN_STRING) ||
-            check(parser, TOKEN_BOOL) ||
-            check(parser, TOKEN_IDENTIFIER) ||
-            check(parser, TOKEN_AMP)) {
+        int hasArrow = match(parser, TOKEN_ARROW);
+        // If the return type is a function type, require `->` to disambiguate:
+        // `fn(...) -> (int) int {}` is OK, but `fn(...) (int) int {}` is not.
+        if (!hasArrow && check(parser, TOKEN_LPAREN)) {
+            // Report error but keep parsing by treating it as if `->` was present.
+            printError(parser, "Expect '->' before function return type");
+            hasArrow = 1;
+        }
+        if (hasArrow || isTypeStartToken(parser->current.type)) {
             returnTypes = listNew();
             returnType = parseType(parser);
             listAppend(returnTypes, returnType);
@@ -1742,10 +1800,18 @@ static Type* parseType(Parser* parser) {
             } while (match(parser, TOKEN_COMMA));
         }
         consume(parser, TOKEN_RPAREN, "Expect ')' after function type parameters");
-        consume(parser, TOKEN_ARROW, "Expect '->' after function type parameters");
+        int hasArrow = match(parser, TOKEN_ARROW);
+
+        // Disallow `(args) (args2) ret` style nested function types.
+        // Nested function return types must use `->`, e.g. `(args) -> (args2) ret`.
+        if (!hasArrow && check(parser, TOKEN_LPAREN)) {
+            printError(parser, "Expect '->' before function return type");
+            return NULL;
+        }
 
         List* returnTypes = listNew();
-        if (match(parser, TOKEN_LPAREN)) {
+        if (hasArrow && check(parser, TOKEN_LPAREN) && !isParenFunctionTypeAfterArrow(parser)) {
+            consume(parser, TOKEN_LPAREN, "Expect '(' before grouped return types");
             if (!check(parser, TOKEN_RPAREN)) {
                 do {
                     Type* t = parseType(parser);
@@ -1753,10 +1819,17 @@ static Type* parseType(Parser* parser) {
                 } while (match(parser, TOKEN_COMMA));
             }
             consume(parser, TOKEN_RPAREN, "Expect ')' after function type return types");
-        } else {
-            Type* t = parseType(parser);
-            listAppend(returnTypes, t);
-        }
+	        } else {
+	            if (!hasArrow && !isTypeStartToken(parser->current.type)) {
+	                printError(parser, "Expect '->' or return type after function type parameters");
+	                return NULL;
+	            }
+	            Type* t = parseType(parser);
+	            listAppend(returnTypes, t);
+	            // Note: multi-return function types must use grouping: `-> (T, U)`.
+	            // Allowing `-> T, U` here is ambiguous with commas in surrounding syntax
+	            // (e.g. function parameter lists).
+	        }
 
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_FUNC;

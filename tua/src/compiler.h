@@ -64,7 +64,7 @@ typedef struct Compiler{
 	    LLVMTypeRef arrayType;   // cached %tua_array* type
 	    LLVMTypeRef tuaValueType; // cached {i32, i64} tagged value type
 	    List* closureSigs;       // List<ClosureSig*>, variable name -> function type
-	    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature
+	    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature(s) for nested returns
 	    LLVMTypeRef lastLambdaFuncType; // side-channel: funcType of last compiled lambda expr
 
     const char* lastSetFilePath; // last emitted runtime file path (may be NULL)
@@ -130,7 +130,7 @@ typedef struct ClosureSig {
 typedef struct ClosureReturnSig {
     char* name;
     int nameLen;
-    LLVMTypeRef funcType; // expected closure call signature (env + args) for function return value
+    List* funcTypes; // List<LLVMTypeRef>, nesting level -> expected closure call signature (env + args)
 } ClosureReturnSig;
 
 typedef struct LoopTarget {
@@ -231,5 +231,6 @@ LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nam
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);
 void compilerRegisterClosureReturnSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureReturnSig(Compiler* compiler, const char* name, int nameLen);
+LLVMTypeRef compilerFindClosureReturnSigAt(Compiler* compiler, const char* name, int nameLen, int level);
 
 #endif

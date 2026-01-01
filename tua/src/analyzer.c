@@ -31,6 +31,7 @@ typedef enum {
     AT_BF16,
     AT_BOOL,
     AT_STRING,
+    AT_FUNC,
     AT_OPTION,
     AT_MAP,
     AT_ARRAY,
@@ -42,6 +43,8 @@ typedef struct AType {
     struct AType* inner; // Option<T>
     struct AType* key;   // map<K,V>
     struct AType* value; // map<K,V>
+    List* paramTypes;    // fn: List<AType*>
+    List* returnTypes;   // fn: List<AType*> (len==0 => void)
     int64_t arrayLen;    // array: -1 => dynamic (T[]), >=0 => fixed (T[N])
     const char* name;    // Named types (struct/object/enum/custom)
     int nameLen;
@@ -89,6 +92,13 @@ static AType* atNamed(const char* name, int len) {
     AType* t = atNew(AT_NAMED);
     t->name = name;
     t->nameLen = len;
+    return t;
+}
+
+static AType* atFunc(List* paramTypes, List* returnTypes) {
+    AType* t = atNew(AT_FUNC);
+    t->paramTypes = paramTypes ? paramTypes : listNew();
+    t->returnTypes = returnTypes ? returnTypes : listNew();
     return t;
 }
 
@@ -307,7 +317,19 @@ static AType* atFromAstType(Type* t) {
             }
             return atNamed(t->name.start, t->name.length);
         }
-        case TYPE_FUNC:
+        case TYPE_FUNC: {
+            List* ps = listNew();
+            for (ListNode* n = t->paramTypes ? t->paramTypes->head : NULL; n != NULL; n = n->next) {
+                Type* pt = (Type*)n->data;
+                listAppend(ps, atFromAstType(pt));
+            }
+            List* rs = listNew();
+            for (ListNode* n = t->returnTypes ? t->returnTypes->head : NULL; n != NULL; n = n->next) {
+                Type* rt = (Type*)n->data;
+                listAppend(rs, atFromAstType(rt));
+            }
+            return atFunc(ps, rs);
+        }
         default:
             return atNew(AT_ANY);
     }
@@ -322,6 +344,26 @@ static int atAssignable(AType* to, AType* from) {
         if (to->kind == AT_ARRAY) {
             if (!atAssignable(to->inner, from->inner)) return 0;
             if (to->arrayLen >= 0) return from->arrayLen == to->arrayLen;
+            return 1;
+        }
+        if (to->kind == AT_FUNC) {
+            int toPc = to->paramTypes ? to->paramTypes->length : 0;
+            int fromPc = from->paramTypes ? from->paramTypes->length : 0;
+            int toRc = to->returnTypes ? to->returnTypes->length : 0;
+            int fromRc = from->returnTypes ? from->returnTypes->length : 0;
+            if (toPc != fromPc || toRc != fromRc) return 0;
+            for (int i = 0; i < toPc; i++) {
+                AType* toP = (AType*)listGet(to->paramTypes, i);
+                AType* fromP = (AType*)listGet(from->paramTypes, i);
+                // Parameters are contravariant.
+                if (!atAssignable(fromP, toP)) return 0;
+            }
+            for (int i = 0; i < toRc; i++) {
+                AType* toR = (AType*)listGet(to->returnTypes, i);
+                AType* fromR = (AType*)listGet(from->returnTypes, i);
+                // Returns are covariant.
+                if (!atAssignable(toR, fromR)) return 0;
+            }
             return 1;
         }
         if (to->kind == AT_NAMED) {
@@ -405,6 +447,8 @@ static int isValueLiteralNull(const Expr* e) {
 static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char* modulePath);
 static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralExpr* al, AType* expectedArray, const char* modulePath);
 static AType* inferBraceLiteral(Compiler* compiler, Scope* scope, BraceLiteralExpr* bl, AType* expected, const char* modulePath);
+static int listAlwaysReturns(List* stmts);
+static void analyzeBlock(Compiler* compiler, Scope* parent, List* stmts, const char* modulePath, List* expectedReturns);
 
 static void analyzeErrorAt(Compiler* compiler, const char* modulePath, int line, const char* fmt, ...) {
     (void)modulePath;
@@ -747,6 +791,37 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             }
             return inferReturn(expr, dst);
         }
+	        case EXPR_LAMBDA: {
+	            LambdaExpr* lam = (LambdaExpr*)expr;
+	            Scope* lamScope = scopePush(scope);
+	            List* ps = listNew();
+	            for (ListNode* n = lam->params ? lam->params->head : NULL; n != NULL; n = n->next) {
+	                Parameter* p = (Parameter*)n->data;
+	                AType* pt = (p && p->type) ? atFromAstType(p->type) : atNew(AT_ANY);
+	                listAppend(ps, pt);
+	                if (p) scopeDefine(lamScope, &p->name, pt);
+	            }
+	            List* rs = listNew();
+	            if (lam->returnTypes && lam->returnTypes->length > 0) {
+	                for (ListNode* n = lam->returnTypes->head; n != NULL; n = n->next) {
+	                    Type* rt = (Type*)n->data;
+	                    listAppend(rs, atFromAstType(rt));
+	                }
+	            } else if (lam->returnType) {
+	                listAppend(rs, atFromAstType(lam->returnType));
+	            }
+
+	            // Analyze body with lambda's declared return types (or empty => void).
+	            // This enables return type-checking and catches errors inside lambdas.
+	            analyzeBlock(compiler, lamScope, lam->body, modulePath, rs);
+
+	            int requiresReturn = (lam->returnType != NULL) || (lam->returnTypes && lam->returnTypes->length > 0);
+	            if (requiresReturn && !listAlwaysReturns(lam->body)) {
+	                analyzeErrorAt(compiler, modulePath, lam->keyword.line, "missing return in lambda");
+	            }
+
+	            return inferReturn(expr, atFunc(ps, rs));
+	        }
         case EXPR_CALL:
             return inferReturn(expr, inferCall(compiler, scope, (CallExpr*)expr, modulePath));
         case EXPR_ARRAY_LITERAL: {
@@ -871,22 +946,54 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
     return atMap(atNew(AT_ANY), atNew(AT_ANY));
 }
 
-static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char* modulePath);
+static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char* modulePath, List* expectedReturns);
 
-static void analyzeBlock(Compiler* compiler, Scope* parent, List* stmts, const char* modulePath) {
+static int stmtAlwaysReturns(Stmt* stmt);
+static int listAlwaysReturns(List* stmts) {
+    for (ListNode* n = stmts ? stmts->head : NULL; n != NULL; n = n->next) {
+        Stmt* s = (Stmt*)n->data;
+        if (!s) continue;
+        if (stmtAlwaysReturns(s)) return 1;
+    }
+    return 0;
+}
+
+static int stmtAlwaysReturns(Stmt* stmt) {
+    if (!stmt) return 0;
+    if (stmt->type == STMT_PRIVATE) {
+        return stmtAlwaysReturns(((PrivateStmt*)stmt)->inner);
+    }
+    switch (stmt->type) {
+        case STMT_RETURN:
+            return 1;
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            return listAlwaysReturns(b->statements);
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            if (!i->elseBranch) return 0;
+            return stmtAlwaysReturns(i->thenBranch) && stmtAlwaysReturns(i->elseBranch);
+        }
+        default:
+            return 0;
+    }
+}
+
+static void analyzeBlock(Compiler* compiler, Scope* parent, List* stmts, const char* modulePath, List* expectedReturns) {
     Scope* scope = scopePush(parent);
     for (ListNode* n = stmts ? stmts->head : NULL; n != NULL; n = n->next) {
-        analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath);
+        analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, expectedReturns);
         if (compiler && compiler->hadError) return;
     }
 }
 
-static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char* modulePath) {
+static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char* modulePath, List* expectedReturns) {
     if (!stmt) return;
     if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) return;
     if (stmt->type == STMT_PRIVATE) {
         PrivateStmt* p = (PrivateStmt*)stmt;
-        analyzeStmt(compiler, scope, p->inner, modulePath);
+        analyzeStmt(compiler, scope, p->inner, modulePath, expectedReturns);
         return;
     }
 
@@ -939,45 +1046,88 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
         }
         case STMT_BLOCK: {
             BlockStmt* b = (BlockStmt*)stmt;
-            analyzeBlock(compiler, scope, b->statements, modulePath);
+            analyzeBlock(compiler, scope, b->statements, modulePath, expectedReturns);
             break;
         }
         case STMT_IF: {
             IfStmt* i = (IfStmt*)stmt;
             inferExpr(compiler, scope, i->condition, modulePath);
-            analyzeStmt(compiler, scope, i->thenBranch, modulePath);
-            if (i->elseBranch) analyzeStmt(compiler, scope, i->elseBranch, modulePath);
+            analyzeStmt(compiler, scope, i->thenBranch, modulePath, expectedReturns);
+            if (i->elseBranch) analyzeStmt(compiler, scope, i->elseBranch, modulePath, expectedReturns);
             break;
         }
         case STMT_FOR: {
             ForStmt* f = (ForStmt*)stmt;
-            if (f->initializer) analyzeStmt(compiler, scope, f->initializer, modulePath);
+            if (f->initializer) analyzeStmt(compiler, scope, f->initializer, modulePath, expectedReturns);
             if (f->condition) inferExpr(compiler, scope, f->condition, modulePath);
             if (f->increment) inferExpr(compiler, scope, f->increment, modulePath);
-            if (f->body) analyzeStmt(compiler, scope, f->body, modulePath);
+            if (f->body) analyzeStmt(compiler, scope, f->body, modulePath, expectedReturns);
             break;
         }
         case STMT_FOR_IN: {
             ForInStmt* fi = (ForInStmt*)stmt;
             // `for k,v in m { ... }` : just analyze iterable expression + body.
             inferExpr(compiler, scope, fi->range, modulePath);
-            analyzeStmt(compiler, scope, fi->body, modulePath);
+            analyzeStmt(compiler, scope, fi->body, modulePath, expectedReturns);
             break;
         }
         case STMT_WHILE: {
             WhileStmt* w = (WhileStmt*)stmt;
             inferExpr(compiler, scope, w->condition, modulePath);
-            analyzeStmt(compiler, scope, w->body, modulePath);
+            analyzeStmt(compiler, scope, w->body, modulePath, expectedReturns);
             break;
         }
         case STMT_DO_WHILE: {
             DoWhileStmt* dw = (DoWhileStmt*)stmt;
-            analyzeStmt(compiler, scope, dw->body, modulePath);
+            analyzeStmt(compiler, scope, dw->body, modulePath, expectedReturns);
             inferExpr(compiler, scope, dw->condition, modulePath);
+            break;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            int gotCount = 0;
+            if (r->values) gotCount = r->values->length;
+            else if (r->value) gotCount = 1;
+
+            int wantCount = expectedReturns ? expectedReturns->length : 0;
+
+            if (wantCount == 0 && gotCount > 0) {
+                analyzeErrorAt(compiler, modulePath, r->keyword.line, "cannot return a value from a void function");
+            } else if (wantCount > 0 && gotCount == 0) {
+                analyzeErrorAt(compiler, modulePath, r->keyword.line, "missing return value");
+            } else if (wantCount > 0 && gotCount != wantCount) {
+                analyzeErrorAt(compiler, modulePath, r->keyword.line, "return value count mismatch");
+            }
+
+            if (gotCount > 0) {
+                if (r->values) {
+                    int idx = 0;
+                    for (ListNode* n = r->values->head; n != NULL; n = n->next, idx++) {
+                        Expr* v = (Expr*)n->data;
+                        AType* vt = inferExpr(compiler, scope, v, modulePath);
+                        if (expectedReturns && idx < wantCount) {
+                            AType* want = (AType*)listGet(expectedReturns, idx);
+                            if (want && !atAssignable(want, vt)) {
+                                analyzeErrorAt(compiler, modulePath, r->keyword.line, "return type mismatch");
+                            }
+                        }
+                    }
+                } else {
+                    AType* vt = inferExpr(compiler, scope, r->value, modulePath);
+                    if (expectedReturns && wantCount > 0) {
+                        AType* want = (AType*)listGet(expectedReturns, 0);
+                        if (want && !atAssignable(want, vt)) {
+                            analyzeErrorAt(compiler, modulePath, r->keyword.line, "return type mismatch");
+                        }
+                    }
+                }
+            }
             break;
         }
         case STMT_FUNC: {
             FuncStmt* fn = (FuncStmt*)stmt;
+            // Extern functions have no body; skip return-path checks.
+            if (!fn->body) break;
             Scope* fnScope = scopePush(scope);
             for (ListNode* p = fn->params ? fn->params->head : NULL; p != NULL; p = p->next) {
                 Parameter* param = (Parameter*)p->data;
@@ -985,7 +1135,27 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 AType* pt = param->type ? atFromAstType(param->type) : atNew(AT_ANY);
                 scopeDefine(fnScope, &param->name, pt);
             }
-            analyzeBlock(compiler, fnScope, fn->body, modulePath);
+            List* expected = listNew();
+            if (fn->returnTypes && fn->returnTypes->length > 0) {
+                for (ListNode* n = fn->returnTypes->head; n != NULL; n = n->next) {
+                    Type* rt = (Type*)n->data;
+                    listAppend(expected, atFromAstType(rt));
+                }
+            } else if (fn->returnType) {
+                listAppend(expected, atFromAstType(fn->returnType));
+            }
+            analyzeBlock(compiler, fnScope, fn->body, modulePath, expected);
+            int requiresReturn = (fn->returnType != NULL) || (fn->returnTypes && fn->returnTypes->length > 0);
+            if (requiresReturn && !listAlwaysReturns(fn->body)) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    fn->name.line,
+                    "missing return in function '%.*s'",
+                    fn->name.length,
+                    fn->name.start
+                );
+            }
             break;
         }
         case STMT_DESTRUCTURE: {
@@ -1051,7 +1221,7 @@ int analyzeModule(Compiler* compiler, List* statements, List* aliases, const cha
     if (compiler) compiler->currentFilePath = modulePath;
     Scope* scope = scopePush(NULL);
     for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
-        analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath);
+        analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, NULL);
         if (compiler && compiler->hadError) {
             if (compiler) compiler->currentFilePath = savedFile;
             return 0;

@@ -118,8 +118,8 @@
   - `print(x)` / `println(x)`（目前支持打印 int/long/double/bool/string 指针）
 
 #### 6.1 函数类型（TypeScript 风格，Status: Implemented）
-- 语法形态：`(argType1, argType2, ...) -> retType`
-  - 多返回写法：`(int) -> (int, string)`（推荐用括号包起来；实现也接受 `-> int, string`）
+- 语法形态：`(argType1, argType2, ...) -> retType`（或语法糖：`(argType1, ...) retType`）
+  - 多返回写法：`(int) -> (int, string)`（函数类型的多返回必须用括号分组，避免与外围语法的 `,` 歧义）
 - 用法示例：
   - 变量类型标注：`let f: (int, int) -> int = fn(a:int, b:int) -> int { return a + b }`
   - 多返回：`let g: (int) -> (int, string) = fn(x:int) -> int, string { return x, "ok" }`

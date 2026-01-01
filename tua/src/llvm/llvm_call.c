@@ -346,7 +346,7 @@ static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
 
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen);
 
-static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, CallExpr* call) {
+static LLVMTypeRef resolveClosureReturnSigForSimpleCallAt(Compiler* compiler, CallExpr* call, int level) {
     if (!compiler || !call || !call->callee) return NULL;
     if (call->callee->type != EXPR_VARIABLE) return NULL;
 
@@ -362,7 +362,7 @@ static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, Call
         int ql = 0;
         char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
         if (q) {
-            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            LLVMTypeRef t = compilerFindClosureReturnSigAt(compiler, q, ql, level);
             free(q);
             if (t) return t;
         }
@@ -370,14 +370,14 @@ static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, Call
 
     SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
     if (a && a->kind == ALIAS_FUNC) {
-        return compilerFindClosureReturnSig(compiler, a->qualified, a->qualifiedLen);
+        return compilerFindClosureReturnSigAt(compiler, a->qualified, a->qualifiedLen, level);
     }
 
     if (compiler->currentModulePrefix) {
         int ql = 0;
         char* q = compilerQualifyToken(compiler, &callee->name, &ql);
         if (q) {
-            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            LLVMTypeRef t = compilerFindClosureReturnSigAt(compiler, q, ql, level);
             free(q);
             if (t) return t;
         }
@@ -389,13 +389,46 @@ static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, Call
         int ql = 0;
         char* q = mangleRawAndToken(compiler->currentObjectPrefix, compiler->currentObjectPrefixLen, &callee->name, &ql);
         if (q) {
-            LLVMTypeRef t = compilerFindClosureReturnSig(compiler, q, ql);
+            LLVMTypeRef t = compilerFindClosureReturnSigAt(compiler, q, ql, level);
             free(q);
             if (t) return t;
         }
     }
 
-    return compilerFindClosureReturnSig(compiler, callee->name.start, callee->name.length);
+    return compilerFindClosureReturnSigAt(compiler, callee->name.start, callee->name.length, level);
+}
+
+static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, CallExpr* call) {
+    return resolveClosureReturnSigForSimpleCallAt(compiler, call, 0);
+}
+
+static Expr* unwrapGroupingExpr(Expr* e) {
+    while (e && e->type == EXPR_GROUPING) {
+        e = ((GroupingExpr*)e)->expression;
+    }
+    return e;
+}
+
+// For a call-chain like `f(...)(...)(...)`, return the innermost call (`f(...)`) and set depth.
+// Depth is the number of CallExpr nodes in the chain.
+static CallExpr* findInnermostCallInChain(Expr* e, int* outDepth) {
+    if (outDepth) *outDepth = 0;
+    Expr* cur = unwrapGroupingExpr(e);
+    if (!cur || cur->type != EXPR_CALL) return NULL;
+
+    int depth = 0;
+    CallExpr* base = NULL;
+    while (cur && cur->type == EXPR_CALL) {
+        CallExpr* c = (CallExpr*)cur;
+        depth++;
+        base = c;
+        Expr* next = unwrapGroupingExpr(c->callee);
+        if (!next || next->type != EXPR_CALL) break;
+        cur = next;
+    }
+
+    if (outDepth) *outDepth = depth;
+    return base;
 }
 
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen) {
@@ -1307,6 +1340,23 @@ static LLVMValueRef collapseMultiReturnByTypeIfNeeded(Compiler* compiler, LLVMVa
     if (!compiler || !call || !retType) return call;
     if (compiler->wantMultiValue) return call;
     if (LLVMGetTypeKind(retType) == LLVMStructTypeKind) {
+        // Avoid collapsing real struct returns (including closures and user-defined structs).
+        // Multi-return tuples are lowered as anonymous structs; those use the default "first value" rule.
+        LLVMTypeRef closureTy = compilerGetClosureType(compiler);
+        if (retType == closureTy) return call;
+
+        // Named structs are user-defined (or named runtime types) and must not be collapsed.
+        const char* structName = LLVMGetStructName(retType);
+        if (structName && structName[0] != '\0') return call;
+
+        // Option<T> is also a 2-field anonymous struct; do not collapse it.
+        if (LLVMCountStructElementTypes(retType) == 2) {
+            LLVMTypeRef tagTy = LLVMStructGetTypeAtIndex(retType, 0);
+            if (LLVMGetTypeKind(tagTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(tagTy) == 1) {
+                return call;
+            }
+        }
+
         return LLVMBuildExtractValue(compiler->builder, call, 0, "mv0");
     }
     return call;
@@ -1391,14 +1441,16 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    // Call a closure value returned by a simple call: `makeAdder(1)(2)`
-    // Requires that the inner call target has an explicit closure return type `(args)->ret`.
-    Expr* calleeExpr = expr->callee;
-    while (calleeExpr && calleeExpr->type == EXPR_GROUPING) {
-        calleeExpr = ((GroupingExpr*)calleeExpr)->expression;
-    }
+    // Call a closure value returned by a call-chain:
+    // - `makeAdder(1)(2)`
+    // - `bar(1)(2)(3)` (nested closure returns)
+    // Requires that the base function has an explicit (possibly nested) closure return type.
+    Expr* calleeExpr = unwrapGroupingExpr(expr->callee);
     if (calleeExpr && calleeExpr->type == EXPR_CALL) {
-        LLVMTypeRef fnType = resolveClosureReturnSigForSimpleCall(compiler, (CallExpr*)calleeExpr);
+        int depth = 0;
+        CallExpr* baseCall = findInnermostCallInChain(calleeExpr, &depth);
+        int level = depth > 0 ? (depth - 1) : 0;
+        LLVMTypeRef fnType = baseCall ? resolveClosureReturnSigForSimpleCallAt(compiler, baseCall, level) : NULL;
         if (fnType) {
             LLVMValueRef closureVal = compileExpr(compiler, calleeExpr);
             LLVMTypeRef closureType = compilerGetClosureType(compiler);

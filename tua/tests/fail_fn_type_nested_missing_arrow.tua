@@ -1,0 +1,5 @@
+// Should fail: nested function return type must use `->`
+fn bar(x:int) -> (int) (int) int {
+    return fn(y:int) int { return y }
+}
+

@@ -24,14 +24,28 @@ fn foo1(x:int) -> int {
 
 
 fn bar(x:int) -> (int) -> int {
-    return fn (y) int {
-        return y + 10
+    return fn (y) -> int {
+        return 0
+    }
+}
+// Return function type sugar: `(int) int` == `(int) -> int`
+fn bar_sugar(x:int) -> (int) int {
+    return fn (y:int) int {
+        return y + x
     }
 }
 
-fn bar2(x:int) -> (int) -> int {
-    return fn (x) int {
+fn bar2(x:int) -> (int) int {
+    return fn (x)-> int {
         return x + 10
+    }
+}
+
+fn bar3(x:int) -> (int) -> (int) int {
+    return fn (x:int) -> (int) int {
+        return fn (y:int) int {
+            return x + y
+        }
     }
 }
 

@@ -884,6 +884,168 @@ static void collectLambdaUsesStmt(List* uses, Stmt* stmt) {
     }
 }
 
+static void collectNestedLambdasStmt(List* lambdas, Stmt* stmt);
+static void collectNestedLambdasExpr(List* lambdas, Expr* expr) {
+    if (!expr) return;
+    if (expr->type == EXPR_LAMBDA) {
+        listAppend(lambdas, expr);
+        return;
+    }
+    switch (expr->type) {
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)expr;
+            collectNestedLambdasExpr(lambdas, b->left);
+            collectNestedLambdasExpr(lambdas, b->right);
+            break;
+        }
+        case EXPR_UNARY:
+            collectNestedLambdasExpr(lambdas, ((UnaryExpr*)expr)->right);
+            break;
+        case EXPR_GROUPING:
+            collectNestedLambdasExpr(lambdas, ((GroupingExpr*)expr)->expression);
+            break;
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)expr;
+            collectNestedLambdasExpr(lambdas, c->callee);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectNestedLambdasExpr(lambdas, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_ASSIGN:
+            collectNestedLambdasExpr(lambdas, ((AssignExpr*)expr)->value);
+            break;
+        case EXPR_GET:
+            collectNestedLambdasExpr(lambdas, ((GetExpr*)expr)->object);
+            break;
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)expr;
+            collectNestedLambdasExpr(lambdas, s->object);
+            collectNestedLambdasExpr(lambdas, s->value);
+            break;
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)expr;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* e = (MapEntry*)n->data;
+                if (e) collectNestedLambdasExpr(lambdas, e->value);
+            }
+            break;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)expr;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                collectNestedLambdasExpr(lambdas, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_BRACE_LITERAL:
+            break;
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)expr;
+            collectNestedLambdasExpr(lambdas, i->object);
+            collectNestedLambdasExpr(lambdas, i->index);
+            break;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* s = (IndexSetExpr*)expr;
+            collectNestedLambdasExpr(lambdas, s->object);
+            collectNestedLambdasExpr(lambdas, s->index);
+            collectNestedLambdasExpr(lambdas, s->value);
+            break;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)expr;
+            collectNestedLambdasExpr(lambdas, si->callee);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectNestedLambdasExpr(lambdas, f->value);
+            }
+            break;
+        }
+        case EXPR_POSTFIX:
+            collectNestedLambdasExpr(lambdas, ((PostfixExpr*)expr)->operand);
+            break;
+        case EXPR_PREFIX:
+            collectNestedLambdasExpr(lambdas, ((PrefixExpr*)expr)->operand);
+            break;
+        default:
+            break;
+    }
+}
+
+static void collectNestedLambdasStmt(List* lambdas, Stmt* stmt) {
+    if (!stmt) return;
+    if (stmt->type == STMT_PRIVATE) {
+        collectNestedLambdasStmt(lambdas, ((PrivateStmt*)stmt)->inner);
+        return;
+    }
+    switch (stmt->type) {
+        case STMT_VAR:
+            collectNestedLambdasExpr(lambdas, ((VarStmt*)stmt)->initializer);
+            break;
+        case STMT_DESTRUCTURE:
+            collectNestedLambdasExpr(lambdas, ((DestructureStmt*)stmt)->value);
+            break;
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectNestedLambdasStmt(lambdas, (Stmt*)n->data);
+            }
+            break;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            collectNestedLambdasExpr(lambdas, i->condition);
+            collectNestedLambdasStmt(lambdas, i->thenBranch);
+            collectNestedLambdasStmt(lambdas, i->elseBranch);
+            break;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)stmt;
+            collectNestedLambdasStmt(lambdas, f->initializer);
+            collectNestedLambdasExpr(lambdas, f->condition);
+            collectNestedLambdasExpr(lambdas, f->increment);
+            collectNestedLambdasStmt(lambdas, f->body);
+            break;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)stmt;
+            collectNestedLambdasExpr(lambdas, fi->range);
+            collectNestedLambdasStmt(lambdas, fi->body);
+            break;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)stmt;
+            collectNestedLambdasExpr(lambdas, w->condition);
+            collectNestedLambdasStmt(lambdas, w->body);
+            break;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)stmt;
+            collectNestedLambdasStmt(lambdas, dw->body);
+            collectNestedLambdasExpr(lambdas, dw->condition);
+            break;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    collectNestedLambdasExpr(lambdas, (Expr*)n->data);
+                }
+            } else {
+                collectNestedLambdasExpr(lambdas, r->value);
+            }
+            break;
+        }
+        case STMT_EXPR:
+            collectNestedLambdasExpr(lambdas, ((ExprStmt*)stmt)->expression);
+            break;
+        default:
+            break;
+    }
+}
+
 static List* computeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
     (void)compiler;
     List* locals = listNew();
@@ -911,6 +1073,27 @@ static List* computeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
             nameSetAdd(freeNames, t->start, t->length);
         }
     }
+
+    // Transitive capture: if a nested lambda needs an outer name, ensure the current lambda
+    // also captures it (unless it's a local of the current lambda).
+    List* nested = listNew();
+    for (ListNode* n = expr->body ? expr->body->head : NULL; n != NULL; n = n->next) {
+        collectNestedLambdasStmt(nested, (Stmt*)n->data);
+    }
+    for (ListNode* n = nested->head; n != NULL; n = n->next) {
+        LambdaExpr* child = (LambdaExpr*)n->data;
+        if (!child) continue;
+        List* childFree = computeLambdaFreeNames(compiler, child);
+        for (ListNode* m = childFree ? childFree->head : NULL; m != NULL; m = m->next) {
+            Token* t = (Token*)m->data;
+            if (!t) continue;
+            if (!nameSetContains(locals, t->start, t->length)) {
+                nameSetAdd(freeNames, t->start, t->length);
+            }
+        }
+        if (childFree) freeTokenSet(childFree);
+    }
+    listFree(nested);
 
     // Note: tokens inside `locals`/`uses` are shallow wrappers; free lists only.
     freeTokenSet(locals);

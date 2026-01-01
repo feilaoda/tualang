@@ -1,0 +1,10 @@
+fn bar(x:int) -> (int) -> (int) -> int {
+    return fn(y:int) -> (int) -> int {
+        return fn(z:int) int {
+            return x + y + z+10
+        }
+    }
+}
+
+assert(bar(1)(2)(3) == 16)
+
