@@ -41,6 +41,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_BRACE_LITERAL: return "BraceLiteral";
         case EXPR_INDEX: return "Index";
         case EXPR_INDEX_SET: return "IndexSet";
+        case EXPR_STRUCT_INIT: return "StructInit";
         default: return "Unknown";
     }
 }
@@ -376,6 +377,16 @@ static Expr* newSetExpr(Expr* object, Token name, Expr* value) {
     return (Expr*)expr;
 }
 
+static Expr* newStructInitExpr(Token lbrace, Expr* callee, List* fields) {
+    StructInitExpr* expr = malloc(sizeof(StructInitExpr));
+    expr->base.type = EXPR_STRUCT_INIT;
+    expr->base.token = lbrace;
+    expr->base.inferredType = TYPE_ANY;
+    expr->callee = callee;
+    expr->fields = fields;
+    return (Expr*)expr;
+}
+
 static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
     MapLiteralExpr* expr = malloc(sizeof(MapLiteralExpr));
     expr->base.type = EXPR_MAP_LITERAL;
@@ -476,6 +487,37 @@ static Expr* parseExpression(Parser* parser) {
     return expr;
 }
 
+static Expr* finishStructInit(Parser* parser, Expr* callee) {
+    parserDebugStart("finishStructInit");
+
+    Token lbrace = parser->previous; // TOKEN_LBRACE already consumed
+    List* fields = listNew();
+
+    while (match(parser, TOKEN_SEMICOLON)) {}
+    if (!check(parser, TOKEN_RBRACE)) {
+        while (true) {
+            while (match(parser, TOKEN_SEMICOLON)) {}
+            if (check(parser, TOKEN_RBRACE)) break;
+
+            Token name = consume(parser, TOKEN_IDENTIFIER, "Expect field name in struct initializer");
+            consume(parser, TOKEN_COLON, "Expect ':' after field name");
+            Expr* value = parseExpression(parser);
+
+            StructFieldInit* f = malloc(sizeof(StructFieldInit));
+            f->name = name;
+            f->value = value;
+            listAppend(fields, f);
+
+            if (match(parser, TOKEN_COMMA)) continue;
+            break;
+        }
+    }
+    consume(parser, TOKEN_RBRACE, "Expect '}' after struct initializer");
+
+    parserDebugEnd("finishStructInit");
+    return newStructInitExpr(lbrace, callee, fields);
+}
+
 static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
     parserDebugStart("parseBinaryExpr start");
     Expr* left = parseUnaryExpr(parser);
@@ -493,6 +535,15 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
         // Call chaining: `callee(args...)(args...)`
         if (match(parser, TOKEN_LPAREN)) {
             left = finishCall(parser, left);
+            continue;
+        }
+        // Named struct init: `TypeName{ field: expr, ... }` or `ns.TypeName{ ... }`
+        if (match(parser, TOKEN_LBRACE)) {
+            if (left->type != EXPR_VARIABLE && left->type != EXPR_GET) {
+                printError(parser, "Struct initializer must follow a type name");
+                return NULL;
+            }
+            left = finishStructInit(parser, left);
             continue;
         }
         // Checked cast: `expr as T` (returns Option<T>)

@@ -84,5 +84,6 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 	LLVMValueRef emitBraceLiteralExpr(Compiler* compiler, BraceLiteralExpr* expr);
 	LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
 	LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
+	LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr);
 
 #endif

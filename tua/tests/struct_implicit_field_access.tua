@@ -1,0 +1,12 @@
+extern fn strlen(s: string) long
+
+struct Foo {
+  x: string
+  fn len() long {
+    return strlen(x)
+  }
+}
+
+let foo = Foo() 
+foo.x = "abc"
+assert(foo.len() == 3)

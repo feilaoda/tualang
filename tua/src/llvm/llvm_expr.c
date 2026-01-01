@@ -14,6 +14,8 @@ static int typeKindIsFloat(TypeKind k);
 static unsigned typeKindIntBits(TypeKind k);
 static LLVMTypeRef llvmNumericTypeFromKind(Compiler* compiler, TypeKind k);
 static LLVMValueRef castNumericToKind(Compiler* compiler, LLVMValueRef value, TypeKind srcKind, TypeKind dstKind);
+static int fieldIndexOf(StructInfo* info, const Token* fieldName);
+static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx);
 
 static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
@@ -616,6 +618,15 @@ static void collectLambdaLocalsExpr(List* locals, Expr* expr) {
             collectLambdaLocalsExpr(locals, s->value);
             break;
         }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)expr;
+            collectLambdaLocalsExpr(locals, si->callee);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectLambdaLocalsExpr(locals, f->value);
+            }
+            break;
+        }
         case EXPR_POSTFIX:
             collectLambdaLocalsExpr(locals, ((PostfixExpr*)expr)->operand);
             break;
@@ -779,6 +790,15 @@ static void collectLambdaUsesExpr(List* uses, Expr* expr) {
             collectLambdaUsesExpr(uses, s->object);
             collectLambdaUsesExpr(uses, s->index);
             collectLambdaUsesExpr(uses, s->value);
+            break;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)expr;
+            collectLambdaUsesExpr(uses, si->callee);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectLambdaUsesExpr(uses, f->value);
+            }
             break;
         }
         case EXPR_POSTFIX:
@@ -1393,6 +1413,47 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
                 block = block->parent;
             }
             free(q);
+        }
+    }
+
+    // Implicit field access in struct instance methods:
+    // if `x` is not a local/module variable but `this.x` exists, resolve `x` as `this.x`.
+    if (!var.value) {
+        VariableRef thisVar = (VariableRef){0};
+        block = compiler->current;
+        while (block != NULL) {
+            thisVar = findVariableWithLength(block->variables, "this", 4);
+            if (thisVar.value) break;
+            block = block->parent;
+        }
+        if (thisVar.value && thisVar.typeName) {
+            StructInfo* info = compilerFindStruct(compiler, thisVar.typeName, thisVar.typeNameLength);
+            if (info) {
+                int idx = fieldIndexOf(info, &expr->name);
+                if (idx >= 0) {
+                    LLVMValueRef structPtr = NULL;
+                    if (thisVar.isBoxed) {
+                        if (!thisVar.boxPtrType) {
+                            error("Missing boxed pointer type for receiver\n");
+                            return NULL;
+                        }
+                        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, thisVar.boxPtrType, thisVar.value, "cellptr");
+                        if (LLVMGetTypeKind(thisVar.type) == LLVMPointerTypeKind) {
+                            structPtr = LLVMBuildLoad2(compiler->builder, thisVar.type, cellPtr, "recv_ptr");
+                        } else {
+                            structPtr = cellPtr;
+                        }
+                    } else if (LLVMGetTypeKind(thisVar.type) == LLVMPointerTypeKind) {
+                        structPtr = LLVMBuildLoad2(compiler->builder, thisVar.type, thisVar.value, "recv_ptr");
+                    } else {
+                        structPtr = thisVar.value;
+                    }
+
+                    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
+                    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+                    return LLVMBuildLoad2(compiler->builder, fType, fieldPtr, "field");
+                }
+            }
         }
     }
     
@@ -2207,6 +2268,53 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         }
     }
     if (!var.value) {
+        // Implicit field assignment in struct instance methods:
+        // if `x = v` is not a local/module variable but `this.x` exists, treat it as `this.x = v`.
+        VariableRef thisVar = (VariableRef){0};
+        block = compiler->current;
+        while (block != NULL) {
+            thisVar = findVariableWithLength(block->variables, "this", 4);
+            if (thisVar.value) break;
+            block = block->parent;
+        }
+        if (thisVar.value && thisVar.typeName) {
+            StructInfo* info = compilerFindStruct(compiler, thisVar.typeName, thisVar.typeNameLength);
+            if (info) {
+                int idx = fieldIndexOf(info, &expr->name);
+                if (idx >= 0) {
+                    LLVMValueRef structPtr = NULL;
+                    if (thisVar.isBoxed) {
+                        if (!thisVar.boxPtrType) {
+                            error("Missing boxed pointer type for receiver\n");
+                            return NULL;
+                        }
+                        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, thisVar.boxPtrType, thisVar.value, "cellptr");
+                        if (LLVMGetTypeKind(thisVar.type) == LLVMPointerTypeKind) {
+                            structPtr = LLVMBuildLoad2(compiler->builder, thisVar.type, cellPtr, "recv_ptr");
+                        } else {
+                            structPtr = cellPtr;
+                        }
+                    } else if (LLVMGetTypeKind(thisVar.type) == LLVMPointerTypeKind) {
+                        structPtr = LLVMBuildLoad2(compiler->builder, thisVar.type, thisVar.value, "recv_ptr");
+                    } else {
+                        structPtr = thisVar.value;
+                    }
+
+                    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
+                    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+
+                    LLVMValueRef value = compileExpr(compiler, expr->value);
+                    if (!value) {
+                        error("Failed to compile Assign expr\n");
+                        return NULL;
+                    }
+                    value = castToType(compiler, value, fType);
+                    LLVMBuildStore(compiler->builder, value, fieldPtr);
+                    return value;
+                }
+            }
+        }
+
         error("Undefined variable\n");
         return NULL;
     }

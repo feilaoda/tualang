@@ -74,6 +74,7 @@ typedef struct ExternDecl {
     int line;
     int col;
     char* symbol; // NUL-terminated
+    char* alias;  // NUL-terminated (may be NULL)
 } ExternDecl;
 
 static char* readFile(const char* path) {
@@ -244,6 +245,7 @@ static List* collectExternDecls(ModuleSystem* sys) {
             d->line = f->name.line;
             d->col = f->name.col;
             d->symbol = sym;
+            d->alias = f->externAlias.length > 0 ? dupCStringN(f->externAlias.start, f->externAlias.length) : NULL;
             listAppend(out, d);
         }
     }
@@ -263,11 +265,26 @@ static int checkExternDecls(List* decls) {
         void* p = dlsym(RTLD_DEFAULT, d->symbol);
         if (p) continue;
         if (d->file && d->line > 0 && d->col > 0) {
-            fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->col, d->symbol);
+            fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'%s%s%s\n",
+                d->file, d->line, d->col, d->symbol,
+                d->alias ? " (declared as '" : "",
+                d->alias ? d->alias : "",
+                d->alias ? "')" : ""
+            );
         } else if (d->file && d->line > 0) {
-            fprintf(stderr, "%s:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->symbol);
+            fprintf(stderr, "%s:%d: error: unresolved extern symbol '%s'%s%s%s\n",
+                d->file, d->line, d->symbol,
+                d->alias ? " (declared as '" : "",
+                d->alias ? d->alias : "",
+                d->alias ? "')" : ""
+            );
         } else {
-            fprintf(stderr, "error: unresolved extern symbol '%s'\n", d->symbol);
+            fprintf(stderr, "error: unresolved extern symbol '%s'%s%s%s\n",
+                d->symbol,
+                d->alias ? " (declared as '" : "",
+                d->alias ? d->alias : "",
+                d->alias ? "')" : ""
+            );
         }
         fprintf(stderr, "note: use --dlopen <path> to load a .so/.dylib (or .a on macOS/Linux), or use AOT linking with -L/-l/--link-arg\n");
         missing++;
@@ -1281,7 +1298,12 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
             if (!sym) continue;
             ExternDecl* d = findExternDeclBySymbol(compiler ? compiler->externDecls : NULL, sym);
             if (d && d->file && d->line > 0 && d->col > 0) {
-                fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'\n", d->file, d->line, d->col, sym);
+                fprintf(stderr, "%s:%d:%d: error: unresolved extern symbol '%s'%s%s%s\n",
+                    d->file, d->line, d->col, sym,
+                    d->alias ? " (declared as '" : "",
+                    d->alias ? d->alias : "",
+                    d->alias ? "')" : ""
+                );
             }
         }
     }
@@ -1439,6 +1461,24 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
     compiler->currentModulePrefixLen = module->prefixLen;
     compiler->currentAliases = module->aliases;
 
+    // Pre-pass: declare all `extern fn` prototypes (and `as` wrappers) first so
+    // extern calls are order-independent within a module.
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_FUNC) continue;
+        FuncStmt* f = (FuncStmt*)stmt;
+        if (f->body != NULL) continue;
+        // `extern fn` binds to an external symbol and must not be qualified.
+        compileFuncStmt(compiler, f);
+        if (compiler->hadError) return;
+    }
+
     for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
         Stmt* stmt = (Stmt*)node->data;
         if (!stmt) continue;
@@ -1454,7 +1494,6 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
             FuncStmt* f = (FuncStmt*)stmt;
             // `extern fn` binds to an external symbol and must not be qualified.
             if (f->body == NULL) {
-                compileFuncStmt(compiler, f);
                 continue;
             }
             int ql = 0;

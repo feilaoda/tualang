@@ -1,0 +1,9 @@
+object Foo {
+  fn atoi10() int {
+    return atoi("10")
+  }
+}
+
+extern fn atoi(s: string) int
+
+assert(Foo.atoi10() == 10)

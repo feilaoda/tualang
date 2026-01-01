@@ -481,6 +481,127 @@ static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, 
     return LLVMBuildLoad2(compiler->builder, info->type, tmp, "ctor");
 }
 
+static int tokenEqualsToken(const Token* a, const Token* b) {
+    if (!a || !b) return 0;
+    if (a->length != b->length) return 0;
+    return memcmp(a->start, b->start, (size_t)a->length) == 0;
+}
+
+static StructInfo* resolveStructForInitExpr(Compiler* compiler, Expr* callee, Token* errTok) {
+    if (!compiler || !callee) return NULL;
+
+    if (callee->type == EXPR_VARIABLE) {
+        VariableExpr* v = (VariableExpr*)callee;
+        if (errTok) *errTok = v->name;
+        return compilerResolveStructByToken(compiler, &v->name);
+    }
+
+    if (callee->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)callee;
+        if (errTok) *errTok = get->name;
+
+        if (get->object && get->object->type == EXPR_VARIABLE) {
+            VariableExpr* ns = (VariableExpr*)get->object;
+            SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+            if (a && a->kind == ALIAS_MODULE) {
+                int ql = 0;
+                char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                StructInfo* info = compilerFindStruct(compiler, q, ql);
+                free(q);
+                return info;
+            }
+        }
+
+        // Support `ns.A.B{...}` when `ns` is a module alias.
+        if (get->object && get->object->type == EXPR_GET) {
+            GetExpr* inner = (GetExpr*)get->object;
+            if (inner->object && inner->object->type == EXPR_VARIABLE) {
+                VariableExpr* ns = (VariableExpr*)inner->object;
+                SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                if (a && a->kind == ALIAS_MODULE) {
+                    int ql1 = 0;
+                    char* q1 = mangleRawAndToken(a->qualified, a->qualifiedLen, &inner->name, &ql1);
+                    int ql2 = 0;
+                    char* q2 = mangleRawAndToken(q1, ql1, &get->name, &ql2);
+                    free(q1);
+                    StructInfo* info = compilerFindStruct(compiler, q2, ql2);
+                    free(q2);
+                    return info;
+                }
+            }
+        }
+    }
+
+    return NULL;
+}
+
+LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr) {
+    if (!compiler || !expr || !expr->callee) return NULL;
+
+    Token errTok = expr->base.token;
+    StructInfo* info = resolveStructForInitExpr(compiler, expr->callee, &errTok);
+    if (!info || !info->decl) {
+        compilerErrorAtToken(compiler, &errTok, "unknown struct in initializer");
+        return NULL;
+    }
+
+    int fieldCount = info->decl->fields ? info->decl->fields->length : 0;
+    Expr** provided = NULL;
+    if (fieldCount > 0) {
+        provided = calloc((size_t)fieldCount, sizeof(Expr*));
+    }
+
+    for (ListNode* n = expr->fields ? expr->fields->head : NULL; n != NULL; n = n->next) {
+        StructFieldInit* f = (StructFieldInit*)n->data;
+        if (!f) continue;
+
+        int idx = -1;
+        for (int i = 0; i < fieldCount; i++) {
+            FieldDeclaration* fd = listGet(info->decl->fields, i);
+            if (fd && tokenEqualsToken(&fd->name, &f->name)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) {
+            compilerErrorAtToken(compiler, &f->name, "unknown field '%.*s' in struct initializer", f->name.length, f->name.start);
+            if (provided) free(provided);
+            return NULL;
+        }
+        if (provided && provided[idx]) {
+            compilerErrorAtToken(compiler, &f->name, "duplicate field '%.*s' in struct initializer", f->name.length, f->name.start);
+            if (provided) free(provided);
+            return NULL;
+        }
+        if (provided) provided[idx] = f->value;
+    }
+
+    // Value semantics: build a stack temporary and return the loaded value.
+    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, info->type, "sinit_tmp");
+    LLVMValueRef obj = tmp;
+
+    for (int i = 0; i < fieldCount; i++) {
+        FieldDeclaration* field = listGet(info->decl->fields, i);
+        LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, obj, (unsigned)i, "field_ptr");
+        LLVMTypeRef fType = typeToLLVMType(compiler, field ? field->type : NULL);
+
+        LLVMValueRef initVal = NULL;
+        if (provided && provided[i]) {
+            initVal = compileExpr(compiler, provided[i]);
+        } else if (field && field->initializer) {
+            initVal = compileExpr(compiler, field->initializer);
+        }
+        if (!initVal) {
+            initVal = LLVMConstNull(fType);
+        }
+        initVal = castValueToType(compiler, initVal, fType);
+        LLVMBuildStore(compiler->builder, initVal, fieldPtr);
+    }
+
+    if (provided) free(provided);
+    return LLVMBuildLoad2(compiler->builder, info->type, tmp, "sinit");
+}
+
 static LLVMValueRef getOrCreatePrintf(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "printf");
     if (existing) return existing;

@@ -770,6 +770,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_BRACE_LITERAL:
             return emitBraceLiteralExpr(compiler, (BraceLiteralExpr*)expr);
             break;
+        case EXPR_STRUCT_INIT:
+            return emitStructInitExpr(compiler, (StructInitExpr*)expr);
+            break;
         case EXPR_INDEX:
             return emitIndexExpr(compiler, (IndexExpr*)expr);
             break;
@@ -1562,9 +1565,18 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
                 wname[wlen] = '\0';
             }
 
-            // Avoid duplicate wrapper emission if the same extern declaration is visited twice.
+            // Reject conflicts: the alias wrapper is emitted as a normal (internal) function,
+            // so the generated name must be unique within the module.
             LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, wname);
-            if (!existing) {
+            if (existing) {
+                compilerErrorAtToken(
+                    compiler,
+                    &stmt->externAlias,
+                    "extern alias '%.*s' conflicts with an existing symbol",
+                    stmt->externAlias.length,
+                    stmt->externAlias.start
+                );
+            } else {
                 LLVMValueRef wrapper = LLVMAddFunction(compiler->module, wname, funcType);
                 LLVMSetLinkage(wrapper, LLVMInternalLinkage);
 

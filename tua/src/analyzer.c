@@ -754,6 +754,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         }
         case EXPR_BRACE_LITERAL:
             return inferReturn(expr, inferBraceLiteral(compiler, scope, (BraceLiteralExpr*)expr, NULL, modulePath));
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)expr;
+            inferExpr(compiler, scope, si->callee, modulePath);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (!f) continue;
+                inferExpr(compiler, scope, f->value, modulePath);
+            }
+            return inferReturn(expr, atNew(AT_ANY));
+        }
         case EXPR_GET: {
             // Member access type inference is incomplete; keep permissive.
             GetExpr* g = (GetExpr*)expr;

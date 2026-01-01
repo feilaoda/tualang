@@ -475,6 +475,46 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         }
     }
 
+    if (initializer->type == EXPR_STRUCT_INIT) {
+        StructInitExpr* si = (StructInitExpr*)initializer;
+        if (si->callee && si->callee->type == EXPR_VARIABLE) {
+            VariableExpr* callee = (VariableExpr*)si->callee;
+            StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
+            if (info) return info->type;
+        }
+        if (si->callee && si->callee->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)si->callee;
+            if (get->object && get->object->type == EXPR_VARIABLE) {
+                VariableExpr* ns = (VariableExpr*)get->object;
+                SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                if (a && a->kind == ALIAS_MODULE) {
+                    int ql = 0;
+                    char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                    StructInfo* info = compilerFindStruct(compiler, q, ql);
+                    free(q);
+                    if (info) return info->type;
+                }
+            }
+            if (get->object && get->object->type == EXPR_GET) {
+                GetExpr* inner = (GetExpr*)get->object;
+                if (inner->object && inner->object->type == EXPR_VARIABLE) {
+                    VariableExpr* ns = (VariableExpr*)inner->object;
+                    SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+                    if (a && a->kind == ALIAS_MODULE) {
+                        int ql1 = 0;
+                        char* q1 = mangleRawAndToken(a->qualified, a->qualifiedLen, &inner->name, &ql1);
+                        int ql2 = 0;
+                        char* q2 = mangleRawAndToken(q1, ql1, &get->name, &ql2);
+                        free(q1);
+                        StructInfo* info = compilerFindStruct(compiler, q2, ql2);
+                        free(q2);
+                        if (info) return info->type;
+                    }
+                }
+            }
+        }
+    }
+
     if (initializer->type == EXPR_UNARY) {
         UnaryExpr* un = (UnaryExpr*)initializer;
         if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
@@ -1159,10 +1199,14 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->typeName = stmt->type->inner->name.start;
             variable->typeNameLength = stmt->type->inner->name.length;
         }
-    } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
-        CallExpr* call = (CallExpr*)stmt->initializer;
-        if (call->callee && call->callee->type == EXPR_VARIABLE) {
-            VariableExpr* callee = (VariableExpr*)call->callee;
+    } else if (stmt->initializer && (stmt->initializer->type == EXPR_CALL || stmt->initializer->type == EXPR_STRUCT_INIT)) {
+        Expr* ctor = stmt->initializer;
+        Expr* ctorCallee = NULL;
+        if (ctor->type == EXPR_CALL) ctorCallee = ((CallExpr*)ctor)->callee;
+        if (ctor->type == EXPR_STRUCT_INIT) ctorCallee = ((StructInitExpr*)ctor)->callee;
+
+        if (ctorCallee && ctorCallee->type == EXPR_VARIABLE) {
+            VariableExpr* callee = (VariableExpr*)ctorCallee;
             StructInfo* info = compilerResolveStructByToken(compiler, &callee->name);
             if (info) {
                 variable->typeName = info->name;
@@ -1171,9 +1215,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->typeName = NULL;
                 variable->typeNameLength = 0;
             }
-        } else if (call->callee && call->callee->type == EXPR_GET) {
-            // Namespace-qualified struct constructor: `import "m" as ns; let v = ns.User(...)`
-            GetExpr* get = (GetExpr*)call->callee;
+        } else if (ctorCallee && ctorCallee->type == EXPR_GET) {
+            // Namespace-qualified struct constructor: `import "m" as ns; let v = ns.User(...)` / `ns.User{...}`
+            GetExpr* get = (GetExpr*)ctorCallee;
             if (get->object && get->object->type == EXPR_VARIABLE) {
                 VariableExpr* ns = (VariableExpr*)get->object;
                 SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);

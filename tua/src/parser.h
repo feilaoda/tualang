@@ -32,7 +32,8 @@ typedef enum {
     EXPR_ARRAY_LITERAL,
     EXPR_BRACE_LITERAL,
     EXPR_INDEX,
-    EXPR_INDEX_SET
+    EXPR_INDEX_SET,
+    EXPR_STRUCT_INIT
 } ExprType;
 
 typedef enum {
@@ -239,6 +240,17 @@ typedef struct {
     Expr* index;
     Expr* value;
 } IndexSetExpr;
+
+typedef struct StructFieldInit {
+    Token name;
+    Expr* value;
+} StructFieldInit;
+
+typedef struct {
+    Expr base;
+    Expr* callee;  // struct name expr: `Foo` or `ns.Foo`
+    List* fields;  // List<StructFieldInit*>
+} StructInitExpr;
 
 // Lambda expression (closure literal)
 // Syntax: `fn (params...) -> T[,U...] { ... }`
