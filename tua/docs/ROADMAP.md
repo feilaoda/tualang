@@ -20,7 +20,7 @@
 - AST：先保持简单（表达式、变量、块、if、for、call），后续再扩展 struct/object/enum
 
 ### 3. 语义层（类型检查 + 作用域）
-- 作用域：块级作用域、const 不可重新赋值
+- 作用域：块级作用域、`const` 不可修改（含不可重新赋值与禁止经由该绑定写字段/元素）
 - 类型：显式标注 + 基于字面量的最小推断（先做 `int/string/bool/long/double`）
 - 类型错误：在编译期给出清晰报错（行号、token）
 
@@ -38,6 +38,14 @@
 
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
+- [ ] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
+- [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
+  - [ ] 所有权：默认唯一、move-only（标量可 Copy）；移动后不可用（move checker）
+  - [ ] 借用：`const r = &x` 共享、`let r = &x` 独占；生命周期推断（borrow checker）
+  - [ ] 函数参数：默认借用、显式 `move` 取得所有权（降低 90% 代码心智负担）
+  - [ ] drop/析构：作用域结束自动释放；统一 `deinit` 与错误路径语义（panic/throw）
+  - [ ] 逃逸分析：栈默认、堆按需；临时对象尽量内联/寄存器化
+  - [ ] 并发：数据竞争编译期阻止（后续结合线程能力定义规则边界）
 - [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）
 - [x] 增加语义/类型分析层（第一版）：在 LLVM codegen 前做基础类型推断/检查（Option/map 相关），避免 LLVMVerify 才报错
 - [x] 尾递归优化（self tail call）：`return f(args...)` 复用当前栈帧（当函数启用闭包 boxing 时禁用）
@@ -68,7 +76,8 @@
   - [x] 读取：`m[k] -> Option<V>`（未命中返回 `None()`；可用 `??` 提供默认值）
   - [x] 写入：`m[k] = v`（当 `m` 为变量且为 `null` 时自动初始化）
   - [x] 内建方法：`len()/hasKey()/get()/delete()/clear()`
-  - [x] 遍历：`for k,v in m { ... }`
+  - [x] 遍历（map）：`for v in m { ... }` / `for k,v in m { ... }`
+  - [x] 遍历（array）：`for v in a { ... }` / `for v,i in a { ... }`
   - [x] 完整强类型（第一版）：对 `map<K,V>` 写入/字面量做静态检查（禁止写入 `null`/错误类型）
   - [x] 类型推断（第一版）：从字面量推导 `map<K,V>`（仅当 key/value 都是非空字面量且类型一致时）
 - [ ] 基础类型：把 `string` 做成真正的运行时基础类型（而不是仅 `i8*`/printf 直出）
@@ -162,6 +171,22 @@
 - `tua_rt` 只提供跨平台底座（内存/线程/文件/时间/句柄/loop）；不内置模型/推理算法。
 - `std` 提供可复用的通用库（bytes/io/json/tokenizer 等）；LLM 逻辑优先放到独立的 `llm` 包/库中（Tua + 可选 C 内核）。
 
+#### 11.0 LLM 跑通所需基础能力（分层归属）
+说明：这里列的是“要跑通 CPU baseline 推理（能加载模型并输出 token）”最常见的依赖，按归属层标注。
+- [ ] [`language/spec`] 位运算/移位：`~ & | ^ << >>`（PRNG/量化/bit-pack 解码必需）
+- [ ] [`language/spec`] 内存模型 v0：`bytes/slice` 所有权、mmap 生命周期、FFI 释放约定
+- [ ] [`tua_rt`] 大文件：流式读取 + `mmap/munmap`（POSIX 第一版；Windows stub）
+- [ ] [`tua_rt`] 并发：TLS/atomics + workqueue + CPU feature 探测（线程数/核心数）
+- [ ] [`tua_rt`] RNG：可复现 RNG 原语（seed/nextU32/nextU64）
+- [ ] [`std`] `std.bytes`/`std.io`：bytes/slice 视图、端序读写、BufReader/Reader、UTF-8 边界工具
+- [ ] [`std`] `std.json`：轻量 JSON（读模型配置/metadata/推理参数）
+- [ ] [`std`] Tokenizer：BPE 或 sentencepiece（择一，先正确性再性能）
+- [ ] [`llm`] 模型格式：GGUF（建议）解析 + tensor metadata + 权重映射（mmap/stream）
+- [ ] [`llm`] 推理核心：f32 baseline `matmul/dot` + softmax +（rms/layer）norm + rope + 激活函数
+- [ ] [`llm`] KV cache：数据结构/布局/更新（prefill/decode）
+- [ ] [`llm`] 采样：temperature/top-k/top-p/repetition penalty（调用 `tua_rt` RNG）
+- [ ] [`llm`] Runner：`examples/llm/run.tua`（token-by-token 输出、参数解析、基准跑法）
+
 #### 11.1 语言/编译器（通用能力，不专属于 LLM）
 - [x] 基础数值类型 + 溢出/转换规则（第一版）
   - [x] 整数：`i8/i16/int(i32)/long(i64)/isize`、`u8/u16/u32/u64/usize/byte`
@@ -171,7 +196,8 @@
     - [x] `(T)expr`：不检查（截断/扩展/浮点转换）
     - [x] `expr as T`：可检查转换，返回 `Option<T>`（范围检查；NaN/超范围为 `None()`）
   - [ ] 后续：FP8（E4M3/E5M2 等）具体格式与算术/向量化支持（为 AI 量化做准备）
-- [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器）
+- [ ] 位运算/移位（`~ & | ^ << >>`）：为 PRNG/量化/bit-pack 解码准备
+- [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器；优先在 `std` 落地，必要时补语言语法/ABI）
 - [x] 通用 FFI：Tua 侧声明外部符号与签名（例如 `extern fn ...`），避免在编译器里维护函数名白名单
 - [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
   - [x] CLI：`tuac` 支持 `--link-search/-L`、`--link-lib/-l`、`--link-arg`（透传到系统链接器）
