@@ -33,6 +33,15 @@ static int tokenEqualsCString(const Token* token, const char* s) {
     return token->length == (int)len && memcmp(token->start, s, len) == 0;
 }
 
+static int astTypeIsNamedStructValue(Type* t) {
+    if (!t || t->kind != TYPE_NAMED) return 0;
+    // Exclude built-in named types that are pointer-like or special-cased.
+    if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+    if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
+    return 1;
+}
+
 void initCompiler(Compiler* compiler) {
     compiler->structs = listNew();
     compiler->enums = listNew();
@@ -323,6 +332,7 @@ static void storeLocalVarValueForDrop(Compiler* compiler, VariableRef var, LLVMV
 static void emitDropForVar(Compiler* compiler, VariableRef var) {
     if (!compiler) return;
     if (var.isArray && var.isStackArray) return; // stack-backed fixed arrays must not be freed
+    if (var.isBorrowed) return;
     if (!var.isMap && !var.isArray) return;
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) return;
 
@@ -1469,6 +1479,7 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
         Parameter* thisParam = malloc(sizeof(Parameter));
         thisParam->name = thisNameTok;
         thisParam->type = thisType;
+        thisParam->mode = PARAM_CONST;
         listAppend(params, thisParam);
 
         if (method->params) {
@@ -1573,6 +1584,7 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             }
 
             variable->isConst = stmt->isConst ? 1 : 0;
+            variable->isBorrowed = 0;
             variable->isGlobal = 0;
             variable->isBoxed = isBoxed;
             variable->boxPtrType = isBoxed ? boxPtrType : NULL;
@@ -1643,7 +1655,11 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)paramCount);
         for (int i = 0; i < paramCount; i++) {
             Parameter* p = listGet(stmt->params, i);
-            paramTypes[i] = typeToLLVMType(compiler, p->type, false);
+            LLVMTypeRef pt = typeToLLVMType(compiler, p ? p->type : NULL, false);
+            if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(p->type)) {
+                pt = LLVMPointerType(pt, 0);
+            }
+            paramTypes[i] = pt;
         }
     }
 
@@ -1861,7 +1877,8 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
         }
-        variable->isConst = 0;
+        variable->isConst = (p && p->mode == PARAM_CONST) ? 1 : 0;
+        variable->isBorrowed = (p && p->type && p->type->kind == TYPE_REF) ? 1 : ((p && p->mode != PARAM_MOVE) ? 1 : 0);
         variable->isGlobal = 0;
         variable->isBoxed = isBoxed;
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
@@ -2027,6 +2044,7 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
             Parameter* thisParam = malloc(sizeof(Parameter));
             thisParam->name = thisNameTok;
             thisParam->type = thisType;
+            thisParam->mode = PARAM_CONST;
             listAppend(params, thisParam);
             if (method->params) {
                 for (ListNode* p = method->params->head; p != NULL; p = p->next) {

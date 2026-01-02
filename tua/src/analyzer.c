@@ -59,13 +59,24 @@ typedef struct VarInfo {
     int isConst; // binding immutability
     int isMoved; // first-pass move tracking for named types
     int isRef;   // true if this binding is a reference (`&T`) / pointer-like
+    int isParam; // true if this binding is a function parameter
+    int isBorrowed; // true if this binding is a borrow (non-owning view / borrow param)
     Scope* owner;
 } VarInfo;
+
+typedef struct {
+    char* name;
+    int nameLen;
+    int paramCount;
+    int* paramModes;     // ParamMode
+    int* paramIsMoveOnly; // true for move-only params (struct/map/array), excluding refs
+} FuncInfo;
 
 typedef struct Scope {
     struct Scope* parent;
     List* vars; // List<VarInfo*>
     List* borrows; // List<BorrowInfo*>
+    List* funcs; // List<FuncInfo*> (shared across nested scopes)
 } Scope;
 
 typedef struct {
@@ -245,7 +256,19 @@ static Scope* scopePush(Scope* parent) {
     s->parent = parent;
     s->vars = listNew();
     s->borrows = listNew();
+    s->funcs = parent ? parent->funcs : listNew();
     return s;
+}
+
+static FuncInfo* scopeFindFunc(Scope* scope, const Token* name) {
+    if (!scope || !scope->funcs || !name || !name->start || name->length <= 0) return NULL;
+    for (ListNode* n = scope->funcs->head; n != NULL; n = n->next) {
+        FuncInfo* f = (FuncInfo*)n->data;
+        if (!f) continue;
+        if (f->nameLen != name->length) continue;
+        if (memcmp(f->name, name->start, (size_t)name->length) == 0) return f;
+    }
+    return NULL;
 }
 
 static VarInfo* scopeFind(Scope* scope, const Token* name) {
@@ -339,7 +362,7 @@ static void borrowCheckAndRecord(
     }
 }
 
-static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef) {
+static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef, int isParam, int isBorrowed) {
     if (!scope || !name || !name->start || name->length <= 0) return;
     VarInfo* v = (VarInfo*)malloc(sizeof(VarInfo));
     v->name = (char*)malloc((size_t)name->length + 1);
@@ -350,6 +373,8 @@ static void scopeDefine(Scope* scope, const Token* name, AType* type, int isCons
     v->isConst = isConst ? 1 : 0;
     v->isMoved = 0;
     v->isRef = isRef ? 1 : 0;
+    v->isParam = isParam ? 1 : 0;
+    v->isBorrowed = isBorrowed ? 1 : 0;
     v->owner = scope;
     listAppend(scope->vars, v);
 }
@@ -378,6 +403,42 @@ static int varIsMoveOnly(const VarInfo* v) {
         return 1;
     }
     return 0;
+}
+
+static int atIsMoveOnly(AType* t, int isRef) {
+    if (!t) return 0;
+    if (isRef) return 0;
+    if (t->kind == AT_MAP || t->kind == AT_ARRAY) return 1;
+    if (t->kind == AT_NAMED) {
+        if (t->nameLen == 3 && memcmp(t->name, "ptr", 3) == 0) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+static Expr* unwrapGrouping(Expr* e) {
+    while (e && e->type == EXPR_GROUPING) e = ((GroupingExpr*)e)->expression;
+    return e;
+}
+
+static int exprIsUnaryMove(Expr* e) {
+    e = unwrapGrouping(e);
+    if (!e || e->type != EXPR_UNARY) return 0;
+    return ((UnaryExpr*)e)->operator.type == TOKEN_MOVE;
+}
+
+static const Token* argBaseVarName(Expr* arg) {
+    arg = unwrapGrouping(arg);
+    if (!arg) return NULL;
+    if (arg->type == EXPR_VARIABLE) return &((VariableExpr*)arg)->name;
+    if (arg->type == EXPR_UNARY) {
+        UnaryExpr* un = (UnaryExpr*)arg;
+        if ((un->operator.type == TOKEN_AMP || un->operator.type == TOKEN_MOVE) &&
+            un->right && un->right->type == EXPR_VARIABLE) {
+            return &((VariableExpr*)un->right)->name;
+        }
+    }
+    return NULL;
 }
 
 static void checkReturnExprNoAddrOfLocal(Compiler* compiler, Scope* scope, Expr* e, const char* modulePath, int line) {
@@ -746,8 +807,68 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
     // Default: unknown return type.
     // Still analyze callee/args for nested errors.
     inferExpr(compiler, scope, call->callee, modulePath);
+
+    // If this is a call to a known local function, enforce parameter modes (borrow/move).
+    FuncInfo* fi = NULL;
+    if (call->callee->type == EXPR_VARIABLE) {
+        VariableExpr* callee = (VariableExpr*)call->callee;
+        fi = scopeFindFunc(scope, &callee->name);
+    }
+
+    Scope* callScope = fi ? scopePush(scope) : scope;
+
+    if (fi) {
+        ListNode* n = call->arguments ? call->arguments->head : NULL;
+        for (int i = 0; i < fi->paramCount && n != NULL; i++, n = n->next) {
+            Expr* arg = (Expr*)n->data;
+            int mode = fi->paramModes ? fi->paramModes[i] : PARAM_CONST;
+
+            if (exprIsUnaryMove(arg) && mode != PARAM_MOVE) {
+                analyzeErrorAt(compiler, modulePath, call->base.token.line, "cannot move into a borrowed parameter");
+            }
+
+            const Token* baseName = argBaseVarName(arg);
+            VarInfo* baseVar = baseName ? scopeFind(callScope, baseName) : NULL;
+
+            if (mode == PARAM_MOVE) {
+                if (baseVar && fi->paramIsMoveOnly && fi->paramIsMoveOnly[i] && !exprIsUnaryMove(arg)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        baseName->line,
+                        "argument '%.*s' must be moved: use `move %.*s`",
+                        baseName->length,
+                        baseName->start,
+                        baseName->length,
+                        baseName->start
+                    );
+                }
+            } else if (mode == PARAM_LET) {
+                if (!baseName) {
+                    analyzeErrorAt(compiler, modulePath, call->base.token.line, "mutable borrow argument must be a variable");
+                } else if (baseVar && baseVar->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        baseName->line,
+                        "cannot take mutable borrow of const binding '%.*s'",
+                        baseName->length,
+                        baseName->start
+                    );
+                } else {
+                    borrowCheckAndRecord(compiler, callScope, baseName, 1, modulePath, baseName->line);
+                }
+            } else {
+                // PARAM_CONST: shared borrow if this argument is a variable lvalue
+                if (baseName) {
+                    borrowCheckAndRecord(compiler, callScope, baseName, 0, modulePath, baseName->line);
+                }
+            }
+        }
+    }
+
     for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
-        inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+        inferExpr(compiler, callScope, (Expr*)n->data, modulePath);
     }
     return atNew(AT_ANY);
 }
@@ -960,6 +1081,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                             rv->name.start
                         );
                     } else
+                    if (src->isBorrowed) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of borrowed binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else
                     if (src->isConst) {
                         analyzeErrorAt(
                             compiler,
@@ -980,6 +1111,49 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             return inferReturn(expr, inferBinary(compiler, scope, (BinaryExpr*)expr, modulePath));
         case EXPR_UNARY: {
             UnaryExpr* u = (UnaryExpr*)expr;
+            if (u->operator.type == TOKEN_MOVE) {
+                if (!u->right || u->right->type != EXPR_VARIABLE) {
+                    analyzeErrorAt(compiler, modulePath, u->base.token.line, "`move` expects a variable");
+                    return inferReturn(expr, atNew(AT_ANY));
+                }
+                VariableExpr* rv = (VariableExpr*)u->right;
+                VarInfo* src = scopeFind(scope, &rv->name);
+                // Infer operand type before marking it moved.
+                AType* outTy = inferExpr(compiler, scope, u->right, modulePath);
+                if (src && varIsMoveOnly(src)) {
+                    if (borrowHasAny(scope, &rv->name)) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move '%.*s' because it is borrowed",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else if (src->isBorrowed) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of borrowed binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else if (src->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of const binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else {
+                        src->isMoved = 1;
+                    }
+                }
+                return inferReturn(expr, outTy ? outTy : atNew(AT_ANY));
+            }
             return inferReturn(expr, inferExpr(compiler, scope, u->right, modulePath));
         }
         case EXPR_POSTFIX: {
@@ -1064,7 +1238,12 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
 	                Parameter* p = (Parameter*)n->data;
 	                AType* pt = (p && p->type) ? atFromAstType(p->type) : atNew(AT_ANY);
 	                listAppend(ps, pt);
-	                if (p) scopeDefine(lamScope, &p->name, pt, 0, (p->type && p->type->kind == TYPE_REF) ? 1 : 0);
+	                if (p) {
+                        int isRef = (p->type && p->type->kind == TYPE_REF) ? 1 : 0;
+                        int isConst = (p->mode == PARAM_CONST) ? 1 : 0;
+                        int isBorrowed = isRef || (p->mode != PARAM_MOVE);
+                        scopeDefine(lamScope, &p->name, pt, isConst, isRef, 1, isBorrowed);
+                    }
 	            }
 	            List* rs = listNew();
 	            if (lam->returnTypes && lam->returnTypes->length > 0) {
@@ -1357,8 +1536,28 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 }
             }
 
+            int isRefBinding = 0;
+            if (v->type && v->type->kind == TYPE_REF) {
+                isRefBinding = 1;
+            } else if (!v->type && v->initializer && v->initializer->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)v->initializer;
+                if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
+            }
+
+            // `const view = x` creates a shared borrow view for move-only values.
+            int isConstView = 0;
+            if (v->isConst && !isRefBinding && v->initializer && v->initializer->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)v->initializer;
+                VarInfo* src = scopeFind(scope, &rv->name);
+                if (varIsMoveOnly(src)) {
+                    isConstView = 1;
+                    borrowCheckAndRecord(compiler, scope, &rv->name, 0, modulePath, v->name.line);
+                }
+            }
+
             // First-pass move semantics: `let b = a` moves `a` when `a` is move-only.
-            if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
+            // (Except for `const view = a`, which is a shared borrow view.)
+            if (!isConstView && v->initializer && v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
                 if (varIsMoveOnly(src)) {
@@ -1371,8 +1570,16 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             rv->name.length,
                             rv->name.start
                         );
-                    } else
-                    if (src->isConst) {
+                    } else if (src->isBorrowed) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of borrowed binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else if (src->isConst) {
                         analyzeErrorAt(
                             compiler,
                             modulePath,
@@ -1385,13 +1592,6 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         src->isMoved = 1;
                     }
                 }
-            }
-            int isRefBinding = 0;
-            if (v->type && v->type->kind == TYPE_REF) {
-                isRefBinding = 1;
-            } else if (!v->type && v->initializer && v->initializer->type == EXPR_UNARY) {
-                UnaryExpr* un = (UnaryExpr*)v->initializer;
-                if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
             }
 
             // Borrow rules (first pass): `let r=&x` is mutable/exclusive, `const r=&x` is shared.
@@ -1415,7 +1615,15 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     }
                 }
             }
-            scopeDefine(scope, &v->name, annotated ? annotated : initTy, v->isConst ? 1 : 0, isRefBinding);
+            scopeDefine(
+                scope,
+                &v->name,
+                annotated ? annotated : initTy,
+                v->isConst ? 1 : 0,
+                isRefBinding,
+                0,
+                (isRefBinding || isConstView) ? 1 : 0
+            );
             break;
         }
         case STMT_EXPR: {
@@ -1483,6 +1691,20 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     int idx = 0;
                     for (ListNode* n = r->values->head; n != NULL; n = n->next, idx++) {
                         Expr* v = (Expr*)n->data;
+                        if (v && v->type == EXPR_VARIABLE) {
+                            VariableExpr* ve = (VariableExpr*)v;
+                            VarInfo* vi = scopeFind(scope, &ve->name);
+                            if (vi && vi->isBorrowed && varIsMoveOnly(vi)) {
+                                analyzeErrorAt(
+                                    compiler,
+                                    modulePath,
+                                    r->keyword.line,
+                                    "cannot return borrowed value '%.*s'",
+                                    ve->name.length,
+                                    ve->name.start
+                                );
+                            }
+                        }
                         checkReturnExprNoAddrOfLocal(compiler, scope, v, modulePath, r->keyword.line);
                         AType* vt = inferExpr(compiler, scope, v, modulePath);
                         if (expectedReturns && idx < wantCount) {
@@ -1493,6 +1715,20 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         }
                     }
                 } else {
+                    if (r->value && r->value->type == EXPR_VARIABLE) {
+                        VariableExpr* ve = (VariableExpr*)r->value;
+                        VarInfo* vi = scopeFind(scope, &ve->name);
+                        if (vi && vi->isBorrowed && varIsMoveOnly(vi)) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                r->keyword.line,
+                                "cannot return borrowed value '%.*s'",
+                                ve->name.length,
+                                ve->name.start
+                            );
+                        }
+                    }
                     checkReturnExprNoAddrOfLocal(compiler, scope, r->value, modulePath, r->keyword.line);
                     AType* vt = inferExpr(compiler, scope, r->value, modulePath);
                     if (expectedReturns && wantCount > 0) {
@@ -1514,7 +1750,10 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 Parameter* param = (Parameter*)p->data;
                 if (!param) continue;
                 AType* pt = param->type ? atFromAstType(param->type) : atNew(AT_ANY);
-                scopeDefine(fnScope, &param->name, pt, 0, (param->type && param->type->kind == TYPE_REF) ? 1 : 0);
+                int isRef = (param->type && param->type->kind == TYPE_REF) ? 1 : 0;
+                int isConst = (param->mode == PARAM_CONST) ? 1 : 0;
+                int isBorrowed = isRef || (param->mode != PARAM_MOVE);
+                scopeDefine(fnScope, &param->name, pt, isConst, isRef, 1, isBorrowed);
             }
             List* expected = listNew();
             if (fn->returnTypes && fn->returnTypes->length > 0) {
@@ -1569,7 +1808,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             );
                         }
                     }
-                    scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding);
+                    scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding, 0, isRefBinding ? 1 : 0);
                 }
             } else if (!d->isDeclaration && d->names) {
                 for (ListNode* n = d->names->head; n != NULL; n = n->next) {
@@ -1614,6 +1853,42 @@ int analyzeModule(Compiler* compiler, List* statements, List* aliases, const cha
     const char* savedFile = compiler ? compiler->currentFilePath : NULL;
     if (compiler) compiler->currentFilePath = modulePath;
     Scope* scope = scopePush(NULL);
+
+    // Pre-pass: collect local function signatures for borrow/move checking at call sites.
+    for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
+        Stmt* stmt = (Stmt*)n->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_FUNC) continue;
+        FuncStmt* fn = (FuncStmt*)stmt;
+        if (!fn || !fn->name.start || fn->name.length <= 0) continue;
+
+        FuncInfo* fi = (FuncInfo*)malloc(sizeof(FuncInfo));
+        memset(fi, 0, sizeof(FuncInfo));
+        fi->name = (char*)malloc((size_t)fn->name.length + 1);
+        memcpy(fi->name, fn->name.start, (size_t)fn->name.length);
+        fi->name[fn->name.length] = '\0';
+        fi->nameLen = fn->name.length;
+
+        fi->paramCount = fn->params ? fn->params->length : 0;
+        if (fi->paramCount > 0) {
+            fi->paramModes = (int*)malloc(sizeof(int) * (size_t)fi->paramCount);
+            fi->paramIsMoveOnly = (int*)malloc(sizeof(int) * (size_t)fi->paramCount);
+            for (int i = 0; i < fi->paramCount; i++) {
+                Parameter* p = fn->params ? (Parameter*)listGet(fn->params, i) : NULL;
+                int mode = p ? p->mode : PARAM_CONST;
+                int isRef = (p && p->type && p->type->kind == TYPE_REF) ? 1 : 0;
+                AType* pt = (p && p->type) ? atFromAstType(p->type) : atNew(AT_ANY);
+                fi->paramModes[i] = mode;
+                fi->paramIsMoveOnly[i] = atIsMoveOnly(pt, isRef);
+            }
+        }
+        listAppend(scope->funcs, fi);
+    }
+
     for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
         analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, NULL);
         if (compiler && compiler->hadError) {

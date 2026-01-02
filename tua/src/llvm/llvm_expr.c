@@ -168,6 +168,14 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
     }
 }
 
+static int astTypeIsNamedStructValue(Type* t) {
+    if (!t || t->kind != TYPE_NAMED) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+    if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
+    return 1;
+}
+
 static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
     if (existing) return existing;
@@ -3463,6 +3471,38 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
             }
             return var.value;
         }
+        case TOKEN_MOVE: {
+            if (!expr->right || expr->right->type != EXPR_VARIABLE) {
+                error("move expects a variable for now\n");
+                return NULL;
+            }
+            VariableRef var = findVariableExpr(compiler, expr->right);
+            if (!var.value || !var.type) {
+                error("Undefined variable in move\n");
+                return NULL;
+            }
+
+            LLVMValueRef v = compileExpr(compiler, expr->right);
+            if (!v) return NULL;
+
+            // Runtime move for container values: null out the source after `move x`.
+            int shouldMoveMap = (var.type == compilerGetMapType(compiler)) && var.isMap;
+            int shouldMoveArr = (var.type == compilerGetArrayType(compiler)) && var.isArray && !var.isStackArray;
+            if ((shouldMoveMap || shouldMoveArr) && var.value) {
+                LLVMValueRef nullv = LLVMConstNull(var.type);
+                if (var.isBoxed) {
+                    if (!var.boxPtrType) {
+                        error("Missing boxed pointer type metadata\n");
+                        return NULL;
+                    }
+                    LLVMValueRef cellp = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "mv_cellp");
+                    LLVMBuildStore(compiler->builder, nullv, cellp);
+                } else {
+                    LLVMBuildStore(compiler->builder, nullv, var.value);
+                }
+            }
+            return v;
+        }
         case TOKEN_MINUS: {
             LLVMValueRef operand = compileExpr(compiler, expr->right);
             if (!operand) {
@@ -3703,7 +3743,11 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
 
     for (int i = 0; i < paramCount; i++) {
         Parameter* p = listGet(expr->params, i);
-        paramTypes[i + 1] = lambdaTypeToLLVMType(compiler, p ? p->type : NULL, false);
+        LLVMTypeRef pt = lambdaTypeToLLVMType(compiler, p ? p->type : NULL, false);
+        if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(p->type)) {
+            pt = LLVMPointerType(pt, 0);
+        }
+        paramTypes[i + 1] = pt;
     }
 
     LLVMTypeRef retType = LLVMVoidTypeInContext(context);
@@ -3771,6 +3815,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             vr->typeName = NULL;
             vr->typeNameLength = 0;
             vr->isConst = 0;
+            vr->isBorrowed = 1;
             vr->isGlobal = 0;
             vr->isBoxed = 1;
             vr->boxPtrType = cellPtrType;
@@ -3838,7 +3883,8 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
         }
-        variable->isConst = 0;
+        variable->isConst = (p && p->mode == PARAM_CONST) ? 1 : 0;
+        variable->isBorrowed = (!p || p->mode != PARAM_MOVE) ? 1 : 0;
         variable->isGlobal = 0;
         variable->isBoxed = 1;
         variable->boxPtrType = cellPtrType;

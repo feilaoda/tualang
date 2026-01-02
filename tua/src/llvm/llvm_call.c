@@ -409,6 +409,59 @@ static Expr* unwrapGroupingExpr(Expr* e) {
     return e;
 }
 
+static LLVMValueRef implicitBorrowAddrOfVar(Compiler* compiler, VariableRef var) {
+    if (!compiler || !var.value) return NULL;
+    if (var.isBoxed) {
+        if (!var.boxPtrType) {
+            emitDebug("Missing boxed pointer type metadata\n");
+            return NULL;
+        }
+        return LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxptr");
+    }
+    // Slot is already a pointer to the value.
+    return var.value;
+}
+
+static LLVMValueRef compileCallArgForParam(Compiler* compiler, Expr* argExpr, LLVMTypeRef paramType) {
+    if (!compiler || !argExpr || !paramType) return NULL;
+    Expr* a = unwrapGroupingExpr(argExpr);
+
+    LLVMValueRef v = compileExpr(compiler, a);
+    if (!v) return NULL;
+
+    // Default: values are passed by value (with best-effort casts).
+    if (LLVMGetTypeKind(paramType) != LLVMPointerTypeKind) {
+        return castValueToType(compiler, v, paramType);
+    }
+
+    // If the argument already produces a pointer value (string/map/array/&T/etc), pass it directly.
+    if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind) {
+        return castValueToType(compiler, v, paramType);
+    }
+
+    // Otherwise, the callee expects a pointer but the argument is a value (e.g. borrowing a struct by value).
+    // Prefer borrowing an existing lvalue; fall back to materializing a temporary.
+    if (a && a->type == EXPR_VARIABLE) {
+        VariableRef var = findVariableExpr(compiler, a);
+        if (var.value && var.type && LLVMGetTypeKind(var.type) != LLVMPointerTypeKind) {
+            LLVMValueRef addr = implicitBorrowAddrOfVar(compiler, var);
+            if (!addr) return NULL;
+            if (LLVMTypeOf(addr) != paramType) {
+                addr = LLVMBuildBitCast(compiler->builder, addr, paramType, "argptrcast");
+            }
+            return addr;
+        }
+    }
+
+    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, LLVMTypeOf(v), "argtmp");
+    LLVMBuildStore(compiler->builder, v, tmp);
+    LLVMValueRef p = tmp;
+    if (LLVMTypeOf(p) != paramType) {
+        p = LLVMBuildBitCast(compiler->builder, p, paramType, "argtmpcast");
+    }
+    return p;
+}
+
 // For a call-chain like `f(...)(...)(...)`, return the innermost call (`f(...)`) and set depth.
 // Depth is the number of CallExpr nodes in the chain.
 static CallExpr* findInnermostCallInChain(Expr* e, int* outDepth) {
@@ -464,9 +517,13 @@ static LLVMValueRef emitDirectFuncCall(Compiler* compiler, LLVMValueRef func, Ca
         args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
         ListNode* node = expr->arguments->head;
         for (unsigned i = 0; i < expected; i++) {
-            LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-            argVal = castValueToType(compiler, argVal, paramTypes[i]);
-            args[i] = argVal;
+            LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[i]);
+            if (!av) {
+                if (paramTypes) free(paramTypes);
+                if (args) free(args);
+                return NULL;
+            }
+            args[i] = av;
             node = node->next;
         }
     }
@@ -1423,9 +1480,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
             ListNode* node = expr->arguments ? expr->arguments->head : NULL;
             for (unsigned i = 1; i < expected; i++) {
-                LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-                argVal = castValueToType(compiler, argVal, paramTypes[i]);
-                args[i] = argVal;
+                LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[i]);
+                if (!av) {
+                    if (paramTypes) free(paramTypes);
+                    if (args) free(args);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                args[i] = av;
                 node = node->next;
             }
         }
@@ -1489,9 +1551,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
                 ListNode* node = expr->arguments ? expr->arguments->head : NULL;
                 for (unsigned i = 1; i < expected; i++) {
-                    LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-                    argVal = castValueToType(compiler, argVal, paramTypes[i]);
-                    args[i] = argVal;
+                    LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[i]);
+                    if (!av) {
+                        if (paramTypes) free(paramTypes);
+                        if (args) free(args);
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    args[i] = av;
                     node = node->next;
                 }
             }
@@ -2264,9 +2331,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
 
             for (; argIndex < expected; argIndex++) {
-                LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-                argVal = castValueToType(compiler, argVal, paramTypes[argIndex]);
-                args[argIndex] = argVal;
+                LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[argIndex]);
+                if (!av) {
+                    if (paramTypes) free(paramTypes);
+                    if (args) free(args);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                args[argIndex] = av;
                 node = node->next;
             }
         }
@@ -3323,9 +3395,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 args[0] = castValueToType(compiler, envPtr, paramTypes[0]);
                 ListNode* node = expr->arguments ? expr->arguments->head : NULL;
                 for (unsigned i = 1; i < expected; i++) {
-                    LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-                    argVal = castValueToType(compiler, argVal, paramTypes[i]);
-                    args[i] = argVal;
+                    LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[i]);
+                    if (!av) {
+                        if (paramTypes) free(paramTypes);
+                        if (args) free(args);
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    args[i] = av;
                     node = node->next;
                 }
             }
@@ -3469,9 +3546,14 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
             ListNode* node = expr->arguments->head;
             for (unsigned i = 0; i < expected; i++) {
-                LLVMValueRef argVal = compileExpr(compiler, (Expr*)node->data);
-                argVal = castValueToType(compiler, argVal, paramTypes[i]);
-                args[i] = argVal;
+                LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, paramTypes[i]);
+                if (!av) {
+                    if (paramTypes) free(paramTypes);
+                    if (args) free(args);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                args[i] = av;
                 node = node->next;
             }
         }

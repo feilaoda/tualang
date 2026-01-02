@@ -22,6 +22,7 @@ typedef struct VariableRef {
     const char* typeName;
     int typeNameLength;
     int isConst;
+    int isBorrowed; // non-owning view; must not be dropped (map/array)
     int isGlobal;
     int isBoxed;
     LLVMTypeRef boxPtrType; // T* for boxed variables; slot stores T*

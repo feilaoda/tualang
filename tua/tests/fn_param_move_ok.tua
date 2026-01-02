@@ -1,0 +1,8 @@
+fn take(move m: map) -> int {
+  return m.len()
+}
+
+let x: map = { "a": 1 }
+let n = take(move x)
+assert(n == 1)
+

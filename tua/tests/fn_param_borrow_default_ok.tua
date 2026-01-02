@@ -1,0 +1,16 @@
+struct Foo {
+  x: int
+}
+
+fn read(f: Foo) -> int {
+  return f.x
+}
+
+let a: Foo = Foo()
+a.x = 1
+assert(read(a) == 1)
+
+// `read(a)` is a borrow, not a move.
+a.x = 2
+assert(read(a) == 2)
+

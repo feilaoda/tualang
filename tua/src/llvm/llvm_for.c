@@ -72,6 +72,7 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->typeName = NULL;
     variable->typeNameLength = 0;
     variable->isConst = 0;
+    variable->isBorrowed = 0;
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;

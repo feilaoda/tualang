@@ -855,6 +855,30 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         inferredTypedMap = inferTypedMapKVFromLiteral(compiler, (MapLiteralExpr*)stmt->initializer, &inferredKeyTy, &inferredValTy);
     }
 
+    // `const view = x` (move-only) creates a non-owning view; for structs, this is represented as a pointer.
+    int isConstView = 0;
+    int isConstStructView = 0;
+    VariableRef constViewBase = (VariableRef){0};
+    if (stmt->isConst && stmt->initializer && stmt->initializer->type == EXPR_VARIABLE &&
+        !(stmt->type && stmt->type->kind == TYPE_REF)) {
+        constViewBase = findVariableExpr(compiler, stmt->initializer);
+        if (constViewBase.value) {
+            int baseIsStruct = constViewBase.typeName != NULL || LLVMGetTypeKind(constViewBase.type) == LLVMStructTypeKind;
+            int baseIsMoveOnly = constViewBase.isMap || constViewBase.isArray || baseIsStruct;
+            if (baseIsMoveOnly) {
+                isConstView = 1;
+                if (baseIsStruct && !constViewBase.isMap && !constViewBase.isArray) {
+                    isConstStructView = 1;
+                    if (LLVMGetTypeKind(constViewBase.type) == LLVMPointerTypeKind) {
+                        valueType = constViewBase.type;
+                    } else {
+                        valueType = LLVMPointerType(constViewBase.type, 0);
+                    }
+                }
+            }
+        }
+    }
+
     int shouldBox = compiler && compiler->boxAllLocals;
     LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
     LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
@@ -1051,7 +1075,22 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             }
         }
 
-        LLVMValueRef initValue = compileExpr(compiler, stmt->initializer);
+        LLVMValueRef initValue = NULL;
+        if (isConstStructView && stmt->initializer && stmt->initializer->type == EXPR_VARIABLE && constViewBase.value) {
+            // For a struct view, store the address of the base value (or the pointer it already holds).
+            if (LLVMGetTypeKind(constViewBase.type) == LLVMPointerTypeKind) {
+                initValue = compileExpr(compiler, stmt->initializer);
+            } else if (constViewBase.isBoxed) {
+                if (!constViewBase.boxPtrType) {
+                    error("Missing boxed pointer type metadata\n");
+                    return;
+                }
+                initValue = LLVMBuildLoad2(compiler->builder, constViewBase.boxPtrType, constViewBase.value, "view_boxptr");
+            } else {
+                initValue = constViewBase.value;
+            }
+        }
+        if (!initValue) initValue = compileExpr(compiler, stmt->initializer);
 
         compiler->expectedMapKeyType = savedKey;
         compiler->expectedMapValueType = savedVal;
@@ -1099,7 +1138,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         }
 
         // Runtime move: for move-only container types (map/array), null out the source after `let b = a`.
-        if (stmt->initializer->type == EXPR_VARIABLE &&
+        // `const view = a` is a borrow view and must not move.
+        if (!stmt->isConst && stmt->initializer->type == EXPR_VARIABLE &&
             (valueType == compilerGetMapType(compiler) || valueType == compilerGetArrayType(compiler))) {
             VariableRef base = findVariableExpr(compiler, stmt->initializer);
             int shouldMoveMap = (valueType == compilerGetMapType(compiler)) && base.isMap;
@@ -1295,6 +1335,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->typeNameLength = 0;
     }
     variable->isConst = stmt->isConst ? 1 : 0;
+    variable->isBorrowed = isConstView ? 1 : 0;
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;

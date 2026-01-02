@@ -438,7 +438,18 @@ typedef struct {
 typedef struct {
     Token name;
     Type* type;
+    // Parameter mode:
+    // - default/const => shared readonly borrow
+    // - let           => exclusive mutable borrow
+    // - move          => take ownership
+    int mode;
 } Parameter;
+
+typedef enum {
+    PARAM_CONST = 0,
+    PARAM_LET = 1,
+    PARAM_MOVE = 2,
+} ParamMode;
 
 typedef struct FieldDeclaration {
     Token name;

@@ -492,10 +492,11 @@ static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value) {
     return (Expr*)expr;
 }
 
-static Parameter* newParameter(Token name, Type* type) {
+static Parameter* newParameter(Token name, Type* type, int mode) {
     Parameter* param = malloc(sizeof(Parameter));
     param->name = name;
     param->type = type;
+    param->mode = mode;
     return param;
 }
 
@@ -688,7 +689,8 @@ static Expr* parseUnaryExpr(Parser* parser) {
         match(parser, TOKEN_DEC) ||
         match(parser, TOKEN_MINUS) || 
         match(parser, TOKEN_NOT) ||
-        match(parser, TOKEN_AMP)) {
+        match(parser, TOKEN_AMP) ||
+        match(parser, TOKEN_MOVE)) {
         Token operator = parser->previous;
         Expr* right = parseUnaryExpr(parser);
         parserDebugEnd("parseUnaryExpr");
@@ -834,12 +836,16 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         List* parameters = listNew();
         if (!check(parser, TOKEN_RPAREN)) {
             do {
+                int mode = PARAM_CONST;
+                if (match(parser, TOKEN_CONST)) mode = PARAM_CONST;
+                else if (match(parser, TOKEN_VAR)) mode = PARAM_LET;
+                else if (match(parser, TOKEN_MOVE)) mode = PARAM_MOVE;
                 Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
                 Type* type = NULL;
                 if (match(parser, TOKEN_COLON)) {
                     type = parseType(parser);
                 }
-                listAppend(parameters, newParameter(param, type));
+                listAppend(parameters, newParameter(param, type, mode));
             } while (match(parser, TOKEN_COMMA));
         }
         consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
@@ -1517,12 +1523,16 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     List* parameters = listNew();
     if (!check(parser, TOKEN_RPAREN)) {
         do {
+            int mode = PARAM_CONST;
+            if (match(parser, TOKEN_CONST)) mode = PARAM_CONST;
+            else if (match(parser, TOKEN_VAR)) mode = PARAM_LET;
+            else if (match(parser, TOKEN_MOVE)) mode = PARAM_MOVE;
             Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
             Type* type = NULL;
             if (match(parser, TOKEN_COLON)) {
                 type = parseType(parser);
             }
-            listAppend(parameters, newParameter(param, type));
+            listAppend(parameters, newParameter(param, type, mode));
         } while (match(parser, TOKEN_COMMA));
     }
     consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
@@ -1565,12 +1575,16 @@ static Stmt* parseExternFunctionDeclaration(Parser* parser) {
     List* parameters = listNew();
     if (!check(parser, TOKEN_RPAREN)) {
         do {
+            if (check(parser, TOKEN_CONST) || check(parser, TOKEN_VAR) || check(parser, TOKEN_MOVE)) {
+                printError(parser, "extern fn parameters do not support let/const/move modifiers");
+                advance(parser);
+            }
             Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
             Type* type = NULL;
             if (match(parser, TOKEN_COLON)) {
                 type = parseType(parser);
             }
-            listAppend(parameters, newParameter(param, type));
+            listAppend(parameters, newParameter(param, type, PARAM_CONST));
         } while (match(parser, TOKEN_COMMA));
     }
     consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");

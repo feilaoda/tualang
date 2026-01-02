@@ -29,6 +29,7 @@ typedef enum {
     TOKEN_PRIVATE,
     TOKEN_THIS,
     TOKEN_DEINIT,
+    TOKEN_MOVE,
     // Types
     TOKEN_INT,
     TOKEN_DOUBLE,

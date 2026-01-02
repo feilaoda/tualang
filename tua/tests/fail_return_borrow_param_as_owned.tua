@@ -1,0 +1,11 @@
+struct Foo {
+  x: int
+}
+
+fn id(f: Foo) -> Foo {
+  return f
+}
+
+let a: Foo = Foo()
+id(a)
+

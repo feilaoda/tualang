@@ -47,6 +47,9 @@
   - `let`：绑定可修改（可重新赋值；且允许通过该绑定修改其指向/拥有的对象内容）
   - `const`：绑定不可修改（不可重新赋值；且禁止通过该绑定修改对象内容，例如 `a.field = ...` / `a[i] = ...` / `a.push(...)`）
   - 语言不提供 `mut` 关键字；“不可修改”统一用 `const` 表达
+- `const` 视图（Frozen，Status: Planned）：
+  - `const view = x`：当 `x` 是 move-only 值（如 `struct/map/array`）时，创建 `x` 的共享只读视图（shared borrow），`x` 仍可被只读借用/传给只读函数，但在 view 存活期间禁止 move 与写
+  - `const v = <non-lvalue/new value>`：仍然是普通的 `const` 拥有型绑定（不是视图）
 - 引用绑定（Frozen）：
   - `let r = &x`：对 `x` 的引用（默认可写/独占借用，见 10）
   - `const r = &x`：对 `x` 的只读引用（共享借用，见 10）
@@ -152,6 +155,11 @@
   - `fn name(a[:Type], b[:Type]) -> Type { ... }`
   - `fn name(a[:Type], b[:Type]) Type { ... }`（语法糖，省略 `->`）
   - 形参类型可省略；当前默认按 `int` 处理（完整类型检查见语义层规划）
+- 形参修饰（Status: Planned，语义已冻结）：
+  - 语言不提供 `mut` 关键字；参数“可写/只读”用 `let/const` 表达
+  - 默认：`fn f(x: T)` 等价于 `fn f(const x: T)`（只读借用，见 10.4）
+  - 可写借用：`fn f(let x: T)`（独占借用，允许写字段/元素，见 10.4）
+  - 所有权转移：`fn f(move x: T)`（取得所有权，可返回/存储，见 10.4）
 - 外部声明（FFI，Status: Implemented）：
   - `extern fn name(a:Type, b:Type) -> Type`
   - `extern fn name(a:Type, b:Type) Type`（语法糖，省略 `->`）
@@ -427,7 +435,8 @@
 
 #### 10.4 函数参数的所有权界定（Planned，默认安全）
 为减少心智负担，计划采用“默认借用、显式 move”的规则：
-- `fn f(x: T) { ... }`：`x` 是借用（等价于 `&T`），函数内不能把 `x` move/返回
+- `fn f(x: T) { ... }`：默认等价 `fn f(const x: T)`，`x` 是只读借用（共享借用）；函数内不能把 `x` move/返回，也不能写字段/元素
+- `fn f(let x: T) { ... }`：`x` 是可写借用（独占借用）；允许写字段/元素，但同一时间禁止其它借用
 - `fn f(move x: T) { ... }`：`x` 被 move 进来，函数成为 owner，可返回/存储
 - 示例（Planned）：
   - `fn take(move user: User) -> User { return user }` ✅

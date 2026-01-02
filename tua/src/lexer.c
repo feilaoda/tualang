@@ -59,8 +59,8 @@ static const char* TokenNames[] = {
 
 
 
-const char* tokenToString(TokenType type) {
-    switch (type) {
+	const char* tokenToString(TokenType type) {
+	    switch (type) {
         // 关键字
         case TOKEN_VAR: return "var/let";
         case TOKEN_CONST: return "const";
@@ -82,8 +82,9 @@ const char* tokenToString(TokenType type) {
         case TOKEN_ENUM: return "enum";
         case TOKEN_EXTERN: return "extern";
         case TOKEN_PRIVATE: return "private";
-        case TOKEN_THIS: return "this";
-        case TOKEN_DEINIT: return "deinit";
+	        case TOKEN_THIS: return "this";
+	        case TOKEN_DEINIT: return "deinit";
+	        case TOKEN_MOVE: return "move";
         
         // 类型
         case TOKEN_INT: return "int";
@@ -157,9 +158,9 @@ const char* tokenToString(TokenType type) {
         case TOKEN_EOF: return "EOF";
         case TOKEN_ERROR: return "ERROR";
         
-        default: return "unknown";
-    }
-}
+	        default: return "unknown";
+	    }
+	}
 static bool isDigit(char c) {
     return c >= '0' && c <= '9';
 }
@@ -394,6 +395,11 @@ static TokenType identifierType(Lexer* lexer) {
             }
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "long", 4) == 0) {
                 return TOKEN_LONG;
+            }
+            break;
+        case 'm':
+            if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "move", 4) == 0) {
+                return TOKEN_MOVE;
             }
             break;
         // (handled above)
