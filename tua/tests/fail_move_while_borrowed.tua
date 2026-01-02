@@ -1,0 +1,8 @@
+struct Foo {
+  x: int
+}
+
+let foo: Foo = Foo()
+const r: &Foo = &foo
+let b: Foo = foo
+println(b.x)

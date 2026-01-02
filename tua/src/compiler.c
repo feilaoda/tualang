@@ -277,6 +277,96 @@ LLVMTypeRef compilerGetArrayType(Compiler* compiler) {
     return compiler->arrayType;
 }
 
+static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_map_free");
+    if (fn) return fn;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_free", fty);
+}
+
+static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_array_free");
+    if (fn) return fn;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_free", fty);
+}
+
+static LLVMValueRef loadLocalVarValueForDrop(Compiler* compiler, VariableRef var, const char* name) {
+    if (!compiler || !var.value || !var.type) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    if (var.isBoxed) {
+        if (!var.boxPtrType) return NULL;
+        LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "drop_cell");
+        return LLVMBuildLoad2(builder, var.type, cell, name ? name : "drop_val");
+    }
+    return LLVMBuildLoad2(builder, var.type, var.value, name ? name : "drop_val");
+}
+
+static void storeLocalVarValueForDrop(Compiler* compiler, VariableRef var, LLVMValueRef value) {
+    if (!compiler || !var.value || !var.type || !value) return;
+    LLVMBuilderRef builder = compiler->builder;
+    if (var.isBoxed) {
+        if (!var.boxPtrType) return;
+        LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "drop_cell2");
+        LLVMBuildStore(builder, value, cell);
+    } else {
+        LLVMBuildStore(builder, value, var.value);
+    }
+}
+
+static void emitDropForVar(Compiler* compiler, VariableRef var) {
+    if (!compiler) return;
+    if (var.isArray && var.isStackArray) return; // stack-backed fixed arrays must not be freed
+    if (!var.isMap && !var.isArray) return;
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) return;
+
+    LLVMValueRef cur = loadLocalVarValueForDrop(compiler, var, "drop_cur");
+    if (!cur) return;
+
+    LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+    if (!fn) return;
+    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+    LLVMValueRef args1[1] = { cur };
+    LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "");
+
+    LLVMValueRef nullv = LLVMConstNull(var.type);
+    storeLocalVarValueForDrop(compiler, var, nullv);
+}
+
+static void emitDropForBlockVars(Compiler* compiler, Block* block) {
+    if (!compiler || !block || !block->variables) return;
+    for (ListNode* n = block->variables->head; n != NULL; n = n->next) {
+        VariableRef* vr = (VariableRef*)n->data;
+        if (!vr) continue;
+        emitDropForVar(compiler, *vr);
+    }
+}
+
+static void emitDropForCurrentFunctionScopes(Compiler* compiler) {
+    if (!compiler || !compiler->current || !compiler->current->func) return;
+    LLVMValueRef fn = compiler->current->func;
+    for (Block* b = compiler->current; b != NULL && b->func == fn; b = b->parent) {
+        emitDropForBlockVars(compiler, b);
+    }
+}
+
+static void moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
+    if (!compiler || !e) return;
+    if (e->type != EXPR_VARIABLE) return;
+    VariableRef v = findVariableExpr(compiler, e);
+    if (!v.value || !v.type) return;
+    if (v.isArray && v.isStackArray) return;
+    if (!v.isMap && !v.isArray) return;
+    LLVMValueRef nullv = LLVMConstNull(v.type);
+    storeLocalVarValueForDrop(compiler, v, nullv);
+}
+
 LLVMTypeRef compilerGetTuaValueType(Compiler* compiler) {
     if (!compiler) return NULL;
     if (compiler->tuaValueType) return compiler->tuaValueType;
@@ -1159,6 +1249,11 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
         node = node->next;
     }
 
+    // Drop locals on normal block exit (best-effort; early returns handled in compileReturnStmt).
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) {
+        emitDropForBlockVars(compiler, scoped);
+    }
+
     compiler->current = saved;
     compilerDebug("Compiled block statement end\n");
 }
@@ -1177,6 +1272,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
     }
 
     if (LLVMGetTypeKind(returnType) == LLVMVoidTypeKind) {
+        emitDropForCurrentFunctionScopes(compiler);
         LLVMBuildRetVoid(builder);
         return;
     }
@@ -1191,6 +1287,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
             Expr* only = (Expr*)stmt->values->head->data;
             LLVMValueRef mv = compileExprMulti(compiler, only);
             if (mv && LLVMTypeOf(mv) == returnType) {
+                emitDropForCurrentFunctionScopes(compiler);
                 LLVMBuildRet(builder, mv);
                 return;
             }
@@ -1204,7 +1301,9 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
         for (unsigned i = 0; i < elementCount; i++) {
             LLVMValueRef v = NULL;
             if (node && i < provided) {
-                v = compileExpr(compiler, (Expr*)node->data);
+                Expr* srcExpr = (Expr*)node->data;
+                v = compileExpr(compiler, srcExpr);
+                moveOutOnReturnIfNeeded(compiler, srcExpr);
                 node = node->next;
                 LLVMTypeRef want = LLVMStructGetTypeAtIndex(returnType, i);
                 v = castValueToType(compiler, v, want);
@@ -1215,6 +1314,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
             }
             out = LLVMBuildInsertValue(builder, out, v, i, "mvr");
         }
+        emitDropForCurrentFunctionScopes(compiler);
         LLVMBuildRet(builder, out);
         return;
     }
@@ -1224,14 +1324,18 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
         if (stmt->values->length > 1) {
             error("Function returns single value, but return has multiple expressions\n");
         }
-        returnValue = compileExpr(compiler, (Expr*)stmt->values->head->data);
+        Expr* srcExpr = (Expr*)stmt->values->head->data;
+        returnValue = compileExpr(compiler, srcExpr);
+        moveOutOnReturnIfNeeded(compiler, srcExpr);
     } else if (stmt->value != NULL) {
         returnValue = compileExpr(compiler, stmt->value);
+        moveOutOnReturnIfNeeded(compiler, stmt->value);
     }
     if (returnValue == NULL) {
         returnValue = LLVMConstNull(returnType);
     }
     returnValue = castValueToType(compiler, returnValue, returnType);
+    emitDropForCurrentFunctionScopes(compiler);
     LLVMBuildRet(builder, returnValue);
 }
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt){
@@ -1828,6 +1932,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
 
     // Implicit return
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) {
+        emitDropForBlockVars(compiler, funcBlock);
         if (LLVMGetTypeKind(retType) == LLVMVoidTypeKind) {
             LLVMBuildRetVoid(compiler->builder);
         } else {

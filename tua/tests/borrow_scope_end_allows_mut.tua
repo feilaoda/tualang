@@ -1,0 +1,13 @@
+struct Foo {
+  x: int
+}
+
+let foo: Foo = Foo()
+{
+  const r: &Foo = &foo
+  assert(r.x == 0)
+}
+
+let m: &Foo = &foo
+m.x = 1
+assert(foo.x == 1)

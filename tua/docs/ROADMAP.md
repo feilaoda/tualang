@@ -40,10 +40,10 @@
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
 - [ ] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
-  - [ ] 所有权：默认唯一、move-only（标量可 Copy）；移动后不可用（move checker）
-  - [ ] 借用：`const r = &x` 共享、`let r = &x` 独占；生命周期推断（borrow checker）
+  - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
+  - [x] 借用（第一版）：`const r = &x` 共享、`let r = &x` 独占；禁止冲突借用/被借用时写或 move
   - [ ] 函数参数：默认借用、显式 `move` 取得所有权（降低 90% 代码心智负担）
-  - [ ] drop/析构：作用域结束自动释放；统一 `deinit` 与错误路径语义（panic/throw）
+  - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
   - [ ] 逃逸分析：栈默认、堆按需；临时对象尽量内联/寄存器化
   - [ ] 并发：数据竞争编译期阻止（后续结合线程能力定义规则边界）
 - [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）
@@ -82,8 +82,7 @@
   - [x] 类型推断（第一版）：从字面量推导 `map<K,V>`（仅当 key/value 都是非空字面量且类型一致时）
 - [ ] 基础类型：把 `string` 做成真正的运行时基础类型（而不是仅 `i8*`/printf 直出）
 - [ ] 空值：实现 `null` 作为空值，并定义比较/打印/条件判断/赋值规则
-- [ ] 内存管理（短期）：RC（引用计数）+ 周期处理策略（检测/弱引用/限制形成环）
-- [ ] 内存管理（中长期）：后续切换/替换为增量 GC（标记-清扫/分代，配写屏障）
+- [ ] 内存模型 v1：补齐 `struct deinit`/closure env drop/deep drop；并把 std 中“裸指针 free”收敛为明确的资源句柄 `close()` 或拥有型 `bytes/string` drop（无 GC）
 
 ### 9. 错误与入口（建议）
 - [x] 诊断统一（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时一致）
@@ -178,6 +177,7 @@
 - [ ] [`tua_rt`] 大文件：流式读取 + `mmap/munmap`（POSIX 第一版；Windows stub）
 - [ ] [`tua_rt`] 并发：TLS/atomics + workqueue + CPU feature 探测（线程数/核心数）
 - [ ] [`tua_rt`] RNG：可复现 RNG 原语（seed/nextU32/nextU64）
+  - 说明：RNG 属于通用基础能力（不仅 LLM）；`llm` 层只消费它做 sampling，避免把推理专用逻辑塞进运行时
 - [ ] [`std`] `std.bytes`/`std.io`：bytes/slice 视图、端序读写、BufReader/Reader、UTF-8 边界工具
 - [ ] [`std`] `std.json`：轻量 JSON（读模型配置/metadata/推理参数）
 - [ ] [`std`] Tokenizer：BPE 或 sentencepiece（择一，先正确性再性能）

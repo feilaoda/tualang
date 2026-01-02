@@ -50,6 +50,8 @@ typedef struct AType {
     int nameLen;
 } AType;
 
+typedef struct Scope Scope;
+
 typedef struct VarInfo {
     char* name;
     int nameLen;
@@ -57,12 +59,20 @@ typedef struct VarInfo {
     int isConst; // binding immutability
     int isMoved; // first-pass move tracking for named types
     int isRef;   // true if this binding is a reference (`&T`) / pointer-like
+    Scope* owner;
 } VarInfo;
 
 typedef struct Scope {
     struct Scope* parent;
     List* vars; // List<VarInfo*>
+    List* borrows; // List<BorrowInfo*>
 } Scope;
+
+typedef struct {
+    char* name;
+    int nameLen;
+    int isMutable; // 1 => mutable/exclusive borrow, 0 => shared/readonly borrow
+} BorrowInfo;
 
 static AType* atNew(ATypeKind k) {
     AType* t = (AType*)malloc(sizeof(AType));
@@ -234,6 +244,7 @@ static Scope* scopePush(Scope* parent) {
     Scope* s = (Scope*)malloc(sizeof(Scope));
     s->parent = parent;
     s->vars = listNew();
+    s->borrows = listNew();
     return s;
 }
 
@@ -250,6 +261,84 @@ static VarInfo* scopeFind(Scope* scope, const Token* name) {
     return NULL;
 }
 
+static void analyzeErrorAt(Compiler* compiler, const char* modulePath, int line, const char* fmt, ...);
+
+static void borrowCollectCounts(Scope* scope, const Token* name, int* outShared, int* outMutable) {
+    int shared = 0;
+    int mutable = 0;
+    if (scope && name && name->start && name->length > 0) {
+        for (Scope* s = scope; s != NULL; s = s->parent) {
+            for (ListNode* n = s->borrows ? s->borrows->head : NULL; n != NULL; n = n->next) {
+                BorrowInfo* b = (BorrowInfo*)n->data;
+                if (!b) continue;
+                if (b->nameLen != name->length) continue;
+                if (memcmp(b->name, name->start, (size_t)name->length) != 0) continue;
+                if (b->isMutable) mutable++;
+                else shared++;
+            }
+        }
+    }
+    if (outShared) *outShared = shared;
+    if (outMutable) *outMutable = mutable;
+}
+
+static int borrowHasAny(Scope* scope, const Token* name) {
+    int s = 0, m = 0;
+    borrowCollectCounts(scope, name, &s, &m);
+    return (s + m) > 0;
+}
+
+static void borrowRecord(Scope* scope, const Token* name, int isMutable) {
+    if (!scope || !name || !name->start || name->length <= 0) return;
+    BorrowInfo* b = (BorrowInfo*)malloc(sizeof(BorrowInfo));
+    b->name = (char*)malloc((size_t)name->length + 1);
+    memcpy(b->name, name->start, (size_t)name->length);
+    b->name[name->length] = '\0';
+    b->nameLen = name->length;
+    b->isMutable = isMutable ? 1 : 0;
+    listAppend(scope->borrows, b);
+}
+
+static void borrowCheckAndRecord(
+    Compiler* compiler,
+    Scope* scope,
+    const Token* owner,
+    int wantMutable,
+    const char* modulePath,
+    int line
+) {
+    if (!scope || !owner) return;
+    int shared = 0, mut = 0;
+    borrowCollectCounts(scope, owner, &shared, &mut);
+    if (wantMutable) {
+        if (shared > 0 || mut > 0) {
+            analyzeErrorAt(
+                compiler,
+                modulePath,
+                line,
+                "cannot take mutable reference to '%.*s' because it is already borrowed",
+                owner->length,
+                owner->start
+            );
+            return;
+        }
+        borrowRecord(scope, owner, 1);
+    } else {
+        if (mut > 0) {
+            analyzeErrorAt(
+                compiler,
+                modulePath,
+                line,
+                "cannot take shared reference to '%.*s' because it is mutably borrowed",
+                owner->length,
+                owner->start
+            );
+            return;
+        }
+        borrowRecord(scope, owner, 0);
+    }
+}
+
 static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef) {
     if (!scope || !name || !name->start || name->length <= 0) return;
     VarInfo* v = (VarInfo*)malloc(sizeof(VarInfo));
@@ -261,7 +350,56 @@ static void scopeDefine(Scope* scope, const Token* name, AType* type, int isCons
     v->isConst = isConst ? 1 : 0;
     v->isMoved = 0;
     v->isRef = isRef ? 1 : 0;
+    v->owner = scope;
     listAppend(scope->vars, v);
+}
+
+static Scope* scopeRoot(Scope* scope) {
+    Scope* s = scope;
+    while (s && s->parent) s = s->parent;
+    return s;
+}
+
+static int scopeIsAncestor(Scope* ancestor, Scope* child) {
+    if (!ancestor || !child) return 0;
+    for (Scope* s = child; s != NULL; s = s->parent) {
+        if (s == ancestor) return 1;
+    }
+    return 0;
+}
+
+static int varIsMoveOnly(const VarInfo* v) {
+    if (!v || !v->type) return 0;
+    if (v->isRef) return 0;
+    if (v->type->kind == AT_MAP || v->type->kind == AT_ARRAY) return 1;
+    if (v->type->kind == AT_NAMED) {
+        // `ptr` is treated as a raw pointer and remains copyable for now.
+        if (v->type->nameLen == 3 && memcmp(v->type->name, "ptr", 3) == 0) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void checkReturnExprNoAddrOfLocal(Compiler* compiler, Scope* scope, Expr* e, const char* modulePath, int line) {
+    if (!e || !scope) return;
+    if (e->type != EXPR_UNARY) return;
+    UnaryExpr* un = (UnaryExpr*)e;
+    if (un->operator.type != TOKEN_AMP) return;
+    if (!un->right || un->right->type != EXPR_VARIABLE) return;
+    VariableExpr* v = (VariableExpr*)un->right;
+    VarInfo* vi = scopeFind(scope, &v->name);
+    if (!vi || !vi->owner) return;
+    Scope* root = scopeRoot(scope);
+    if (vi->owner != root) {
+        analyzeErrorAt(
+            compiler,
+            modulePath,
+            line,
+            "cannot return reference to local variable '%.*s'",
+            v->name.length,
+            v->name.start
+        );
+    }
 }
 
 static int tokenTextEquals(const Token* tok, const char* s) {
@@ -759,6 +897,40 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     a->name.start
                 );
             }
+            if (borrowHasAny(scope, &a->name)) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    a->name.line,
+                    "cannot assign to '%.*s' because it is borrowed",
+                    a->name.length,
+                    a->name.start
+                );
+            }
+
+            // Escape check (first pass): forbid storing `&local` into an outer-scope binding.
+            if (a->value && a->value->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)a->value;
+                if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)un->right;
+                    VarInfo* src = scopeFind(scope, &rv->name);
+                    if (vi && vi->owner && src && src->owner) {
+                        if (!scopeIsAncestor(src->owner, vi->owner)) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                a->name.line,
+                                "cannot let reference to '%.*s' escape to outer scope via '%.*s'",
+                                rv->name.length,
+                                rv->name.start,
+                                a->name.length,
+                                a->name.start
+                            );
+                        }
+                    }
+                }
+            }
+
             AType* rhs = inferExpr(compiler, scope, a->value, modulePath);
             if (vi && vi->type && !atAssignable(vi->type, rhs)) {
                 if (atIsOption(rhs) && !atIsOption(vi->type)) {
@@ -773,13 +945,21 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 }
             }
 
-            // First-pass move semantics: assigning from a named-type variable moves it.
+            // First-pass move semantics: assigning from a move-only variable moves it.
             if (a->value && a->value->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)a->value;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                if (src && src->type && src->type->kind == AT_NAMED &&
-                    !src->isRef &&
-                    !(src->type->nameLen == 3 && memcmp(src->type->name, "ptr", 3) == 0)) {
+                if (varIsMoveOnly(src)) {
+                    if (borrowHasAny(scope, &rv->name)) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move '%.*s' because it is borrowed",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else
                     if (src->isConst) {
                         analyzeErrorAt(
                             compiler,
@@ -801,6 +981,42 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_UNARY: {
             UnaryExpr* u = (UnaryExpr*)expr;
             return inferReturn(expr, inferExpr(compiler, scope, u->right, modulePath));
+        }
+        case EXPR_POSTFIX: {
+            PostfixExpr* p = (PostfixExpr*)expr;
+            if (p->operand && p->operand->type == EXPR_VARIABLE) {
+                VariableExpr* v = (VariableExpr*)p->operand;
+                VarInfo* vi = scopeFind(scope, &v->name);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        p->base.token.line,
+                        "cannot modify const variable '%.*s'",
+                        v->name.length,
+                        v->name.start
+                    );
+                }
+            }
+            return inferReturn(expr, inferExpr(compiler, scope, p->operand, modulePath));
+        }
+        case EXPR_PREFIX: {
+            PrefixExpr* p = (PrefixExpr*)expr;
+            if (p->operand && p->operand->type == EXPR_VARIABLE) {
+                VariableExpr* v = (VariableExpr*)p->operand;
+                VarInfo* vi = scopeFind(scope, &v->name);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        p->base.token.line,
+                        "cannot modify const variable '%.*s'",
+                        v->name.length,
+                        v->name.start
+                    );
+                }
+            }
+            return inferReturn(expr, inferExpr(compiler, scope, p->operand, modulePath));
         }
         case EXPR_GROUPING:
             return inferReturn(expr, inferExpr(compiler, scope, ((GroupingExpr*)expr)->expression, modulePath));
@@ -910,6 +1126,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                         recv->name.start
                     );
                 }
+                if (vi && !vi->isRef && borrowHasAny(scope, &recv->name)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through '%.*s' because it is borrowed",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
             }
             inferExpr(compiler, scope, s->object, modulePath);
             inferExpr(compiler, scope, s->value, modulePath);
@@ -928,6 +1154,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                         modulePath,
                         is->base.token.line,
                         "cannot assign through const binding '%.*s'",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
+                if (vi && !vi->isRef && borrowHasAny(scope, &recv->name)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through '%.*s' because it is borrowed",
                         recv->name.length,
                         recv->name.start
                     );
@@ -1121,13 +1357,21 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 }
             }
 
-            // First-pass move semantics: `let b = a` moves `a` when `a` is a named type.
+            // First-pass move semantics: `let b = a` moves `a` when `a` is move-only.
             if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                if (src && src->type && src->type->kind == AT_NAMED &&
-                    !src->isRef &&
-                    !(src->type->nameLen == 3 && memcmp(src->type->name, "ptr", 3) == 0)) {
+                if (varIsMoveOnly(src)) {
+                    if (borrowHasAny(scope, &rv->name)) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move '%.*s' because it is borrowed",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else
                     if (src->isConst) {
                         analyzeErrorAt(
                             compiler,
@@ -1148,6 +1392,28 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             } else if (!v->type && v->initializer && v->initializer->type == EXPR_UNARY) {
                 UnaryExpr* un = (UnaryExpr*)v->initializer;
                 if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
+            }
+
+            // Borrow rules (first pass): `let r=&x` is mutable/exclusive, `const r=&x` is shared.
+            if (isRefBinding && v->initializer && v->initializer->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)v->initializer;
+                if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+                    VariableExpr* base = (VariableExpr*)un->right;
+                    VarInfo* baseVar = scopeFind(scope, &base->name);
+                    int wantMutable = v->isConst ? 0 : 1;
+                    if (wantMutable && baseVar && baseVar->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            v->name.line,
+                            "cannot take mutable reference to const binding '%.*s'",
+                            base->name.length,
+                            base->name.start
+                        );
+                    } else {
+                        borrowCheckAndRecord(compiler, scope, &base->name, wantMutable, modulePath, v->name.line);
+                    }
+                }
             }
             scopeDefine(scope, &v->name, annotated ? annotated : initTy, v->isConst ? 1 : 0, isRefBinding);
             break;
@@ -1217,6 +1483,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     int idx = 0;
                     for (ListNode* n = r->values->head; n != NULL; n = n->next, idx++) {
                         Expr* v = (Expr*)n->data;
+                        checkReturnExprNoAddrOfLocal(compiler, scope, v, modulePath, r->keyword.line);
                         AType* vt = inferExpr(compiler, scope, v, modulePath);
                         if (expectedReturns && idx < wantCount) {
                             AType* want = (AType*)listGet(expectedReturns, idx);
@@ -1226,6 +1493,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         }
                     }
                 } else {
+                    checkReturnExprNoAddrOfLocal(compiler, scope, r->value, modulePath, r->keyword.line);
                     AType* vt = inferExpr(compiler, scope, r->value, modulePath);
                     if (expectedReturns && wantCount > 0) {
                         AType* want = (AType*)listGet(expectedReturns, 0);

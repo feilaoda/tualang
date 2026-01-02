@@ -25,6 +25,24 @@ static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_panic", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_free");
+    if (existing) return existing;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_free", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_free");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_free", fnType);
+}
+
 static char* dupTokenCString(const Token* token) {
     if (!token || !token->start || token->length <= 0) return NULL;
     char* s = malloc((size_t)token->length + 1);
@@ -2507,6 +2525,19 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         error("Cannot assign to const variable\n");
         return NULL;
     }
+
+    // Self-assignment is a no-op for now.
+    if (expr->value && expr->value->type == EXPR_VARIABLE) {
+        VariableExpr* rv = (VariableExpr*)expr->value;
+        if (rv->name.length == expr->name.length && memcmp(rv->name.start, expr->name.start, (size_t)expr->name.length) == 0) {
+            if (var.isBoxed) {
+                if (!var.boxPtrType) return NULL;
+                LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxptr");
+                return LLVMBuildLoad2(compiler->builder, var.type, ptr, "load");
+            }
+            return LLVMBuildLoad2(compiler->builder, var.type, var.value, "load");
+        }
+    }
     // Compile value to be assigned
     LLVMValueRef value = compileExpr(compiler, expr->value);
     if (!value) {
@@ -2524,6 +2555,24 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         value = nv ? nv : castToType(compiler, value, var.type);
     }
 
+    // Drop old container value on overwrite (RAII, best-effort).
+    if ((var.isMap || var.isArray) && !(var.isArray && var.isStackArray)) {
+        LLVMValueRef oldv = NULL;
+        if (var.isBoxed) {
+            if (!var.boxPtrType) return NULL;
+            LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "old_boxptr");
+            oldv = LLVMBuildLoad2(compiler->builder, var.type, ptr, "old");
+        } else {
+            oldv = LLVMBuildLoad2(compiler->builder, var.type, var.value, "old");
+        }
+        LLVMValueRef freeFn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+        if (freeFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+            LLVMValueRef args1[1] = { oldv };
+            LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        }
+    }
+
     if (var.isBoxed) {
         if (!var.boxPtrType) {
             error("Missing boxed pointer type metadata\n");
@@ -2533,6 +2582,25 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         LLVMBuildStore(compiler->builder, value, ptr);
     } else {
         LLVMBuildStore(compiler->builder, value, var.value);
+    }
+
+    // Runtime move for container values: null out the RHS after `a = b`.
+    if (expr->value && expr->value->type == EXPR_VARIABLE) {
+        VariableExpr* rv = (VariableExpr*)expr->value;
+        VariableRef rhsVar = findVariableExpr(compiler, (Expr*)rv);
+        if (rhsVar.value &&
+            (rhsVar.isMap || rhsVar.isArray) &&
+            !(rhsVar.isArray && rhsVar.isStackArray) &&
+            !(rv->name.length == expr->name.length && memcmp(rv->name.start, expr->name.start, (size_t)expr->name.length) == 0)) {
+            LLVMValueRef nullv = LLVMConstNull(rhsVar.type);
+            if (rhsVar.isBoxed) {
+                if (!rhsVar.boxPtrType) return NULL;
+                LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, rhsVar.boxPtrType, rhsVar.value, "mv_boxptr");
+                LLVMBuildStore(compiler->builder, nullv, ptr);
+            } else {
+                LLVMBuildStore(compiler->builder, nullv, rhsVar.value);
+            }
+        }
     }
 
     // Best-effort: keep closure call signature in sync across assignments.

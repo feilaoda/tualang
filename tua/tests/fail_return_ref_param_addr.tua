@@ -1,0 +1,10 @@
+struct Foo {
+  x: int
+}
+
+fn bad(p: Foo) -> &Foo {
+  return &p
+}
+
+let a: Foo = Foo()
+println(bad(a).x)

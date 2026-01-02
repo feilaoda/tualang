@@ -20,6 +20,7 @@ void tua_map_clear(tua_map* map);
 int32_t tua_map_has(tua_map* map, tua_value key);
 int32_t tua_map_len(tua_map* map);
 int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue);
+void tua_map_free(tua_map* map);
 
 void tua_panic(const char* msg);
 void tua_set_loc(const char* file, int32_t line, int32_t col);

@@ -1,0 +1,14 @@
+struct Foo {
+  x: int
+}
+
+fn ok() {
+  let a: Foo = Foo()
+  a.x = 1
+  {
+    let r: &Foo = &a
+    assert(r.x == 1)
+  }
+}
+
+ok()

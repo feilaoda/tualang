@@ -1,0 +1,10 @@
+fn make() -> int[] {
+  let a: int[] = {1, 2}
+  let b = a
+  return b
+}
+
+let x: int[] = make()
+assert(x.len() == 2)
+assert(x[0] == 1)
+assert(x[1] == 2)

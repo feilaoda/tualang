@@ -1097,6 +1097,27 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         } else {
             if (initValue) LLVMBuildStore(compiler->builder, initValue, slot);
         }
+
+        // Runtime move: for move-only container types (map/array), null out the source after `let b = a`.
+        if (stmt->initializer->type == EXPR_VARIABLE &&
+            (valueType == compilerGetMapType(compiler) || valueType == compilerGetArrayType(compiler))) {
+            VariableRef base = findVariableExpr(compiler, stmt->initializer);
+            int shouldMoveMap = (valueType == compilerGetMapType(compiler)) && base.isMap;
+            int shouldMoveArr = (valueType == compilerGetArrayType(compiler)) && base.isArray && !base.isStackArray;
+            if ((shouldMoveMap || shouldMoveArr) && base.value && base.type) {
+                LLVMValueRef nullv = LLVMConstNull(base.type);
+                if (base.isBoxed) {
+                    if (!base.boxPtrType) {
+                        error("Missing boxed pointer type metadata\n");
+                        return;
+                    }
+                    LLVMValueRef cellp = LLVMBuildLoad2(compiler->builder, base.boxPtrType, base.value, "mv_cellp");
+                    LLVMBuildStore(compiler->builder, nullv, cellp);
+                } else {
+                    LLVMBuildStore(compiler->builder, nullv, base.value);
+                }
+            }
+        }
     } else if (valueType == compilerGetArrayType(compiler) && hasAnnotatedArray && annotatedFixedLen >= 0) {
         // Default init for fixed arrays: allocate and zero-initialize.
         LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);

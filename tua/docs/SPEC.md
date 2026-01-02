@@ -188,7 +188,7 @@
     - 立即调用：`(fn(...) -> T { ... })(args...)`
   - 实现策略（当前 LLVM-JIT 版本）：
     - 当函数体内出现匿名函数时，本函数的局部变量/参数会自动使用“heap box”存储以保证被捕获后仍然有效
-    - 目前 box/env 使用 `malloc`，尚未引入 RC/GC，因此存在内存泄漏（后续按 roadmap 切换到 RC/增量 GC）
+    - 目前 box/env 使用 `malloc`；尚未实现 closure drop，因此存在内存泄漏（后续按内存模型：closure 拥有 env 并在 drop 时释放；不引入 GC）
   - 当前限制（后续规划补齐）：
     - 已支持 TS 风格函数类型 `(args) -> ret`（见下）；但完整类型检查/类型推断仍在规划中
 - 内建函数（Status: Implemented）：
@@ -385,25 +385,36 @@
 - 运行时错误会输出 best-effort 行号（用于定位 `unwrap(None)`、对 `null map` 读写等）。
 - 规划：统一诊断格式为 `file:line:col: ...` 并增加栈回溯。
 
-### 10. 内存模型（Status: Planned，高优先级）
+### 10. 内存模型（Status: Partial，高优先级）
 目标：**安全第一、无 GC、无手动内存管理**，并尽量做到“默认安全、特殊显式、性能可预测”。
+
+#### 10.0 当前实现覆盖（Status: Partial）
+- 已实现（编译期）：
+  - move-only（`struct/map/array`）：`let b = a` / `a = b` 会转移所有权；move 后再使用为编译错误
+  - `const` 不可修改：禁止重绑定、字段写、下标写、`++/--`
+  - 借用检查（第一版）：`let r = &x` 独占可写借用；`const r = &x` 共享只读借用；禁止冲突借用；被借用期间禁止 move/写
+  - 引用逃逸检查（第一版）：禁止 `return &local`；禁止把 `&local` 赋给外层变量（跨作用域逃逸）
+- 已实现（运行时/编译器插桩，第一版）：
+  - `map/array` 自动释放：作用域结束、覆盖赋值、`return` 路径会 drop 容器；move 会把源 slot 置 `null`（避免 double-free）
+- 未实现（Planned）：
+  - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；函数参数“默认借用 + 显式 move”；跨线程数据竞争规则
 
 #### 10.1 总体原则（Frozen）
 - 编译期阻止所有内存安全问题：悬垂引用/重复释放/数据竞争
 - 不引入运行时 GC（无 stop-the-world）
-- 不提供 `free/delete` 之类的手动内存管理 API 给用户代码
+- 语言层不提供 `free/delete` 给“语言拥有的值”（如 `struct/map/array`）；FFI 返回的裸指针/缓冲区需要配套释放函数（短期在 `std/rt` 暴露，后续用 `bytes/string` 的 drop 收敛）
 - 零成本抽象：大部分检查在编译期完成；运行时只保留必要的边界检查（如数组越界）
 
-#### 10.2 所有权与移动（Planned）
+#### 10.2 所有权与移动（Status: Partial）
 - 默认：**所有权唯一且不可复制（move-only）**；赋值会转移所有权：
   - `let b = a` 会移动 `a -> b`，`a` 之后不可再用（编译期报错）
-- 例外（Copy types，Planned）：标量数值与 `bool` 等可以按值复制（不涉及释放），其余类型默认 move-only
+- 例外（Copy types，Status: Implemented）：标量数值与 `bool` 等按值复制（不涉及释放），其余类型默认 move-only
 - 函数返回：返回值总是“拥有所有权”的值（不能返回对局部变量的引用）
   - 允许返回：新创建的值、从参数显式 move 进来的值
 
-#### 10.3 借用与引用（Planned）
+#### 10.3 借用与引用（Status: Partial）
 - 引用是借用，不拥有资源；引用不触发释放
-- 借用规则（借用检查器，Planned）：
+- 借用规则（借用检查器，第一版已实现）：
   - 引用不能比所有者活得久（防悬垂引用）
   - 独占借用：同一时间只能存在一个“可写引用”（通过 `let r = &x` 产生）
   - 共享借用：允许多个“只读引用”（通过 `const r = &x` 产生）
@@ -422,10 +433,11 @@
   - `fn take(move user: User) -> User { return user }` ✅
   - `fn consume(user: User) -> User { return user }` ❌（user 为借用，不能返回）
 
-#### 10.5 生命周期推断（Planned）
+#### 10.5 生命周期推断（Status: Partial）
 - 编译器自动推断生命周期，用户通常不需要手动标注
-- 禁止返回局部变量引用：
-  - `fn invalid() -> &User { let u = ...; return &u }` ❌（悬垂引用）
+- 已实现的禁止规则（第一版）：
+  - 禁止返回局部变量引用：`fn invalid() -> &User { let u = ...; return &u }` ❌（悬垂引用）
+  - 禁止引用逃逸到外层作用域（跨 block 赋值逃逸）
 - 从借用对象读取字段并返回（设计选择，Planned）：
   - 若返回类型是拥有所有权的类型（如 `string`），则需要 `clone()` 或由编译器按默认规则隐式 clone（需在 SPEC 冻结：偏“简单直观” vs “显式控制”）
 
@@ -434,11 +446,35 @@
 - 当值逃逸到返回值/闭包/堆容器等场景时自动转为堆分配（对用户透明）
 - 容器/动态对象（如 `string/bytes/map/array/closure env`）在 drop 时自动释放（无手动 free）
 
-#### 10.7 资源释放与析构（Planned）
+#### 10.7 资源释放与析构（Status: Partial）
 - 作用域结束时自动 drop（RAII 风格）
+- 第一版已覆盖 `map/array` 的 drop（作用域/覆盖赋值/return 路径）；后续补齐 `struct/closure env` 与 deep drop
 - `deinit`/析构的语义与调用时机需要统一（与错误路径 panic/throw 下的保证一起冻结）
 - 闭包 boxing：捕获变量 box/env 的所有权归 closure；closure drop 时释放 env（当前实现存在泄漏，需修复）
 
 #### 10.8 并发与数据竞争（Planned）
 - 当语言暴露线程/并发时，借用规则必须扩展到跨线程：禁止未同步的共享可变状态（数据竞争编译期阻止）
 - 设计方向：类似 Rust 的 `Send/Sync` 能力边界（具体形式待定）
+
+### 11. ABI / FFI 约定（Status: Planned）
+本节解释“语言 ABI 是什么、怎么定义”：ABI（Application Binary Interface）是 **编译产物与运行时/外部库在二进制层面的契约**，包括调用约定、类型布局、参数/返回值传递方式、以及跨边界的所有权规则。
+
+#### 11.1 调用约定（Planned）
+- `extern fn` 默认使用目标平台的 C ABI（由 LLVM 默认 calling convention 决定），用于对接 `tua_rt` 与系统库。
+
+#### 11.2 类型布局（Planned，现状以实现为准）
+- 标量：
+  - `int/i32 -> int32_t`，`long/i64 -> int64_t`，`float/f32 -> float`，`double/f64 -> double`，`bool -> i1`（对外通常按 `int32_t` 约定）
+  - `ptr -> void*`（不透明指针/句柄）
+  - `string -> char*`（UTF-8，当前约定为 NUL 结尾；`null` 表示空指针）
+- 引用：`&T -> T*`
+- 动态值：`any -> tua_value`（见 `src/tua_map.h`）
+- 容器句柄：
+  - `map -> tua_map*`（见 `src/tua_map.h`）
+  - `T[]/T[N] -> tua_array*`（见 `src/tua_array.h`，其中 `elem_size/fixed_len` 描述元素大小与定长信息）
+- `Option<T>`：当前实现为 `{ i1 ok, T payload }` 的二元结构体（Planned：冻结更严格的跨边界表示与 nil 规则）
+- 多返回：当前实现为“LLVM struct 返回”（JIT/AOT 具体 ABI 取决于平台对结构体返回的约定）
+
+#### 11.3 跨 ABI 的所有权规则（Planned，先冻结最小集）
+- `extern fn` 的参数默认是“借用”（callee 不应释放传入的 `map/array/string/ptr`），除非该函数名/文档明确标注为“接管所有权”。
+- 由 `extern fn` 返回的指针/缓冲区必须提供配套释放函数（例如 `tua_free`、`tua_fs_string_array_free`），并在 `std` 层封装为更安全的 API（Planned：用 `bytes/string` 的 drop 消除用户手动释放）。

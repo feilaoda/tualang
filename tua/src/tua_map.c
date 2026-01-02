@@ -398,6 +398,25 @@ int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_v
     return 0;
 }
 
+void tua_map_free(tua_map* map) {
+    if (!map) return;
+    if (map->entries && map->capacity > 0) {
+        for (size_t i = 0; i < map->capacity; i++) {
+            MapEntry* e = &map->entries[i];
+            if (e->kind == KEY_STRING && e->k.s) {
+                free(e->k.s);
+                e->k.s = NULL;
+            }
+        }
+        free(map->entries);
+        map->entries = NULL;
+    }
+    map->capacity = 0;
+    map->count = 0;
+    map->tombstones = 0;
+    free(map);
+}
+
 void tua_print_value(tua_value value, int32_t newline) {
     switch (value.tag) {
         case TUA_VAL_NIL:

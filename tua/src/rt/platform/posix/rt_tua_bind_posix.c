@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -537,7 +538,13 @@ void tua_fs_string_array_free(tua_array* arr) {
             }
         }
     }
-    tua_array_free(arr);
+    // Do not free the array header here: the language/compiler may insert an
+    // automatic drop for array locals. Leaving the header alive (but empty)
+    // avoids double-free when user code calls `Fs.freeStringArray(...)`.
+    free(arr->data);
+    arr->data = NULL;
+    arr->len = 0;
+    arr->cap = 0;
 }
 
 // Synchronous helper: returns a `tua_array*` of `char*` and stores the error in `out_err`.

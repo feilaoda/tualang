@@ -8,11 +8,11 @@ assert(b[1] == 2)
 
 let c = b
 c[0] = 10
-assert(b[0] == 10)
+assert(c[0] == 10)
 
-let d = b.clone()
+let d = c.clone()
 d[0] = 7
-assert(b[0] == 10)
+assert(c[0] == 10)
 assert(d[0] == 7)
 
 let f:int[3] = {7}
