@@ -393,6 +393,15 @@ static LLVMTypeRef inferReturnTypeFromCall(Compiler* compiler, CallExpr* call) {
     return ret;
 }
 
+static int isOptionLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    if (LLVMCountStructElementTypes(t) != 2) return 0;
+    LLVMTypeRef f0 = LLVMStructGetTypeAtIndex(t, 0);
+    if (LLVMGetTypeKind(f0) != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(f0) == 1;
+}
+
 static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initializer) {
     if (!initializer) return LLVMInt32TypeInContext(compiler->context);
 
@@ -452,6 +461,11 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                     LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;
                     return compilerGetOptionType(compiler, inner);
                 }
+                if (rv.value && rv.isMap && (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite"))) {
+                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
+                    return compilerGetOptionType(compiler, vtPtr);
+                }
                 if (rv.value && rv.isMap && tokenEquals(&get->name, "len")) {
                     return LLVMInt32TypeInContext(compiler->context);
                 }
@@ -463,6 +477,16 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 }
                 if (rv.value && rv.isArray && tokenEquals(&get->name, "push")) {
                     return LLVMInt32TypeInContext(compiler->context);
+                }
+            }
+            // Option built-in methods: infer from the receiver expression type (not just variables).
+            LLVMTypeRef recvTy = get->object ? inferLLVMTypeFromInitializer(compiler, get->object) : NULL;
+            if (recvTy && isOptionLLVMType(recvTy)) {
+                LLVMTypeRef inner = LLVMStructGetTypeAtIndex(recvTy, 1);
+                if (tokenEquals(&get->name, "unwrap")) return inner;
+                if (tokenEquals(&get->name, "unwrapOr")) return inner;
+                if (tokenEquals(&get->name, "isSome") || tokenEquals(&get->name, "isNone")) {
+                    return LLVMInt1TypeInContext(compiler->context);
                 }
             }
         }

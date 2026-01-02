@@ -1,0 +1,11 @@
+let m: map = {}
+m["a"] = 1
+
+let o = m.getRef("a")
+assert(o.isSome())
+let p = o.unwrap()
+assert(p != null)
+
+let o2 = m.getRef("b")
+assert(o2.isNone())
+

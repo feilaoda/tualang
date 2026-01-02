@@ -59,6 +59,7 @@ typedef struct VarInfo {
     int isConst; // binding immutability
     int isMoved; // first-pass move tracking for named types
     int isRef;   // true if this binding is a reference (`&T`) / pointer-like
+    int refKind; // for isRef: 1 => mutable/exclusive, 0 => shared/readonly, -1 => unknown
     int isParam; // true if this binding is a function parameter
     int isBorrowed; // true if this binding is a borrow (non-owning view / borrow param)
     Scope* owner;
@@ -70,6 +71,8 @@ typedef struct {
     int paramCount;
     int* paramModes;     // ParamMode
     int* paramIsMoveOnly; // true for move-only params (struct/map/array), excluding refs
+    int returnsRef;
+    int returnRefKind; // only meaningful when returnsRef=1
 } FuncInfo;
 
 typedef struct Scope {
@@ -362,7 +365,7 @@ static void borrowCheckAndRecord(
     }
 }
 
-static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef, int isParam, int isBorrowed) {
+static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef, int refKind, int isParam, int isBorrowed) {
     if (!scope || !name || !name->start || name->length <= 0) return;
     VarInfo* v = (VarInfo*)malloc(sizeof(VarInfo));
     v->name = (char*)malloc((size_t)name->length + 1);
@@ -373,6 +376,7 @@ static void scopeDefine(Scope* scope, const Token* name, AType* type, int isCons
     v->isConst = isConst ? 1 : 0;
     v->isMoved = 0;
     v->isRef = isRef ? 1 : 0;
+    v->refKind = isRef ? refKind : -1;
     v->isParam = isParam ? 1 : 0;
     v->isBorrowed = isBorrowed ? 1 : 0;
     v->owner = scope;
@@ -439,6 +443,35 @@ static const Token* argBaseVarName(Expr* arg) {
         }
     }
     return NULL;
+}
+
+static int tokenTextEquals(const Token* tok, const char* s);
+
+// Detect `m.getRef(k)` / `m.getRefWrite(k)` (optionally wrapped by `.unwrap()`) and
+// return the map variable name and the borrow mutability (1 => exclusive, 0 => shared).
+static const Token* mapGetRefOwnerName(Expr* expr, int* outMutable) {
+    expr = unwrapGrouping(expr);
+    if (!expr) return NULL;
+
+    if (expr->type != EXPR_CALL) return NULL;
+    CallExpr* call = (CallExpr*)expr;
+    if (!call->callee) return NULL;
+
+    // Option.unwrap(): peel the wrapper
+    if (call->callee->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)call->callee;
+        if (tokenTextEquals(&get->name, "unwrap")) {
+            return mapGetRefOwnerName(get->object, outMutable);
+        }
+    }
+
+    // Map.getRef / Map.getRefWrite
+    if (call->callee->type != EXPR_GET) return NULL;
+    GetExpr* get = (GetExpr*)call->callee;
+    if (!(tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite"))) return NULL;
+    if (!get->object || get->object->type != EXPR_VARIABLE) return NULL;
+    if (outMutable) *outMutable = tokenTextEquals(&get->name, "getRefWrite") ? 1 : 0;
+    return &((VariableExpr*)get->object)->name;
 }
 
 static void checkReturnExprNoAddrOfLocal(Compiler* compiler, Scope* scope, Expr* e, const char* modulePath, int line) {
@@ -752,7 +785,7 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
         }
     }
 
-    // Map built-in method calls: m.get(k) / m.len() / ...
+        // Map built-in method calls: m.get(k) / m.len() / ...
     if (call->callee->type == EXPR_GET) {
         GetExpr* get = (GetExpr*)call->callee;
         AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
@@ -767,6 +800,33 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             }
         }
         if (atIsMap(recvTy)) {
+            // Borrowing reads: m.getRef(k) / m.getRefWrite(k)
+            if (tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite")) {
+                if ((recvTy->key && !atIsAny(recvTy->key)) || (recvTy->value && !atIsAny(recvTy->value))) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "map.getRef/getRefWrite is not supported on typed map<K,V> yet");
+                }
+                if (get->object && get->object->type == EXPR_VARIABLE) {
+                    VariableExpr* recv = (VariableExpr*)get->object;
+                    VarInfo* vi = scopeFind(scope, &recv->name);
+                    if (tokenTextEquals(&get->name, "getRefWrite") && vi && vi->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            get->name.line,
+                            "cannot take mutable element reference from const map '%.*s'",
+                            recv->name.length,
+                            recv->name.start
+                        );
+                    }
+                }
+                Expr* key0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
+                AType* keyTy = inferExpr(compiler, scope, key0, modulePath);
+                if (!typedMapKeyAllows(recvTy->key, keyTy)) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "typed map key type mismatch");
+                }
+                // Return type is `Option<Ref<V>>` but we keep it permissive in the analyzer for now.
+                return atOption(atNew(AT_ANY));
+            }
             if (tokenTextEquals(&get->name, "get")) {
                 Expr* key0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
                 AType* keyTy = inferExpr(compiler, scope, key0, modulePath);
@@ -777,8 +837,32 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             }
             if (tokenTextEquals(&get->name, "len")) return atNew(AT_INT);
             if (tokenTextEquals(&get->name, "hasKey")) return atNew(AT_BOOL);
-            if (tokenTextEquals(&get->name, "delete")) return atNew(AT_BOOL);
-            if (tokenTextEquals(&get->name, "clear")) return atNew(AT_INT);
+            if (tokenTextEquals(&get->name, "delete") || tokenTextEquals(&get->name, "clear")) {
+                if (get->object && get->object->type == EXPR_VARIABLE) {
+                    VariableExpr* recv = (VariableExpr*)get->object;
+                    VarInfo* vi = scopeFind(scope, &recv->name);
+                    if (vi && vi->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            get->name.line,
+                            "cannot mutate const map '%.*s'",
+                            recv->name.length,
+                            recv->name.start
+                        );
+                    } else if (borrowHasAny(scope, &recv->name)) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            get->name.line,
+                            "cannot mutate '%.*s' because it is borrowed",
+                            recv->name.length,
+                            recv->name.start
+                        );
+                    }
+                }
+                return tokenTextEquals(&get->name, "delete") ? atNew(AT_BOOL) : atNew(AT_INT);
+            }
         }
         if (atIsArray(recvTy)) {
             if (tokenTextEquals(&get->name, "len")) return atNew(AT_INT);
@@ -844,8 +928,21 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                     );
                 }
             } else if (mode == PARAM_LET) {
-                if (!baseName) {
+                int mapBorrowMut = 0;
+                const Token* mapBorrowName = mapGetRefOwnerName(arg, &mapBorrowMut);
+                if (!baseName && !mapBorrowName) {
                     analyzeErrorAt(compiler, modulePath, call->base.token.line, "mutable borrow argument must be a variable");
+                } else if (!baseName && mapBorrowName) {
+                    borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, modulePath, mapBorrowName->line);
+                } else if (baseVar && baseVar->isRef && baseVar->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        baseName->line,
+                        "cannot pass shared reference '%.*s' where a mutable reference is required",
+                        baseName->length,
+                        baseName->start
+                    );
                 } else if (baseVar && baseVar->isConst) {
                     analyzeErrorAt(
                         compiler,
@@ -862,6 +959,13 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 // PARAM_CONST: shared borrow if this argument is a variable lvalue
                 if (baseName) {
                     borrowCheckAndRecord(compiler, callScope, baseName, 0, modulePath, baseName->line);
+                } else {
+                    int mapBorrowMut = 0;
+                    const Token* mapBorrowName = mapGetRefOwnerName(arg, &mapBorrowMut);
+                    if (mapBorrowName) {
+                        // Map element refs borrow the map to keep entry addresses stable.
+                        borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, modulePath, mapBorrowName->line);
+                    }
                 }
             }
         }
@@ -887,6 +991,10 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
                      b->operator.type == TOKEN_MINUS ||
                      b->operator.type == TOKEN_STAR ||
                      b->operator.type == TOKEN_SLASH);
+    int opIsShift = (b->operator.type == TOKEN_SHL || b->operator.type == TOKEN_SHR);
+    int opIsBitwise = (b->operator.type == TOKEN_AMP ||
+                       b->operator.type == TOKEN_BOR ||
+                       b->operator.type == TOKEN_BXOR);
 
     if (b->operator.type == TOKEN_EQ || b->operator.type == TOKEN_NEQ) {
         if (atIsOption(l) != atIsOption(r)) {
@@ -916,6 +1024,35 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
     }
 
     if (opIsArith && atIsString(l) && atIsString(r) && b->operator.type == TOKEN_PLUS) return atNew(AT_STRING);
+
+    if (opIsShift || opIsBitwise) {
+        if (!atIsInt(l) && !atIsAny(l)) analyzeErrorAt(compiler, modulePath, b->operator.line, "bitwise/shift requires integer left operand");
+        if (!atIsInt(r) && !atIsAny(r)) analyzeErrorAt(compiler, modulePath, b->operator.line, "bitwise/shift requires integer right operand");
+        // For bitwise (not shift), forbid implicit signed/unsigned mixing.
+        if (opIsBitwise && atIsInt(l) && atIsInt(r) && (atIsSignedInt(l) != atIsSignedInt(r))) {
+            analyzeErrorAt(compiler, modulePath, b->operator.line, "cannot mix signed and unsigned integers; cast explicitly");
+        }
+
+        // Result type: integer promotion to at least 32 bits, keep signedness.
+        if (atIsAny(l) || atIsAny(r)) return atNew(AT_ANY);
+
+        int lSigned = atIsSignedInt(l);
+        int lb = atIntBits(l);
+        int rb = atIntBits(r);
+        int cb = lb;
+        if (!opIsShift) cb = (lb > rb ? lb : rb);
+        if (cb < 32) cb = 32;
+        int wantSize = (l->kind == AT_ISIZE || l->kind == AT_USIZE || r->kind == AT_ISIZE || r->kind == AT_USIZE);
+        int ptrBits = (int)(sizeof(void*) * 8);
+
+        if (lSigned) {
+            ATypeKind out = (cb == ptrBits && wantSize) ? AT_ISIZE : (cb >= 64 ? AT_LONG : AT_INT);
+            return opIsOrd ? atNew(AT_BOOL) : atNew(out);
+        }
+
+        ATypeKind out = (cb == ptrBits && wantSize) ? AT_USIZE : (cb >= 64 ? AT_U64 : AT_U32);
+        return opIsOrd ? atNew(AT_BOOL) : atNew(out);
+    }
 
     if ((opIsArith || opIsOrd || opIsEq) && atIsNumeric(l) && atIsNumeric(r)) {
         // FP8 is storage-only for now: disallow scalar ops/comparisons.
@@ -1154,6 +1291,24 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 }
                 return inferReturn(expr, outTy ? outTy : atNew(AT_ANY));
             }
+            if (u->operator.type == TOKEN_BNOT) {
+                AType* rhs = inferExpr(compiler, scope, u->right, modulePath);
+                if (!atIsInt(rhs) && !atIsAny(rhs)) {
+                    analyzeErrorAt(compiler, modulePath, u->base.token.line, "bitwise not requires integer operand");
+                    return inferReturn(expr, atNew(AT_ANY));
+                }
+                if (atIsAny(rhs)) return inferReturn(expr, atNew(AT_ANY));
+                int signedness = atIsSignedInt(rhs);
+                int bits = atIntBits(rhs);
+                if (bits < 32) bits = 32;
+                int ptrBits = (int)(sizeof(void*) * 8);
+                if (signedness) {
+                    ATypeKind out = (bits == ptrBits && rhs->kind == AT_ISIZE) ? AT_ISIZE : (bits >= 64 ? AT_LONG : AT_INT);
+                    return inferReturn(expr, atNew(out));
+                }
+                ATypeKind out = (bits == ptrBits && rhs->kind == AT_USIZE) ? AT_USIZE : (bits >= 64 ? AT_U64 : AT_U32);
+                return inferReturn(expr, atNew(out));
+            }
             return inferReturn(expr, inferExpr(compiler, scope, u->right, modulePath));
         }
         case EXPR_POSTFIX: {
@@ -1242,7 +1397,8 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                         int isRef = (p->type && p->type->kind == TYPE_REF) ? 1 : 0;
                         int isConst = (p->mode == PARAM_CONST) ? 1 : 0;
                         int isBorrowed = isRef || (p->mode != PARAM_MOVE);
-                        scopeDefine(lamScope, &p->name, pt, isConst, isRef, 1, isBorrowed);
+                        int refKind = isRef ? ((p->mode == PARAM_LET) ? 1 : 0) : -1;
+                        scopeDefine(lamScope, &p->name, pt, isConst, isRef, refKind, 1, isBorrowed);
                     }
 	            }
 	            List* rs = listNew();
@@ -1305,7 +1461,17 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                         recv->name.start
                     );
                 }
-                if (vi && !vi->isRef && borrowHasAny(scope, &recv->name)) {
+                if (vi && vi->isRef && vi->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through shared reference '%.*s'",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
+                if (vi && borrowHasAny(scope, &recv->name)) {
                     analyzeErrorAt(
                         compiler,
                         modulePath,
@@ -1337,7 +1503,17 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                         recv->name.start
                     );
                 }
-                if (vi && !vi->isRef && borrowHasAny(scope, &recv->name)) {
+                if (vi && vi->isRef && vi->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through shared reference '%.*s'",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
+                if (vi && borrowHasAny(scope, &recv->name)) {
                     analyzeErrorAt(
                         compiler,
                         modulePath,
@@ -1544,6 +1720,28 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
             }
 
+            // Map.getRef()/getRefWrite() borrow the map for as long as the result value lives in this scope
+            // (even if it is wrapped by Option and later unwrapped).
+            {
+                int wantMut = 0;
+                const Token* mapName = mapGetRefOwnerName(v->initializer, &wantMut);
+                if (mapName) {
+                    VarInfo* mv = scopeFind(scope, mapName);
+                    if (wantMut && mv && mv->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            v->name.line,
+                            "cannot take mutable element reference from const map '%.*s'",
+                            mapName->length,
+                            mapName->start
+                        );
+                    } else {
+                        borrowCheckAndRecord(compiler, scope, mapName, wantMut, modulePath, v->name.line);
+                    }
+                }
+            }
+
             // `const view = x` creates a shared borrow view for move-only values.
             int isConstView = 0;
             if (v->isConst && !isRefBinding && v->initializer && v->initializer->type == EXPR_VARIABLE) {
@@ -1615,12 +1813,56 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     }
                 }
             }
+            // Reborrow: `const s: Ref<T> = r` freezes `r` for the lifetime of `s`.
+            if (isRefBinding && v->isConst && v->initializer) {
+                Expr* init = unwrapGrouping(v->initializer);
+                if (init && init->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)init;
+                    VarInfo* src = scopeFind(scope, &rv->name);
+                    if (src && src->isRef) {
+                        borrowCheckAndRecord(compiler, scope, &rv->name, 0, modulePath, v->name.line);
+                    }
+                }
+            }
+            int refKind = -1;
+            if (isRefBinding) {
+                refKind = 0; // default shared unless proven mutable
+                if (v->initializer) {
+                    Expr* init = unwrapGrouping(v->initializer);
+                    if (init && init->type == EXPR_UNARY) {
+                        UnaryExpr* un = (UnaryExpr*)init;
+                        if (un->operator.type == TOKEN_AMP) {
+                            refKind = v->isConst ? 0 : 1;
+                        }
+                    } else if (init && init->type == EXPR_VARIABLE) {
+                        VariableExpr* rv = (VariableExpr*)init;
+                        VarInfo* src = scopeFind(scope, &rv->name);
+                        if (src && src->isRef) refKind = (src->refKind >= 0 ? src->refKind : 0);
+                    } else if (init && init->type == EXPR_CALL) {
+                        int wantMut = 0;
+                        const Token* mapName = mapGetRefOwnerName(init, &wantMut);
+                        if (mapName) {
+                            refKind = wantMut ? 1 : 0;
+                        } else {
+                        CallExpr* call = (CallExpr*)init;
+                        if (call->callee && call->callee->type == EXPR_VARIABLE) {
+                            VariableExpr* callee = (VariableExpr*)call->callee;
+                            FuncInfo* fi = scopeFindFunc(scope, &callee->name);
+                            if (fi && fi->returnsRef) {
+                                refKind = (fi->returnRefKind != 0) ? 1 : 0;
+                            }
+                        }
+                        }
+                    }
+                }
+            }
             scopeDefine(
                 scope,
                 &v->name,
                 annotated ? annotated : initTy,
                 v->isConst ? 1 : 0,
                 isRefBinding,
+                refKind,
                 0,
                 (isRefBinding || isConstView) ? 1 : 0
             );
@@ -1753,7 +1995,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 int isRef = (param->type && param->type->kind == TYPE_REF) ? 1 : 0;
                 int isConst = (param->mode == PARAM_CONST) ? 1 : 0;
                 int isBorrowed = isRef || (param->mode != PARAM_MOVE);
-                scopeDefine(fnScope, &param->name, pt, isConst, isRef, 1, isBorrowed);
+                int refKind = isRef ? ((param->mode == PARAM_LET) ? 1 : 0) : -1;
+                scopeDefine(fnScope, &param->name, pt, isConst, isRef, refKind, 1, isBorrowed);
             }
             List* expected = listNew();
             if (fn->returnTypes && fn->returnTypes->length > 0) {
@@ -1808,7 +2051,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             );
                         }
                     }
-                    scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding, 0, isRefBinding ? 1 : 0);
+                    scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding, isRefBinding ? 0 : -1, 0, isRefBinding ? 1 : 0);
                 }
             } else if (!d->isDeclaration && d->names) {
                 for (ListNode* n = d->names->head; n != NULL; n = n->next) {
@@ -1845,6 +2088,103 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
         default:
             // Keep permissive for now.
             break;
+    }
+}
+
+static int tokenEqualsToken(const Token* a, const Token* b) {
+    if (!a || !b) return 0;
+    if (a->length != b->length) return 0;
+    if (!a->start || !b->start) return 0;
+    return memcmp(a->start, b->start, (size_t)a->length) == 0;
+}
+
+static int funcParamRefKindByName(FuncStmt* fn, const Token* name, int* outKind) {
+    if (!fn || !name) return 0;
+    int idx = 0;
+    for (ListNode* n = fn->params ? fn->params->head : NULL; n != NULL; n = n->next, idx++) {
+        Parameter* p = (Parameter*)n->data;
+        if (!p) continue;
+        if (!tokenEqualsToken(&p->name, name)) continue;
+        if (!p->type || p->type->kind != TYPE_REF) return 0;
+        if (outKind) *outKind = (p->mode == PARAM_LET) ? 1 : 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void scanReturnRefKindInStmt(FuncStmt* fn, Stmt* stmt, int* ioKind, int* ioSeen, int* ioUnknown) {
+    if (!fn || !stmt) return;
+    if (*ioUnknown) return;
+
+    if (stmt->type == STMT_PRIVATE) {
+        PrivateStmt* ps = (PrivateStmt*)stmt;
+        if (ps && ps->inner) scanReturnRefKindInStmt(fn, ps->inner, ioKind, ioSeen, ioUnknown);
+        return;
+    }
+
+    switch (stmt->type) {
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            if (!r) return;
+            // Only model single-return `return <expr>` for now.
+            if (r->values && r->values->length != 1) { *ioUnknown = 1; return; }
+            Expr* v = r->value;
+            if (!v && r->values && r->values->length == 1) {
+                v = (Expr*)r->values->head->data;
+            }
+            v = unwrapGrouping(v);
+            if (!v || v->type != EXPR_VARIABLE) { *ioUnknown = 1; return; }
+            VariableExpr* ve = (VariableExpr*)v;
+            int k = 0;
+            if (!funcParamRefKindByName(fn, &ve->name, &k)) { *ioUnknown = 1; return; }
+            if (!*ioSeen) {
+                *ioKind = k;
+                *ioSeen = 1;
+                return;
+            }
+            // If different return paths disagree, degrade to shared.
+            if (*ioKind != k) *ioKind = 0;
+            return;
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b && b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                scanReturnRefKindInStmt(fn, (Stmt*)n->data, ioKind, ioSeen, ioUnknown);
+                if (*ioUnknown) return;
+            }
+            return;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            if (i && i->thenBranch) scanReturnRefKindInStmt(fn, i->thenBranch, ioKind, ioSeen, ioUnknown);
+            if (*ioUnknown) return;
+            if (i && i->elseBranch) scanReturnRefKindInStmt(fn, i->elseBranch, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)stmt;
+            if (f && f->initializer) scanReturnRefKindInStmt(fn, f->initializer, ioKind, ioSeen, ioUnknown);
+            if (*ioUnknown) return;
+            if (f && f->body) scanReturnRefKindInStmt(fn, f->body, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)stmt;
+            if (fi && fi->body) scanReturnRefKindInStmt(fn, fi->body, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)stmt;
+            if (w && w->body) scanReturnRefKindInStmt(fn, w->body, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)stmt;
+            if (dw && dw->body) scanReturnRefKindInStmt(fn, dw->body, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        default:
+            return;
     }
 }
 
@@ -1885,6 +2225,30 @@ int analyzeModule(Compiler* compiler, List* statements, List* aliases, const cha
                 fi->paramModes[i] = mode;
                 fi->paramIsMoveOnly[i] = atIsMoveOnly(pt, isRef);
             }
+        }
+
+        // Best-effort: infer reference return kind for local functions like:
+        // `fn id(let p: Ref<Foo>) -> Ref<Foo> { return p }`.
+        fi->returnsRef = 0;
+        fi->returnRefKind = 0; // default shared
+        Type* rt0 = fn->returnType;
+        if (fn->returnTypes && fn->returnTypes->length > 0) {
+            // Only consider the first return type for now (multi-return ref modeling is TBD).
+            rt0 = (Type*)listGet(fn->returnTypes, 0);
+        }
+        if (rt0 && rt0->kind == TYPE_REF && fn->body) {
+            fi->returnsRef = 1;
+            int kind = 0;
+            int seen = 0;
+            int unknown = 0;
+            for (ListNode* bn = fn->body ? fn->body->head : NULL; bn != NULL; bn = bn->next) {
+                scanReturnRefKindInStmt(fn, (Stmt*)bn->data, &kind, &seen, &unknown);
+                if (unknown) break;
+            }
+            fi->returnRefKind = (seen && !unknown) ? kind : 0;
+        } else if (rt0 && rt0->kind == TYPE_REF) {
+            fi->returnsRef = 1;
+            fi->returnRefKind = 0;
         }
         listAppend(scope->funcs, fi);
     }

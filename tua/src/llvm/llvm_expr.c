@@ -1290,6 +1290,20 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         return NULL;
     }
 
+    // `tua_value` (dynamic `any`) comparison sugar: allow `any == scalar/string`
+    // by converting the `tua_value` side to the other operand type.
+    if (opIsEq && (isTuaValueLLVMType(compiler, leftType) ^ isTuaValueLLVMType(compiler, rightType))) {
+        if (isTuaValueLLVMType(compiler, leftType)) {
+            left = castFromTuaValue(compiler, left, rightType);
+        } else {
+            right = castFromTuaValue(compiler, right, leftType);
+        }
+        leftType = LLVMTypeOf(left);
+        rightType = LLVMTypeOf(right);
+        leftKind = LLVMGetTypeKind(leftType);
+        rightKind = LLVMGetTypeKind(rightType);
+    }
+
     // String concatenation: i8* + i8*
     if (expr->operator.type == TOKEN_PLUS &&
         leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
@@ -1343,6 +1357,21 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         LLVMAddIncoming(phi, &nullRes, &nullBB, 1);
         LLVMAddIncoming(phi, &strRes, &cmpBB, 1);
         return phi;
+    }
+
+    // Pointer equality for non-string pointers (including `Ref<T> == null`).
+    // Notes:
+    // - `string` equality uses content comparison above (strcmp).
+    // - For other pointers, compare pointer values (after bitcast to i8*).
+    if ((expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ) &&
+        leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
+        !(leftType == i8ptr && rightType == i8ptr)) {
+        LLVMValueRef l = left;
+        LLVMValueRef r = right;
+        if (leftType != i8ptr) l = LLVMBuildBitCast(builder, left, i8ptr, "p_l");
+        if (rightType != i8ptr) r = LLVMBuildBitCast(builder, right, i8ptr, "p_r");
+        LLVMIntPredicate pred = (expr->operator.type == TOKEN_EQ) ? LLVMIntEQ : LLVMIntNE;
+        return LLVMBuildICmp(builder, pred, l, r, "p_eq");
     }
 
     // Option<T> equality: Option<T> ==/!= Option<T>
@@ -1448,6 +1477,10 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
                        expr->operator.type == TOKEN_GT ||
                        expr->operator.type == TOKEN_LE ||
                        expr->operator.type == TOKEN_GE);
+    int opIsShift = (expr->operator.type == TOKEN_SHL || expr->operator.type == TOKEN_SHR);
+    int opIsBitwise = (expr->operator.type == TOKEN_AMP ||
+                       expr->operator.type == TOKEN_BOR ||
+                       expr->operator.type == TOKEN_BXOR);
 
     TypeKind lk = expr->left ? expr->left->inferredType : TYPE_ANY;
     TypeKind rk = expr->right ? expr->right->inferredType : TYPE_ANY;
@@ -1455,6 +1488,60 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     if ((opIsArithmetic || opIsCompare) && (typeKindIsFp8(lk) || typeKindIsFp8(rk))) {
         compilerErrorAt(compiler, expr->operator.line, "f8/bf8 scalar ops are not supported yet (cast to f16/f32 first)");
         return NULL;
+    }
+
+    // Bitwise/shift: integer-only, deterministic shift masking.
+    if (opIsShift || opIsBitwise) {
+        if (!typeKindIsInt(lk) || !typeKindIsInt(rk)) {
+            compilerErrorAt(compiler, expr->operator.line, "bitwise/shift operators require integer operands");
+            return NULL;
+        }
+
+        int isUnsignedLocal = typeKindIsUnsignedInt(lk);
+        if (opIsBitwise && (typeKindIsUnsignedInt(lk) != typeKindIsUnsignedInt(rk))) {
+            compilerErrorAt(compiler, expr->operator.line, "cannot mix signed and unsigned integers; cast explicitly");
+            return NULL;
+        }
+
+        unsigned lb = typeKindIntBits(lk);
+        unsigned rb = typeKindIntBits(rk);
+        unsigned cb = opIsShift ? lb : (lb > rb ? lb : rb);
+        if (cb < 32) cb = 32;
+        unsigned ptrBits = (unsigned)(sizeof(void*) * 8);
+
+        TypeKind ck = TYPE_INT;
+        if (isUnsignedLocal) {
+            ck = (cb >= 64) ? TYPE_U64 : TYPE_U32;
+            if (cb == ptrBits && (lk == TYPE_USIZE || rk == TYPE_USIZE)) ck = TYPE_USIZE;
+        } else {
+            ck = (cb >= 64) ? TYPE_LONG : TYPE_INT;
+            if (cb == ptrBits && (lk == TYPE_ISIZE || rk == TYPE_ISIZE)) ck = TYPE_ISIZE;
+        }
+
+        left = castNumericToKind(compiler, left, lk, ck);
+        right = castNumericToKind(compiler, right, rk, ck);
+        if (!left || !right) return NULL;
+
+        if (opIsShift) {
+            LLVMTypeRef it = llvmNumericTypeFromKind(compiler, ck);
+            unsigned bits = LLVMGetIntTypeWidth(it);
+            LLVMValueRef mask = LLVMConstInt(it, (uint64_t)(bits - 1), 0);
+            LLVMValueRef sh = LLVMBuildAnd(builder, right, mask, "sh_mask");
+            if (expr->operator.type == TOKEN_SHL) {
+                return LLVMBuildShl(builder, left, sh, "shl");
+            }
+            return isUnsignedLocal ? LLVMBuildLShr(builder, left, sh, "lshr")
+                                   : LLVMBuildAShr(builder, left, sh, "ashr");
+        }
+
+        switch (expr->operator.type) {
+            case TOKEN_AMP:  return LLVMBuildAnd(builder, left, right, "band");
+            case TOKEN_BOR:  return LLVMBuildOr(builder, left, right, "bor");
+            case TOKEN_BXOR: return LLVMBuildXor(builder, left, right, "bxor");
+            default:
+                compilerErrorAt(compiler, expr->operator.line, "unknown bitwise operator");
+                return NULL;
+        }
     }
 
     bool leftIsNum =
@@ -3532,6 +3619,25 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
                 return NULL;
             }
             return LLVMBuildNot(builder, b, "not");
+        }
+
+        case TOKEN_BNOT: {
+            LLVMValueRef operand = compileExpr(compiler, expr->right);
+            if (!operand) {
+                error("Failed to compile right operand");
+                return NULL;
+            }
+            TypeKind srcK = expr->right ? expr->right->inferredType : TYPE_ANY;
+            TypeKind dstK = expr->base.inferredType;
+            if (typeKindIsInt(dstK) && typeKindIsInt(srcK)) {
+                operand = castNumericToKind(compiler, operand, srcK, dstK);
+            }
+            LLVMTypeRef t = LLVMTypeOf(operand);
+            if (LLVMGetTypeKind(t) != LLVMIntegerTypeKind || LLVMGetIntTypeWidth(t) == 1) {
+                error("Operand must be integer for bitwise not");
+                return NULL;
+            }
+            return LLVMBuildNot(builder, operand, "bnot");
         }
         
         // case TOKEN_BITNOT: {

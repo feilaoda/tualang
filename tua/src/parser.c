@@ -160,20 +160,25 @@ static int getOperatorPrecedence(TokenType type) {
     switch (type) {
         case TOKEN_ASSIGN: return 1;      // =
         case TOKEN_COALESCE: return 2;    // ??
-        case TOKEN_OR: return 2;          // ||
-        case TOKEN_AND: return 3;         // &&
-        case TOKEN_EQ: 
-        case TOKEN_NEQ: return 4;         // ==, !=
-        case TOKEN_LT: 
+        case TOKEN_OR: return 3;          // ||
+        case TOKEN_AND: return 4;         // &&
+        case TOKEN_BOR: return 5;         // |
+        case TOKEN_BXOR: return 6;        // ^
+        case TOKEN_AMP: return 7;         // & (bitwise and)
+        case TOKEN_EQ:
+        case TOKEN_NEQ: return 8;         // ==, !=
+        case TOKEN_LT:
         case TOKEN_GT:
-        case TOKEN_LE:                    // 添加 <= 运算符
-        case TOKEN_GE: return 5;          // 添加 >= 运算符
-        case TOKEN_PLUS: 
-        case TOKEN_MINUS: return 6;       // +, -
-        case TOKEN_STAR: 
-        case TOKEN_SLASH: return 7;       // *, /
+        case TOKEN_LE:
+        case TOKEN_GE: return 9;          // < > <= >=
+        case TOKEN_SHL:
+        case TOKEN_SHR: return 10;        // << >>
+        case TOKEN_PLUS:
+        case TOKEN_MINUS: return 11;      // +, -
+        case TOKEN_STAR:
+        case TOKEN_SLASH: return 12;      // *, /
         case TOKEN_INC:
-        case TOKEN_DEC: return 8;         // ++, --
+        case TOKEN_DEC: return 13;        // ++, --
         default: return 0;
     }
 }
@@ -689,6 +694,7 @@ static Expr* parseUnaryExpr(Parser* parser) {
         match(parser, TOKEN_DEC) ||
         match(parser, TOKEN_MINUS) || 
         match(parser, TOKEN_NOT) ||
+        match(parser, TOKEN_BNOT) ||
         match(parser, TOKEN_AMP) ||
         match(parser, TOKEN_MOVE)) {
         Token operator = parser->previous;
@@ -2090,6 +2096,41 @@ static Type* parseType(Parser* parser) {
                 errorAtCurrent(parser, "Type 'ptr' does not accept generic arguments");
             }
             base = type;
+        } else if (parser->previous.length == 3 && memcmp(parser->previous.start, "Ref", 3) == 0) {
+            // Reference type syntax: `Ref<T>` (planned surface syntax; `&T` remains supported).
+            if (!match(parser, TOKEN_LT)) {
+                errorAtCurrent(parser, "Type 'Ref' expects one type argument: Ref<T>");
+                Type* type = malloc(sizeof(Type));
+                type->kind = TYPE_NAMED;
+                type->name = parser->previous;
+                type->inner = NULL;
+                type->typeArgs = NULL;
+                type->paramTypes = NULL;
+                type->returnTypes = NULL;
+                type->arrayLen = 0;
+                base = type;
+            } else {
+                Type* inner = parseType(parser);
+                if (match(parser, TOKEN_COMMA)) {
+                    errorAtCurrent(parser, "Type 'Ref' expects exactly one type argument");
+                    // Best-effort recovery: consume remaining args until '>'.
+                    while (!check(parser, TOKEN_GT) && !check(parser, TOKEN_EOF)) {
+                        parseType(parser);
+                        if (!match(parser, TOKEN_COMMA)) break;
+                    }
+                }
+                consume(parser, TOKEN_GT, "Expect '>' after Ref type argument");
+
+                Type* type = malloc(sizeof(Type));
+                type->kind = TYPE_REF;
+                type->name = (Token){0};
+                type->inner = inner;
+                type->typeArgs = NULL;
+                type->paramTypes = NULL;
+                type->returnTypes = NULL;
+                type->arrayLen = 0;
+                base = type;
+            }
         } else {
         Type* type = malloc(sizeof(Type));
         type->kind = TYPE_NAMED;

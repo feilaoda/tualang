@@ -127,6 +127,11 @@ static const char* TokenNames[] = {
         case TOKEN_COALESCE: return "??";
         case TOKEN_QMARK: return "?";
         case TOKEN_AMP: return "&";
+        case TOKEN_BOR: return "|";
+        case TOKEN_BXOR: return "^";
+        case TOKEN_BNOT: return "~";
+        case TOKEN_SHL: return "<<";
+        case TOKEN_SHR: return ">>";
         case TOKEN_ARROW: return "->";
         case TOKEN_COLON: return ":";
         case TOKEN_EQ: return "==";
@@ -626,11 +631,13 @@ Token scanToken(Lexer* lexer) {
         case '<': 
         {
             if (match(lexer, '=')) return makeToken(lexer, TOKEN_LE);
+            if (match(lexer, '<')) return makeToken(lexer, TOKEN_SHL);
             return makeToken(lexer, TOKEN_LT);
             break;
         }
         case '>': {
             if (match(lexer, '=')) return makeToken(lexer, TOKEN_GE);
+            if (match(lexer, '>')) return makeToken(lexer, TOKEN_SHR);
             return makeToken(lexer, TOKEN_GT);
             break;
         }
@@ -639,8 +646,11 @@ Token scanToken(Lexer* lexer) {
             return makeToken(lexer, TOKEN_AMP);
         case '|':
             if (match(lexer, '|')) return makeToken(lexer, TOKEN_OR);
-            //或
-            break;
+            return makeToken(lexer, TOKEN_BOR);
+        case '^':
+            return makeToken(lexer, TOKEN_BXOR);
+        case '~':
+            return makeToken(lexer, TOKEN_BNOT);
         case '?':
             if (match(lexer, '?')) return makeToken(lexer, TOKEN_COALESCE);
             return makeToken(lexer, TOKEN_QMARK);

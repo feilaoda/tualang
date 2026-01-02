@@ -1,0 +1,4 @@
+const m: map = {"a": 1}
+let o = m.getRefWrite("a")
+println(o.isSome())
+

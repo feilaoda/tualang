@@ -2,13 +2,13 @@ struct Foo {
   x: int
 }
 
-fn id(let p: &Foo) -> &Foo {
+fn id(let p: Ref<Foo>) -> Ref<Foo> {
   return p
 }
 
 let foo: Foo = Foo()
 foo.x = 1
 
-let r: &Foo = id(&foo)
+let r: Ref<Foo> = id(&foo)
 r.x = 2
 assert(foo.x == 2)

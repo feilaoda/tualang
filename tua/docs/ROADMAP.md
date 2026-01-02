@@ -38,11 +38,14 @@
 
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
-- [ ] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
+- [x] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
   - [x] 借用（第一版）：`const r = &x` 共享、`let r = &x` 独占；禁止冲突借用/被借用时写或 move
-  - [ ] 函数参数：默认只读借用（`fn f(x:T)` 等价 `fn f(const x:T)`）；可写借用用 `fn f(let x:T)`；取得所有权用 `fn f(move x:T)`（降低 90% 代码心智负担）
+  - [x] 函数参数：默认只读借用（`fn f(x:T)` 等价 `fn f(const x:T)`）；可写借用用 `fn f(let x:T)`；取得所有权用 `fn f(move x:T)`（降低 90% 代码心智负担）
+  - [x] `const` 视图（第一版）：`const view = x` 对 move-only 值创建共享只读视图；view 存活期间禁止 move/写
+  - [x] 引用类型语法（`language/spec`）：类型层统一 `Ref<T>`；`&T` 为过渡别名并逐步废弃
+  - [x] 重借用（reborrow，`language/spec`）：允许独占 -> 共享降级；共享存活期间冻结原独占引用（诊断要清晰）
   - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
   - [ ] 逃逸分析：栈默认、堆按需；临时对象尽量内联/寄存器化
   - [ ] 并发：数据竞争编译期阻止（后续结合线程能力定义规则边界）
@@ -76,6 +79,7 @@
   - [x] 读取：`m[k] -> Option<V>`（未命中返回 `None()`；可用 `??` 提供默认值）
   - [x] 写入：`m[k] = v`（当 `m` 为变量且为 `null` 时自动初始化）
   - [x] 内建方法：`len()/hasKey()/get()/delete()/clear()`
+  - [x] 借用读取（`language/spec` + `tua_rt`）：`getRef()/getRefWrite()`（当前仅支持 `map`；`map<K,V>` 仍待补齐）
   - [x] 遍历（map）：`for v in m { ... }` / `for k,v in m { ... }`
   - [x] 遍历（array）：`for v in a { ... }` / `for v,i in a { ... }`
   - [x] 完整强类型（第一版）：对 `map<K,V>` 写入/字面量做静态检查（禁止写入 `null`/错误类型）

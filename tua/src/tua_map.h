@@ -14,6 +14,10 @@ tua_map* tua_map_new(void);
 tua_value tua_map_get(tua_map* map, tua_value key);
 // Returns value and writes ok=1 if key exists (even if value is null), else ok=0 and returns null.
 tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk);
+// Returns a pointer to the stored value and writes ok=1 if key exists (even if value is nil),
+// else ok=0 and returns NULL.
+// Note: the returned pointer is only valid until the map is mutated in a way that may rehash/relocate entries.
+tua_value* tua_map_get_ref_with_ok(tua_map* map, tua_value key, int32_t* outOk);
 void tua_map_set(tua_map* map, tua_value key, tua_value value);
 int32_t tua_map_delete(tua_map* map, tua_value key);
 void tua_map_clear(tua_map* map);

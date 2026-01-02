@@ -70,6 +70,11 @@ typedef enum {
     TOKEN_COALESCE,  // ??
     TOKEN_QMARK,     // ?
     TOKEN_AMP,       // &
+    TOKEN_BOR,       // |
+    TOKEN_BXOR,      // ^
+    TOKEN_BNOT,      // ~
+    TOKEN_SHL,       // <<
+    TOKEN_SHR,       // >>
     TOKEN_ARROW,     // ->
     TOKEN_COLON,     // :
     TOKEN_EQ,         //==

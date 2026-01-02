@@ -35,7 +35,10 @@
   - `any`：动态值（当前实现中为 `tua_value`），用于 `map` 等“动态容器”的 value 存储
   - 当前运行时表示：`string` 仍等价于 C 字符串指针（`i8*`）；“真正的 string 类型”见后续规划
 - 命名类型：`T`（用于 `struct T`；值类型，默认 move-only）
-- 引用类型：`&T`（LLVM 后端中表现为 `T*` 指针）
+- 引用值类型（Status: Partial）：
+  - 当前实现：`&T`（LLVM 后端中表现为 `T*` 指针）
+  - 规划（Frozen，Status: Planned）：语法层只保留一个引用类型 `Ref<T>`（一等引用值，可用于变量/参数/返回值类型）；`&T` 作为过渡期类型别名解析为 `Ref<T>`，最终会废弃类型写法 `&T` 以减少歧义
+  - 说明（Frozen）：表达式 `&x` 产生“引用值”（类型为 `Ref<T>`；过渡期也可写成 `&T`）
 
 ### 3. 变量与赋值（Status: Implemented）
 - 变量声明：
@@ -47,12 +50,13 @@
   - `let`：绑定可修改（可重新赋值；且允许通过该绑定修改其指向/拥有的对象内容）
   - `const`：绑定不可修改（不可重新赋值；且禁止通过该绑定修改对象内容，例如 `a.field = ...` / `a[i] = ...` / `a.push(...)`）
   - 语言不提供 `mut` 关键字；“不可修改”统一用 `const` 表达
-- `const` 视图（Frozen，Status: Planned）：
+- `const` 视图（Frozen，Status: Partial）：
   - `const view = x`：当 `x` 是 move-only 值（如 `struct/map/array`）时，创建 `x` 的共享只读视图（shared borrow），`x` 仍可被只读借用/传给只读函数，但在 view 存活期间禁止 move 与写
   - `const v = <non-lvalue/new value>`：仍然是普通的 `const` 拥有型绑定（不是视图）
 - 引用绑定（Frozen）：
-  - `let r = &x`：对 `x` 的引用（默认可写/独占借用，见 10）
-  - `const r = &x`：对 `x` 的只读引用（共享借用，见 10）
+  - `let r = &x`：对 `x` 的引用值（默认可写/独占借用，见 10）
+  - `const r = &x`：对 `x` 的只读引用值（共享借用，见 10）
+  - 注意：`const r = x`（move-only）是“只读视图”；`const r = &x` 才是“引用值”
 - 赋值：
   - `name = expr`
   - `obj.field = expr`
@@ -82,7 +86,7 @@
     - `string + string -> string`：字符串拼接；`null` 视为字符串 `"null"`（例如 `"x" + null == "xnull"`）
     - `string == string` / `!=`：内容比较；若任一侧为 `null`，则仅当两侧都为 `null` 才相等
   - 指针比较（Frozen）：
-    - 指针/引用类型（`ptr`、`string`、`map`、`&T` 等）仅允许 `==` / `!=` 比较（按指针值）
+    - 指针/引用类型（`ptr`、`string`、`map`、`Ref<T>` 等；过渡期 `&T` 亦同）仅允许 `==` / `!=` 比较（按指针值）
     - 有序比较（`< <= > >=`）对指针/引用类型无定义，视为编译错误
 - 位运算/移位（Status: Planned，高优先级）
   - 目标：提供 PRNG/bytes/量化等所需的确定性 bit-level 计算能力
@@ -112,7 +116,7 @@
   - falsey：
     - `false`
     - 数值类型：`0` / `0.0`
-    - 指针/引用类型：`null`（包括 `string/ptr/map/&T` 等）
+    - 指针/引用类型：`null`（包括 `string/ptr/map/Ref<T>` 等；过渡期 `&T` 亦同）
     - `Option<T>`：`None()`（等价于 `opt.isSome() == false`）
     - `any`：`nil` 与 `bool(false)`（其他 dynamic 值均为 truthy）
   - truthy：除上述 falsey 之外的所有值
@@ -155,11 +159,12 @@
   - `fn name(a[:Type], b[:Type]) -> Type { ... }`
   - `fn name(a[:Type], b[:Type]) Type { ... }`（语法糖，省略 `->`）
   - 形参类型可省略；当前默认按 `int` 处理（完整类型检查见语义层规划）
-- 形参修饰（Status: Planned，语义已冻结）：
+- 形参修饰（Status: Implemented，语义已冻结）：
   - 语言不提供 `mut` 关键字；参数“可写/只读”用 `let/const` 表达
   - 默认：`fn f(x: T)` 等价于 `fn f(const x: T)`（只读借用，见 10.4）
   - 可写借用：`fn f(let x: T)`（独占借用，允许写字段/元素，见 10.4）
   - 所有权转移：`fn f(move x: T)`（取得所有权，可返回/存储，见 10.4）
+  - 说明（Frozen）：参数名本身视为 `const` 绑定（不可 `x = other`），但当 `x` 为可写借用时允许改字段/元素（例如 `x.field = ...`）
 - 外部声明（FFI，Status: Implemented）：
   - `extern fn name(a:Type, b:Type) -> Type`
   - `extern fn name(a:Type, b:Type) Type`（语法糖，省略 `->`）
@@ -231,16 +236,16 @@
 - move / 引用语义（Frozen）：
   - `let b = a`：移动 `a -> b`（所有权转移），`a` 之后不可再用（编译期错误）
   - 需要复制时必须显式：`a.clone()`（Planned：默认深拷贝字段；并对资源字段做正确的所有权处理）
-  - `let r = &a` / `const r = &a`：取 `a` 的引用（类型层面是 `&T`，LLVM 层面是 `T*`）
-- 字段访问：`p.x` / `p.x = v`（接收者目前仅支持变量；若变量是 `&T` 则会间接到指向的对象）
+  - `let r = &a` / `const r = &a`：取 `a` 的引用（类型层面是 `Ref<T>`；过渡期可写 `&T`；LLVM 层面是 `T*`）
+- 字段访问：`p.x` / `p.x = v`（接收者目前仅支持变量；若变量是 `Ref<T>`（过渡期 `&T`）则会间接到指向的对象）
 - `this`（Frozen）：
-  - 仅在 `struct` 实例方法中可用，类型恒为 `&T`
+  - 仅在 `struct` 实例方法中可用，类型恒为 `Ref<T>`（过渡期 `&T`）
   - `this` 绑定不可重新赋值；字段是否可写取决于接收者是否为 `let` 绑定（`const` 接收者上写字段为编译错误，Planned：由借用检查器统一判定）
   - 隐式字段访问/赋值（Frozen）：在 `struct` 实例方法中，若标识符既不是局部变量/参数/模块顶层变量，且 `this` 上存在同名字段，则将 `x` / `x = v` 分别解析为 `this.x` / `this.x = v`（便于写 `x` 代替 `this.x`）
 - 实例方法调用（Frozen）：
-  - `p.m(a,b)` 会被编译为 `T__m(recv, a, b)`，其中 `recv` 恒为 `&T`
+  - `p.m(a,b)` 会被编译为 `T__m(recv, a, b)`，其中 `recv` 恒为 `Ref<T>`（过渡期 `&T`）
     - 若 `p` 为 `T`（值），则 `recv = &p`
-    - 若 `p` 为 `&T`（引用），则 `recv = p`
+    - 若 `p` 为 `Ref<T>`（引用值），则 `recv = p`
 - `init/deinit`（Status: Partial）：
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）
@@ -250,7 +255,7 @@
   - `impl StructName { fn func(...) ... }`
 - 语义：
   - `impl StructName` 中的 `fn` 会作为 `StructName` 的实例方法（与 `struct StructName { fn ... }` 等价）
-  - 这些方法内允许使用 `this`（类型恒为 `&StructName`）
+  - 这些方法内允许使用 `this`（类型恒为 `Ref<StructName>`；过渡期 `&StructName`）
   - 若同名方法重复定义（struct 内 vs impl 块，或多个 impl），视为编译错误（第一版）
 
 #### 7.3 object（Status: Implemented）
@@ -342,6 +347,12 @@
   - `m.get(k) -> Option<V>`
   - `m.delete(k) -> bool`
   - `m.clear() -> void`
+- 借用读取（Status: Partial，配合 `Ref<T>`）：
+  - 目标：支持“零拷贝读取/原地修改”，并为 `bytes/slice`、模型权重 mmap 等场景铺路
+  - `m.getRef(k) -> Option<Ref<V>>`：返回 value 的共享只读引用（shared borrow）
+  - `m.getRefWrite(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
+  - 约束（Frozen）：当 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
+  - 当前实现（Status: Implemented for `map`）：`map`（无类型参数）返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）；`map<K,V>` 暂不支持 `getRef/getRefWrite`（编译期报错）
 - 遍历（Status: Implemented）：
   - `for v in m { ... }` / `for k,v in m { ... }`：见 5（`for-in`）
 - key 规范化（Status: Implemented）：
@@ -381,7 +392,7 @@
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景
 - 赋值与类型（Frozen）：
-  - `null` 可赋值给 `string`、`ptr`、`map`、`&T` 等指针/引用类型
+  - `null` 可赋值给 `string`、`ptr`、`map`、`Ref<T>` 等指针/引用类型（过渡期 `&T` 亦同）
   - `nil` 当前不是关键字；内部的 dynamic `nil` 仅用于 `any`/`tua_value`（例如 `None()` 的 payload），不直接暴露为语法字面量
 - 运算（Frozen）：
   - truthiness：`null` 为 falsey（例如 `!null == true`）
@@ -405,7 +416,7 @@
 - 已实现（运行时/编译器插桩，第一版）：
   - `map/array` 自动释放：作用域结束、覆盖赋值、`return` 路径会 drop 容器；move 会把源 slot 置 `null`（避免 double-free）
 - 未实现（Planned）：
-  - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；函数参数“默认借用 + 显式 move”；跨线程数据竞争规则
+  - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；跨线程数据竞争规则
 
 #### 10.1 总体原则（Frozen）
 - 编译期阻止所有内存安全问题：悬垂引用/重复释放/数据竞争
@@ -428,24 +439,33 @@
   - 共享借用：允许多个“只读引用”（通过 `const r = &x` 产生）
   - 不允许“可写引用”与“只读引用”同时存在于同一所有者上
 - 表达方式（Frozen/Planned）：
-  - 语言不提供 `mut` 关键字，也不引入 `&mut T` 类型
-  - `&T` 表示引用类型；可写/只读由绑定决定：
-    - `let r = &x`：可写（独占）借用
-    - `const r = &x`：只读（共享）借用
+  - 语言不提供 `mut` 关键字，也不引入 `&mut T` 或 `RefMut<T>` 的语法区分
+  - 语法层引用类型统一为 `Ref<T>`；过渡期 `&T` 作为别名解析为 `Ref<T>`（类型写法 `&T` 最终废弃）
+  - 可写/只读由“借用能力”决定，并由编译器跟踪（不是靠 `let/const` 绑定去“升级权限”）：
+    - `let r = &x`：得到 **独占/可写** 的 `Ref<T>`（exclusive borrow）
+    - `const r = &x`：得到 **共享/只读** 的 `Ref<T>`（shared borrow）
+  - 升级禁止（Frozen）：共享引用不能因为被 `let` 绑定而变成可写（例如把共享 `Ref<T>` 传给需要独占借用的参数是编译错误）
+  - 降级/重借用（Frozen，Status: Planned）：可以从独占引用生成共享引用（reborrow），但在共享引用存活期间原独占引用被冻结（禁止写）
+    - 例：`let r = &x; foo(r)` 其中 `foo(const a: Ref<T>)` 会触发重借用；`foo` 返回前 `r` 不可写
+    - 例：`let r = &x; const s = r` 产生共享 `s`，`s` 存活期间 `r` 不可写
 
-#### 10.4 函数参数的所有权界定（Planned，默认安全）
-为减少心智负担，计划采用“默认借用、显式 move”的规则：
+#### 10.4 函数参数的所有权界定（Frozen，默认安全）
+为减少心智负担，采用“默认借用、显式 move”的规则：
 - `fn f(x: T) { ... }`：默认等价 `fn f(const x: T)`，`x` 是只读借用（共享借用）；函数内不能把 `x` move/返回，也不能写字段/元素
 - `fn f(let x: T) { ... }`：`x` 是可写借用（独占借用）；允许写字段/元素，但同一时间禁止其它借用
 - `fn f(move x: T) { ... }`：`x` 被 move 进来，函数成为 owner，可返回/存储
-- 示例（Planned）：
+- 调用规则（Frozen）：
+  - 传只读借用：`f(x)`（`x` 保持可用）
+  - 传可写借用：`f(x)`（`x` 仍可用，但在借用存活期间受借用检查器约束）
+  - 传所有权：必须显式 `f(move x)`（move 后 `x` 不可再用）
+- 示例（Frozen）：
   - `fn take(move user: User) -> User { return user }` ✅
   - `fn consume(user: User) -> User { return user }` ❌（user 为借用，不能返回）
 
 #### 10.5 生命周期推断（Status: Partial）
 - 编译器自动推断生命周期，用户通常不需要手动标注
 - 已实现的禁止规则（第一版）：
-  - 禁止返回局部变量引用：`fn invalid() -> &User { let u = ...; return &u }` ❌（悬垂引用）
+  - 禁止返回局部变量引用：`fn invalid() -> Ref<User> { let u = ...; return &u }` ❌（悬垂引用；过渡期写 `&User` 亦同）
   - 禁止引用逃逸到外层作用域（跨 block 赋值逃逸）
 - 从借用对象读取字段并返回（设计选择，Planned）：
   - 若返回类型是拥有所有权的类型（如 `string`），则需要 `clone()` 或由编译器按默认规则隐式 clone（需在 SPEC 冻结：偏“简单直观” vs “显式控制”）
@@ -476,7 +496,7 @@
   - `int/i32 -> int32_t`，`long/i64 -> int64_t`，`float/f32 -> float`，`double/f64 -> double`，`bool -> i1`（对外通常按 `int32_t` 约定）
   - `ptr -> void*`（不透明指针/句柄）
   - `string -> char*`（UTF-8，当前约定为 NUL 结尾；`null` 表示空指针）
-- 引用：`&T -> T*`
+- 引用：`Ref<T> -> T*`（过渡期 `&T` 等价 `Ref<T>`）
 - 动态值：`any -> tua_value`（见 `src/tua_map.h`）
 - 容器句柄：
   - `map -> tua_map*`（见 `src/tua_map.h`）

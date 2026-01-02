@@ -263,6 +263,22 @@ tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
     return map->entries[slot].v;
 }
 
+tua_value* tua_map_get_ref_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
+    if (!map) tua_panic("index null map");
+    if (!outOk) tua_panic("invalid outOk");
+    KeyKind kind;
+    uint32_t hash;
+    int64_t ikey = 0;
+    const char* skey = NULL;
+    decode_key(key, &kind, &hash, &ikey, &skey);
+
+    int found = 0;
+    size_t slot = find_slot(map, kind, hash, ikey, skey, &found);
+    *outOk = found ? 1 : 0;
+    if (!found) return NULL;
+    return &map->entries[slot].v;
+}
+
 void tua_map_set(tua_map* map, tua_value key, tua_value value) {
     if (!map) tua_panic("assign into null map");
     ensure_capacity(map);

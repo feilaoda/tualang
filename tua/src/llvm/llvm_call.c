@@ -767,6 +767,18 @@ static LLVMValueRef getOrCreateTuaMapGetWithOk(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_get_with_ok", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaMapGetRefWithOk(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get_ref_with_ok");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { mapType, vt, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(vtPtr, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_get_ref_with_ok", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaMapDelete(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_delete");
     if (existing) return existing;
@@ -2071,6 +2083,46 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return ok;
+            }
+
+            if (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite")) {
+                if (got != 1) {
+                    emitDebug("map.getRef/getRefWrite expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (recvVar.isTypedMap) {
+                    compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is not supported on typed map<K,V> yet");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+                LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, i32, "mokptr");
+                LLVMValueRef gfn = getOrCreateTuaMapGetRefWithOk(compiler);
+                LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                LLVMValueRef args3[3] = { mapPtr, key, okPtr };
+                LLVMValueRef p = LLVMBuildCall2(compiler->builder, gtype, gfn, args3, 3, "mgetp");
+                LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, i32, okPtr, "mok32");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+
+                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
+                LLVMValueRef payload = castValueToType(compiler, p, vtPtr);
+
+                LLVMTypeRef optType = compilerGetOptionType(compiler, vtPtr);
+                LLVMValueRef opt = LLVMGetUndef(optType);
+                opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+                opt = LLVMBuildInsertValue(compiler->builder, opt, payload, 1, "o1");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return opt;
             }
 
             if (tokenEquals(&get->name, "clear")) {
