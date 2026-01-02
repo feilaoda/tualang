@@ -54,6 +54,9 @@ typedef struct VarInfo {
     char* name;
     int nameLen;
     AType* type;
+    int isConst; // binding immutability
+    int isMoved; // first-pass move tracking for named types
+    int isRef;   // true if this binding is a reference (`&T`) / pointer-like
 } VarInfo;
 
 typedef struct Scope {
@@ -247,7 +250,7 @@ static VarInfo* scopeFind(Scope* scope, const Token* name) {
     return NULL;
 }
 
-static void scopeDefine(Scope* scope, const Token* name, AType* type) {
+static void scopeDefine(Scope* scope, const Token* name, AType* type, int isConst, int isRef) {
     if (!scope || !name || !name->start || name->length <= 0) return;
     VarInfo* v = (VarInfo*)malloc(sizeof(VarInfo));
     v->name = (char*)malloc((size_t)name->length + 1);
@@ -255,6 +258,9 @@ static void scopeDefine(Scope* scope, const Token* name, AType* type) {
     v->name[name->length] = '\0';
     v->nameLen = name->length;
     v->type = type ? type : atNew(AT_ANY);
+    v->isConst = isConst ? 1 : 0;
+    v->isMoved = 0;
+    v->isRef = isRef ? 1 : 0;
     listAppend(scope->vars, v);
 }
 
@@ -725,6 +731,17 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_VARIABLE: {
             VariableExpr* v = (VariableExpr*)expr;
             VarInfo* vi = scopeFind(scope, &v->name);
+            if (vi && vi->isMoved) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    v->name.line,
+                    "use of moved value '%.*s'",
+                    v->name.length,
+                    v->name.start
+                );
+                return inferReturn(expr, atNew(AT_ANY));
+            }
             if (vi && vi->type) return inferReturn(expr, vi->type);
             // Unknown identifier: keep permissive (imports/functions/structs handled in codegen).
             return inferReturn(expr, atNew(AT_ANY));
@@ -732,6 +749,16 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_ASSIGN: {
             AssignExpr* a = (AssignExpr*)expr;
             VarInfo* vi = scopeFind(scope, &a->name);
+            if (vi && vi->isConst) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    a->name.line,
+                    "cannot assign to const variable '%.*s'",
+                    a->name.length,
+                    a->name.start
+                );
+            }
             AType* rhs = inferExpr(compiler, scope, a->value, modulePath);
             if (vi && vi->type && !atAssignable(vi->type, rhs)) {
                 if (atIsOption(rhs) && !atIsOption(vi->type)) {
@@ -743,6 +770,28 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     );
                 } else {
                     analyzeErrorAt(compiler, modulePath, a->name.line, "type mismatch in assignment");
+                }
+            }
+
+            // First-pass move semantics: assigning from a named-type variable moves it.
+            if (a->value && a->value->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)a->value;
+                VarInfo* src = scopeFind(scope, &rv->name);
+                if (src && src->type && src->type->kind == AT_NAMED &&
+                    !src->isRef &&
+                    !(src->type->nameLen == 3 && memcmp(src->type->name, "ptr", 3) == 0)) {
+                    if (src->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of const binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else {
+                        src->isMoved = 1;
+                    }
                 }
             }
             return inferReturn(expr, vi && vi->type ? vi->type : atNew(AT_ANY));
@@ -799,7 +848,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
 	                Parameter* p = (Parameter*)n->data;
 	                AType* pt = (p && p->type) ? atFromAstType(p->type) : atNew(AT_ANY);
 	                listAppend(ps, pt);
-	                if (p) scopeDefine(lamScope, &p->name, pt);
+	                if (p) scopeDefine(lamScope, &p->name, pt, 0, (p->type && p->type->kind == TYPE_REF) ? 1 : 0);
 	            }
 	            List* rs = listNew();
 	            if (lam->returnTypes && lam->returnTypes->length > 0) {
@@ -845,10 +894,45 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             inferExpr(compiler, scope, g->object, modulePath);
             return inferReturn(expr, atNew(AT_ANY));
         }
+        case EXPR_SET: {
+            // Member assignment: const/move checks first; keep type inference permissive.
+            SetExpr* s = (SetExpr*)expr;
+            if (s->object && s->object->type == EXPR_VARIABLE) {
+                VariableExpr* recv = (VariableExpr*)s->object;
+                VarInfo* vi = scopeFind(scope, &recv->name);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through const binding '%.*s'",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
+            }
+            inferExpr(compiler, scope, s->object, modulePath);
+            inferExpr(compiler, scope, s->value, modulePath);
+            return inferReturn(expr, atNew(AT_VOID));
+        }
         case EXPR_INDEX:
             return inferReturn(expr, inferIndex(compiler, scope, (IndexExpr*)expr, modulePath));
         case EXPR_INDEX_SET: {
             IndexSetExpr* is = (IndexSetExpr*)expr;
+            if (is->object && is->object->type == EXPR_VARIABLE) {
+                VariableExpr* recv = (VariableExpr*)is->object;
+                VarInfo* vi = scopeFind(scope, &recv->name);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through const binding '%.*s'",
+                        recv->name.length,
+                        recv->name.start
+                    );
+                }
+            }
             AType* objTy = inferExpr(compiler, scope, is->object, modulePath);
             AType* keyTy = inferExpr(compiler, scope, is->index, modulePath);
             AType* valTy = inferExpr(compiler, scope, is->value, modulePath);
@@ -1036,7 +1120,36 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     analyzeErrorAt(compiler, modulePath, v->name.line, "type mismatch in variable initializer");
                 }
             }
-            scopeDefine(scope, &v->name, annotated ? annotated : initTy);
+
+            // First-pass move semantics: `let b = a` moves `a` when `a` is a named type.
+            if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)v->initializer;
+                VarInfo* src = scopeFind(scope, &rv->name);
+                if (src && src->type && src->type->kind == AT_NAMED &&
+                    !src->isRef &&
+                    !(src->type->nameLen == 3 && memcmp(src->type->name, "ptr", 3) == 0)) {
+                    if (src->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            rv->name.line,
+                            "cannot move out of const binding '%.*s'",
+                            rv->name.length,
+                            rv->name.start
+                        );
+                    } else {
+                        src->isMoved = 1;
+                    }
+                }
+            }
+            int isRefBinding = 0;
+            if (v->type && v->type->kind == TYPE_REF) {
+                isRefBinding = 1;
+            } else if (!v->type && v->initializer && v->initializer->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)v->initializer;
+                if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
+            }
+            scopeDefine(scope, &v->name, annotated ? annotated : initTy, v->isConst ? 1 : 0, isRefBinding);
             break;
         }
         case STMT_EXPR: {
@@ -1133,7 +1246,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 Parameter* param = (Parameter*)p->data;
                 if (!param) continue;
                 AType* pt = param->type ? atFromAstType(param->type) : atNew(AT_ANY);
-                scopeDefine(fnScope, &param->name, pt);
+                scopeDefine(fnScope, &param->name, pt, 0, (param->type && param->type->kind == TYPE_REF) ? 1 : 0);
             }
             List* expected = listNew();
             if (fn->returnTypes && fn->returnTypes->length > 0) {
@@ -1169,9 +1282,11 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     Token* nameTok = (Token*)n->data;
                     if (!nameTok) continue;
                     AType* annotated = NULL;
+                    int isRefBinding = 0;
                     if (d->types && idx < d->types->length) {
                         Type* t = (Type*)listGet(d->types, idx);
                         annotated = t ? atFromAstType(t) : NULL;
+                        if (t && t->kind == TYPE_REF) isRefBinding = 1;
                     }
                     // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
                     AType* inferred = (d->names->length == 1) ? rhs : atNew(AT_ANY);
@@ -1186,13 +1301,24 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             );
                         }
                     }
-                    scopeDefine(scope, nameTok, chosen);
+                    scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding);
                 }
             } else if (!d->isDeclaration && d->names) {
                 for (ListNode* n = d->names->head; n != NULL; n = n->next) {
                     Token* nameTok = (Token*)n->data;
                     if (!nameTok) continue;
                     VarInfo* vi = scopeFind(scope, nameTok);
+                    if (vi && vi->isConst) {
+                        analyzeErrorAt(
+                            compiler,
+                            modulePath,
+                            nameTok->line,
+                            "cannot assign to const variable '%.*s'",
+                            nameTok->length,
+                            nameTok->start
+                        );
+                        continue;
+                    }
                     if (vi && vi->type && !atAssignable(vi->type, rhs)) {
                         if (atIsOption(rhs) && !atIsOption(vi->type)) {
                             analyzeErrorAt(

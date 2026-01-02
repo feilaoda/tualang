@@ -1,0 +1,8 @@
+struct Foo {
+  x: int
+}
+
+let foo: Foo = Foo()
+let r: &Foo = &foo
+r.x = 1
+assert(foo.x == 1)
