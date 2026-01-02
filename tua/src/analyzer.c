@@ -399,7 +399,8 @@ static int scopeIsAncestor(Scope* ancestor, Scope* child) {
 
 static int varIsMoveOnly(const VarInfo* v) {
     if (!v || !v->type) return 0;
-    if (v->isRef) return 0;
+    // Shared references are copyable; exclusive references are move-only to prevent aliasing.
+    if (v->isRef) return v->refKind == 1 ? 1 : 0;
     if (v->type->kind == AT_MAP || v->type->kind == AT_ARRAY) return 1;
     if (v->type->kind == AT_NAMED) {
         // `ptr` is treated as a raw pointer and remains copyable for now.
@@ -1218,7 +1219,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                             rv->name.start
                         );
                     } else
-                    if (src->isBorrowed) {
+                    if (src->isBorrowed && !src->isRef) {
                         analyzeErrorAt(
                             compiler,
                             modulePath,
@@ -1244,6 +1245,54 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             }
             return inferReturn(expr, vi && vi->type ? vi->type : atNew(AT_ANY));
         }
+        case EXPR_DEREF_SET: {
+            DerefSetExpr* d = (DerefSetExpr*)expr;
+            Expr* ptr = unwrapGrouping(d->pointer);
+            if (!ptr || ptr->type != EXPR_VARIABLE) {
+                analyzeErrorAt(compiler, modulePath, d->base.token.line, "dereference assignment expects a reference variable");
+                inferExpr(compiler, scope, d->pointer, modulePath);
+                inferExpr(compiler, scope, d->value, modulePath);
+                return inferReturn(expr, atNew(AT_ANY));
+            }
+
+            VariableExpr* pv = (VariableExpr*)ptr;
+            VarInfo* vi = scopeFind(scope, &pv->name);
+            if (!vi || !vi->isRef) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    d->base.token.line,
+                    "cannot dereference non-reference '%.*s'",
+                    pv->name.length,
+                    pv->name.start
+                );
+            } else {
+                if (vi->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        d->base.token.line,
+                        "cannot write through shared reference '%.*s'",
+                        pv->name.length,
+                        pv->name.start
+                    );
+                }
+                // If the reference itself was reborrowed as shared, forbid using it mutably.
+                if (borrowHasAny(scope, &pv->name)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        d->base.token.line,
+                        "cannot write through reference '%.*s' because it is borrowed",
+                        pv->name.length,
+                        pv->name.start
+                    );
+                }
+            }
+
+            inferExpr(compiler, scope, d->value, modulePath);
+            return inferReturn(expr, atNew(AT_ANY));
+        }
         case EXPR_BINARY:
             return inferReturn(expr, inferBinary(compiler, scope, (BinaryExpr*)expr, modulePath));
         case EXPR_UNARY: {
@@ -1267,7 +1316,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                             rv->name.length,
                             rv->name.start
                         );
-                    } else if (src->isBorrowed) {
+                    } else if (src->isBorrowed && !src->isRef) {
                         analyzeErrorAt(
                             compiler,
                             modulePath,
@@ -1290,6 +1339,27 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     }
                 }
                 return inferReturn(expr, outTy ? outTy : atNew(AT_ANY));
+            }
+            if (u->operator.type == TOKEN_STAR) {
+                Expr* rhs = unwrapGrouping(u->right);
+                if (!rhs || rhs->type != EXPR_VARIABLE) {
+                    analyzeErrorAt(compiler, modulePath, u->base.token.line, "dereference expects a reference variable");
+                    inferExpr(compiler, scope, u->right, modulePath);
+                    return inferReturn(expr, atNew(AT_ANY));
+                }
+                VariableExpr* v = (VariableExpr*)rhs;
+                VarInfo* vi = scopeFind(scope, &v->name);
+                if (!vi || !vi->isRef) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        u->base.token.line,
+                        "cannot dereference non-reference '%.*s'",
+                        v->name.length,
+                        v->name.start
+                    );
+                }
+                return inferReturn(expr, atNew(AT_ANY));
             }
             if (u->operator.type == TOKEN_BNOT) {
                 AType* rhs = inferExpr(compiler, scope, u->right, modulePath);
@@ -1715,9 +1785,29 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             int isRefBinding = 0;
             if (v->type && v->type->kind == TYPE_REF) {
                 isRefBinding = 1;
-            } else if (!v->type && v->initializer && v->initializer->type == EXPR_UNARY) {
-                UnaryExpr* un = (UnaryExpr*)v->initializer;
-                if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
+            } else if (!v->type && v->initializer) {
+                Expr* init = unwrapGrouping(v->initializer);
+                if (init && init->type == EXPR_UNARY) {
+                    UnaryExpr* un = (UnaryExpr*)init;
+                    if (un->operator.type == TOKEN_AMP) isRefBinding = 1;
+                } else if (init && init->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)init;
+                    VarInfo* src = scopeFind(scope, &rv->name);
+                    if (src && src->isRef) isRefBinding = 1;
+                } else if (init && init->type == EXPR_CALL) {
+                    // Infer `Ref<T>` from known ref-returning calls, including `m.getRef*().unwrap()`.
+                    int wantMut = 0;
+                    if (mapGetRefOwnerName(init, &wantMut)) {
+                        isRefBinding = 1;
+                    } else {
+                        CallExpr* call = (CallExpr*)init;
+                        if (call->callee && call->callee->type == EXPR_VARIABLE) {
+                            VariableExpr* callee = (VariableExpr*)call->callee;
+                            FuncInfo* fi = scopeFindFunc(scope, &callee->name);
+                            if (fi && fi->returnsRef) isRefBinding = 1;
+                        }
+                    }
+                }
             }
 
             // Map.getRef()/getRefWrite() borrow the map for as long as the result value lives in this scope
@@ -1759,35 +1849,38 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
                 if (varIsMoveOnly(src)) {
-                    if (borrowHasAny(scope, &rv->name)) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move '%.*s' because it is borrowed",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else if (src->isBorrowed) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move out of borrowed binding '%.*s'",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else if (src->isConst) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move out of const binding '%.*s'",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else {
-                        src->isMoved = 1;
+                    // `const s = r` for reference values is a shared reborrow, not a move.
+                    if (!(isRefBinding && v->isConst && src && src->isRef)) {
+                        if (borrowHasAny(scope, &rv->name)) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                rv->name.line,
+                                "cannot move '%.*s' because it is borrowed",
+                                rv->name.length,
+                                rv->name.start
+                            );
+                        } else if (src->isBorrowed && !src->isRef) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                rv->name.line,
+                                "cannot move out of borrowed binding '%.*s'",
+                                rv->name.length,
+                                rv->name.start
+                            );
+                        } else if (src->isConst) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                rv->name.line,
+                                "cannot move out of const binding '%.*s'",
+                                rv->name.length,
+                                rv->name.start
+                            );
+                        } else {
+                            src->isMoved = 1;
+                        }
                     }
                 }
             }
@@ -1837,19 +1930,23 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     } else if (init && init->type == EXPR_VARIABLE) {
                         VariableExpr* rv = (VariableExpr*)init;
                         VarInfo* src = scopeFind(scope, &rv->name);
-                        if (src && src->isRef) refKind = (src->refKind >= 0 ? src->refKind : 0);
+                        if (src && src->isRef) {
+                            // `const s = r` is a shared reborrow (downgrade).
+                            if (v->isConst) refKind = 0;
+                            else refKind = (src->refKind >= 0 ? src->refKind : 0);
+                        }
                     } else if (init && init->type == EXPR_CALL) {
                         int wantMut = 0;
                         const Token* mapName = mapGetRefOwnerName(init, &wantMut);
                         if (mapName) {
-                            refKind = wantMut ? 1 : 0;
+                            refKind = v->isConst ? 0 : (wantMut ? 1 : 0);
                         } else {
                         CallExpr* call = (CallExpr*)init;
                         if (call->callee && call->callee->type == EXPR_VARIABLE) {
                             VariableExpr* callee = (VariableExpr*)call->callee;
                             FuncInfo* fi = scopeFindFunc(scope, &callee->name);
                             if (fi && fi->returnsRef) {
-                                refKind = (fi->returnRefKind != 0) ? 1 : 0;
+                                refKind = v->isConst ? 0 : ((fi->returnRefKind != 0) ? 1 : 0);
                             }
                         }
                         }
@@ -1936,7 +2033,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         if (v && v->type == EXPR_VARIABLE) {
                             VariableExpr* ve = (VariableExpr*)v;
                             VarInfo* vi = scopeFind(scope, &ve->name);
-                            if (vi && vi->isBorrowed && varIsMoveOnly(vi)) {
+                            if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(vi)) {
                                 analyzeErrorAt(
                                     compiler,
                                     modulePath,
@@ -1960,7 +2057,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     if (r->value && r->value->type == EXPR_VARIABLE) {
                         VariableExpr* ve = (VariableExpr*)r->value;
                         VarInfo* vi = scopeFind(scope, &ve->name);
-                        if (vi && vi->isBorrowed && varIsMoveOnly(vi)) {
+                        if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(vi)) {
                             analyzeErrorAt(
                                 compiler,
                                 modulePath,

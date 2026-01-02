@@ -1,0 +1,6 @@
+let x = 1
+let r = &x
+
+const s = r
+*r = 2
+

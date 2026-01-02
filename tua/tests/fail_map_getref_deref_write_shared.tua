@@ -1,0 +1,6 @@
+let m: map = {}
+m["a"] = 1
+
+let p = m.getRef("a").unwrap()
+*p = 2
+

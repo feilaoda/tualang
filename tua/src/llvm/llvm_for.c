@@ -63,11 +63,12 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
         LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), slot);
     }
 
-    VariableRef* variable = malloc(sizeof(VariableRef));
+    VariableRef* variable = (VariableRef*)calloc(1, sizeof(VariableRef));
     variable->name = name;
     variable->length = nameTok.length;
     variable->value = slot;
     variable->type = valueType;
+    variable->pointeeType = NULL;
     variable->typeKind = TYPE_ANY;
     variable->typeName = NULL;
     variable->typeNameLength = 0;

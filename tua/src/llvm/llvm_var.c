@@ -547,6 +547,11 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 return LLVMPointerType(base.type, 0);
             }
         }
+        if (un->operator.type == TOKEN_STAR && un->right && un->right->type == EXPR_VARIABLE) {
+            // Dereference: `*p` has the pointee type of `p`.
+            VariableRef base = findVariableExpr(compiler, un->right);
+            if (base.value && base.pointeeType) return base.pointeeType;
+        }
     }
 
     if (initializer->type == EXPR_GET) {
@@ -1260,11 +1265,12 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         }
     }
     Block * block = compiler->current;
-    VariableRef * variable = malloc(sizeof(VariableRef));
+    VariableRef * variable = (VariableRef*)calloc(1, sizeof(VariableRef));
     variable->name = var;
     variable->length = stmt->name.length;
     variable->value = slot;
     variable->type = valueType;
+    variable->pointeeType = NULL;
     variable->typeKind = stmt->type ? stmt->type->kind : (stmt->initializer ? stmt->initializer->inferredType : TYPE_ANY);
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
         StructInfo* info = compilerResolveStructByToken(compiler, &stmt->type->name);
@@ -1341,6 +1347,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->typeName = NULL;
                 variable->typeNameLength = 0;
             }
+            if (base.value && base.type) {
+                variable->pointeeType = base.type;
+            }
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
@@ -1354,9 +1363,33 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
         }
+        if (base.value && base.pointeeType) {
+            variable->pointeeType = base.pointeeType;
+        }
     } else {
         variable->typeName = NULL;
         variable->typeNameLength = 0;
+    }
+
+    if (stmt->type && stmt->type->kind == TYPE_REF) {
+        variable->pointeeType = stmt->type->inner ? toLLVMType(compiler, stmt->type->inner) : NULL;
+    }
+
+    // `m.getRef(...).unwrap()` / `m.getRefWrite(...).unwrap()` returns `tua_value*` for untyped map.
+    if (!variable->pointeeType && stmt->initializer && stmt->initializer->type == EXPR_CALL) {
+        CallExpr* c1 = (CallExpr*)stmt->initializer;
+        if (c1->callee && c1->callee->type == EXPR_GET) {
+            GetExpr* g1 = (GetExpr*)c1->callee;
+            if (tokenEquals(&g1->name, "unwrap") && g1->object && g1->object->type == EXPR_CALL) {
+                CallExpr* c0 = (CallExpr*)g1->object;
+                if (c0->callee && c0->callee->type == EXPR_GET) {
+                    GetExpr* g0 = (GetExpr*)c0->callee;
+                    if (tokenEquals(&g0->name, "getRef") || tokenEquals(&g0->name, "getRefWrite")) {
+                        variable->pointeeType = compilerGetTuaValueType(compiler);
+                    }
+                }
+            }
+        }
     }
     variable->isConst = stmt->isConst ? 1 : 0;
     variable->isBorrowed = isConstView ? 1 : 0;

@@ -17,6 +17,9 @@ typedef struct VariableRef {
     int length;
     LLVMValueRef value;
     LLVMTypeRef type;
+    // For pointer-like values (e.g. Ref<T>), track the pointee type explicitly.
+    // Needed for LLVM opaque pointers where `LLVMGetElementType(ptr)` is unreliable.
+    LLVMTypeRef pointeeType;
     // Best-effort semantic type kind (for signed/unsigned codegen decisions).
     TypeKind typeKind;
     const char* typeName;
@@ -71,6 +74,7 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
 LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr);
 LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr);
+LLVMValueRef emitDerefSetExpr(Compiler* compiler, DerefSetExpr* expr);
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr);
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr);
 LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr);

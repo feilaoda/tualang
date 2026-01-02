@@ -860,6 +860,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_ASSIGN:
             return emitAssignExpr(compiler, (AssignExpr*)expr);
             break;
+        case EXPR_DEREF_SET:
+            return emitDerefSetExpr(compiler, (DerefSetExpr*)expr);
+            break;
         case EXPR_CALL:
             return emitCallExpr(compiler, (CallExpr*)expr);
             break;
@@ -1568,11 +1571,12 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
                 if (v) LLVMBuildStore(compiler->builder, v, slot);
             }
 
-            VariableRef* variable = malloc(sizeof(VariableRef));
+            VariableRef* variable = (VariableRef*)calloc(1, sizeof(VariableRef));
             variable->name = varName;
             variable->length = nameTok->length;
             variable->value = slot;
             variable->type = targetType;
+            variable->pointeeType = NULL;
 
             const char* typeName = llvmStructNameOrNull(targetType);
             if (typeName) {
@@ -1850,11 +1854,15 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             tr.paramBoxPtrTypes[i] = isBoxed ? boxPtrType : NULL;
         }
 
-        VariableRef* variable = malloc(sizeof(VariableRef));
+        VariableRef* variable = (VariableRef*)calloc(1, sizeof(VariableRef));
         variable->name = paramName;
         variable->length = p->name.length;
         variable->value = slot;
         variable->type = valueType;
+        variable->pointeeType = (p && p->type && p->type->kind == TYPE_REF)
+                                    ? (p->type->inner ? typeToLLVMType(compiler, p->type->inner, false)
+                                                      : LLVMInt32TypeInContext(compiler->context))
+                                    : NULL;
         if (p->type && p->type->kind == TYPE_NAMED) {
             StructInfo* info = compilerResolveStructByToken(compiler, &p->type->name);
             if (info) {

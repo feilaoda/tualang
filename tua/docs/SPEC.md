@@ -237,6 +237,9 @@
   - `let b = a`：移动 `a -> b`（所有权转移），`a` 之后不可再用（编译期错误）
   - 需要复制时必须显式：`a.clone()`（Planned：默认深拷贝字段；并对资源字段做正确的所有权处理）
   - `let r = &a` / `const r = &a`：取 `a` 的引用（类型层面是 `Ref<T>`；过渡期可写 `&T`；LLVM 层面是 `T*`）
+- 解引用（Status: Implemented）：
+  - 读：`*r`（`r` 必须是 `Ref<T>` 变量，第一版限制）
+  - 写：`*r = v`（要求 `r` 具备独占/可写借用能力，例如来自 `let r = &x` 或 `m.getRefWrite(k)`）
 - 字段访问：`p.x` / `p.x = v`（接收者目前仅支持变量；若变量是 `Ref<T>`（过渡期 `&T`）则会间接到指向的对象）
 - `this`（Frozen）：
   - 仅在 `struct` 实例方法中可用，类型恒为 `Ref<T>`（过渡期 `&T`）
@@ -353,6 +356,9 @@
   - `m.getRefWrite(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
   - 约束（Frozen）：当 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
   - 当前实现（Status: Implemented for `map`）：`map`（无类型参数）返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）；`map<K,V>` 暂不支持 `getRef/getRefWrite`（编译期报错）
+  - 用法（Status: Implemented for `map`）：
+    - `let p = m.getRef("k").unwrap(); let v = *p`（读 `tua_value`）
+    - `let p = m.getRefWrite("k").unwrap(); *p = 123`（原地写 value）
 - 遍历（Status: Implemented）：
   - `for v in m { ... }` / `for k,v in m { ... }`：见 5（`for-in`）
 - key 规范化（Status: Implemented）：
@@ -448,6 +454,9 @@
   - 降级/重借用（Frozen，Status: Planned）：可以从独占引用生成共享引用（reborrow），但在共享引用存活期间原独占引用被冻结（禁止写）
     - 例：`let r = &x; foo(r)` 其中 `foo(const a: Ref<T>)` 会触发重借用；`foo` 返回前 `r` 不可写
     - 例：`let r = &x; const s = r` 产生共享 `s`，`s` 存活期间 `r` 不可写
+  - 解引用（Status: Implemented）：
+    - `*r`：读取引用指向的值
+    - `*r = v`：写入引用指向的值（仅允许对“独占/可写引用”写；共享引用写为编译错误）
 
 #### 10.4 函数参数的所有权界定（Frozen，默认安全）
 为减少心智负担，采用“默认借用、显式 move”的规则：

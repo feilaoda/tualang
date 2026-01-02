@@ -1,0 +1,9 @@
+let m: map = {}
+m["a"] = 1
+
+let p = m.getRefWrite("a").unwrap()
+*p = 2
+
+let x: int = m["a"].unwrap()
+assert(x == 2)
+
