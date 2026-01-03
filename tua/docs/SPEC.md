@@ -279,15 +279,15 @@
   - 与 trait 的关系（Planned，扩展点）：
     - promotion **不等于** “自动实现 trait”：嵌入只影响字段/方法解析与 receiver 重写，不产生子类型/隐式 upcast
     - Status: Implemented（v0）：trait 满足性按 trait 规则检查；是否“满足”取决于方法集是否存在（可包含 promoted methods）
-    - Planned：静态分发采用泛型单态化（例如 `fn f<T: Trait>(x: T)`）
-    - Planned：动态分发需显式启用 `dyn Trait`（fat pointer / vtable），并在 ABI 中冻结布局与调用约定
+    - Status: Implemented（v1）：静态分发采用泛型单态化（例如 `fn f<T: Trait>(x: T)`）
+    - Status: Implemented（v2，第一版）：动态分发采用 trait object（fat pointer / vtable）；`TraitName` 可作为值类型使用（不要求显式 `dyn` 关键字）
   - 重要：`Child` **不是** `Base` 的子类型；`let b: Base = child` 是类型错误（Planned：完善类型检查报错信息）
 - `init/deinit`（Status: Partial）：
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）
 
-#### 7.2 trait（Status: Implemented v1）
-- 目标：提供“结构体满足某能力”的编译期契约；v1 提供 **静态分发**（通过泛型单态化），不引入 `dyn Trait`
+#### 7.2 trait（Status: Implemented v2，静态 + 动态）
+- 目标：提供“结构体满足某能力”的编译期契约；支持 **静态分发**（泛型单态化）与 **动态分发**（trait object / vtable）
 - 声明：
   - `trait TraitName { fn m(a: T, ...) -> R }`
   - trait 方法目前仅支持 **签名**（不支持默认实现/方法体）
@@ -296,7 +296,7 @@
   - `impl TraitName for StructName { fn m(...) ... }`：
     - 只能实现 trait 中声明的方法（多余方法为编译错误）
     - 方法体会被编译为 trait 命名空间下的函数：`StructName__TraitName__m`（不会加入 `StructName` 的固有方法集）
-    - 该方法体用于 v1 的静态分发（见下）；对具体类型调用 `x.m()` 默认仍解析为固有方法
+    - 该方法体用于静态/动态分发（见下）；对具体类型调用 `x.m()` 默认仍解析为固有方法（trait 方法体只在 trait 分发路径生效）
 - 满足性（Frozen）：
   - 对每个 trait 方法 `m`：
     - 若 `impl Trait for Struct {}` 内提供了 `m` 的方法体，则视为已实现
@@ -311,8 +311,21 @@
     - 若存在 `ConcreteType__Trait__m`，则调用该函数（trait impl 方法体）
     - 否则回退到固有/提升方法解析（调用 `ConcreteType__m` 或 promoted method）
   - 约束：在 `T: Trait` 上调用的方法必须在 `Trait` 中声明，否则为编译错误
+- v2 动态分发（Implemented，第一版；无 `dyn` 关键字）：
+  - `TraitName` 在类型位置表示 trait object（接口值）：一个 fat pointer `{ data: ptr, vtable: ptr }`
+  - vtable 布局（冻结 ABI，第一版）：`{ drop(i8*), m0(i8*, ...), m1(i8*, ...), ... }`（方法顺序按 trait 声明顺序）
+  - 对 `let x: TraitName = S{...}`：
+    - 要求存在 `impl TraitName for S {}`
+    - 生成 owning trait object：把 `S` box 到堆上，`drop` 负责递归 drop 后 `free`
+  - 对 `fn f(x: TraitName) { ... }` 的调用：
+    - 传入具体 `S` 时，默认构造非 owning view（`data = &s`），调用结束不释放
+    - 传入 `move s` 时，构造 owning object（box 到堆上），由被调函数的作用域 drop 释放
+  - 方法调用：`x.m(...)` 会通过 `vtable` 做间接调用
+- 自动“静态优先 / 动态降级”（Implemented，第一版）：
+  - 若存在 `fn f(x: TraitName) { ... }`，编译器会额外注册一个等价的合成泛型模板 `fn f<T0: TraitName>(x: T0) { ... }`
+  - 调用 `f(S{...})` 时若可推断出具体类型，则优先走静态单态化；当参数实参本身是 trait object（或无法推断）时回退到动态版本
 - 当前限制（Planned）：
-  - 不能把 `TraitName` 作为值类型/参数类型使用；不支持 `dyn Trait`（需要冻结 ABI + vtable 方案）
+  - trait 泛型（`trait Trait<T>`）、多重 bound、默认方法、`dyn` 显式关键字与 object-safety 规则仍待完善
 
 #### 7.3 impl（Status: Implemented，Rust 风格）
 - 语法：
@@ -372,7 +385,8 @@
   - **单态化**：把泛型调用在编译期展开成对实例化版本的直接调用
 - 第一版建议切片（Status: Implemented v0/v1）：
   - 仅支持 **函数泛型**：`fn f<T>(...) ...`
-  - 调用处要求 **显式类型实参**：`f<int>(1)`（暂不支持 `f(1)` 推断）
+  - 调用处支持 **显式类型实参**：`f<int>(1)`
+  - v0.5 语法糖：支持 `f(1)` 的类型实参推断（当可唯一推断时）；否则要求写出显式 `f<T>(...)`
   - 实现方式：每组类型实参生成一个单态化实例函数（`__G__...` 形式的内部符号名），并缓存复用
 - v1 约束（Status: Implemented）：
   - 语法：`fn g<T: Trait>(x: T) -> ...`

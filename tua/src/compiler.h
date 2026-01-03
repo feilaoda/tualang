@@ -196,10 +196,17 @@ typedef struct TraitInfo {
     char* name;
     int nameLength;
     TraitStmt* decl;
+    // v2-ish infrastructure (used for "no `dyn`" trait objects): per-trait object and vtable types.
+    // Object type name: `<TraitName>__obj`, layout: { i8* data, i8* vtable } (opaque vtable ptr).
+    LLVMTypeRef objType;
+    // Vtable type name: `<TraitName>__vtable`, layout: { i8* drop, i8* m0, i8* m1, ... }.
+    LLVMTypeRef vtableType;
 } TraitInfo;
 
 TraitInfo* compilerFindTrait(Compiler* compiler, const char* name, int length);
 TraitInfo* compilerResolveTraitByToken(Compiler* compiler, const Token* name);
+LLVMTypeRef compilerGetTraitObjType(Compiler* compiler, TraitInfo* trait);
+LLVMTypeRef compilerGetTraitVtableType(Compiler* compiler, TraitInfo* trait);
 
 typedef struct GenericSubst {
     const char* name;

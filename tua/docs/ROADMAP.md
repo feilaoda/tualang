@@ -43,7 +43,7 @@
   - [x] v0 语法与 AST：`fn f<T>(...)` + 调用处显式 `f<int>(1)`（先不做推断）
   - [x] v0 单态化与缓存：同一组类型实参只生成一次实例；支持跨模块导入后的实例化
   - [x] v1 约束（bounds）：支持 `T: Trait`（基于 `impl Trait for Struct` 记录 + 实例化时检查）
-  - [ ] v0.5 类型实参推断（语法糖）：允许 `id(10)` 在可唯一推断时等价 `id<int>(10)`；否则报错要求显式 `id<T>(...)`
+  - [x] v0.5 类型实参推断（语法糖）：允许 `id(10)` 在可唯一推断时等价 `id<int>(10)`；否则报错要求显式 `id<T>(...)`
   - [ ] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
@@ -63,7 +63,7 @@
 - [x] `struct` 嵌入字段 + 字段/方法提升（Go 风格但无子类型）：`...Base` / `...Base as name`，遮蔽优先、歧义报错、支持嵌套提升
 - [x] trait v0（language/spec + compiler）：`trait` 声明 + `impl Trait for Struct` 满足性检查（方法集检查，含 promoted methods），支持跨模块导入/导出
   - [x] trait v1：静态分发（泛型单态化，例如 `fn f<T: Trait>(x: T)`；支持 `impl Trait for Struct { fn ... }` 提供 trait 方法体并在 bound 上分发）
-  - [ ] trait v2：动态分发 `dyn Trait`（fat pointer/vtable，需冻结 ABI）
+  - [x] trait v2（第一版）：动态分发 trait object（fat pointer/vtable），并支持“静态优先、必要时自动降级为动态”（不要求显式 `dyn` 关键字）
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化

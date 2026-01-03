@@ -830,14 +830,14 @@ static AType* atFromAstType(Type* t) {
     }
 }
 
-static int atAssignable(AType* to, AType* from) {
+static int atAssignable(Compiler* compiler, AType* to, AType* from) {
     if (atIsAny(to) || atIsAny(from)) return 1;
     if (!to || !from) return 1;
     if (to->kind == from->kind) {
-        if (to->kind == AT_OPTION) return atAssignable(to->inner, from->inner);
-        if (to->kind == AT_MAP) return atAssignable(to->key, from->key) && atAssignable(to->value, from->value);
+        if (to->kind == AT_OPTION) return atAssignable(compiler, to->inner, from->inner);
+        if (to->kind == AT_MAP) return atAssignable(compiler, to->key, from->key) && atAssignable(compiler, to->value, from->value);
         if (to->kind == AT_ARRAY) {
-            if (!atAssignable(to->inner, from->inner)) return 0;
+            if (!atAssignable(compiler, to->inner, from->inner)) return 0;
             if (to->arrayLen >= 0) return from->arrayLen == to->arrayLen;
             return 1;
         }
@@ -851,19 +851,49 @@ static int atAssignable(AType* to, AType* from) {
                 AType* toP = (AType*)listGet(to->paramTypes, i);
                 AType* fromP = (AType*)listGet(from->paramTypes, i);
                 // Parameters are contravariant.
-                if (!atAssignable(fromP, toP)) return 0;
+                if (!atAssignable(compiler, fromP, toP)) return 0;
             }
             for (int i = 0; i < toRc; i++) {
                 AType* toR = (AType*)listGet(to->returnTypes, i);
                 AType* fromR = (AType*)listGet(from->returnTypes, i);
                 // Returns are covariant.
-                if (!atAssignable(toR, fromR)) return 0;
+                if (!atAssignable(compiler, toR, fromR)) return 0;
             }
             return 1;
         }
         if (to->kind == AT_NAMED) {
-            if (to->nameLen != from->nameLen) return 0;
-            return memcmp(to->name, from->name, (size_t)to->nameLen) == 0;
+            if (to->nameLen == from->nameLen && memcmp(to->name, from->name, (size_t)to->nameLen) == 0) {
+                return 1;
+            }
+
+            // Trait object assignment: allow assigning a struct value to a trait-typed slot when
+            // `impl Trait for Struct {}` exists. This models "interface values" without an explicit `dyn`.
+            if (compiler) {
+                Token traitTok = (Token){TOKEN_IDENTIFIER, to->name, to->nameLen, 0, 0, 0};
+                TraitInfo* trait = compilerResolveTraitByToken(compiler, &traitTok);
+                if (trait) {
+                    Token targetTok = (Token){TOKEN_IDENTIFIER, from->name, from->nameLen, 0, 0, 0};
+                    const char* targetQ = NULL;
+                    int targetQL = 0;
+                    char* targetAlloc = NULL;
+                    SymbolAlias* sa = compilerFindAlias(compiler, targetTok.start, targetTok.length);
+                    if (sa && sa->kind == ALIAS_STRUCT) {
+                        targetQ = sa->qualified;
+                        targetQL = sa->qualifiedLen;
+                    } else if (compiler->currentModulePrefix) {
+                        targetAlloc = compilerQualifyToken(compiler, &targetTok, &targetQL);
+                        targetQ = targetAlloc;
+                    } else {
+                        targetQ = targetTok.start;
+                        targetQL = targetTok.length;
+                    }
+
+                    int ok = compilerHasTraitImplPair(compiler, trait->name, trait->nameLength, targetQ, targetQL);
+                    if (targetAlloc) free(targetAlloc);
+                    if (ok) return 1;
+                }
+            }
+            return 0;
         }
         return 1;
     }
@@ -915,14 +945,14 @@ static int typedMapKeyAllows(AType* keyTy, AType* keyExprTy) {
     return 0;
 }
 
-static int typedMapValueAllows(AType* valTy, AType* exprTy) {
+static int typedMapValueAllows(Compiler* compiler, AType* valTy, AType* exprTy) {
     if (!valTy || !exprTy) return 1;
     if (atIsAny(valTy) || atIsAny(exprTy)) return 1;
     if (valTy->kind == AT_STRING) return exprTy->kind == AT_STRING || exprTy->kind == AT_NULL;
     if (valTy->kind == AT_BOOL) return exprTy->kind == AT_BOOL;
     if (atIsFloat(valTy) && valTy->kind != AT_F8 && valTy->kind != AT_BF8) return atIsNumeric(exprTy);
     if (atIsInt(valTy)) return atIsNumeric(exprTy);
-    return atAssignable(valTy, exprTy);
+    return atAssignable(compiler, valTy, exprTy);
 }
 
 static int isKeyLiteralCompatible(const Token* key, AType* keyTy) {
@@ -987,7 +1017,7 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
     for (ListNode* n = al->elements ? al->elements->head : NULL; n != NULL; n = n->next) {
         count++;
         AType* et = inferExpr(compiler, scope, (Expr*)n->data, modulePath);
-        if (expectedInner && !atIsAny(expectedInner) && !atAssignable(expectedInner, et)) {
+        if (expectedInner && !atIsAny(expectedInner) && !atAssignable(compiler, expectedInner, et)) {
             analyzeErrorAt(compiler, modulePath, al->base.token.line, "array element type mismatch");
         }
 
@@ -1154,7 +1184,7 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 } else {
                     Expr* arg0 = (Expr*)call->arguments->head->data;
                     AType* argTy = inferExpr(compiler, scope, arg0, modulePath);
-                    if (recvTy->inner && !atIsAny(recvTy->inner) && !atAssignable(recvTy->inner, argTy)) {
+                    if (recvTy->inner && !atIsAny(recvTy->inner) && !atAssignable(compiler, recvTy->inner, argTy)) {
                         analyzeErrorAt(compiler, modulePath, get->name.line, "array element type mismatch");
                     }
                 }
@@ -1292,7 +1322,7 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
             }
             return atNew(AT_ANY);
         }
-        if (l->inner && !atIsAny(l->inner) && !atAssignable(l->inner, r)) {
+        if (l->inner && !atIsAny(l->inner) && !atAssignable(compiler, l->inner, r)) {
             analyzeErrorAt(compiler, modulePath, b->operator.line, "type mismatch for \"??\" default value");
         }
         return l->inner ? l->inner : atNew(AT_ANY);
@@ -1465,7 +1495,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             }
 
             AType* rhs = inferExpr(compiler, scope, a->value, modulePath);
-            if (vi && vi->type && !atAssignable(vi->type, rhs)) {
+            if (vi && vi->type && !atAssignable(compiler, vi->type, rhs)) {
                 if (atIsOption(rhs) && !atIsOption(vi->type)) {
                     analyzeErrorAt(
                         compiler,
@@ -1885,14 +1915,14 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 if (!typedMapKeyAllows(objTy->key, keyTy)) {
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "typed map key type mismatch");
                 }
-                if (!typedMapValueAllows(objTy->value, valTy)) {
+                if (!typedMapValueAllows(compiler, objTy->value, valTy)) {
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "typed map value type mismatch");
                 }
             } else if (atIsArray(objTy)) {
                 if (!atIsNumeric(keyTy) && !atIsAny(keyTy)) {
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "array index must be numeric");
                 }
-                if (objTy->inner && !atAssignable(objTy->inner, valTy)) {
+                if (objTy->inner && !atAssignable(compiler, objTy->inner, valTy)) {
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "array element type mismatch");
                 }
             }
@@ -1918,7 +1948,7 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
                 analyzeErrorAt(compiler, modulePath, e->key.line, "typed map key type mismatch");
             }
             AType* vTy = inferExpr(compiler, scope, e->value, modulePath);
-            if (!typedMapValueAllows(valTy, vTy)) {
+            if (!typedMapValueAllows(compiler, valTy, vTy)) {
                 analyzeErrorAt(compiler, modulePath, e->key.line, "typed map value type mismatch");
             }
             // Forbid null for non-string typed V.
@@ -2055,7 +2085,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 analyzeErrorAt(compiler, modulePath, v->name.line, "dynamic array must have an initializer (use [] or [..])");
             }
 
-            if (annotated && !atAssignable(annotated, initTy)) {
+            if (annotated && !atAssignable(compiler, annotated, initTy)) {
                 if (atIsOption(initTy) && !atIsOption(annotated)) {
                     analyzeErrorAt(
                         compiler,
@@ -2354,7 +2384,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         AType* vt = inferExpr(compiler, scope, v, modulePath);
                         if (expectedReturns && idx < wantCount) {
                             AType* want = (AType*)listGet(expectedReturns, idx);
-                            if (want && !atAssignable(want, vt)) {
+                            if (want && !atAssignable(compiler, want, vt)) {
                                 analyzeErrorAt(compiler, modulePath, r->keyword.line, "return type mismatch");
                             }
                         }
@@ -2378,7 +2408,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     AType* vt = inferExpr(compiler, scope, r->value, modulePath);
                     if (expectedReturns && wantCount > 0) {
                         AType* want = (AType*)listGet(expectedReturns, 0);
-                        if (want && !atAssignable(want, vt)) {
+                        if (want && !atAssignable(compiler, want, vt)) {
                             analyzeErrorAt(compiler, modulePath, r->keyword.line, "return type mismatch");
                         }
                     }
@@ -2444,7 +2474,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
                     AType* inferred = (d->names->length == 1) ? rhs : atNew(AT_ANY);
                     AType* chosen = annotated ? annotated : inferred;
-                    if (annotated && !atAssignable(annotated, inferred)) {
+                    if (annotated && !atAssignable(compiler, annotated, inferred)) {
                         if (atIsOption(inferred) && !atIsOption(annotated)) {
                             analyzeErrorAt(
                                 compiler,
@@ -2472,7 +2502,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         );
                         continue;
                     }
-                    if (vi && vi->type && !atAssignable(vi->type, rhs)) {
+                    if (vi && vi->type && !atAssignable(compiler, vi->type, rhs)) {
                         if (atIsOption(rhs) && !atIsOption(vi->type)) {
                             analyzeErrorAt(
                                 compiler,
@@ -2591,11 +2621,115 @@ static void scanReturnRefKindInStmt(FuncStmt* fn, Stmt* stmt, int* ioKind, int* 
     }
 }
 
-int analyzeModule(Compiler* compiler, List* statements, List* aliases, const char* modulePath) {
-    (void)aliases;
+int analyzeModule(
+    Compiler* compiler,
+    List* statements,
+    List* aliases,
+    const char* modulePath,
+    const char* modulePrefix,
+    int modulePrefixLen
+) {
     const char* savedFile = compiler ? compiler->currentFilePath : NULL;
-    if (compiler) compiler->currentFilePath = modulePath;
+    const char* savedPrefix = compiler ? compiler->currentModulePrefix : NULL;
+    int savedPrefixLen = compiler ? compiler->currentModulePrefixLen : 0;
+    List* savedAliases = compiler ? compiler->currentAliases : NULL;
+
+    if (compiler) {
+        compiler->currentFilePath = modulePath;
+        compiler->currentModulePrefix = modulePrefix;
+        compiler->currentModulePrefixLen = modulePrefixLen;
+        compiler->currentAliases = aliases;
+    }
     Scope* scope = scopePush(NULL);
+
+    // Pre-pass: register trait declarations so analyzer can treat `TraitName` as a first-class type
+    // (trait object) and perform basic assignability checks.
+    for (ListNode* node = statements ? statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_TRAIT) continue;
+        TraitStmt* t = (TraitStmt*)stmt;
+        if (!compiler) continue;
+
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &t->name, &ql);
+        if (q) {
+            if (!compilerFindTrait(compiler, q, ql)) {
+                Token old = t->name;
+                t->name.start = q;
+                t->name.length = ql;
+                compileTraitStmt(compiler, t);
+                t->name = old;
+            }
+            free(q);
+        } else {
+            if (!compilerFindTrait(compiler, t->name.start, t->name.length)) {
+                compileTraitStmt(compiler, t);
+            }
+        }
+        if (compiler->hadError) {
+            if (compiler) {
+                compiler->currentFilePath = savedFile;
+                compiler->currentModulePrefix = savedPrefix;
+                compiler->currentModulePrefixLen = savedPrefixLen;
+                compiler->currentAliases = savedAliases;
+            }
+            return 0;
+        }
+    }
+
+    // Pre-pass: record `impl Trait for Struct` pairs so trait-typed assignment can be validated.
+    for (ListNode* node = statements ? statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_TRAIT_IMPL) continue;
+        TraitImplStmt* ti = (TraitImplStmt*)stmt;
+        if (!compiler) continue;
+
+        const char* traitQ = NULL;
+        int traitQL = 0;
+        char* traitAlloc = NULL;
+        SymbolAlias* ta = compilerFindAlias(compiler, ti->traitName.start, ti->traitName.length);
+        if (ta && ta->kind == ALIAS_TRAIT) {
+            traitQ = ta->qualified;
+            traitQL = ta->qualifiedLen;
+        } else if (compiler->currentModulePrefix) {
+            traitAlloc = compilerQualifyToken(compiler, &ti->traitName, &traitQL);
+            traitQ = traitAlloc;
+        } else {
+            traitQ = ti->traitName.start;
+            traitQL = ti->traitName.length;
+        }
+
+        const char* targetQ = NULL;
+        int targetQL = 0;
+        char* targetAlloc = NULL;
+        SymbolAlias* sa = compilerFindAlias(compiler, ti->targetName.start, ti->targetName.length);
+        if (sa && sa->kind == ALIAS_STRUCT) {
+            targetQ = sa->qualified;
+            targetQL = sa->qualifiedLen;
+        } else if (compiler->currentModulePrefix) {
+            targetAlloc = compilerQualifyToken(compiler, &ti->targetName, &targetQL);
+            targetQ = targetAlloc;
+        } else {
+            targetQ = ti->targetName.start;
+            targetQL = ti->targetName.length;
+        }
+
+        compilerRecordTraitImplPair(compiler, traitQ, traitQL, targetQ, targetQL);
+        if (traitAlloc) free(traitAlloc);
+        if (targetAlloc) free(targetAlloc);
+    }
 
     // Pre-pass: collect local function signatures for borrow/move checking at call sites.
     for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
@@ -2668,10 +2802,20 @@ int analyzeModule(Compiler* compiler, List* statements, List* aliases, const cha
         scope->stmtIndex = stmtIndex;
         analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, NULL);
         if (compiler && compiler->hadError) {
-            if (compiler) compiler->currentFilePath = savedFile;
+            if (compiler) {
+                compiler->currentFilePath = savedFile;
+                compiler->currentModulePrefix = savedPrefix;
+                compiler->currentModulePrefixLen = savedPrefixLen;
+                compiler->currentAliases = savedAliases;
+            }
             return 0;
         }
     }
-    if (compiler) compiler->currentFilePath = savedFile;
+    if (compiler) {
+        compiler->currentFilePath = savedFile;
+        compiler->currentModulePrefix = savedPrefix;
+        compiler->currentModulePrefixLen = savedPrefixLen;
+        compiler->currentAliases = savedAliases;
+    }
     return 1;
 }

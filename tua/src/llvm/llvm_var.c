@@ -65,6 +65,20 @@ static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_new", fnType);
 }
 
+static char* vtableGlobalNameForTraitAndStruct(const char* traitName, int traitLen, const char* structName, int structLen) {
+    const char* prefix = "__VT__";
+    const int prefixLen = 5;
+    const int sepLen = 2;
+    int len = prefixLen + traitLen + sepLen + structLen;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, prefix, (size_t)prefixLen);
+    memcpy(s + prefixLen, traitName, (size_t)traitLen);
+    memcpy(s + prefixLen + traitLen, "__", (size_t)sepLen);
+    memcpy(s + prefixLen + traitLen + sepLen, structName, (size_t)structLen);
+    s[len] = '\0';
+    return s;
+}
+
 static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef type, const char* name) {
     if (!compiler || !compiler->current || !compiler->current->func) return NULL;
     LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(compiler->current->func);
@@ -129,6 +143,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_PTR:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
+            if (ti) return compilerGetTraitObjType(compiler, ti);
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
@@ -1197,6 +1213,71 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         compiler->expectedArrayElemType = savedAElem;
         compiler->expectedArrayElemKind = savedAElemK;
         compiler->expectedArrayFixedLen = savedAFixed;
+
+        // Trait object variable: store an owning interface value by boxing the concrete struct value.
+        if (stmt->type && stmt->type->kind == TYPE_NAMED) {
+            TraitInfo* trait = compilerResolveTraitByToken(compiler, &stmt->type->name);
+            if (trait) {
+                LLVMTypeRef objTy = compilerGetTraitObjType(compiler, trait);
+                if (objTy && LLVMTypeOf(initValue) != objTy) {
+                    LLVMTypeRef concreteTy = LLVMTypeOf(initValue);
+                    if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+                        error("trait object initialization requires a struct value\n");
+                        return;
+                    }
+                    const char* structName = NULL;
+                    int structLen = 0;
+                    if (stmt->initializer && stmt->initializer->type == EXPR_VARIABLE) {
+                        VariableRef base = findVariableExpr(compiler, stmt->initializer);
+                        if (base.typeName && base.typeNameLength > 0) {
+                            structName = base.typeName;
+                            structLen = base.typeNameLength;
+                        }
+                    }
+                    if (!structName) {
+                        const char* n = LLVMGetStructName(concreteTy);
+                        if (n) {
+                            structName = n;
+                            structLen = (int)strlen(n);
+                        }
+                    }
+                    if (!structName || structLen <= 0) {
+                        error("trait object initialization requires a named struct type\n");
+                        return;
+                    }
+
+                    char* vtName = vtableGlobalNameForTraitAndStruct(trait->name, trait->nameLength, structName, structLen);
+                    LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, vtName);
+                    free(vtName);
+                    if (!vt) {
+                        error("missing trait impl for trait object initialization\n");
+                        return;
+                    }
+
+                    LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+                    LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+                    LLVMValueRef raw = LLVMBuildCall2(
+                        compiler->builder,
+                        LLVMGlobalGetValueType(mallocFn),
+                        mallocFn,
+                        &sizeV,
+                        1,
+                        "malloc"
+                    );
+                    LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+                    LLVMBuildStore(compiler->builder, initValue, cell);
+
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    LLVMValueRef dataI8 = LLVMBuildBitCast(compiler->builder, cell, i8ptr, "data");
+                    LLVMValueRef vtI8 = LLVMBuildBitCast(compiler->builder, vt, i8ptr, "vt");
+                    LLVMValueRef obj = LLVMGetUndef(objTy);
+                    obj = LLVMBuildInsertValue(compiler->builder, obj, dataI8, 0, "o0");
+                    obj = LLVMBuildInsertValue(compiler->builder, obj, vtI8, 1, "o1");
+                    initValue = obj;
+                }
+            }
+        }
+
         if (stmt->initializer->type == EXPR_LAMBDA) {
             compiledLambdaSig = compiler->lastLambdaFuncType;
             if (declaredSig && compiledLambdaSig && declaredSig != compiledLambdaSig) {
@@ -1241,7 +1322,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             VariableRef base = findVariableExpr(compiler, stmt->initializer);
             int shouldMoveMap = base.isMap;
             int shouldMoveArr = base.isArray && !base.isStackArray;
-            if ((shouldMoveMap || shouldMoveArr) && base.value && base.type) {
+            int shouldMoveTrait = base.isTraitObj;
+            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait) && base.value && base.type) {
                 LLVMValueRef nullv = LLVMConstNull(base.type);
                 if (base.isBoxed) {
                     if (!base.boxPtrType) {
@@ -1483,6 +1565,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isBoxed = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     variable->isMap = 0;
+    variable->isTraitObj = 0;
+    variable->traitName = NULL;
+    variable->traitNameLength = 0;
     variable->isTypedMap = 0;
     variable->mapKeyType = NULL;
     variable->mapValueType = NULL;
@@ -1522,6 +1607,17 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->genericBoundTraitName = gs->boundTraitName;
                 variable->genericBoundTraitNameLength = gs->boundTraitNameLen;
             }
+        }
+    }
+
+    if (stmt->type && stmt->type->kind == TYPE_NAMED) {
+        TraitInfo* ti = compilerResolveTraitByToken(compiler, &stmt->type->name);
+        if (ti) {
+            variable->isTraitObj = 1;
+            variable->traitName = ti->name;
+            variable->traitNameLength = ti->nameLength;
+            variable->typeName = NULL;
+            variable->typeNameLength = 0;
         }
     }
 

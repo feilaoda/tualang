@@ -41,6 +41,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
+    if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
     return 1;
 }
 
@@ -323,6 +324,18 @@ static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_array_free", fty);
 }
 
+static LLVMValueRef getOrCreateFree(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "free");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "free", fty);
+}
+
+static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info);
+
 static LLVMValueRef loadLocalVarValueForDrop(Compiler* compiler, VariableRef var, const char* name) {
     if (!compiler || !var.value || !var.type) return NULL;
     LLVMBuilderRef builder = compiler->builder;
@@ -350,17 +363,35 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
     if (!compiler) return;
     if (var.isArray && var.isStackArray) return; // stack-backed fixed arrays must not be freed
     if (var.isBorrowed) return;
-    if (!var.isMap && !var.isArray) return;
+    if (!var.isMap && !var.isArray && !var.isTraitObj) return;
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) return;
 
     LLVMValueRef cur = loadLocalVarValueForDrop(compiler, var, "drop_cur");
     if (!cur) return;
 
-    LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
-    if (!fn) return;
-    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
-    LLVMValueRef args1[1] = { cur };
-    LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "");
+    if (var.isTraitObj) {
+        if (!var.traitName || var.traitNameLength <= 0) return;
+        TraitInfo* trait = compilerFindTrait(compiler, var.traitName, var.traitNameLength);
+        if (!trait) return;
+        LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, trait);
+        if (!vtTy) return;
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+
+        LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "to_data");
+        LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, cur, 1, "to_vt");
+        LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "vtptr");
+        LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "vt_drop_p");
+        LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "vt_drop");
+        LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+        LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "dropfn");
+        LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+    } else {
+        LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+        if (!fn) return;
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args1[1] = { cur };
+        LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "");
+    }
 
     LLVMValueRef nullv = LLVMConstNull(var.type);
     storeLocalVarValueForDrop(compiler, var, nullv);
@@ -389,9 +420,121 @@ static void moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
     VariableRef v = findVariableExpr(compiler, e);
     if (!v.value || !v.type) return;
     if (v.isArray && v.isStackArray) return;
-    if (!v.isMap && !v.isArray) return;
+    if (!v.isMap && !v.isArray && !v.isTraitObj) return;
     LLVMValueRef nullv = LLVMConstNull(v.type);
     storeLocalVarValueForDrop(compiler, v, nullv);
+}
+
+static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info) {
+    if (!compiler || !info || !info->name || info->nameLength <= 0 || !info->decl) return NULL;
+    // Name: `<Struct>__drop`
+    int dropNameLen = info->nameLength + 6; // "__drop"
+    char* dropName = malloc((size_t)dropNameLen + 1);
+    memcpy(dropName, info->name, (size_t)info->nameLength);
+    memcpy(dropName + info->nameLength, "__drop", 6);
+    dropName[dropNameLen] = '\0';
+
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, dropName);
+    if (existing) {
+        free(dropName);
+        return existing;
+    }
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef selfTy = LLVMPointerType(info->type, 0);
+    LLVMTypeRef params[1] = { selfTy };
+    LLVMTypeRef fnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    LLVMValueRef fn = LLVMAddFunction(compiler->module, dropName, fnTy);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+
+    // Save insertion point.
+    LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+    Block* savedCurrent = compiler->current;
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
+    LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+    LLVMValueRef self = LLVMGetParam(fn, 0);
+
+    // Drop fields best-effort (deep drop of struct/map/array/trait objects).
+    for (int i = 0; info->decl->fields && i < info->decl->fields->length; i++) {
+        FieldDeclaration* f = (FieldDeclaration*)listGet(info->decl->fields, i);
+        if (!f || !f->type) continue;
+
+        // Field pointer
+        LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, self, (unsigned)i, "fptr");
+
+        // map: free handle
+        if (f->type->kind == TYPE_NAMED && f->type->name.length == 3 && memcmp(f->type->name.start, "map", 3) == 0) {
+            LLVMTypeRef mapTy = compilerGetMapType(compiler);
+            LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, mapTy, fieldPtr, "mcur");
+            LLVMValueRef freeFn = getOrCreateTuaMapFree(compiler);
+            if (freeFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+                LLVMValueRef args1[1] = { cur };
+                LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+            }
+            LLVMBuildStore(compiler->builder, LLVMConstNull(mapTy), fieldPtr);
+            continue;
+        }
+
+        // arrays: free handle
+        if (f->type->kind == TYPE_ARRAY) {
+            LLVMTypeRef arrTy = compilerGetArrayType(compiler);
+            LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, arrTy, fieldPtr, "acur");
+            LLVMValueRef freeFn = getOrCreateTuaArrayFree(compiler);
+            if (freeFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+                LLVMValueRef args1[1] = { cur };
+                LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+            }
+            LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), fieldPtr);
+            continue;
+        }
+
+        // trait object: call vtable.drop(data)
+        if (f->type->kind == TYPE_NAMED) {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &f->type->name);
+            if (ti) {
+                LLVMTypeRef objTy = compilerGetTraitObjType(compiler, ti);
+                LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, ti);
+                LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, objTy, fieldPtr, "tcur");
+                LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "t_data");
+                LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, cur, 1, "t_vt");
+                LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "t_vtptr");
+                LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "t_drop_p");
+                LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "t_drop");
+                LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+                LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "t_dropfn");
+                LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+                LLVMBuildStore(compiler->builder, LLVMConstNull(objTy), fieldPtr);
+                continue;
+            }
+        }
+
+        // nested struct: recurse
+        if (f->type->kind == TYPE_NAMED) {
+            StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+            if (inner) {
+                LLVMValueRef dropInner = getOrCreateStructDrop(compiler, inner);
+                if (dropInner) {
+                    LLVMTypeRef dropInnerTy = LLVMGlobalGetValueType(dropInner);
+                    LLVMValueRef args1[1] = { fieldPtr };
+                    LLVMBuildCall2(compiler->builder, dropInnerTy, dropInner, args1, 1, "");
+                }
+                continue;
+            }
+        }
+    }
+
+    LLVMBuildRetVoid(compiler->builder);
+
+    // Restore insertion point.
+    if (savedBlock) LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+    compiler->current = savedCurrent;
+
+    free(dropName);
+    return fn;
 }
 
 LLVMTypeRef compilerGetTuaValueType(Compiler* compiler) {
@@ -558,6 +701,53 @@ TraitInfo* compilerResolveTraitByToken(Compiler* compiler, const Token* name) {
     return compilerFindTrait(compiler, name->start, name->length);
 }
 
+LLVMTypeRef compilerGetTraitObjType(Compiler* compiler, TraitInfo* trait) {
+    if (!compiler || !trait) return NULL;
+    if (trait->objType) return trait->objType;
+    // Create a per-trait named object type so we can recover the trait from LLVM types in codegen.
+    int len = trait->nameLength + 5; // "__obj"
+    char* tn = malloc((size_t)len + 1);
+    memcpy(tn, trait->name, (size_t)trait->nameLength);
+    memcpy(tn + trait->nameLength, "__obj", 5);
+    tn[len] = '\0';
+    LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+    if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+    // Layout: { i8* data, i8* vtable } (opaque vtable ptr; entries are i8*).
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fields[2] = { i8ptr, i8ptr };
+    LLVMStructSetBody(t, fields, 2, 0);
+    trait->objType = t;
+    free(tn);
+    return t;
+}
+
+LLVMTypeRef compilerGetTraitVtableType(Compiler* compiler, TraitInfo* trait) {
+    if (!compiler || !trait) return NULL;
+    if (trait->vtableType) return trait->vtableType;
+    if (!trait->decl) return NULL;
+
+    int len = trait->nameLength + 8; // "__vtable"
+    char* tn = malloc((size_t)len + 1);
+    memcpy(tn, trait->name, (size_t)trait->nameLength);
+    memcpy(tn + trait->nameLength, "__vtable", 8);
+    tn[len] = '\0';
+
+    LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, tn);
+    if (!t) t = LLVMStructCreateNamed(compiler->context, tn);
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    int mc = trait->decl->methods ? trait->decl->methods->length : 0;
+    int fc = 1 + mc; // drop + methods
+    LLVMTypeRef* fields = malloc(sizeof(LLVMTypeRef) * (size_t)fc);
+    for (int i = 0; i < fc; i++) fields[i] = i8ptr;
+    LLVMStructSetBody(t, fields, (unsigned)fc, 0);
+    free(fields);
+
+    trait->vtableType = t;
+    free(tn);
+    return t;
+}
+
 EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name) {
     if (!compiler || !name) return NULL;
     SymbolAlias* a = compilerFindAlias(compiler, name->start, name->length);
@@ -699,6 +889,10 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         case TYPE_PTR:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
+            if (ti) {
+                return compilerGetTraitObjType(compiler, ti);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
@@ -2281,6 +2475,8 @@ void compileTraitStmt(Compiler* compiler, TraitStmt* stmt) {
     info->name = traitName;
     info->nameLength = stmt->name.length;
     info->decl = stmt;
+    info->objType = NULL;
+    info->vtableType = NULL;
     listAppend(compiler->traits, info);
 }
 
@@ -2297,6 +2493,250 @@ static TraitMethodDecl* traitFindMethodDeclByName(TraitInfo* trait, const Token*
         if (req && tokenEqualsTokenRaw(&req->name, name)) return req;
     }
     return NULL;
+}
+
+static int traitMethodIndexByName(TraitInfo* trait, const Token* name) {
+    if (!trait || !trait->decl || !name) return -1;
+    int idx = 0;
+    for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next, idx++) {
+        TraitMethodDecl* req = (TraitMethodDecl*)mn->data;
+        if (!req) continue;
+        if (tokenEqualsTokenRaw(&req->name, name)) return idx;
+    }
+    return -1;
+}
+
+static LLVMTypeRef llvmTypeFromTraitReturnTypes(Compiler* compiler, TraitMethodDecl* m) {
+    if (!compiler || !m) return LLVMVoidTypeInContext(compiler->context);
+    int rc = m->returnTypes ? m->returnTypes->length : 0;
+    if (rc <= 0) return LLVMVoidTypeInContext(compiler->context);
+    if (rc == 1) {
+        Type* t = (Type*)listGet(m->returnTypes, 0);
+        return typeToLLVMType(compiler, t, true);
+    }
+    LLVMTypeRef* rts = malloc(sizeof(LLVMTypeRef) * (size_t)rc);
+    for (int i = 0; i < rc; i++) {
+        Type* t = (Type*)listGet(m->returnTypes, i);
+        rts[i] = typeToLLVMType(compiler, t, false);
+    }
+    LLVMTypeRef out = LLVMStructTypeInContext(compiler->context, rts, (unsigned)rc, 0);
+    free(rts);
+    return out;
+}
+
+static LLVMTypeRef llvmTypeFromTraitParam(Compiler* compiler, Parameter* p) {
+    if (!compiler || !p) return LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef pt = typeToLLVMType(compiler, p->type, false);
+    if (p->mode != PARAM_MOVE && astTypeIsNamedStructValue(compiler, p->type)) {
+        pt = LLVMPointerType(pt, 0);
+    }
+    return pt;
+}
+
+static char* mangleVtableGlobalName(const char* traitName, int traitLen, const char* structName, int structLen) {
+    const char* prefix = "__VT__";
+    const int prefixLen = 5;
+    const int sepLen = 2;
+    int len = prefixLen + traitLen + sepLen + structLen;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, prefix, (size_t)prefixLen);
+    memcpy(s + prefixLen, traitName, (size_t)traitLen);
+    memcpy(s + prefixLen + traitLen, "__", (size_t)sepLen);
+    memcpy(s + prefixLen + traitLen + sepLen, structName, (size_t)structLen);
+    s[len] = '\0';
+    return s;
+}
+
+static LLVMValueRef getOrCreateTraitVtableGlobal(Compiler* compiler, TraitInfo* trait, StructInfo* target) {
+    if (!compiler || !trait || !target) return NULL;
+    if (!trait->decl || !target->decl) return NULL;
+
+    LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, trait);
+    if (!vtTy) return NULL;
+
+    char* gname = mangleVtableGlobalName(trait->name, trait->nameLength, target->name, target->nameLength);
+    LLVMValueRef existing = LLVMGetNamedGlobal(compiler->module, gname);
+    if (existing) {
+        free(gname);
+        return existing;
+    }
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+
+    // Ensure struct drop exists for this concrete type.
+    LLVMValueRef dropStruct = getOrCreateStructDrop(compiler, target);
+    if (!dropStruct) {
+        compilerErrorAt(compiler, 0, "failed to create drop for struct");
+        free(gname);
+        return NULL;
+    }
+
+    // Drop wrapper: void(i8*) which calls `<Struct>__drop` then `free`.
+    int dropWrapLen = 0;
+    Token traitTok = (Token){TOKEN_IDENTIFIER, trait->name, trait->nameLength, 0, 0, 0};
+    Token structTok = (Token){TOKEN_IDENTIFIER, target->name, target->nameLength, 0, 0, 0};
+    Token dropTok = (Token){TOKEN_IDENTIFIER, "drop", 4, 0, 0, 0};
+    char* ts = mangleTwo(&traitTok, &structTok, "__", &dropWrapLen);
+    Token tsTok = (Token){TOKEN_IDENTIFIER, ts, dropWrapLen, 0, 0, 0};
+    char* dropWrapName = mangleTwo(&tsTok, &dropTok, "__VT__", &dropWrapLen);
+    free(ts);
+
+    LLVMValueRef dropWrap = LLVMGetNamedFunction(compiler->module, dropWrapName);
+    LLVMTypeRef dropWrapTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+    if (!dropWrap) {
+        dropWrap = LLVMAddFunction(compiler->module, dropWrapName, dropWrapTy);
+        LLVMSetLinkage(dropWrap, LLVMInternalLinkage);
+
+        LLVMBasicBlockRef saved = LLVMGetInsertBlock(compiler->builder);
+        LLVMBasicBlockRef entry = LLVMAppendBasicBlock(dropWrap, "entry");
+        LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+        LLVMValueRef data = LLVMGetParam(dropWrap, 0);
+        LLVMValueRef self = LLVMBuildBitCast(compiler->builder, data, LLVMPointerType(target->type, 0), "self");
+        LLVMTypeRef sdTy = LLVMGlobalGetValueType(dropStruct);
+        LLVMBuildCall2(compiler->builder, sdTy, dropStruct, &self, 1, "");
+        LLVMValueRef freeFn = getOrCreateFree(compiler);
+        LLVMTypeRef freeTy = LLVMGlobalGetValueType(freeFn);
+        LLVMBuildCall2(compiler->builder, freeTy, freeFn, &data, 1, "");
+        LLVMBuildRetVoid(compiler->builder);
+
+        if (saved) LLVMPositionBuilderAtEnd(compiler->builder, saved);
+    }
+
+    int mc = trait->decl->methods ? trait->decl->methods->length : 0;
+    int fc = 1 + mc;
+    LLVMValueRef* fields = malloc(sizeof(LLVMValueRef) * (size_t)fc);
+    fields[0] = LLVMConstBitCast(dropWrap, i8ptr);
+
+    // Method wrappers and vtable entries.
+    for (int mi = 0; mi < mc; mi++) {
+        TraitMethodDecl* req = (TraitMethodDecl*)listGet(trait->decl->methods, mi);
+        if (!req) {
+            fields[1 + mi] = LLVMConstNull(i8ptr);
+            continue;
+        }
+
+        int wrapNameLen = 0;
+        Token mnTok = req->name;
+        char* tss = mangleTwo(&traitTok, &structTok, "__", &wrapNameLen);
+        Token tssTok = (Token){TOKEN_IDENTIFIER, tss, wrapNameLen, 0, 0, 0};
+        char* wrapName = mangleTwo(&tssTok, &mnTok, "__VT__", &wrapNameLen);
+        free(tss);
+
+        LLVMTypeRef retTy = llvmTypeFromTraitReturnTypes(compiler, req);
+        int argc = req->params ? req->params->length : 0;
+        LLVMTypeRef* wps = malloc(sizeof(LLVMTypeRef) * (size_t)(1 + argc));
+        wps[0] = i8ptr;
+        for (int ai = 0; ai < argc; ai++) {
+            Parameter* p = (Parameter*)listGet(req->params, ai);
+            wps[1 + ai] = llvmTypeFromTraitParam(compiler, p);
+        }
+        LLVMTypeRef wty = LLVMFunctionType(retTy, wps, (unsigned)(1 + argc), 0);
+        free(wps);
+
+        LLVMValueRef wrap = LLVMGetNamedFunction(compiler->module, wrapName);
+        if (!wrap) {
+            wrap = LLVMAddFunction(compiler->module, wrapName, wty);
+            LLVMSetLinkage(wrap, LLVMInternalLinkage);
+
+            LLVMBasicBlockRef saved = LLVMGetInsertBlock(compiler->builder);
+            LLVMBasicBlockRef entry = LLVMAppendBasicBlock(wrap, "entry");
+            LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+            LLVMValueRef data = LLVMGetParam(wrap, 0);
+            LLVMValueRef root = LLVMBuildBitCast(compiler->builder, data, LLVMPointerType(target->type, 0), "root");
+
+            // Resolve the concrete implementation: prefer `Struct__Trait__m`, else inherent/promoted `Struct__m`.
+            LLVMValueRef implFn = NULL;
+            {
+                int stLen = 0;
+                char* st = mangleTwo(&structTok, &traitTok, "__", &stLen);
+                Token stTok = (Token){TOKEN_IDENTIFIER, st, stLen, 0, 0, 0};
+                int fullLen = 0;
+                char* full = mangleTwo(&stTok, &req->name, "__", &fullLen);
+                free(st);
+                implFn = LLVMGetNamedFunction(compiler->module, full);
+                free(full);
+            }
+
+            PromotedMethodSigPath path = {0};
+            if (!implFn) {
+                int r = resolvePromotedMethodSigPath(compiler, target, &req->name, &path);
+                if (r > 0 && path.target) {
+                    Token it = (Token){TOKEN_IDENTIFIER, path.target->name, path.target->nameLength, 0, 0, 0};
+                    int ml = 0;
+                    char* n = mangleTwo(&it, &req->name, "__", &ml);
+                    implFn = LLVMGetNamedFunction(compiler->module, n);
+                    free(n);
+                }
+            }
+
+            if (!implFn) {
+                // leave a null slot; dispatch will trap if called.
+                if (LLVMGetTypeKind(retTy) == LLVMVoidTypeKind) LLVMBuildRetVoid(compiler->builder);
+                else LLVMBuildRet(compiler->builder, LLVMConstNull(retTy));
+                if (saved) LLVMPositionBuilderAtEnd(compiler->builder, saved);
+                free(wrapName);
+                continue;
+            }
+
+            // Compute promoted receiver pointer if needed.
+            LLVMValueRef recv = root;
+            LLVMTypeRef curTy = target->type;
+            StructInfo* curInfo = target;
+            if (path.target && path.depth > 0) {
+                for (int di = 0; di < path.depth; di++) {
+                    int embIdx = path.indices[di];
+                    FieldDeclaration* f = curInfo && curInfo->decl ? (FieldDeclaration*)listGet(curInfo->decl->fields, embIdx) : NULL;
+                    if (!f || !f->type || f->type->kind != TYPE_NAMED) break;
+                    StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+                    if (!inner) break;
+                    recv = LLVMBuildStructGEP2(compiler->builder, curTy, recv, (unsigned)embIdx, "emb_ptr");
+                    curTy = inner->type;
+                    curInfo = inner;
+                }
+            }
+
+            LLVMTypeRef ifTy = LLVMGlobalGetValueType(implFn);
+            unsigned expected = LLVMCountParamTypes(ifTy);
+            LLVMTypeRef* ipt = NULL;
+            if (expected > 0) {
+                ipt = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+                LLVMGetParamTypes(ifTy, ipt);
+            }
+            LLVMValueRef* args = NULL;
+            if (expected > 0) {
+                args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+                args[0] = castValueToType(compiler, recv, ipt[0]);
+                for (unsigned ai = 1; ai < expected; ai++) {
+                    LLVMValueRef av = LLVMGetParam(wrap, ai);
+                    args[ai] = castValueToType(compiler, av, ipt[ai]);
+                }
+            }
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, ifTy, implFn, args, expected, "");
+            if (ipt) free(ipt);
+            if (args) free(args);
+
+            if (LLVMGetTypeKind(retTy) == LLVMVoidTypeKind) LLVMBuildRetVoid(compiler->builder);
+            else LLVMBuildRet(compiler->builder, call);
+
+            if (saved) LLVMPositionBuilderAtEnd(compiler->builder, saved);
+        }
+
+        fields[1 + mi] = LLVMConstBitCast(wrap, i8ptr);
+        free(wrapName);
+    }
+
+    LLVMValueRef gv = LLVMAddGlobal(compiler->module, vtTy, gname);
+    LLVMSetLinkage(gv, LLVMInternalLinkage);
+    LLVMValueRef init = LLVMConstNamedStruct(vtTy, fields, (unsigned)fc);
+    LLVMSetInitializer(gv, init);
+    LLVMSetGlobalConstant(gv, 1);
+
+    free(fields);
+    free(gname);
+    free(dropWrapName);
+    return gv;
 }
 
 void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
@@ -2485,6 +2925,10 @@ void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
             );
         }
     }
+
+    if (compiler->hadError) return;
+    // Ensure dynamic-dispatch vtable exists for this impl pair (used when a trait is used as a value type).
+    (void)getOrCreateTraitVtableGlobal(compiler, trait, target);
 }
 
 static const char* llvmStructNameOrNull(LLVMTypeRef t) {
@@ -2882,6 +3326,18 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;
+        }
+
+        // If the parameter is a trait object type (no `dyn` keyword), record it and avoid treating it as a struct.
+        if (pType && pType->kind == TYPE_NAMED) {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &pType->name);
+            if (ti) {
+                variable->isTraitObj = 1;
+                variable->traitName = ti->name;
+                variable->traitNameLength = ti->nameLength;
+                variable->typeName = NULL;
+                variable->typeNameLength = 0;
+            }
         }
         variable->isConst = (p && p->mode == PARAM_CONST) ? 1 : 0;
         variable->isBorrowed = (p && p->type && p->type->kind == TYPE_REF) ? 1 : ((p && p->mode != PARAM_MOVE) ? 1 : 0);

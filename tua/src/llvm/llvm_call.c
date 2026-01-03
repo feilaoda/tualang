@@ -285,6 +285,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
+            if (ti) return compilerGetTraitObjType(compiler, ti);
             if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
@@ -324,6 +326,220 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
     }
 }
 
+static Expr* unwrapGroupingExpr(Expr* e);
+
+static Type* inferTypeFromValueExpr(Compiler* compiler, Expr* e) {
+    if (!compiler || !e) return NULL;
+    e = unwrapGroupingExpr(e);
+    if (!e) return NULL;
+
+    if (e->type == EXPR_LITERAL) {
+        LiteralExpr* lit = (LiteralExpr*)e;
+        TypeKind k = TYPE_VOID;
+        switch (lit->value.type) {
+            case TOKEN_INT: k = TYPE_INT; break;
+            case TOKEN_LONG: k = TYPE_LONG; break;
+            case TOKEN_FLOAT: k = TYPE_FLOAT; break;
+            case TOKEN_DOUBLE: k = TYPE_DOUBLE; break;
+            case TOKEN_STRING_LITERAL: k = TYPE_STRING; break;
+            case TOKEN_TRUE:
+            case TOKEN_FALSE:
+                k = TYPE_BOOL;
+                break;
+            default:
+                break;
+        }
+        if (k != TYPE_VOID) {
+            Type* t = malloc(sizeof(Type));
+            memset(t, 0, sizeof(*t));
+            t->kind = k;
+            return t;
+        }
+    }
+
+    if (e->type == EXPR_VARIABLE) {
+        VariableRef v = findVariableExpr(compiler, e);
+        if (v.typeName && v.typeNameLength > 0) {
+            Type* t = malloc(sizeof(Type));
+            memset(t, 0, sizeof(*t));
+            t->kind = TYPE_NAMED;
+            t->name = (Token){TOKEN_IDENTIFIER, v.typeName, v.typeNameLength, e->token.line, e->token.col, 0};
+            return t;
+        }
+        TypeKind k = e->inferredType;
+        if (k == TYPE_INT || k == TYPE_LONG || k == TYPE_BOOL || k == TYPE_STRING ||
+            k == TYPE_FLOAT || k == TYPE_DOUBLE ||
+            k == TYPE_I8 || k == TYPE_I16 || k == TYPE_ISIZE ||
+            k == TYPE_U8 || k == TYPE_U16 || k == TYPE_U32 || k == TYPE_U64 || k == TYPE_USIZE ||
+            k == TYPE_BYTE || k == TYPE_F16 || k == TYPE_BF16 ||
+            k == TYPE_F8 || k == TYPE_BF8) {
+            Type* t = malloc(sizeof(Type));
+            memset(t, 0, sizeof(*t));
+            t->kind = k;
+            return t;
+        }
+        return NULL;
+    }
+
+    // Best-effort: treat `TypeName(...)` and `ns.TypeName(...)` as constructing a named type.
+    if (e->type == EXPR_CALL) {
+        CallExpr* c = (CallExpr*)e;
+        Expr* callee = c->callee ? unwrapGroupingExpr(c->callee) : NULL;
+        if (callee && callee->type == EXPR_VARIABLE) {
+            VariableExpr* ve = (VariableExpr*)callee;
+            StructInfo* si = compilerResolveStructByToken(compiler, &ve->name);
+            if (si) {
+                Type* t = malloc(sizeof(Type));
+                memset(t, 0, sizeof(*t));
+                t->kind = TYPE_NAMED;
+                t->name = (Token){TOKEN_IDENTIFIER, si->name, si->nameLength, e->token.line, e->token.col, 0};
+                return t;
+            }
+        }
+        if (callee && callee->type == EXPR_GET) {
+            GetExpr* ge = (GetExpr*)callee;
+            // `ns.S(...)` where ge->name is S
+            StructInfo* si = compilerResolveStructByToken(compiler, &ge->name);
+            if (si) {
+                Type* t = malloc(sizeof(Type));
+                memset(t, 0, sizeof(*t));
+                t->kind = TYPE_NAMED;
+                t->name = (Token){TOKEN_IDENTIFIER, si->name, si->nameLength, e->token.line, e->token.col, 0};
+                return t;
+            }
+        }
+    }
+
+    if (e->type == EXPR_STRUCT_INIT) {
+        StructInitExpr* si = (StructInitExpr*)e;
+        Expr* callee = si->callee ? unwrapGroupingExpr(si->callee) : NULL;
+        if (callee && callee->type == EXPR_VARIABLE) {
+            VariableExpr* ve = (VariableExpr*)callee;
+            StructInfo* info = compilerResolveStructByToken(compiler, &ve->name);
+            if (info) {
+                Type* t = malloc(sizeof(Type));
+                memset(t, 0, sizeof(*t));
+                t->kind = TYPE_NAMED;
+                t->name = (Token){TOKEN_IDENTIFIER, info->name, info->nameLength, e->token.line, e->token.col, 0};
+                return t;
+            }
+        }
+        if (callee && callee->type == EXPR_GET) {
+            GetExpr* ge = (GetExpr*)callee;
+            StructInfo* info = compilerResolveStructByToken(compiler, &ge->name);
+            if (info) {
+                Type* t = malloc(sizeof(Type));
+                memset(t, 0, sizeof(*t));
+                t->kind = TYPE_NAMED;
+                t->name = (Token){TOKEN_IDENTIFIER, info->name, info->nameLength, e->token.line, e->token.col, 0};
+                return t;
+            }
+        }
+    }
+
+    // Fallback for literals based on inferred kind.
+    TypeKind k = e->inferredType;
+    if (k == TYPE_INT || k == TYPE_LONG || k == TYPE_BOOL || k == TYPE_STRING ||
+        k == TYPE_FLOAT || k == TYPE_DOUBLE) {
+        Type* t = malloc(sizeof(Type));
+        memset(t, 0, sizeof(*t));
+        t->kind = k;
+        return t;
+    }
+    return NULL;
+}
+
+static int astNamedTypeEqualsName(Type* t, const char* name, int nameLen) {
+    if (!t || t->kind != TYPE_NAMED) return 0;
+    if (t->typeArgs && t->typeArgs->length > 0) return 0;
+    if (t->name.length != nameLen) return 0;
+    return memcmp(t->name.start, name, (size_t)nameLen) == 0;
+}
+
+static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate* tmpl, CallExpr* call) {
+    if (!compiler || !tmpl || !tmpl->decl || !call) return NULL;
+    int expected = tmpl->decl->typeParams ? tmpl->decl->typeParams->length : 0;
+    if (expected <= 0) return NULL;
+
+    int argc = call->arguments ? call->arguments->length : 0;
+    int pc = tmpl->decl->params ? tmpl->decl->params->length : 0;
+    if (argc != pc) return NULL;
+
+    Type** inferred = malloc(sizeof(Type*) * (size_t)expected);
+    for (int i = 0; i < expected; i++) inferred[i] = NULL;
+
+    for (int i = 0; i < pc; i++) {
+        Parameter* p = (Parameter*)listGet(tmpl->decl->params, i);
+        Expr* arg = (Expr*)listGet(call->arguments, i);
+        if (!p || !p->type) continue;
+
+        Type* pt = compilerResolveGenericType(compiler, p->type);
+        // Only infer for top-level occurrences of type params: `x: T` or `x: Ref<T>` (aka `&T`).
+        const char* tpName = NULL;
+        int tpLen = 0;
+        if (pt && pt->kind == TYPE_NAMED) {
+            tpName = pt->name.start;
+            tpLen = pt->name.length;
+        } else if (pt && pt->kind == TYPE_REF && pt->inner && pt->inner->kind == TYPE_NAMED) {
+            tpName = pt->inner->name.start;
+            tpLen = pt->inner->name.length;
+        }
+        if (!tpName || tpLen <= 0) continue;
+
+        int tpIndex = -1;
+        for (int j = 0; j < expected; j++) {
+            TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, j);
+            if (!td) continue;
+            if (td->name.length == tpLen && memcmp(td->name.start, tpName, (size_t)tpLen) == 0) {
+                tpIndex = j;
+                break;
+            }
+        }
+        if (tpIndex < 0) continue;
+
+        Type* it = inferTypeFromValueExpr(compiler, arg);
+        if (!it) continue;
+        // If the argument's inferred type is itself a trait object type, do not try to
+        // instantiate `T: Trait` with `T = TraitName`; let normal (dynamic) resolution win.
+        if ((it->kind == TYPE_NAMED && compilerResolveTraitByToken(compiler, &it->name)) ||
+            (it->kind == TYPE_REF && it->inner && it->inner->kind == TYPE_NAMED && compilerResolveTraitByToken(compiler, &it->inner->name))) {
+            for (int j = 0; j < expected; j++) {
+                if (inferred[j]) free(inferred[j]);
+            }
+            free(it);
+            free(inferred);
+            return NULL;
+        }
+        if (!inferred[tpIndex]) {
+            inferred[tpIndex] = it;
+        } else {
+            // Best-effort consistency check.
+            if (inferred[tpIndex]->kind != it->kind) {
+                free(inferred);
+                return NULL;
+            }
+            if (it->kind == TYPE_NAMED) {
+                if (!astNamedTypeEqualsName(inferred[tpIndex], it->name.start, it->name.length)) {
+                    free(inferred);
+                    return NULL;
+                }
+            }
+        }
+    }
+
+    List* out = listNew();
+    for (int i = 0; i < expected; i++) {
+        if (!inferred[i]) {
+            listFree(out);
+            free(inferred);
+            return NULL;
+        }
+        listAppend(out, inferred[i]);
+    }
+    free(inferred);
+    return out;
+}
+
 static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
     if (!value) return NULL;
 
@@ -347,6 +563,97 @@ static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value) {
 }
 
 static char* mangleRawAndToken(const char* left, int leftLen, const Token* right, int* outLen);
+
+static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, &i64, 1, 0);
+    return LLVMAddFunction(compiler->module, "malloc", fnType);
+}
+
+static TraitInfo* findTraitByObjType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !compiler->traits || !t) return NULL;
+    for (ListNode* n = compiler->traits->head; n != NULL; n = n->next) {
+        TraitInfo* ti = (TraitInfo*)n->data;
+        if (!ti) continue;
+        if (!ti->objType) continue;
+        if (ti->objType == t) return ti;
+    }
+    return NULL;
+}
+
+static char* vtableGlobalNameForTraitAndStruct(const char* traitName, int traitLen, const char* structName, int structLen) {
+    const char* prefix = "__VT__";
+    const int prefixLen = 5;
+    const int sepLen = 2;
+    int len = prefixLen + traitLen + sepLen + structLen;
+    char* s = malloc((size_t)len + 1);
+    memcpy(s, prefix, (size_t)prefixLen);
+    memcpy(s + prefixLen, traitName, (size_t)traitLen);
+    memcpy(s + prefixLen + traitLen, "__", (size_t)sepLen);
+    memcpy(s + prefixLen + traitLen + sepLen, structName, (size_t)structLen);
+    s[len] = '\0';
+    return s;
+}
+
+static int traitMethodIndex(TraitInfo* trait, const Token* methodName) {
+    if (!trait || !trait->decl || !methodName) return -1;
+    int idx = 0;
+    for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next, idx++) {
+        TraitMethodDecl* m = (TraitMethodDecl*)mn->data;
+        if (!m) continue;
+        if (m->name.length != methodName->length) continue;
+        if (memcmp(m->name.start, methodName->start, (size_t)methodName->length) == 0) return idx;
+    }
+    return -1;
+}
+
+static TraitMethodDecl* traitMethodDeclAt(TraitInfo* trait, int idx) {
+    if (!trait || !trait->decl || idx < 0) return NULL;
+    return trait->decl->methods ? (TraitMethodDecl*)listGet(trait->decl->methods, idx) : NULL;
+}
+
+static int astTypeIsNamedStructValueForCall(Compiler* compiler, Type* t) {
+    if (!compiler || !t) return 0;
+    t = compilerResolveGenericType(compiler, t);
+    if (!t || t->kind != TYPE_NAMED) return 0;
+    if (t->typeArgs && t->typeArgs->length > 0) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+    if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
+    if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
+    StructInfo* si = compilerResolveStructByToken(compiler, &t->name);
+    return si != NULL;
+}
+
+static LLVMTypeRef llvmReturnTypeForTraitMethod(Compiler* compiler, TraitMethodDecl* m) {
+    if (!compiler || !m) return LLVMVoidTypeInContext(compiler->context);
+    int rc = m->returnTypes ? m->returnTypes->length : 0;
+    if (rc <= 0) return LLVMVoidTypeInContext(compiler->context);
+    if (rc == 1) {
+        Type* t = (Type*)listGet(m->returnTypes, 0);
+        return typeToLLVMType(compiler, t);
+    }
+    LLVMTypeRef* rts = malloc(sizeof(LLVMTypeRef) * (size_t)rc);
+    for (int i = 0; i < rc; i++) {
+        Type* t = (Type*)listGet(m->returnTypes, i);
+        rts[i] = typeToLLVMType(compiler, t);
+    }
+    LLVMTypeRef out = LLVMStructTypeInContext(compiler->context, rts, (unsigned)rc, 0);
+    free(rts);
+    return out;
+}
+
+static LLVMTypeRef llvmParamTypeForTraitMethod(Compiler* compiler, Parameter* p) {
+    if (!compiler || !p) return LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef pt = typeToLLVMType(compiler, p->type);
+    if (p->mode != PARAM_MOVE && astTypeIsNamedStructValueForCall(compiler, p->type)) {
+        pt = LLVMPointerType(pt, 0);
+    }
+    return pt;
+}
 
 static LLVMTypeRef resolveClosureReturnSigForSimpleCallAt(Compiler* compiler, CallExpr* call, int level) {
     if (!compiler || !call || !call->callee) return NULL;
@@ -424,12 +731,135 @@ static LLVMValueRef implicitBorrowAddrOfVar(Compiler* compiler, VariableRef var)
     return var.value;
 }
 
+static LLVMValueRef implicitBorrowAddrOfVar(Compiler* compiler, VariableRef var);
+static LLVMValueRef loadLocalValue(Compiler* compiler, VariableRef var);
+
 static LLVMValueRef compileCallArgForParam(Compiler* compiler, Expr* argExpr, LLVMTypeRef paramType) {
     if (!compiler || !argExpr || !paramType) return NULL;
     Expr* a = unwrapGroupingExpr(argExpr);
 
     LLVMValueRef v = compileExpr(compiler, a);
     if (!v) return NULL;
+
+    // Trait object ("no dyn" interface value) conversion:
+    // If the callee expects a per-trait object type, convert a concrete struct value to a temporary trait object.
+    // - Default (no `move`): build a non-owning view (data points to an lvalue address or a temp alloca).
+    // - With `move`: box the value onto the heap and return an owning trait object.
+    TraitInfo* traitObj = findTraitByObjType(compiler, paramType);
+    if (traitObj) {
+        LLVMTypeRef objTy = compilerGetTraitObjType(compiler, traitObj);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+
+        // Already a trait object value of the expected trait.
+        if (LLVMTypeOf(v) == objTy) {
+            return v;
+        }
+
+        // Determine if the argument is `move <expr>`.
+        int isMove = 0;
+        Expr* base = a;
+        if (base && base->type == EXPR_UNARY) {
+            UnaryExpr* un = (UnaryExpr*)base;
+            if (un->operator.type == TOKEN_MOVE) {
+                isMove = 1;
+                base = unwrapGroupingExpr(un->right);
+            }
+        }
+
+        // Resolve the concrete struct name for vtable lookup.
+        const char* structName = NULL;
+        int structLen = 0;
+        LLVMTypeRef concreteTy = LLVMTypeOf(v);
+
+        // Prefer lvalue metadata for variables.
+        LLVMValueRef dataAddr = NULL;
+        if (base && base->type == EXPR_VARIABLE) {
+            VariableRef var = findVariableExpr(compiler, base);
+            if (var.typeName && var.typeNameLength > 0) {
+                structName = var.typeName;
+                structLen = var.typeNameLength;
+            }
+            if (!isMove) {
+                // For view conversion, point to the lvalue address.
+                if (var.value && var.type && LLVMGetTypeKind(var.type) != LLVMPointerTypeKind) {
+                    dataAddr = implicitBorrowAddrOfVar(compiler, var);
+                } else if (var.value && var.type && LLVMGetTypeKind(var.type) == LLVMPointerTypeKind) {
+                    // For plain refs, the slot already holds an address.
+                    dataAddr = loadLocalValue(compiler, var);
+                }
+            }
+        }
+
+        if (!structName && LLVMGetTypeKind(concreteTy) == LLVMStructTypeKind) {
+            const char* n = LLVMGetStructName(concreteTy);
+            if (n) {
+                structName = n;
+                structLen = (int)strlen(n);
+            }
+        }
+
+        if (!structName || structLen <= 0) {
+            compilerErrorAtToken(compiler, &a->token, "cannot form trait object: unknown concrete type");
+            return NULL;
+        }
+
+        char* vtName = vtableGlobalNameForTraitAndStruct(traitObj->name, traitObj->nameLength, structName, structLen);
+        LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, vtName);
+        free(vtName);
+        if (!vt) {
+            compilerErrorAtToken(
+                compiler,
+                &a->token,
+                "missing trait impl: '%.*s' does not implement '%.*s'",
+                structLen,
+                structName,
+                traitObj->nameLength,
+                traitObj->name
+            );
+            return NULL;
+        }
+
+        LLVMValueRef dataI8 = NULL;
+        if (isMove) {
+            // Own: heap box the concrete value.
+            if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+                compilerErrorAtToken(compiler, &a->token, "trait object move conversion requires a struct value");
+                return NULL;
+            }
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+            LLVMValueRef raw = LLVMBuildCall2(
+                compiler->builder,
+                LLVMGlobalGetValueType(mallocFn),
+                mallocFn,
+                &sizeV,
+                1,
+                "malloc"
+            );
+            LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+            LLVMBuildStore(compiler->builder, v, cell);
+            dataI8 = LLVMBuildBitCast(compiler->builder, cell, i8ptr, "data");
+        } else {
+            // View: data points to an address.
+            if (!dataAddr) {
+                // Materialize a temporary for rvalues.
+                if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+                    compilerErrorAtToken(compiler, &a->token, "trait object conversion requires a struct value");
+                    return NULL;
+                }
+                LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, concreteTy, "to_tmp");
+                LLVMBuildStore(compiler->builder, v, tmp);
+                dataAddr = tmp;
+            }
+            dataI8 = LLVMBuildBitCast(compiler->builder, dataAddr, i8ptr, "data");
+        }
+
+        LLVMValueRef vtI8 = LLVMBuildBitCast(compiler->builder, vt, i8ptr, "vt");
+        LLVMValueRef out = LLVMGetUndef(objTy);
+        out = LLVMBuildInsertValue(compiler->builder, out, dataI8, 0, "o0");
+        out = LLVMBuildInsertValue(compiler->builder, out, vtI8, 1, "o1");
+        return out;
+    }
 
     // Default: values are passed by value (with best-effort casts).
     if (LLVMGetTypeKind(paramType) != LLVMPointerTypeKind) {
@@ -2684,6 +3114,110 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
+        // Trait object method call (dynamic dispatch): when receiver is a trait object value.
+        if (recvVar.value && recvVar.isTraitObj) {
+            if (!recvVar.traitName || recvVar.traitNameLength <= 0) {
+                compilerErrorAtToken(compiler, &get->name, "missing trait metadata for receiver");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            TraitInfo* trait = compilerFindTrait(compiler, recvVar.traitName, recvVar.traitNameLength);
+            if (!trait || !trait->decl) {
+                compilerErrorAtToken(compiler, &get->name, "unknown trait for receiver");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            int midx = traitMethodIndex(trait, &get->name);
+            if (midx < 0) {
+                compilerErrorAtToken(
+                    compiler,
+                    &get->name,
+                    "method '%.*s' is not in trait '%.*s'",
+                    get->name.length,
+                    get->name.start,
+                    trait->nameLength,
+                    trait->name
+                );
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            TraitMethodDecl* m = traitMethodDeclAt(trait, midx);
+            if (!m) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMValueRef obj = loadLocalValue(compiler, recvVar);
+            if (!obj) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMTypeRef objTy = LLVMTypeOf(obj);
+            if (LLVMGetTypeKind(objTy) != LLVMStructTypeKind || LLVMCountStructElementTypes(objTy) != 2) {
+                compilerErrorAtToken(compiler, &get->name, "invalid trait object representation");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, obj, 0, "to_data");
+            LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, obj, 1, "to_vt");
+
+            LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, trait);
+            LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "vtptr");
+            LLVMValueRef slotPtr = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, (unsigned)(1 + midx), "vt_m_p");
+            LLVMValueRef fnRaw = LLVMBuildLoad2(compiler->builder, i8ptr, slotPtr, "vt_m");
+
+            int argc = m->params ? m->params->length : 0;
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (got != (unsigned)argc) {
+                compilerErrorAtToken(
+                    compiler,
+                    &get->name,
+                    "argument count mismatch for call '%.*s': expected %d, got %u",
+                    get->name.length,
+                    get->name.start,
+                    argc,
+                    got
+                );
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
+            LLVMTypeRef retTy = llvmReturnTypeForTraitMethod(compiler, m);
+            LLVMTypeRef* pts = malloc(sizeof(LLVMTypeRef) * (size_t)(1 + argc));
+            pts[0] = i8ptr;
+            for (int i = 0; i < argc; i++) {
+                Parameter* p = (Parameter*)listGet(m->params, i);
+                pts[1 + i] = llvmParamTypeForTraitMethod(compiler, p);
+            }
+            LLVMTypeRef fnTy = LLVMFunctionType(retTy, pts, (unsigned)(1 + argc), 0);
+
+            LLVMValueRef fn = LLVMBuildBitCast(compiler->builder, fnRaw, LLVMPointerType(fnTy, 0), "vt_fn");
+
+            LLVMValueRef* args = malloc(sizeof(LLVMValueRef) * (size_t)(1 + argc));
+            args[0] = data;
+            for (int i = 0; i < argc; i++) {
+                Expr* argAst = (Expr*)listGet(expr->arguments, i);
+                LLVMValueRef av = compileCallArgForParam(compiler, argAst, pts[1 + i]);
+                if (!av) {
+                    free(pts);
+                    free(args);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                args[1 + i] = av;
+            }
+            free(pts);
+
+            LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnTy, fn, args, (unsigned)(1 + argc), callInstNameForFnType(fnTy));
+            free(args);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retTy);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return out;
+        }
+
         bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
         bool isTraitDispatch = isInstance && recvVar.genericBoundTraitName != NULL && recvVar.genericBoundTraitNameLength > 0;
         if (hasTypeArgs && isInstance) {
@@ -4021,7 +4555,62 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return NULL;
             }
         } else {
-        if (compiler->currentModulePrefix) {
+        int genericTemplateSeen = 0;
+        int genericInferFailed = 0;
+
+        // v0.5: type argument inference for generic calls when no explicit `<T>` is provided.
+        // If a generic template exists for this name, infer from argument expressions and instantiate.
+        if (compiler && expr && expr->arguments) {
+            GenericFuncTemplate* tmpl = NULL;
+            char* baseAlloc = NULL;
+
+            if (compiler->currentModulePrefix) {
+                int ql = 0;
+                baseAlloc = compilerQualifyToken(compiler, &callee->name, &ql);
+                if (baseAlloc) {
+                    tmpl = compilerFindGenericFuncTemplate(compiler, baseAlloc, ql);
+                    if (tmpl) {
+                    } else {
+                        free(baseAlloc);
+                        baseAlloc = NULL;
+                    }
+                }
+            }
+            if (!tmpl) {
+                SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+                if (a && a->kind == ALIAS_FUNC) {
+                    tmpl = compilerFindGenericFuncTemplate(compiler, a->qualified, a->qualifiedLen);
+                }
+            }
+            if (!tmpl) {
+                tmpl = compilerFindGenericFuncTemplate(compiler, callee->name.start, callee->name.length);
+            }
+
+            if (tmpl && tmpl->qualifiedName && tmpl->qualifiedNameLen > 0) {
+                genericTemplateSeen = 1;
+                List* inferred = inferTypeArgsForGenericCall(compiler, tmpl, expr);
+                if (inferred) {
+                    func = compilerInstantiateGenericFunc(compiler, tmpl->qualifiedName, tmpl->qualifiedNameLen, inferred, &callee->name);
+                    // inferred list elements are heap-allocated Type*; keep for compiler cache lifetime.
+                    listFree(inferred);
+                    if (!func) {
+                        // Instantiation can fail either because inference produced an invalid set of args
+                        // (in which case we should fall back to non-generic resolution if possible),
+                        // or because of a real compiler error (e.g. bound not satisfied).
+                        if (compiler && compiler->hadError) {
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return NULL;
+                        }
+                        genericInferFailed = 1;
+                    }
+                } else {
+                    genericInferFailed = 1;
+                }
+            }
+            if (baseAlloc) free(baseAlloc);
+        }
+
+        if (!func && compiler->currentModulePrefix) {
             int ql = 0;
             char* q = compilerQualifyToken(compiler, &callee->name, &ql);
             if (q) {
@@ -4047,6 +4636,21 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (func && !foundQualified && !foundAlias && tokenEquals(&callee->name, "main")) {
                 func = NULL;
             }
+        }
+
+        if (!func && genericTemplateSeen && genericInferFailed) {
+            compilerErrorAtToken(
+                compiler,
+                &callee->name,
+                "cannot infer generic type arguments for '%.*s'; write '%.*s<...>(...)'",
+                callee->name.length,
+                callee->name.start,
+                callee->name.length,
+                callee->name.start
+            );
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            free(name);
+            return NULL;
         }
 
         if (!func) {

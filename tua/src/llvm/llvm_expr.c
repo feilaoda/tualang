@@ -224,6 +224,8 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
         case TYPE_ARRAY:
             return compilerGetArrayType(compiler);
         case TYPE_NAMED: {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
+            if (ti) return compilerGetTraitObjType(compiler, ti);
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
@@ -271,6 +273,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
+    if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
     return 1;
 }
 
@@ -2818,7 +2821,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
     }
 
     // Drop old container value on overwrite (RAII, best-effort).
-    if ((var.isMap || var.isArray) && !(var.isArray && var.isStackArray)) {
+    if ((var.isMap || var.isArray || var.isTraitObj) && !(var.isArray && var.isStackArray)) {
         LLVMValueRef oldv = NULL;
         if (var.isBoxed) {
             if (!var.boxPtrType) return NULL;
@@ -2827,12 +2830,78 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         } else {
             oldv = LLVMBuildLoad2(compiler->builder, var.type, var.value, "old");
         }
-        LLVMValueRef freeFn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
-        if (freeFn) {
-            LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
-            LLVMValueRef args1[1] = { oldv };
-            LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        if (var.isTraitObj) {
+            if (var.traitName && var.traitNameLength > 0) {
+                TraitInfo* trait = compilerFindTrait(compiler, var.traitName, var.traitNameLength);
+                if (trait) {
+                    LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, trait);
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, oldv, 0, "to_data");
+                    LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, oldv, 1, "to_vt");
+                    LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "vtptr");
+                    LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "vt_drop_p");
+                    LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "vt_drop");
+                    LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+                    LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "dropfn");
+                    LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+                }
+            }
+        } else {
+            LLVMValueRef freeFn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+            if (freeFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+                LLVMValueRef args1[1] = { oldv };
+                LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+            }
         }
+    }
+
+    // Convert concrete struct -> trait object on assignment to a trait-typed variable.
+    if (var.isTraitObj && LLVMTypeOf(value) != var.type) {
+        TraitInfo* trait = (var.traitName && var.traitNameLength > 0) ? compilerFindTrait(compiler, var.traitName, var.traitNameLength) : NULL;
+        if (!trait) {
+            error("Unknown trait type for assignment\n");
+            return NULL;
+        }
+        LLVMTypeRef objTy = compilerGetTraitObjType(compiler, trait);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMTypeRef concreteTy = LLVMTypeOf(value);
+        if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+            error("Assigning to trait requires a struct value\n");
+            return NULL;
+        }
+        const char* structName = LLVMGetStructName(concreteTy);
+        if (!structName) {
+            error("Assigning to trait requires a named struct type\n");
+            return NULL;
+        }
+        int structLen = (int)strlen(structName);
+        char* vtName = malloc((size_t)(5 + trait->nameLength + 2 + structLen) + 1);
+        memcpy(vtName, "__VT__", 5);
+        memcpy(vtName + 5, trait->name, (size_t)trait->nameLength);
+        memcpy(vtName + 5 + trait->nameLength, "__", 2);
+        memcpy(vtName + 5 + trait->nameLength + 2, structName, (size_t)structLen);
+        vtName[5 + trait->nameLength + 2 + structLen] = '\0';
+        LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, vtName);
+        free(vtName);
+        if (!vt) {
+            error("Missing trait impl for assignment\n");
+            return NULL;
+        }
+
+        // Own by default on assignment: box value into heap.
+        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+        LLVMValueRef raw = LLVMBuildCall2(compiler->builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+        LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+        LLVMBuildStore(compiler->builder, value, cell);
+        LLVMValueRef dataI8 = LLVMBuildBitCast(compiler->builder, cell, i8ptr, "data");
+        LLVMValueRef vtI8 = LLVMBuildBitCast(compiler->builder, vt, i8ptr, "vt");
+
+        LLVMValueRef obj = LLVMGetUndef(objTy);
+        obj = LLVMBuildInsertValue(compiler->builder, obj, dataI8, 0, "o0");
+        obj = LLVMBuildInsertValue(compiler->builder, obj, vtI8, 1, "o1");
+        value = obj;
     }
 
     if (var.isBoxed) {
@@ -2851,7 +2920,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         VariableExpr* rv = (VariableExpr*)expr->value;
         VariableRef rhsVar = findVariableExpr(compiler, (Expr*)rv);
         if (rhsVar.value &&
-            (rhsVar.isMap || rhsVar.isArray) &&
+            (rhsVar.isMap || rhsVar.isArray || rhsVar.isTraitObj) &&
             !(rhsVar.isArray && rhsVar.isStackArray) &&
             !(rv->name.length == expr->name.length && memcmp(rv->name.start, expr->name.start, (size_t)expr->name.length) == 0)) {
             LLVMValueRef nullv = LLVMConstNull(rhsVar.type);
@@ -3836,7 +3905,8 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
             // Runtime move for container values: null out the source after `move x`.
             int shouldMoveMap = (var.type == compilerGetMapType(compiler)) && var.isMap;
             int shouldMoveArr = (var.type == compilerGetArrayType(compiler)) && var.isArray && !var.isStackArray;
-            if ((shouldMoveMap || shouldMoveArr) && var.value) {
+            int shouldMoveTrait = var.isTraitObj;
+            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait) && var.value) {
                 LLVMValueRef nullv = LLVMConstNull(var.type);
                 if (var.isBoxed) {
                     if (!var.boxPtrType) {

@@ -1,0 +1,5 @@
+fn id<T>(move x: T) -> T {
+  return x
+}
+
+assert(id(1) == 1)

@@ -1468,6 +1468,40 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
     compiler->currentModulePrefixLen = module->prefixLen;
     compiler->currentAliases = module->aliases;
 
+    // Pre-pass: register trait declarations first so they can be referenced from types/bounds
+    // independent of source order within a module.
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_TRAIT) continue;
+        TraitStmt* t = (TraitStmt*)stmt;
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &t->name, &ql);
+        if (q) {
+            if (compilerFindTrait(compiler, q, ql)) {
+                free(q);
+                continue;
+            }
+            Token old = t->name;
+            t->name.start = q;
+            t->name.length = ql;
+            compileTraitStmt(compiler, t);
+            t->name = old;
+            free(q);
+        } else {
+            if (compilerFindTrait(compiler, t->name.start, t->name.length)) {
+                continue;
+            }
+            compileTraitStmt(compiler, t);
+        }
+        if (compiler->hadError) return;
+    }
+
     // Pre-pass: register all generic function templates in this module so calls can instantiate them
     // even when used before their declaration.
     for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
@@ -1481,6 +1515,72 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
         if (stmt->type != STMT_FUNC) continue;
         FuncStmt* f = (FuncStmt*)stmt;
         if (!f->body) continue;
+
+        // Auto-generic: if a function has parameters typed as a trait name, register a synthetic
+        // generic template for the same function name (prefered by calls when inference works),
+        // while still compiling the non-generic function as dynamic (trait object) fallback.
+        if (!f->typeParams || f->typeParams->length <= 0) {
+            int autoCount = 0;
+            if (f->params) {
+                for (int i = 0; i < f->params->length; i++) {
+                    Parameter* p = (Parameter*)listGet(f->params, i);
+                    if (!p || !p->type) continue;
+                    if (p->type->kind != TYPE_NAMED) continue;
+                    TraitInfo* ti = compilerResolveTraitByToken(compiler, &p->type->name);
+                    if (ti) autoCount++;
+                }
+            }
+            if (autoCount > 0) {
+                FuncStmt* g = malloc(sizeof(FuncStmt));
+                *g = *f;
+                g->typeParams = listNew();
+                g->params = listNew();
+
+                int idx = 0;
+                for (int i = 0; f->params && i < f->params->length; i++) {
+                    Parameter* p = (Parameter*)listGet(f->params, i);
+                    if (!p) continue;
+                    Parameter* np = malloc(sizeof(Parameter));
+                    *np = *p;
+                    if (p->type && p->type->kind == TYPE_NAMED) {
+                        TraitInfo* ti = compilerResolveTraitByToken(compiler, &p->type->name);
+                        if (ti) {
+                            char buf[32];
+                            snprintf(buf, sizeof(buf), "T%d", idx++);
+                            int nlen = (int)strlen(buf);
+                            char* tn = malloc((size_t)nlen + 1);
+                            memcpy(tn, buf, (size_t)nlen + 1);
+
+                            TypeParamDecl* tp = malloc(sizeof(TypeParamDecl));
+                            tp->name = (Token){TOKEN_IDENTIFIER, tn, nlen, p->name.line, p->name.col, 0};
+                            tp->boundTrait = p->type->name;
+                            tp->hasBound = 1;
+                            listAppend(g->typeParams, tp);
+
+                            Type* nt = malloc(sizeof(Type));
+                            memset(nt, 0, sizeof(*nt));
+                            nt->kind = TYPE_NAMED;
+                            nt->name = tp->name;
+                            np->type = nt;
+                        }
+                    }
+                    listAppend(g->params, np);
+                }
+
+                if (g->typeParams && g->typeParams->length > 0) {
+                    int ql = 0;
+                    char* q = compilerQualifyToken(compiler, &f->name, &ql);
+                    if (q) {
+                        compilerRegisterGenericFuncTemplate(compiler, g, q, ql, module->path, module->prefix, module->prefixLen, module->aliases);
+                        free(q);
+                    } else {
+                        compilerRegisterGenericFuncTemplate(compiler, g, f->name.start, f->name.length, module->path, module->prefix, module->prefixLen, module->aliases);
+                    }
+                    if (compiler->hadError) return;
+                }
+            }
+        }
+
         if (!f->typeParams || f->typeParams->length <= 0) continue;
 
         int ql = 0;
@@ -1613,18 +1713,8 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
             }
         }
         if (stmt->type == STMT_TRAIT) {
-            TraitStmt* t = (TraitStmt*)stmt;
-            int ql = 0;
-            char* q = compilerQualifyToken(compiler, &t->name, &ql);
-            if (q) {
-                Token old = t->name;
-                t->name.start = q;
-                t->name.length = ql;
-                compileTraitStmt(compiler, t);
-                t->name = old;
-                free(q);
-                continue;
-            }
+            // Already registered in the trait pre-pass above.
+            continue;
         }
         if (stmt->type == STMT_ENUM) {
             EnumStmt* e = (EnumStmt*)stmt;
@@ -1981,7 +2071,7 @@ int main(int argc, char* argv[]) {
     // Compile modules in dependency-first order into the single LLVM module's main.
     for (ListNode* node = sys.order->head; node != NULL; node = node->next) {
         ModuleInfo* m = (ModuleInfo*)node->data;
-        if (!analyzeModule(&compiler, m->statements, m->aliases, m->path)) {
+        if (!analyzeModule(&compiler, m->statements, m->aliases, m->path, m->prefix, m->prefixLen)) {
             free(entryPath);
             return 1;
         }
