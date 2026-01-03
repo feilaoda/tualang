@@ -1,0 +1,22 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S {
+  id: int
+}
+
+impl S {
+  fn id() -> int { return id }
+}
+
+impl HasId for S {}
+
+fn take(move x: HasId) -> int {
+  return x.id()
+}
+
+let v: HasId = S{ id: 5 }
+let n = take(move v)
+assert(n == 5)
+

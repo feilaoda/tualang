@@ -1,0 +1,16 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S {
+  id: int
+}
+
+impl S {
+  fn id() -> int { return id }
+}
+
+// Missing: `impl HasId for S {}`
+let v: HasId = S{ id: 1 }
+println(v.id())
+

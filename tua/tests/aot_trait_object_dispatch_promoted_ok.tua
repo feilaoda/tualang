@@ -1,0 +1,21 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct Base {
+  id: int
+}
+
+impl Base {
+  fn id() -> int { return id }
+}
+
+struct Child {
+  ...Base
+}
+
+impl HasId for Child {}
+
+let v: HasId = Child{ base: Base{ id: 7 } }
+assert(v.id() == 7)
+

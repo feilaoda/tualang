@@ -1,0 +1,25 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S {
+  id: int
+}
+
+impl S {
+  fn id() -> int { return id }
+}
+
+impl HasId for S {}
+
+fn take(move x: HasId) -> int {
+  return x.id()
+}
+
+let v: HasId = S{ id: 1 }
+let n = take(move v)
+println(n)
+
+// Use-after-move.
+println(v.id())
+
