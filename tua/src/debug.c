@@ -24,7 +24,9 @@ static const char* StmtTypeNames[] = {
     "OBJECT",
     "ENUM",
     "DESTRUCTURE",
-    "IMPL"
+    "IMPL",
+    "TRAIT",
+    "TRAIT_IMPL"
 };
 
 const char* stmtTypeToString(StmtType type) {

@@ -63,7 +63,9 @@ typedef enum {
     STMT_OBJECT,
     STMT_ENUM,
     STMT_DESTRUCTURE,
-    STMT_IMPL
+    STMT_IMPL,
+    STMT_TRAIT,
+    STMT_TRAIT_IMPL
 } StmtType;
 
 
@@ -410,6 +412,27 @@ typedef struct ImplStmt {
     Token name;     // target struct name
     List* methods;  // List<FuncStmt*>
 } ImplStmt;
+
+typedef struct TraitMethodDecl {
+    Token name;
+    List* params;        // List<Parameter*>
+    Type* returnType;    // legacy single return type (first of returnTypes)
+    List* returnTypes;   // List<Type*>, NULL or empty => void
+} TraitMethodDecl;
+
+typedef struct TraitStmt {
+    Stmt base;
+    Token name;
+    List* methods; // List<TraitMethodDecl*>
+} TraitStmt;
+
+typedef struct TraitImplStmt {
+    Stmt base;
+    Token traitName;
+    Token targetName;   // target struct name
+    List* methods;      // optional inline methods: List<FuncStmt*>
+    Token keywordImpl;
+} TraitImplStmt;
 
 typedef struct ObjectStmt {
     Stmt base;

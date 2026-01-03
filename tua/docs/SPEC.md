@@ -88,7 +88,7 @@
   - 指针比较（Frozen）：
     - 指针/引用类型（`ptr`、`string`、`map`、`Ref<T>` 等；过渡期 `&T` 亦同）仅允许 `==` / `!=` 比较（按指针值）
     - 有序比较（`< <= > >=`）对指针/引用类型无定义，视为编译错误
-- 位运算/移位（Status: Planned，高优先级）
+- 位运算/移位（Status: Implemented，高优先级）
   - 目标：提供 PRNG/bytes/量化等所需的确定性 bit-level 计算能力
   - 运算符：
     - 一元：`~x`（bitwise not）
@@ -104,7 +104,7 @@
   - 移位规则（Frozen 预期语义，待实现）：
     - `n` 接受任意整数；先转换为无符号并进行掩码：`n = n & (bits-1)`（保证跨平台无 UB）
     - `>>`：对无符号整数为逻辑右移；对有符号整数为算术右移（符号扩展）
-- 运算符优先级（Status: Planned，待实现）
+- 运算符优先级（Status: Implemented）
   - 预期顺序（从高到低）：一元（`~ ! - &`）> `* /` > `+ -` > `<< >>` > `&` > `^` > `|` > `&&` > `||` > `??`
 - `??`（空值合并，Status: Implemented）：
   - 仅支持 `Option<T> ?? T -> T`，右结合；当左侧为 `None()` 时才会求值右侧（短路）
@@ -276,12 +276,35 @@
     - 对调用 `x.m(...)`：若 `T` 上没有实例方法 `m`，则在 `embedded` 字段类型中递归查找 `m`
     - 若唯一匹配，则将 `x.m(...)` 解析为 `x.<embeddedPath>.m(...)`，并以嵌入字段的地址作为 `recv`
     - 歧义/遮蔽规则与字段提升一致
+  - 与 trait 的关系（Planned，扩展点）：
+    - promotion **不等于** “自动实现 trait”：嵌入只影响字段/方法解析与 receiver 重写，不产生子类型/隐式 upcast
+    - Status: Implemented（v0）：trait 满足性按 trait 规则检查；是否“满足”取决于方法集是否存在（可包含 promoted methods）
+    - Planned：静态分发采用泛型单态化（例如 `fn f<T: Trait>(x: T)`）
+    - Planned：动态分发需显式启用 `dyn Trait`（fat pointer / vtable），并在 ABI 中冻结布局与调用约定
   - 重要：`Child` **不是** `Base` 的子类型；`let b: Base = child` 是类型错误（Planned：完善类型检查报错信息）
 - `init/deinit`（Status: Partial）：
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）
 
-#### 7.2 impl（Status: Implemented，Rust 风格）
+#### 7.2 trait（Status: Implemented v0）
+- 目标：提供“结构体满足某能力”的编译期契约；第一版仅做 **满足性检查**，不引入泛型/trait object
+- 声明：
+  - `trait TraitName { fn m(a: T, ...) -> R }`
+  - trait 方法目前仅支持 **签名**（不支持默认实现/方法体）
+- 实现声明（满足性检查）：
+  - `impl TraitName for StructName { ... }`
+    - `{ ... }` 内的方法会按普通 `impl StructName { ... }` 的规则编译为实例方法
+    - 随后编译器检查 `StructName` 的方法集是否满足 `TraitName` 的全部方法
+  - `impl TraitName for StructName {}` 允许空实现块（仅触发检查）
+- 方法集（Frozen）：
+  - `StructName` 自己定义的方法 + `impl StructName { ... }` 中的方法
+  - 以及通过 `...Base` 的方法提升得到的 promoted methods
+  - 遮蔽/歧义规则与“方法提升”一致：自身同名优先；多个 embedded 命中时报歧义错误
+- 当前限制（Planned）：
+  - 还不能把 `TraitName` 作为值类型/参数类型使用；也不支持 `dyn Trait`
+  - 不支持泛型约束（如 `fn f<T: Trait>(x: T)`）
+
+#### 7.3 impl（Status: Implemented，Rust 风格）
 - 语法：
   - `impl StructName { fn func(...) ... }`
 - 语义：
@@ -289,14 +312,14 @@
   - 这些方法内允许使用 `this`（类型恒为 `Ref<StructName>`；过渡期 `&StructName`）
   - 若同名方法重复定义（struct 内 vs impl 块，或多个 impl），视为编译错误（第一版）
 
-#### 7.3 object（Status: Implemented）
+#### 7.4 object（Status: Implemented）
 - `object O { fn f(...) ... }`
 - `O.f(a,b)` 编译为 `O__f(a,b)`（静态方法）
 - 在 `object O` 的方法体内允许省略 `O.`：
   - 非同名调用：`g(a,b)` 会优先解析为同一个 `object` 内的 `O.g(a,b)`；若不存在该方法，则按普通规则继续解析为模块顶层函数/`extern fn`/导入别名等
   - 同名调用（递归/包装场景）：在 `fn f(){ ... }` 内写 `f()` 会先按普通规则解析模块顶层/`extern fn` 的 `f`；若找不到，再回退解析为 `O.f()`（递归）
 
-#### 7.4 enum（Status: Implemented）
+#### 7.5 enum（Status: Implemented）
 - 声明：`enum E { A, B = 10, C, D = "raw" }`
 - 说明（Frozen）：当前 `enum` 在运行时不引入“独立枚举值类型”；`E` 是命名空间，`E.A` 的值直接是 `int` 或 `string`（取决于 enum 模式）
 - 模式：
@@ -327,7 +350,7 @@
   - 循环依赖：允许；按依赖优先的加载顺序进行一次性执行（后续可补更精确的初始化时序定义）
 - 当前限制：
   - 只支持字符串字面量路径（不支持表达式路径）
-  - 仅支持导入 `fn/struct/object/enum`；不支持导入模块级变量
+  - 仅支持导入 `fn/struct/trait/object/enum`；不支持导入模块级变量
   - 任何导入形式（import-all / named import / namespace import）若引入同名符号（或同名命名空间别名）冲突，会直接报错并停止（可用 `as` 或命名空间导入来消歧义）
   - 命名空间导入的成员访问：已支持 `ns.F(...)`、`ns.StructCtor(...)`、`ns.Obj.method(...)`、`ns.Enum.Variant`
 
@@ -367,8 +390,11 @@
   - 重复 key：后者覆盖前者
   - 允许尾逗号：`{ "a": 1, }`
 - 读取（Status: Implemented）：
-  - `m[k] -> Option<V>`（对 `map` 则为 `Option<tua_value>`）
-  - 限制（Frozen for now）：当 `V` 为 move-only（如 `struct/map/array`）时，`m[k]` / `m.get(k)` **不提供按值读取**（避免隐式复制/移动出容器）；编译期报错并提示使用 `getRef/getRefWrite`
+  - 对 `map`（无类型参数）：`m[k] -> Option<any>`（即 `Option<tua_value>`）
+  - 对 `map<K,V>`：
+    - 当 `V` 为标量（Copy：`int/long/double/bool/string`）：`m[k] -> Option<V>`
+    - 当 `V` 为句柄容器（`map` / `T[]/T[N]`）：`m[k] -> V`（可为 `null`；直接复用句柄的“可空”语义，便于 `m[k].len()` 这种写法）
+    - 当 `V` 为 `struct` 或其它需要避免隐式拷贝/移动的 move-only 值：`m[k]` / `m.get(k)` **不提供按值读取**；编译期报错并提示使用 `getRef/getRefWrite`
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
 - 写入（Status: Implemented）：

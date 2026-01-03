@@ -44,6 +44,7 @@ static int astTypeIsNamedStructValue(Type* t) {
 
 void initCompiler(Compiler* compiler) {
     compiler->structs = listNew();
+    compiler->traits = listNew();
     compiler->enums = listNew();
     compiler->loopStack = listNew();
 
@@ -178,6 +179,17 @@ StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length)
     if (!compiler || !compiler->structs) return NULL;
     for (int i = 0; i < compiler->structs->length; i++) {
         StructInfo* info = listGet(compiler->structs, i);
+        if (!info) continue;
+        if (info->nameLength != length) continue;
+        if (memcmp(info->name, name, (size_t)length) == 0) return info;
+    }
+    return NULL;
+}
+
+TraitInfo* compilerFindTrait(Compiler* compiler, const char* name, int length) {
+    if (!compiler || !compiler->traits) return NULL;
+    for (int i = 0; i < compiler->traits->length; i++) {
+        TraitInfo* info = listGet(compiler->traits, i);
         if (!info) continue;
         if (info->nameLength != length) continue;
         if (memcmp(info->name, name, (size_t)length) == 0) return info;
@@ -521,6 +533,24 @@ StructInfo* compilerResolveStructByToken(Compiler* compiler, const Token* name) 
         }
     }
     return compilerFindStruct(compiler, name->start, name->length);
+}
+
+TraitInfo* compilerResolveTraitByToken(Compiler* compiler, const Token* name) {
+    if (!compiler || !name) return NULL;
+    SymbolAlias* a = compilerFindAlias(compiler, name->start, name->length);
+    if (a && a->kind == ALIAS_TRAIT) {
+        return compilerFindTrait(compiler, a->qualified, a->qualifiedLen);
+    }
+    if (compiler && compiler->currentModulePrefix) {
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, name, &ql);
+        if (q) {
+            TraitInfo* info = compilerFindTrait(compiler, q, ql);
+            free(q);
+            if (info) return info;
+        }
+    }
+    return compilerFindTrait(compiler, name->start, name->length);
 }
 
 EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name) {
@@ -1188,6 +1218,9 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
         case STMT_STRUCT:
             compileStructStmt(compiler, (StructStmt*)stmt);
             break;
+        case STMT_TRAIT:
+            compileTraitStmt(compiler, (TraitStmt*)stmt);
+            break;
         case STMT_OBJECT:
             compileObjectStmt(compiler, (ObjectStmt*)stmt);
             break;
@@ -1196,6 +1229,9 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
             break;
         case STMT_IMPL:
             compileImplStmt(compiler, (ImplStmt*)stmt);
+            break;
+        case STMT_TRAIT_IMPL:
+            compileTraitImplStmt(compiler, (TraitImplStmt*)stmt);
             break;
     }
 }
@@ -1432,6 +1468,7 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
         error("Unknown struct for impl: %.*s\n", stmt->name.length, stmt->name.start);
         return;
     }
+    if (!info->methods) info->methods = listNew();
 
     Token structTok = stmt->name;
     structTok.start = info->name;
@@ -1440,6 +1477,7 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
     for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
         FuncStmt* method = (FuncStmt*)node->data;
         if (!method) continue;
+        if (info->methods) listAppend(info->methods, method);
 
         int mangledLen = 0;
         char* mangled = mangleTwo(&structTok, &method->name, "__", &mangledLen);
@@ -1495,6 +1533,348 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
         compileFuncStmt(compiler, &tmp);
 
         free(mangled);
+    }
+}
+
+static int tokenEqualsTokenRaw(const Token* a, const Token* b) {
+    if (!a || !b) return 0;
+    if (a->length != b->length) return 0;
+    if (!a->start || !b->start) return 0;
+    return memcmp(a->start, b->start, (size_t)a->length) == 0;
+}
+
+static int astTypeIsBuiltinNamed(const Token* name) {
+    if (!name) return 0;
+    if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
+    if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
+    if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    return 0;
+}
+
+static int astTypeEquals(Compiler* compiler, Type* a, Type* b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->kind != b->kind) return 0;
+
+    switch (a->kind) {
+        case TYPE_ANY:
+        case TYPE_VOID:
+        case TYPE_BOOL:
+        case TYPE_STRING:
+        case TYPE_PTR:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_INT:
+        case TYPE_LONG:
+        case TYPE_ISIZE:
+        case TYPE_U8:
+        case TYPE_U16:
+        case TYPE_U32:
+        case TYPE_U64:
+        case TYPE_USIZE:
+        case TYPE_BYTE:
+        case TYPE_F8:
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF8:
+        case TYPE_BF16:
+            return 1;
+        case TYPE_REF:
+            return astTypeEquals(compiler, a->inner, b->inner);
+        case TYPE_ARRAY:
+            if (a->arrayLen != b->arrayLen) return 0;
+            return astTypeEquals(compiler, a->inner, b->inner);
+        case TYPE_FUNC: {
+            int ap = a->paramTypes ? a->paramTypes->length : 0;
+            int bp = b->paramTypes ? b->paramTypes->length : 0;
+            if (ap != bp) return 0;
+            for (int i = 0; i < ap; i++) {
+                Type* at = listGet(a->paramTypes, i);
+                Type* bt = listGet(b->paramTypes, i);
+                if (!astTypeEquals(compiler, at, bt)) return 0;
+            }
+            int ar = a->returnTypes ? a->returnTypes->length : 0;
+            int br = b->returnTypes ? b->returnTypes->length : 0;
+            if (ar != br) return 0;
+            for (int i = 0; i < ar; i++) {
+                Type* at = listGet(a->returnTypes, i);
+                Type* bt = listGet(b->returnTypes, i);
+                if (!astTypeEquals(compiler, at, bt)) return 0;
+            }
+            return 1;
+        }
+        case TYPE_NAMED: {
+            // Builtins and generic builtins match by name+args.
+            if (astTypeIsBuiltinNamed(&a->name) || astTypeIsBuiltinNamed(&b->name)) {
+                if (!tokenEqualsTokenRaw(&a->name, &b->name)) return 0;
+            } else {
+                // Prefer semantic resolution across modules/imports.
+                StructInfo* as = compiler ? compilerResolveStructByToken(compiler, &a->name) : NULL;
+                StructInfo* bs = compiler ? compilerResolveStructByToken(compiler, &b->name) : NULL;
+                if (as || bs) {
+                    if (!as || !bs) return 0;
+                    if (as->nameLength != bs->nameLength) return 0;
+                    if (memcmp(as->name, bs->name, (size_t)as->nameLength) != 0) return 0;
+                } else {
+                    EnumInfo* ae = compiler ? compilerResolveEnumByToken(compiler, &a->name) : NULL;
+                    EnumInfo* be = compiler ? compilerResolveEnumByToken(compiler, &b->name) : NULL;
+                    if (ae || be) {
+                        if (!ae || !be) return 0;
+                        if (ae->nameLength != be->nameLength) return 0;
+                        if (memcmp(ae->name, be->name, (size_t)ae->nameLength) != 0) return 0;
+                    } else {
+                        if (!tokenEqualsTokenRaw(&a->name, &b->name)) return 0;
+                    }
+                }
+            }
+
+            int ac = a->typeArgs ? a->typeArgs->length : 0;
+            int bc = b->typeArgs ? b->typeArgs->length : 0;
+            if (ac != bc) return 0;
+            for (int i = 0; i < ac; i++) {
+                Type* at = listGet(a->typeArgs, i);
+                Type* bt = listGet(b->typeArgs, i);
+                if (!astTypeEquals(compiler, at, bt)) return 0;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int paramListEquals(Compiler* compiler, List* requiredParams, List* implParams) {
+    int rc = requiredParams ? requiredParams->length : 0;
+    int ic = implParams ? implParams->length : 0;
+    if (rc != ic) return 0;
+    for (int i = 0; i < rc; i++) {
+        Parameter* rp = listGet(requiredParams, i);
+        Parameter* ip = listGet(implParams, i);
+        if (!rp || !ip) return 0;
+        if (rp->mode != ip->mode) return 0;
+        if (!rp->type || !ip->type) return 0;
+        if (!astTypeEquals(compiler, rp->type, ip->type)) return 0;
+    }
+    return 1;
+}
+
+static int returnTypesEquals(Compiler* compiler, List* required, List* impl) {
+    int rc = required ? required->length : 0;
+    int ic = impl ? impl->length : 0;
+    if (rc != ic) return 0;
+    for (int i = 0; i < rc; i++) {
+        Type* rt = listGet(required, i);
+        Type* it = listGet(impl, i);
+        if (!rt || !it) return 0;
+        if (!astTypeEquals(compiler, rt, it)) return 0;
+    }
+    return 1;
+}
+
+static FuncStmt* structFindDirectMethodByName(StructInfo* info, const Token* methodName, int* outCount) {
+    if (outCount) *outCount = 0;
+    if (!info || !info->methods || !methodName) return NULL;
+    FuncStmt* found = NULL;
+    int count = 0;
+    for (ListNode* n = info->methods->head; n != NULL; n = n->next) {
+        FuncStmt* m = (FuncStmt*)n->data;
+        if (!m) continue;
+        if (!tokenEqualsTokenRaw(&m->name, methodName)) continue;
+        found = m;
+        count++;
+    }
+    if (outCount) *outCount = count;
+    return found;
+}
+
+typedef struct {
+    int depth;           // number of embedded steps from root to target receiver type
+    int indices[16];     // embedded field indices at each step
+    StructInfo* target;  // struct that defines the method
+    FuncStmt* method;    // method AST (signature)
+    int isAmbiguous;
+} PromotedMethodSigPath;
+
+static void promotedMethodSigSearch(
+    Compiler* compiler,
+    StructInfo* info,
+    const Token* methodName,
+    int depth,
+    int indices[16],
+    PromotedMethodSigPath* ioBest
+) {
+    if (!compiler || !info || !info->decl || !info->decl->fields || !methodName || !ioBest) return;
+    if (depth < 0 || depth >= (int)(sizeof(ioBest->indices) / sizeof(ioBest->indices[0]))) return;
+
+    int directCount = 0;
+    FuncStmt* direct = structFindDirectMethodByName(info, methodName, &directCount);
+    if (directCount > 1) {
+        ioBest->isAmbiguous = 1;
+        return;
+    }
+    if (direct) {
+        if (ioBest->target) {
+            ioBest->isAmbiguous = 1;
+            return;
+        }
+        ioBest->depth = depth;
+        for (int i = 0; i < depth; i++) ioBest->indices[i] = indices[i];
+        ioBest->target = info;
+        ioBest->method = direct;
+        return;
+    }
+
+    for (int i = 0; i < info->decl->fields->length; i++) {
+        FieldDeclaration* f = listGet(info->decl->fields, i);
+        if (!f || !f->isEmbedded || !f->type) continue;
+        if (f->type->kind != TYPE_NAMED) continue;
+        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+        if (!inner) continue;
+        indices[depth] = i;
+        promotedMethodSigSearch(compiler, inner, methodName, depth + 1, indices, ioBest);
+        if (ioBest->isAmbiguous) return;
+    }
+}
+
+// Returns 1 on success, 0 if not found, -1 if ambiguous.
+static int resolvePromotedMethodSigPath(Compiler* compiler, StructInfo* root, const Token* methodName, PromotedMethodSigPath* out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!compiler || !root || !methodName || !out) return 0;
+
+    // Direct method wins (shadows embedded).
+    int directCount = 0;
+    FuncStmt* direct = structFindDirectMethodByName(root, methodName, &directCount);
+    if (directCount > 1) return -1;
+    if (direct) {
+        out->depth = 0;
+        out->target = root;
+        out->method = direct;
+        return 1;
+    }
+
+    int tmp[16] = {0};
+    promotedMethodSigSearch(compiler, root, methodName, 0, tmp, out);
+    if (out->isAmbiguous) return -1;
+    if (!out->target || !out->method) return 0;
+    return 1;
+}
+
+void compileTraitStmt(Compiler* compiler, TraitStmt* stmt) {
+    if (!compiler || !stmt) return;
+
+    char* traitName = malloc((size_t)stmt->name.length + 1);
+    memcpy(traitName, stmt->name.start, (size_t)stmt->name.length);
+    traitName[stmt->name.length] = '\0';
+
+    if (compilerFindTrait(compiler, stmt->name.start, stmt->name.length)) {
+        compilerErrorAtToken(compiler, &stmt->name, "duplicate trait: %.*s", stmt->name.length, stmt->name.start);
+        free(traitName);
+        return;
+    }
+
+    // Basic validation: unique method names and explicit param types.
+    if (stmt->methods) {
+        for (int i = 0; i < stmt->methods->length; i++) {
+            TraitMethodDecl* m = listGet(stmt->methods, i);
+            if (!m) continue;
+            for (int j = i + 1; j < stmt->methods->length; j++) {
+                TraitMethodDecl* n = listGet(stmt->methods, j);
+                if (!n) continue;
+                if (tokenEqualsTokenRaw(&m->name, &n->name)) {
+                    compilerErrorAtToken(compiler, &n->name, "duplicate trait method: %.*s", n->name.length, n->name.start);
+                    break;
+                }
+            }
+            for (ListNode* pn = m->params ? m->params->head : NULL; pn != NULL; pn = pn->next) {
+                Parameter* p = (Parameter*)pn->data;
+                if (!p) continue;
+                if (!p->type) {
+                    compilerErrorAtToken(compiler, &p->name, "trait method parameter requires an explicit type");
+                    break;
+                }
+            }
+        }
+    }
+
+    TraitInfo* info = malloc(sizeof(TraitInfo));
+    info->name = traitName;
+    info->nameLength = stmt->name.length;
+    info->decl = stmt;
+    listAppend(compiler->traits, info);
+}
+
+static int traitMethodMatchesFunc(Compiler* compiler, TraitMethodDecl* req, FuncStmt* impl) {
+    if (!req || !impl) return 0;
+    if (!paramListEquals(compiler, req->params, impl->params)) return 0;
+    return returnTypesEquals(compiler, req->returnTypes, impl->returnTypes);
+}
+
+void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
+    if (!compiler || !stmt) return;
+
+    TraitInfo* trait = compilerResolveTraitByToken(compiler, &stmt->traitName);
+    if (!trait || !trait->decl) {
+        compilerErrorAtToken(compiler, &stmt->traitName, "unknown trait: %.*s", stmt->traitName.length, stmt->traitName.start);
+        return;
+    }
+
+    StructInfo* target = compilerResolveStructByToken(compiler, &stmt->targetName);
+    if (!target || !target->decl) {
+        compilerErrorAtToken(compiler, &stmt->targetName, "unknown struct for trait impl: %.*s", stmt->targetName.length, stmt->targetName.start);
+        return;
+    }
+
+    // Inline methods inside `impl Trait for Struct { ... }` are treated as normal struct methods.
+    if (stmt->methods && stmt->methods->length > 0) {
+        ImplStmt tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.base.type = STMT_IMPL;
+        tmp.name = stmt->targetName;
+        tmp.methods = stmt->methods;
+        compileImplStmt(compiler, &tmp);
+        if (compiler->hadError) return;
+    }
+
+    // Validate trait satisfaction using method set (includes promoted methods).
+    for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next) {
+        TraitMethodDecl* req = (TraitMethodDecl*)mn->data;
+        if (!req) continue;
+
+        PromotedMethodSigPath path = {0};
+        int r = resolvePromotedMethodSigPath(compiler, target, &req->name, &path);
+        if (r < 0) {
+            compilerErrorAtToken(
+                compiler,
+                &req->name,
+                "trait '%.*s' not satisfied by '%.*s': ambiguous method '%.*s' (write explicit path)",
+                stmt->traitName.length, stmt->traitName.start,
+                stmt->targetName.length, stmt->targetName.start,
+                req->name.length, req->name.start
+            );
+            continue;
+        }
+        if (r == 0 || !path.method) {
+            compilerErrorAtToken(
+                compiler,
+                &req->name,
+                "trait '%.*s' not satisfied by '%.*s': missing method '%.*s'",
+                stmt->traitName.length, stmt->traitName.start,
+                stmt->targetName.length, stmt->targetName.start,
+                req->name.length, req->name.start
+            );
+            continue;
+        }
+
+        if (!traitMethodMatchesFunc(compiler, req, path.method)) {
+            compilerErrorAtToken(
+                compiler,
+                &req->name,
+                "trait '%.*s' not satisfied by '%.*s': signature mismatch for method '%.*s'",
+                stmt->traitName.length, stmt->traitName.start,
+                stmt->targetName.length, stmt->targetName.start,
+                req->name.length, req->name.start
+            );
+        }
     }
 }
 
@@ -2034,19 +2414,28 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
         LLVMStructSetBody(structType, NULL, 0, 0);
     }
 
-    if (!compilerFindStruct(compiler, stmt->name.start, stmt->name.length)) {
-        StructInfo* info = malloc(sizeof(StructInfo));
+    StructInfo* info = compilerFindStruct(compiler, stmt->name.start, stmt->name.length);
+    if (!info) {
+        info = malloc(sizeof(StructInfo));
         info->name = structName;
         info->nameLength = stmt->name.length;
         info->type = structType;
         info->decl = stmt;
+        info->methods = listNew();
         listAppend(compiler->structs, info);
     } else {
         free(structName);
+        if (!info->methods) info->methods = listNew();
+        // Prefer the first declaration we saw; keep existing info->decl.
     }
 
     // Compile methods as `Struct__method(this: Struct*, ...)`
     if (stmt->methods) {
+        // Collect method signatures for trait/promotion checks.
+        for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
+            FuncStmt* method = (FuncStmt*)node->data;
+            if (method && info && info->methods) listAppend(info->methods, method);
+        }
         for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
             FuncStmt* method = (FuncStmt*)node->data;
             if (!method) continue;

@@ -30,6 +30,7 @@ typedef enum {
     TOKEN_THIS,
     TOKEN_DEINIT,
     TOKEN_MOVE,
+    TOKEN_TRAIT,
     // Types
     TOKEN_INT,
     TOKEN_DOUBLE,

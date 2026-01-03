@@ -1833,7 +1833,79 @@ static Stmt* parseStructDeclaration(Parser* parser) {
 static Stmt* parseImplDeclaration(Parser* parser) {
     parserDebugStart("parseImplDeclaration");
 
-    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect struct name after 'impl'");
+    Token kwImpl = parser->previous;
+    Token first = consume(parser, TOKEN_IDENTIFIER, "Expect name after 'impl'");
+
+    // Trait impl: `impl TraitName for StructName { ... }` (methods optional).
+    if (match(parser, TOKEN_FOR)) {
+        Token target = consume(parser, TOKEN_IDENTIFIER, "Expect struct name after 'for'");
+
+        List* methods = listNew();
+        while (match(parser, TOKEN_SEMICOLON)) {
+            // allow newline before '{'
+        }
+
+        if (match(parser, TOKEN_LBRACE)) {
+            while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+                while (match(parser, TOKEN_SEMICOLON)) {}
+                if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+                if (match(parser, TOKEN_PRIVATE)) {
+                    // ignore visibility for now
+                    consume(parser, TOKEN_FUNC, "Expect 'fn' after 'private'");
+                    FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+                    listAppend(methods, method);
+                    continue;
+                }
+
+                if (match(parser, TOKEN_FUNC)) {
+                    FuncStmt* method = (FuncStmt*)parseFunctionDeclaration(parser);
+                    listAppend(methods, method);
+                    continue;
+                }
+
+                if (match(parser, TOKEN_INIT) || match(parser, TOKEN_DEINIT)) {
+                    Token nameToken = parser->previous;
+                    consume(parser, TOKEN_LPAREN, "Expect '(' after init/deinit");
+                    consume(parser, TOKEN_RPAREN, "Expect ')' after init/deinit");
+
+                    Type* returnType = NULL;
+                    List* returnTypes = NULL;
+                    if (match(parser, TOKEN_ARROW)) {
+                        returnTypes = listNew();
+                        returnType = parseType(parser);
+                        listAppend(returnTypes, returnType);
+                        while (match(parser, TOKEN_COMMA)) {
+                            Type* t = parseType(parser);
+                            listAppend(returnTypes, t);
+                        }
+                    }
+
+                    List* body = parseBlock(parser);
+                    FuncStmt* method = (FuncStmt*)newFuncStmt(nameToken, listNew(), returnType, returnTypes, body);
+                    listAppend(methods, method);
+                    continue;
+                }
+
+                errorAtCurrent(parser, "Expect method declaration in impl block");
+                break;
+            }
+            consume(parser, TOKEN_RBRACE, "Expect '}' after impl body");
+        }
+
+        TraitImplStmt* stmt = malloc(sizeof(TraitImplStmt));
+        stmt->base.type = STMT_TRAIT_IMPL;
+        stmt->traitName = first;
+        stmt->targetName = target;
+        stmt->methods = methods;
+        stmt->keywordImpl = kwImpl;
+
+        parserDebugEnd("parseImplDeclaration");
+        return (Stmt*)stmt;
+    }
+
+    // Struct impl: `impl StructName { ... }`
+    Token name = first;
     while (match(parser, TOKEN_SEMICOLON)) {
         // allow newline before '{'
     }
@@ -1893,6 +1965,89 @@ static Stmt* parseImplDeclaration(Parser* parser) {
     stmt->methods = methods;
 
     parserDebugEnd("parseImplDeclaration");
+    return (Stmt*)stmt;
+}
+
+static TraitMethodDecl* parseTraitMethodDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect method name");
+    consume(parser, TOKEN_LPAREN, "Expect '(' after method name");
+
+    List* parameters = listNew();
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            int mode = PARAM_CONST;
+            if (match(parser, TOKEN_CONST)) mode = PARAM_CONST;
+            else if (match(parser, TOKEN_VAR)) mode = PARAM_LET;
+            else if (match(parser, TOKEN_MOVE)) mode = PARAM_MOVE;
+            Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
+            consume(parser, TOKEN_COLON, "Expect ':' after parameter name in trait method");
+            Type* type = parseType(parser);
+            listAppend(parameters, newParameter(param, type, mode));
+        } while (match(parser, TOKEN_COMMA));
+    }
+    consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");
+
+    Type* returnType = NULL;
+    List* returnTypes = NULL;
+    if (match(parser, TOKEN_ARROW)) {
+        returnTypes = listNew();
+        returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
+    } else if (isTypeStartToken(parser->current.type)) {
+        // Sugar: `fn m(...) int`
+        returnTypes = listNew();
+        returnType = parseType(parser);
+        listAppend(returnTypes, returnType);
+        while (match(parser, TOKEN_COMMA)) {
+            Type* t = parseType(parser);
+            listAppend(returnTypes, t);
+        }
+    }
+
+    if (check(parser, TOKEN_LBRACE)) {
+        errorAtCurrent(parser, "Trait methods do not support bodies yet (use impl blocks)");
+        // best-effort recovery: parse and discard the block
+        parseBlock(parser);
+    } else if (check(parser, TOKEN_SEMICOLON)) {
+        consume(parser, TOKEN_SEMICOLON, "Expect statement separator after trait method declaration");
+    }
+
+    TraitMethodDecl* m = malloc(sizeof(TraitMethodDecl));
+    m->name = name;
+    m->params = parameters;
+    m->returnType = returnType;
+    m->returnTypes = returnTypes;
+    return m;
+}
+
+static Stmt* parseTraitDeclaration(Parser* parser) {
+    Token name = consume(parser, TOKEN_IDENTIFIER, "Expect trait name");
+    while (match(parser, TOKEN_SEMICOLON)) {}
+    consume(parser, TOKEN_LBRACE, "Expect '{' before trait body");
+
+    List* methods = listNew();
+    while (!check(parser, TOKEN_RBRACE) && !check(parser, TOKEN_EOF)) {
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (check(parser, TOKEN_RBRACE) || check(parser, TOKEN_EOF)) break;
+
+        if (match(parser, TOKEN_PRIVATE)) {
+            // ignore visibility for now
+        }
+        consume(parser, TOKEN_FUNC, "Expect 'fn' in trait body");
+        TraitMethodDecl* m = parseTraitMethodDeclaration(parser);
+        if (m) listAppend(methods, m);
+    }
+
+    consume(parser, TOKEN_RBRACE, "Expect '}' after trait body");
+
+    TraitStmt* stmt = malloc(sizeof(TraitStmt));
+    stmt->base.type = STMT_TRAIT;
+    stmt->name = name;
+    stmt->methods = methods;
     return (Stmt*)stmt;
 }
 
@@ -2475,6 +2630,10 @@ static Stmt* declaration(Parser* parser) {
     {
         /* code */
         return parseStructDeclaration(parser);
+    }
+
+    if (match(parser, TOKEN_TRAIT)) {
+        return parseTraitDeclaration(parser);
     }
 
     if (match(parser, TOKEN_IMPL)) {

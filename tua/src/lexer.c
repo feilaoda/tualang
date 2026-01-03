@@ -85,6 +85,7 @@ static const char* TokenNames[] = {
 	        case TOKEN_THIS: return "this";
 	        case TOKEN_DEINIT: return "deinit";
 	        case TOKEN_MOVE: return "move";
+	        case TOKEN_TRAIT: return "trait";
         
         // 类型
         case TOKEN_INT: return "int";
@@ -423,6 +424,9 @@ static TokenType identifierType(Lexer* lexer) {
             }
             break;
         case 't':
+            if (lexer->current - lexer->start == 5 && memcmp(lexer->start, "trait", 5) == 0) {
+                return TOKEN_TRAIT;
+            }
             if (lexer->current - lexer->start == 4 && memcmp(lexer->start, "this", 4) == 0) {
                 return TOKEN_THIS;
             }

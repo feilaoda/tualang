@@ -54,6 +54,10 @@
 - [x] 增加语义/类型分析层（第一版）：在 LLVM codegen 前做基础类型推断/检查（Option/map 相关），避免 LLVMVerify 才报错
 - [x] 尾递归优化（self tail call）：`return f(args...)` 复用当前栈帧（当函数启用闭包 boxing 时禁用）
 - [x] 编译器内建函数：从字符串特判改为 `BuiltinId` 表驱动（便于扩展与跨平台 stdlib/rt 绑定）
+- [x] `struct` 嵌入字段 + 字段/方法提升（Go 风格但无子类型）：`...Base` / `...Base as name`，遮蔽优先、歧义报错、支持嵌套提升
+- [x] trait v0（language/spec + compiler）：`trait` 声明 + `impl Trait for Struct` 满足性检查（方法集检查，含 promoted methods），支持跨模块导入/导出
+  - [ ] trait v1：静态分发（泛型单态化，例如 `fn f<T: Trait>(x: T)`）
+  - [ ] trait v2：动态分发 `dyn Trait`（fat pointer/vtable，需冻结 ABI）
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化
@@ -80,7 +84,7 @@
   - [x] 读取：`m[k] -> Option<V>`（未命中返回 `None()`；可用 `??` 提供默认值）
   - [x] 写入：`m[k] = v`（当 `m` 为变量且为 `null` 时自动初始化）
   - [x] 内建方法：`len()/hasKey()/get()/delete()/clear()`
-  - [x] 借用读取（`language/spec` + `tua_rt`）：`getRef()/getRefWrite()`（当前仅支持 `map`；`map<K,V>` 仍待补齐）
+  - [x] 借用读取（`language/spec` + `tua_rt`）：`getRef()/getRefWrite()`（支持 `map` 与 `map<K,V>` 的 move-only value：`struct/map/array`；标量 value 仍按 `get/m[k]`）
   - [x] 遍历（map）：`for v in m { ... }` / `for k,v in m { ... }`
   - [x] 遍历（array）：`for v in a { ... }` / `for v,i in a { ... }`
   - [x] 完整强类型（第一版）：对 `map<K,V>` 写入/字面量做静态检查（禁止写入 `null`/错误类型）

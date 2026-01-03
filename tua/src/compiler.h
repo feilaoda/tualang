@@ -36,6 +36,7 @@ typedef struct Compiler{
     Block *current;
 
     List* structs; // List<StructInfo*>
+    List* traits;  // List<TraitInfo*>
     List* enums;   // List<EnumInfo*>
 
     List* loopStack; // List<LoopTarget*>
@@ -148,6 +149,7 @@ typedef struct LabelInfo {
 typedef enum SymbolAliasKind {
     ALIAS_FUNC = 0,
     ALIAS_STRUCT,
+    ALIAS_TRAIT,
     ALIAS_ENUM,
     ALIAS_OBJECT,
     ALIAS_MODULE
@@ -177,9 +179,21 @@ typedef struct StructInfo {
     int nameLength;
     LLVMTypeRef type;
     StructStmt* decl;
+    // Collected method signatures (from `struct` body and `impl` blocks).
+    // Elements are FuncStmt* (unmangled AST methods without injected `this`).
+    List* methods;
 } StructInfo;
 
 StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length);
+
+typedef struct TraitInfo {
+    char* name;
+    int nameLength;
+    TraitStmt* decl;
+} TraitInfo;
+
+TraitInfo* compilerFindTrait(Compiler* compiler, const char* name, int length);
+TraitInfo* compilerResolveTraitByToken(Compiler* compiler, const Token* name);
 
 typedef struct EnumInfo {
     char* name;
@@ -217,6 +231,8 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt);
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt);
 void compileStructStmt(Compiler* compiler, StructStmt* stmt);
 void compileImplStmt(Compiler* compiler, ImplStmt* stmt);
+void compileTraitStmt(Compiler* compiler, TraitStmt* stmt);
+void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt);
 void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);
 void compileEnumStmt(Compiler* compiler, EnumStmt* stmt);
 void initCompiler(Compiler* compiler);

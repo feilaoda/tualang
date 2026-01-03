@@ -32,6 +32,7 @@
 typedef enum {
     EXPORT_FUNC = 0,
     EXPORT_STRUCT,
+    EXPORT_TRAIT,
     EXPORT_ENUM,
     EXPORT_OBJECT
 } ExportKind;
@@ -411,6 +412,10 @@ static void moduleComputeExports(ModuleInfo* module) {
                 nameTok = ((StructStmt*)s)->name;
                 kind = EXPORT_STRUCT;
                 break;
+            case STMT_TRAIT:
+                nameTok = ((TraitStmt*)s)->name;
+                kind = EXPORT_TRAIT;
+                break;
             case STMT_ENUM:
                 nameTok = ((EnumStmt*)s)->name;
                 kind = EXPORT_ENUM;
@@ -585,6 +590,7 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
                     switch (ex->kind) {
                         case EXPORT_FUNC: a->kind = ALIAS_FUNC; break;
                         case EXPORT_STRUCT: a->kind = ALIAS_STRUCT; break;
+                        case EXPORT_TRAIT: a->kind = ALIAS_TRAIT; break;
                         case EXPORT_ENUM: a->kind = ALIAS_ENUM; break;
                         case EXPORT_OBJECT: a->kind = ALIAS_OBJECT; break;
                     }
@@ -638,6 +644,7 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
                 switch (ex->kind) {
                     case EXPORT_FUNC: a->kind = ALIAS_FUNC; break;
                     case EXPORT_STRUCT: a->kind = ALIAS_STRUCT; break;
+                    case EXPORT_TRAIT: a->kind = ALIAS_TRAIT; break;
                     case EXPORT_ENUM: a->kind = ALIAS_ENUM; break;
                     case EXPORT_OBJECT: a->kind = ALIAS_OBJECT; break;
                 }
@@ -1519,6 +1526,20 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
                 s->name.length = ql;
                 compileStructStmt(compiler, s);
                 s->name = old;
+                free(q);
+                continue;
+            }
+        }
+        if (stmt->type == STMT_TRAIT) {
+            TraitStmt* t = (TraitStmt*)stmt;
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &t->name, &ql);
+            if (q) {
+                Token old = t->name;
+                t->name.start = q;
+                t->name.length = ql;
+                compileTraitStmt(compiler, t);
+                t->name = old;
                 free(q);
                 continue;
             }

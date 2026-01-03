@@ -1,0 +1,10 @@
+trait T {
+  fn foo() -> int
+}
+
+struct S {
+  x: int
+}
+
+impl T for S {}
+
