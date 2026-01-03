@@ -70,7 +70,8 @@ void tua_panic(const char* msg) {
     } else {
         fprintf(stderr, "error: %s\n", msg ? msg : "(null)");
     }
-    abort();
+    fflush(stderr);
+    exit(1);
 }
 
 static uint32_t hash_u64(uint64_t x) {
@@ -500,7 +501,8 @@ void tua_assert_fail(const char* msg, int32_t line) {
     } else {
         fprintf(stderr, "error: assert failed\n");
     }
-    abort();
+    fflush(stderr);
+    exit(1);
 }
 
 int32_t tua_value_to_int(tua_value v) {
