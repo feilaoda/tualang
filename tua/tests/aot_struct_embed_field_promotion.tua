@@ -1,0 +1,14 @@
+struct Base {
+  id: int
+}
+
+struct Child {
+  ...Base
+  extra: int
+}
+
+let c: Child = Child{ base: Base{ id: 7 }, extra: 1 }
+assert(c.id == 7)
+assert(c.base.id == 7)
+assert(c.extra == 1)
+

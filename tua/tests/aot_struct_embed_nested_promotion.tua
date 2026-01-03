@@ -1,0 +1,16 @@
+struct A {
+  x: int
+}
+
+struct B {
+  ...A
+}
+
+struct C {
+  ...B
+}
+
+let c: C = C{ b: B{ a: A{ x: 1 } } }
+assert(c.x == 1)
+assert(c.b.a.x == 1)
+

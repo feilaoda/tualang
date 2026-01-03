@@ -461,6 +461,7 @@ typedef struct FieldDeclaration {
     Type* type;
     Expr* initializer;
     bool isConst;
+    bool isEmbedded;
 } FieldDeclaration;
 
 void initParser(Parser* parser, Lexer *lexer, const char* currentFilePath);

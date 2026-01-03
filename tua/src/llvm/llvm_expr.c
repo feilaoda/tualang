@@ -17,6 +17,91 @@ static LLVMValueRef castNumericToKind(Compiler* compiler, LLVMValueRef value, Ty
 static int fieldIndexOf(StructInfo* info, const Token* fieldName);
 static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx);
 
+typedef struct {
+    int depth;              // number of embedded steps from root to leaf struct
+    int indices[16];        // embedded field indices at each step
+    StructInfo* leafInfo;   // struct that owns the final field
+    int leafFieldIndex;     // field index within leafInfo
+    int isAmbiguous;        // >0 when multiple matches exist
+} PromotedFieldPath;
+
+static int fieldLooksEmbedded(const FieldDeclaration* f) {
+    if (!f) return 0;
+    if (f->isEmbedded) return 1;
+    // Fallback heuristic: treat `base: Base` (no initializer, non-const) as embedded when
+    // the field name matches lowerCamel(TypeName). This keeps promotion working even if
+    // older ASTs don't carry the flag.
+    if (f->isConst) return 0;
+    if (f->initializer) return 0;
+    if (!f->type || f->type->kind != TYPE_NAMED) return 0;
+    if (f->name.length != f->type->name.length) return 0;
+    if (f->name.length <= 0) return 0;
+    const char* tn = f->type->name.start;
+    const char* fn = f->name.start;
+    if (!tn || !fn) return 0;
+    char c0 = tn[0];
+    if (c0 >= 'A' && c0 <= 'Z') c0 = (char)(c0 - 'A' + 'a');
+    if (fn[0] != c0) return 0;
+    if (f->name.length > 1 && memcmp(fn + 1, tn + 1, (size_t)f->name.length - 1) != 0) return 0;
+    return 1;
+}
+
+static void promotedFieldSearch(
+    Compiler* compiler,
+    StructInfo* info,
+    const Token* fieldName,
+    int depth,
+    int indices[16],
+    PromotedFieldPath* ioBest
+) {
+    if (!compiler || !info || !info->decl || !info->decl->fields || !fieldName || !ioBest) return;
+    if (depth < 0 || depth >= (int)(sizeof(ioBest->indices) / sizeof(ioBest->indices[0]))) return;
+
+    int idx = fieldIndexOf(info, fieldName);
+    if (idx >= 0) {
+        if (ioBest->leafInfo) {
+            ioBest->isAmbiguous = 1;
+            return;
+        }
+        ioBest->depth = depth;
+        for (int i = 0; i < depth; i++) ioBest->indices[i] = indices[i];
+        ioBest->leafInfo = info;
+        ioBest->leafFieldIndex = idx;
+        return;
+    }
+
+    for (int i = 0; i < info->decl->fields->length; i++) {
+        FieldDeclaration* f = listGet(info->decl->fields, i);
+        if (!f || !fieldLooksEmbedded(f) || !f->type) continue;
+        if (f->type->kind != TYPE_NAMED) continue;
+        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+        if (!inner) continue;
+        indices[depth] = i;
+        promotedFieldSearch(compiler, inner, fieldName, depth + 1, indices, ioBest);
+        if (ioBest->isAmbiguous) return;
+    }
+}
+
+// Resolve `root.field` through embedded-field promotion.
+// Returns 1 on success, 0 if not found, -1 if ambiguous.
+static int resolvePromotedFieldPath(Compiler* compiler, StructInfo* root, const Token* fieldName, PromotedFieldPath* out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!compiler || !root || !fieldName || !out) return 0;
+    // Direct field wins (no promotion needed).
+    int direct = fieldIndexOf(root, fieldName);
+    if (direct >= 0) {
+        out->depth = 0;
+        out->leafInfo = root;
+        out->leafFieldIndex = direct;
+        return 1;
+    }
+    int tmp[16] = {0};
+    promotedFieldSearch(compiler, root, fieldName, 0, tmp, out);
+    if (out->isAmbiguous) return -1;
+    if (!out->leafInfo) return 0;
+    return 1;
+}
+
 static int tokenEquals(const Token* token, const char* s) {
     if (!token || !s) return 0;
     int len = (int)strlen(s);
@@ -1749,8 +1834,9 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
         if (thisVar.value && thisVar.typeName) {
             StructInfo* info = compilerFindStruct(compiler, thisVar.typeName, thisVar.typeNameLength);
             if (info) {
-                int idx = fieldIndexOf(info, &expr->name);
-                if (idx >= 0) {
+                PromotedFieldPath path = {0};
+                int resolve = resolvePromotedFieldPath(compiler, info, &expr->name, &path);
+                if (resolve > 0) {
                     LLVMValueRef structPtr = NULL;
                     if (thisVar.isBoxed) {
                         if (!thisVar.boxPtrType) {
@@ -1769,8 +1855,21 @@ LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr) {
                         structPtr = thisVar.value;
                     }
 
-                    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
-                    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+                    LLVMTypeRef curType = info->type;
+                    StructInfo* curInfo = info;
+                    for (int i = 0; i < path.depth; i++) {
+                        int embIdx = path.indices[i];
+                        FieldDeclaration* f = curInfo && curInfo->decl ? (FieldDeclaration*)listGet(curInfo->decl->fields, embIdx) : NULL;
+                        if (!f || !f->type || f->type->kind != TYPE_NAMED) return NULL;
+                        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+                        if (!inner) return NULL;
+                        structPtr = LLVMBuildStructGEP2(compiler->builder, curType, structPtr, (unsigned)embIdx, "emb_ptr");
+                        curType = inner->type;
+                        curInfo = inner;
+                    }
+
+                    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, path.leafInfo->type, structPtr, (unsigned)path.leafFieldIndex, "field_ptr");
+                    LLVMTypeRef fType = fieldLLVMType(compiler, path.leafInfo, path.leafFieldIndex);
                     return LLVMBuildLoad2(compiler->builder, fType, fieldPtr, "field");
                 }
             }
@@ -2242,16 +2341,41 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
 
     // Determine V for typed maps when receiver is a simple variable.
     LLVMTypeRef innerType = compilerGetTuaValueType(compiler);
+    int typedHandleByValue = 0;
     if (expr->object && expr->object->type == EXPR_VARIABLE) {
         if (recvVar.value && recvVar.isTypedMap && recvVar.mapValueType) {
             innerType = recvVar.mapValueType;
-            if (!isScalarValueLLVMType(compiler, innerType)) {
-                compilerErrorAt(
-                    compiler,
-                    expr->base.token.line,
-                    "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
-                );
-                return NULL;
+            // Use the typed-map AST metadata to classify V instead of LLVM pointer types (opaque pointers).
+            int scalarKind =
+                recvVar.mapValueKind == TYPE_STRING ||
+                recvVar.mapValueKind == TYPE_BOOL ||
+                recvVar.mapValueKind == TYPE_INT ||
+                recvVar.mapValueKind == TYPE_LONG ||
+                recvVar.mapValueKind == TYPE_FLOAT ||
+                recvVar.mapValueKind == TYPE_DOUBLE ||
+                recvVar.mapValueKind == TYPE_I8 ||
+                recvVar.mapValueKind == TYPE_I16 ||
+                recvVar.mapValueKind == TYPE_U8 ||
+                recvVar.mapValueKind == TYPE_U16 ||
+                recvVar.mapValueKind == TYPE_U32 ||
+                recvVar.mapValueKind == TYPE_U64 ||
+                recvVar.mapValueKind == TYPE_USIZE ||
+                recvVar.mapValueKind == TYPE_ISIZE ||
+                recvVar.mapValueKind == TYPE_BYTE;
+
+            if (!scalarKind) {
+                // Runtime handles (map/array) are cheap to copy and can be treated as nullable values.
+                // Structs and other aggregates must use getRef/getRefWrite to avoid copies.
+                if (recvVar.mapValueIsMap || recvVar.mapValueKind == TYPE_ARRAY) {
+                    typedHandleByValue = 1;
+                } else {
+                    compilerErrorAt(
+                        compiler,
+                        expr->base.token.line,
+                        "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
+                    );
+                    return NULL;
+                }
             }
         }
     }
@@ -2296,6 +2420,10 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     LLVMValueRef opt = LLVMGetUndef(optType);
     opt = LLVMBuildInsertValue(builder, opt, ok, 0, "o0");
     opt = LLVMBuildInsertValue(builder, opt, payload, 1, "o1");
+    if (typedHandleByValue) {
+        // For map/array handles, return the (nullable) handle directly.
+        return payload;
+    }
     return opt;
 }
 
@@ -2845,7 +2973,7 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
-            StructInfo* inner = compilerFindStruct(compiler, f->type->name.start, f->type->name.length);
+            StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
             if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             return inner->type;
         }
@@ -2856,7 +2984,7 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
                 return LLVMPointerType(LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), 0);
             }
             if (f->type->inner->kind == TYPE_NAMED) {
-                StructInfo* inner = compilerFindStruct(compiler, f->type->inner->name.start, f->type->inner->name.length);
+                StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->inner->name);
                 if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
                 return LLVMPointerType(inner->type, 0);
             }
@@ -3493,9 +3621,14 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
         return NULL;
     }
 
-    int idx = fieldIndexOf(info, &expr->name);
-    if (idx < 0) {
-        error("Unknown field\n");
+    PromotedFieldPath path = {0};
+    int resolve = resolvePromotedFieldPath(compiler, info, &expr->name, &path);
+    if (resolve == 0) {
+        compilerErrorAtToken(compiler, &expr->name, "unknown field: %.*s", expr->name.length, expr->name.start);
+        return NULL;
+    }
+    if (resolve < 0) {
+        compilerErrorAtToken(compiler, &expr->name, "ambiguous field: %.*s (write explicit path)", expr->name.length, expr->name.start);
         return NULL;
     }
 
@@ -3522,8 +3655,28 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
         structPtr = recvVar.value;
     }
 
-    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
-    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+    // Apply embedded-field path (if any): x.f => x.emb1.emb2.f
+    LLVMTypeRef curType = info->type;
+    StructInfo* curInfo = info;
+    for (int i = 0; i < path.depth; i++) {
+        int embIdx = path.indices[i];
+        FieldDeclaration* f = curInfo && curInfo->decl ? (FieldDeclaration*)listGet(curInfo->decl->fields, embIdx) : NULL;
+        if (!f || !f->type || f->type->kind != TYPE_NAMED) {
+            compilerErrorAtToken(compiler, &expr->name, "invalid embedded field path");
+            return NULL;
+        }
+        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+        if (!inner) {
+            compilerErrorAtToken(compiler, &expr->name, "unknown embedded struct type");
+            return NULL;
+        }
+        structPtr = LLVMBuildStructGEP2(compiler->builder, curType, structPtr, (unsigned)embIdx, "emb_ptr");
+        curType = inner->type;
+        curInfo = inner;
+    }
+
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, path.leafInfo->type, structPtr, (unsigned)path.leafFieldIndex, "field_ptr");
+    LLVMTypeRef fType = fieldLLVMType(compiler, path.leafInfo, path.leafFieldIndex);
     return LLVMBuildLoad2(compiler->builder, fType, fieldPtr, "field");
 }
 
@@ -3576,9 +3729,14 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
         return NULL;
     }
 
-    int idx = fieldIndexOf(info, &expr->name);
-    if (idx < 0) {
-        error("Unknown field\n");
+    PromotedFieldPath path = {0};
+    int resolve = resolvePromotedFieldPath(compiler, info, &expr->name, &path);
+    if (resolve == 0) {
+        compilerErrorAtToken(compiler, &expr->name, "unknown field: %.*s", expr->name.length, expr->name.start);
+        return NULL;
+    }
+    if (resolve < 0) {
+        compilerErrorAtToken(compiler, &expr->name, "ambiguous field: %.*s (write explicit path)", expr->name.length, expr->name.start);
         return NULL;
     }
 
@@ -3600,8 +3758,27 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
         structPtr = recvVar.value;
     }
 
-    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, structPtr, (unsigned)idx, "field_ptr");
-    LLVMTypeRef fType = fieldLLVMType(compiler, info, idx);
+    LLVMTypeRef curType = info->type;
+    StructInfo* curInfo = info;
+    for (int i = 0; i < path.depth; i++) {
+        int embIdx = path.indices[i];
+        FieldDeclaration* f = curInfo && curInfo->decl ? (FieldDeclaration*)listGet(curInfo->decl->fields, embIdx) : NULL;
+        if (!f || !f->type || f->type->kind != TYPE_NAMED) {
+            compilerErrorAtToken(compiler, &expr->name, "invalid embedded field path");
+            return NULL;
+        }
+        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+        if (!inner) {
+            compilerErrorAtToken(compiler, &expr->name, "unknown embedded struct type");
+            return NULL;
+        }
+        structPtr = LLVMBuildStructGEP2(compiler->builder, curType, structPtr, (unsigned)embIdx, "emb_ptr");
+        curType = inner->type;
+        curInfo = inner;
+    }
+
+    LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, path.leafInfo->type, structPtr, (unsigned)path.leafFieldIndex, "field_ptr");
+    LLVMTypeRef fType = fieldLLVMType(compiler, path.leafInfo, path.leafFieldIndex);
 
     LLVMValueRef rhs = compileExpr(compiler, expr->value);
     rhs = castToType(compiler, rhs, fType);

@@ -259,6 +259,24 @@
   - `p.m(a,b)` 会被编译为 `T__m(recv, a, b)`，其中 `recv` 恒为 `Ref<T>`（过渡期 `&T`）
     - 若 `p` 为 `T`（值），则 `recv = &p`
     - 若 `p` 为 `Ref<T>`（引用值），则 `recv = p`
+- 嵌入与提升（Frozen，Status: Implemented，Go 风格但 **无子类型**）：
+  - 目的：复用字段/方法，但不引入 `extends`/继承链；不提供隐式 upcast；保持布局可预测
+  - 语法：在 `struct` 字段列表中允许嵌入另一个 `struct` 类型：
+    - `...Base`：嵌入 `Base`
+    - `...Base as base2`：嵌入并显式指定字段名（用于命名冲突/多次嵌入）
+  - 降糖（Frozen）：
+    - `...Base` 等价于新增一个字段 `base: Base`，并将该字段标记为 `embedded`
+    - 默认字段名规则：将类型名首字母小写（`Base -> base`）；若重名必须使用 `as`
+  - 字段提升（Frozen）：
+    - 对表达式 `x.f`：若 `x` 的类型 `T` 没有字段 `f`，则在 `T` 的 `embedded` 字段中递归查找 `f`
+    - 若唯一匹配，则将 `x.f` 解析为 `x.<embeddedPath>.f`（例如 `x.id` -> `x.base.id`）
+    - 若存在多个匹配则报错（歧义），要求显式写出路径（如 `x.base1.id` / `x.base2.id`）
+    - 若 `T` 自己存在同名字段 `f`，则永远优先使用 `T.f`（遮蔽 embedded）
+  - 方法提升（Frozen）：
+    - 对调用 `x.m(...)`：若 `T` 上没有实例方法 `m`，则在 `embedded` 字段类型中递归查找 `m`
+    - 若唯一匹配，则将 `x.m(...)` 解析为 `x.<embeddedPath>.m(...)`，并以嵌入字段的地址作为 `recv`
+    - 歧义/遮蔽规则与字段提升一致
+  - 重要：`Child` **不是** `Base` 的子类型；`let b: Base = child` 是类型错误（Planned：完善类型检查报错信息）
 - `init/deinit`（Status: Partial）：
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）

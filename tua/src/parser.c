@@ -1744,6 +1744,51 @@ static Stmt* parseStructDeclaration(Parser* parser) {
             continue;
         }
 
+        // Embedded struct field: `...Base` / `...Base as base2`
+        if (match(parser, TOKEN_ELLIPSIS)) {
+            Token dots = parser->previous;
+            Type* embeddedType = parseType(parser);
+            if (!embeddedType) {
+                errorAtCurrent(parser, "Expect embedded type after '...'");
+                break;
+            }
+            if (embeddedType->kind != TYPE_NAMED) {
+                errorAtCurrent(parser, "Only named struct types can be embedded (use ...Base)");
+            }
+
+            Token fieldName = (Token){0};
+            if (match(parser, TOKEN_AS)) {
+                fieldName = consume(parser, TOKEN_IDENTIFIER, "Expect embedded field name after 'as'");
+            } else {
+                // Default name: lowerCamel(TypeName) => Base -> base
+                Token tn = embeddedType->name;
+                int n = tn.length;
+                char* buf = malloc((size_t)n + 1);
+                memcpy(buf, tn.start, (size_t)n);
+                if (n > 0 && buf[0] >= 'A' && buf[0] <= 'Z') buf[0] = (char)(buf[0] - 'A' + 'a');
+                buf[n] = '\0';
+                fieldName.type = TOKEN_IDENTIFIER;
+                fieldName.start = buf;
+                fieldName.length = n;
+                fieldName.line = dots.line;
+                fieldName.col = dots.col;
+                fieldName.hasDot = 0;
+            }
+
+            if (check(parser, TOKEN_COMMA)) {
+                consume(parser, TOKEN_COMMA, "Expect ',' after embedded field");
+            }
+
+            FieldDeclaration* field = malloc(sizeof(FieldDeclaration));
+            field->name = fieldName;
+            field->type = embeddedType;
+            field->initializer = NULL;
+            field->isConst = false;
+            field->isEmbedded = true;
+            listAppend(fields, field);
+            continue;
+        }
+
         // Field: optional `const`, then `name: Type`, optional `= expr`
         bool isConst = false;
         if (match(parser, TOKEN_CONST)) {
@@ -1768,6 +1813,7 @@ static Stmt* parseStructDeclaration(Parser* parser) {
         field->type = fieldType;
         field->initializer = initializer;
         field->isConst = isConst;
+        field->isEmbedded = false;
         listAppend(fields, field);
     }
     

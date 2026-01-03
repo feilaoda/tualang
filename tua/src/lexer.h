@@ -82,6 +82,7 @@ typedef enum {
     TOKEN_INC, //++
     TOKEN_DEC, //--
     TOKEN_DOT, // .
+    TOKEN_ELLIPSIS, // ...
     // Delimiters
     TOKEN_LPAREN,    // (
     TOKEN_RPAREN,    // )

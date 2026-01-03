@@ -496,6 +496,95 @@ static char* mangleRawAndToken(const char* left, int leftLen, const Token* right
     return s;
 }
 
+typedef struct {
+    int depth;           // number of embedded steps from root to target receiver type
+    int indices[16];     // embedded field indices at each step
+    StructInfo* target;  // struct that defines the method
+    LLVMValueRef func;   // resolved function pointer (Struct__method)
+    int isAmbiguous;
+} PromotedMethodPath;
+
+static int fieldLooksEmbedded(const FieldDeclaration* f) {
+    if (!f) return 0;
+    if (f->isEmbedded) return 1;
+    if (f->isConst) return 0;
+    if (f->initializer) return 0;
+    if (!f->type || f->type->kind != TYPE_NAMED) return 0;
+    if (f->name.length != f->type->name.length) return 0;
+    if (f->name.length <= 0) return 0;
+    const char* tn = f->type->name.start;
+    const char* fn = f->name.start;
+    if (!tn || !fn) return 0;
+    char c0 = tn[0];
+    if (c0 >= 'A' && c0 <= 'Z') c0 = (char)(c0 - 'A' + 'a');
+    if (fn[0] != c0) return 0;
+    if (f->name.length > 1 && memcmp(fn + 1, tn + 1, (size_t)f->name.length - 1) != 0) return 0;
+    return 1;
+}
+
+static void promotedMethodSearch(
+    Compiler* compiler,
+    StructInfo* info,
+    const Token* methodName,
+    int depth,
+    int indices[16],
+    PromotedMethodPath* ioBest
+) {
+    if (!compiler || !info || !info->decl || !info->decl->fields || !methodName || !ioBest) return;
+    if (depth < 0 || depth >= (int)(sizeof(ioBest->indices) / sizeof(ioBest->indices[0]))) return;
+
+    int mangledLen = 0;
+    char* mangled = mangleRawAndToken(info->name, info->nameLength, methodName, &mangledLen);
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, mangled);
+    free(mangled);
+
+    if (fn) {
+        if (ioBest->target) {
+            ioBest->isAmbiguous = 1;
+            return;
+        }
+        ioBest->depth = depth;
+        for (int i = 0; i < depth; i++) ioBest->indices[i] = indices[i];
+        ioBest->target = info;
+        ioBest->func = fn;
+        return;
+    }
+
+    for (int i = 0; i < info->decl->fields->length; i++) {
+        FieldDeclaration* f = listGet(info->decl->fields, i);
+        if (!f || !fieldLooksEmbedded(f) || !f->type) continue;
+        if (f->type->kind != TYPE_NAMED) continue;
+        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+        if (!inner) continue;
+        indices[depth] = i;
+        promotedMethodSearch(compiler, inner, methodName, depth + 1, indices, ioBest);
+        if (ioBest->isAmbiguous) return;
+    }
+}
+
+// Resolve `root.method(...)` through embedded-field promotion.
+// Returns 1 on success, 0 if not found, -1 if ambiguous.
+static int resolvePromotedMethodPath(Compiler* compiler, StructInfo* root, const Token* methodName, PromotedMethodPath* out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!compiler || !root || !methodName || !out) return 0;
+    // Direct method wins (no promotion needed).
+    int mangledLen = 0;
+    char* mangled = mangleRawAndToken(root->name, root->nameLength, methodName, &mangledLen);
+    LLVMValueRef direct = LLVMGetNamedFunction(compiler->module, mangled);
+    free(mangled);
+    if (direct) {
+        out->depth = 0;
+        out->target = root;
+        out->func = direct;
+        return 1;
+    }
+    int tmp[16] = {0};
+    promotedMethodSearch(compiler, root, methodName, 0, tmp, out);
+    if (out->isAmbiguous) return -1;
+    if (!out->target || !out->func) return 0;
+    return 1;
+}
+
 static LLVMValueRef emitDirectFuncCall(Compiler* compiler, LLVMValueRef func, CallExpr* expr, int errLine) {
     if (!compiler || !func || !expr) return NULL;
     LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
@@ -2581,8 +2670,25 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
         free(mangled);
 
+        PromotedMethodPath promoted = {0};
+        StructInfo* promotedRoot = NULL;
+        if (!func && isInstance) {
+                Token t = (Token){TOKEN_IDENTIFIER, recvVar.typeName, recvVar.typeNameLength, get->name.line, get->name.col, 0};
+                promotedRoot = compilerResolveStructByToken(compiler, &t);
+                if (promotedRoot) {
+                    int pr = resolvePromotedMethodPath(compiler, promotedRoot, &get->name, &promoted);
+                    if (pr < 0) {
+                    compilerErrorAtToken(compiler, &get->name, "ambiguous method: %.*s (write explicit path)", get->name.length, get->name.start);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (pr > 0) {
+                    func = promoted.func;
+                }
+            }
+        }
         if (!func) {
-            emitDebug("Undefined object method\n");
+            compilerErrorAtToken(compiler, &get->name, "undefined method: %.*s", get->name.length, get->name.start);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
@@ -2636,6 +2742,36 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "this");
                 } else {
                     thisArg = recvVar.value; // alloca already yields pointer to struct value
+                }
+
+                // Embedded-method promotion: adjust receiver to `&this.<embeddedPath>`.
+                if (promotedRoot && promoted.depth > 0) {
+                    LLVMValueRef p = thisArg;
+                    LLVMTypeRef curType = promotedRoot->type;
+                    StructInfo* curInfo = promotedRoot;
+                    for (int i = 0; i < promoted.depth; i++) {
+                        int embIdx = promoted.indices[i];
+                        FieldDeclaration* f = curInfo && curInfo->decl ? (FieldDeclaration*)listGet(curInfo->decl->fields, embIdx) : NULL;
+                        if (!f || !f->type || f->type->kind != TYPE_NAMED) {
+                            compilerErrorAtToken(compiler, &get->name, "invalid embedded receiver path");
+                            if (paramTypes) free(paramTypes);
+                            if (args) free(args);
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return NULL;
+                        }
+                        StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
+                        if (!inner) {
+                            compilerErrorAtToken(compiler, &get->name, "unknown embedded struct type");
+                            if (paramTypes) free(paramTypes);
+                            if (args) free(args);
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return NULL;
+                        }
+                        p = LLVMBuildStructGEP2(compiler->builder, curType, p, (unsigned)embIdx, "emb_ptr");
+                        curType = inner->type;
+                        curInfo = inner;
+                    }
+                    thisArg = p;
                 }
                 thisArg = castValueToType(compiler, thisArg, paramTypes[0]);
                 args[argIndex++] = thisArg;

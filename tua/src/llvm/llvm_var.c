@@ -429,6 +429,11 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 return rv.arrayElemType;
             }
             if (rv.value && rv.isTypedMap && rv.mapValueType) {
+                // Special-case: typed map values that are runtime handles (map/array) are returned by value (nullable).
+                // This avoids forcing `Option<map>` and matches existing tests that use `m["k"].len()` on map values.
+                if (rv.mapValueIsMap || rv.mapValueKind == TYPE_ARRAY) {
+                    return rv.mapValueType;
+                }
                 return compilerGetOptionType(compiler, rv.mapValueType);
             }
             if (rv.value && rv.isMap) {
@@ -1114,8 +1119,21 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMTypeRef savedAElem = compiler->expectedArrayElemType;
         TypeKind savedAElemK = compiler->expectedArrayElemKind;
         int64_t savedAFixed = compiler->expectedArrayFixedLen;
-        if (valueType == compilerGetMapType(compiler) &&
-            (stmt->initializer->type == EXPR_MAP_LITERAL || stmt->initializer->type == EXPR_BRACE_LITERAL)) {
+        // `{}` is ambiguous (map vs array). Resolve it by declared type:
+        // - `let a: T[] = {}` => empty array
+        // - otherwise `{}` => empty map (back-compat)
+        int braceAsArray = stmt->initializer->type == EXPR_BRACE_LITERAL &&
+                           stmt->type && stmt->type->kind == TYPE_ARRAY;
+
+        // Map literal context.
+        if (stmt->initializer->type == EXPR_MAP_LITERAL ||
+            (stmt->initializer->type == EXPR_BRACE_LITERAL && !braceAsArray)) {
+            // Force `{}` to mean "empty map" regardless of any leaked array expectation.
+            if (stmt->initializer->type == EXPR_BRACE_LITERAL) {
+                compiler->expectedArrayElemType = NULL;
+                compiler->expectedArrayElemKind = TYPE_ANY;
+                compiler->expectedArrayFixedLen = -1;
+            }
             if (hasAnnotatedTypedMap) {
                 compiler->expectedMapKeyType = annotatedKeyTy;
                 compiler->expectedMapValueType = annotatedValTy;
@@ -1130,8 +1148,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 compiler->expectedMapValueKind = inferredValKind;
             }
         }
-        if (valueType == compilerGetArrayType(compiler) &&
-            (stmt->initializer->type == EXPR_ARRAY_LITERAL || stmt->initializer->type == EXPR_BRACE_LITERAL)) {
+
+        // Array literal context.
+        if (stmt->initializer->type == EXPR_ARRAY_LITERAL ||
+            (stmt->initializer->type == EXPR_BRACE_LITERAL && braceAsArray)) {
             if (hasAnnotatedArray) {
                 compiler->expectedArrayElemType = annotatedElemTy;
                 compiler->expectedArrayFixedLen = annotatedFixedLen;
@@ -1207,11 +1227,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
 
         // Runtime move: for move-only container types (map/array), null out the source after `let b = a`.
         // `const view = a` is a borrow view and must not move.
-        if (!stmt->isConst && stmt->initializer->type == EXPR_VARIABLE &&
-            (valueType == compilerGetMapType(compiler) || valueType == compilerGetArrayType(compiler))) {
+        if (!stmt->isConst && stmt->initializer->type == EXPR_VARIABLE) {
             VariableRef base = findVariableExpr(compiler, stmt->initializer);
-            int shouldMoveMap = (valueType == compilerGetMapType(compiler)) && base.isMap;
-            int shouldMoveArr = (valueType == compilerGetArrayType(compiler)) && base.isArray && !base.isStackArray;
+            int shouldMoveMap = base.isMap;
+            int shouldMoveArr = base.isArray && !base.isStackArray;
             if ((shouldMoveMap || shouldMoveArr) && base.value && base.type) {
                 LLVMValueRef nullv = LLVMConstNull(base.type);
                 if (base.isBoxed) {
@@ -1226,7 +1245,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 }
             }
         }
-    } else if (valueType == compilerGetArrayType(compiler) && hasAnnotatedArray && annotatedFixedLen >= 0) {
+    } else if (hasAnnotatedArray && annotatedFixedLen >= 0) {
         // Default init for fixed arrays: allocate and zero-initialize.
         LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)annotatedFixedLen, 1);
@@ -1255,11 +1274,13 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         } else {
             LLVMBuildStore(compiler->builder, initValue, slot);
         }
-    } else if (valueType == compilerGetArrayType(compiler) && hasAnnotatedArray && annotatedFixedLen < 0) {
+    } else if (hasAnnotatedArray && annotatedFixedLen < 0) {
         compilerErrorAt(compiler, stmt->name.line, "dynamic array must have an initializer (use [] or [..])");
         free(var);
         return;
-    } else if (valueType == compilerGetMapType(compiler) && stmt->isConst) {
+    } else if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+               stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&
+               stmt->isConst) {
         // `const` means the binding cannot be re-assigned, but the map object is mutable.
         // To avoid auto-init-on-write rebinding, default-initialize `const map` to an empty map.
         LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
@@ -1299,7 +1320,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMBuildStore(compiler->builder, cell, slot);
     } else {
         // Make `map` locals safely default to null when uninitialized.
-        if (valueType == compilerGetMapType(compiler)) {
+        if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+            stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0) {
             LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), slot);
         }
     }
@@ -1522,7 +1544,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isMap = 1;
     }
 
-    if (!stmt->type && inferredTypedMap && valueType == compilerGetMapType(compiler) && inferredKeyTy && inferredValTy) {
+    if (!stmt->type && inferredTypedMap && inferredKeyTy && inferredValTy) {
         variable->isMap = 1;
         variable->isTypedMap = 1;
         variable->mapKeyType = inferredKeyTy;
@@ -1531,11 +1553,29 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->mapValueKind = inferredValKind;
     }
 
-    if (valueType == compilerGetMapType(compiler) && stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
+    // Inference for unannotated `{}` defaults to map (unless explicitly typed as array).
+    if (stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
+        variable->isMap = 1;
+    }
+    if (stmt->initializer && stmt->initializer->type == EXPR_BRACE_LITERAL &&
+        !(stmt->type && stmt->type->kind == TYPE_ARRAY)) {
         variable->isMap = 1;
     }
 
-    if (hasAnnotatedArray && valueType == compilerGetArrayType(compiler) && annotatedElemTy) {
+    // Propagate container kind for typed-map index reads that return handles by value:
+    // `let v = m["k"]` where `m: map<..., map<...>>` => `v` is a map handle.
+    if (stmt->initializer && stmt->initializer->type == EXPR_INDEX) {
+        IndexExpr* ix = (IndexExpr*)stmt->initializer;
+        if (ix->object && ix->object->type == EXPR_VARIABLE) {
+            VariableRef base = findVariableExpr(compiler, ix->object);
+            if (base.value && base.isTypedMap) {
+                if (base.mapValueIsMap) variable->isMap = 1;
+                if (base.mapValueKind == TYPE_ARRAY) variable->isArray = 1;
+            }
+        }
+    }
+
+    if (hasAnnotatedArray && annotatedElemTy) {
         variable->isArray = 1;
         variable->arrayElemType = annotatedElemTy;
         variable->arrayFixedLen = annotatedFixedLen;

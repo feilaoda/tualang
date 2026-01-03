@@ -149,6 +149,7 @@ static const char* TokenNames[] = {
         case TOKEN_SEMICOLON: return ";";
         case TOKEN_COMMA: return ",";
         case TOKEN_DOT: return ".";
+        case TOKEN_ELLIPSIS: return "...";
         
         // 字面量和其他
         case TOKEN_IDENTIFIER: return "identifier";
@@ -608,7 +609,13 @@ Token scanToken(Lexer* lexer) {
         case ']': return makeToken(lexer, TOKEN_RBRACKET);
         case ';': return makeToken(lexer, TOKEN_SEMICOLON);
         case ',': return makeToken(lexer, TOKEN_COMMA);
-        case '.': return makeToken(lexer, TOKEN_DOT);
+        case '.':
+            if (peek(lexer) == '.' && peekNext(lexer) == '.') {
+                advance(lexer);
+                advance(lexer);
+                return makeToken(lexer, TOKEN_ELLIPSIS);
+            }
+            return makeToken(lexer, TOKEN_DOT);
         case ':': return makeToken(lexer, TOKEN_COLON);
         case '*': return makeToken(lexer, TOKEN_STAR); 
         case '+': {
