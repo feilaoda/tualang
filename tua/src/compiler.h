@@ -42,6 +42,8 @@ typedef struct Compiler{
     List* genericFuncTemplates; // List<GenericFuncTemplate*>
     // Active generic type substitutions while compiling a monomorphized instance.
     List* genericSubsts; // List<GenericSubst*>
+    // Recorded trait impl pairs (`impl Trait for Struct`) for bounds checks.
+    List* traitImplPairs; // List<TraitImplPair*>
 
     List* loopStack; // List<LoopTarget*>
 
@@ -215,6 +217,13 @@ typedef struct GenericFuncTemplate {
     List* aliases; // List<SymbolAlias*> for the template's module
 } GenericFuncTemplate;
 
+typedef struct TraitImplPair {
+    char* traitName;
+    int traitNameLen;
+    char* targetName;
+    int targetNameLen;
+} TraitImplPair;
+
 void compilerRegisterGenericFuncTemplate(
     Compiler* compiler,
     FuncStmt* decl,
@@ -235,6 +244,9 @@ Type* compilerResolveGenericType(Compiler* compiler, Type* type);
 // Instantiate a generic function template with explicit type arguments.
 // Returns the monomorphized LLVM function value, or NULL if no template is registered for `baseName`.
 LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* baseName, int baseNameLen, List* typeArgs, const Token* callSite);
+
+void compilerRecordTraitImplPair(Compiler* compiler, const char* traitName, int traitLen, const char* targetName, int targetLen);
+int compilerHasTraitImplPair(Compiler* compiler, const char* traitName, int traitLen, const char* targetName, int targetLen);
 
 typedef struct EnumInfo {
     char* name;

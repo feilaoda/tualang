@@ -50,6 +50,7 @@ void initCompiler(Compiler* compiler) {
     compiler->enums = listNew();
     compiler->genericFuncTemplates = listNew();
     compiler->genericSubsts = NULL;
+    compiler->traitImplPairs = listNew();
     compiler->loopStack = listNew();
 
     compiler->currentFilePath = NULL;
@@ -795,6 +796,20 @@ static Type* canonicalizeTypeForGenericArg(Compiler* compiler, Type* t) {
                     if (ei) {
                         out->name.start = ei->name;
                         out->name.length = ei->nameLength;
+                    } else {
+                        // Best-effort: qualify local names even if the struct/enum hasn't been compiled yet.
+                        SymbolAlias* a = compilerFindAlias(compiler, src->name.start, src->name.length);
+                        if (a && (a->kind == ALIAS_STRUCT || a->kind == ALIAS_ENUM)) {
+                            out->name.start = a->qualified;
+                            out->name.length = a->qualifiedLen;
+                        } else if (compiler->currentModulePrefix) {
+                            int ql = 0;
+                            char* q = compilerQualifyToken(compiler, &src->name, &ql);
+                            if (q) {
+                                out->name.start = q; // keep allocated; caller-owned (freed with type tree)
+                                out->name.length = ql;
+                            }
+                        }
                     }
                 }
             }
@@ -810,6 +825,38 @@ static Type* canonicalizeTypeForGenericArg(Compiler* compiler, Type* t) {
         default:
             return out;
     }
+}
+
+int compilerHasTraitImplPair(Compiler* compiler, const char* traitName, int traitLen, const char* targetName, int targetLen) {
+    if (!compiler || !compiler->traitImplPairs || !traitName || !targetName) return 0;
+    for (ListNode* n = compiler->traitImplPairs->head; n != NULL; n = n->next) {
+        TraitImplPair* p = (TraitImplPair*)n->data;
+        if (!p) continue;
+        if (p->traitNameLen != traitLen) continue;
+        if (p->targetNameLen != targetLen) continue;
+        if (memcmp(p->traitName, traitName, (size_t)traitLen) != 0) continue;
+        if (memcmp(p->targetName, targetName, (size_t)targetLen) != 0) continue;
+        return 1;
+    }
+    return 0;
+}
+
+void compilerRecordTraitImplPair(Compiler* compiler, const char* traitName, int traitLen, const char* targetName, int targetLen) {
+    if (!compiler) return;
+    if (!compiler->traitImplPairs) compiler->traitImplPairs = listNew();
+    if (!traitName || !targetName || traitLen <= 0 || targetLen <= 0) return;
+    if (compilerHasTraitImplPair(compiler, traitName, traitLen, targetName, targetLen)) return;
+
+    TraitImplPair* p = malloc(sizeof(TraitImplPair));
+    p->traitName = malloc((size_t)traitLen + 1);
+    memcpy(p->traitName, traitName, (size_t)traitLen);
+    p->traitName[traitLen] = '\0';
+    p->traitNameLen = traitLen;
+    p->targetName = malloc((size_t)targetLen + 1);
+    memcpy(p->targetName, targetName, (size_t)targetLen);
+    p->targetName[targetLen] = '\0';
+    p->targetNameLen = targetLen;
+    listAppend(compiler->traitImplPairs, p);
 }
 
 typedef struct {
@@ -981,14 +1028,79 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
 
     compiler->genericSubsts = listNew();
     for (int i = 0; i < expected; i++) {
-        Token* tp = (Token*)listGet(tmpl->decl->typeParams, i);
+        TypeParamDecl* tp = (TypeParamDecl*)listGet(tmpl->decl->typeParams, i);
         Type* ca = (Type*)listGet(canon, i);
         if (!tp || !ca) continue;
         GenericSubst* s = malloc(sizeof(GenericSubst));
-        s->name = tp->start;
-        s->nameLen = tp->length;
+        s->name = tp->name.start;
+        s->nameLen = tp->name.length;
         s->type = ca;
         listAppend(compiler->genericSubsts, s);
+    }
+
+    // v1 bounds: verify `T: Trait` constraints using declared `impl Trait for Struct` pairs.
+    for (int i = 0; i < expected; i++) {
+        TypeParamDecl* tp = (TypeParamDecl*)listGet(tmpl->decl->typeParams, i);
+        Type* ca = (Type*)listGet(canon, i);
+        if (!tp || !tp->hasBound || !ca) continue;
+
+        if (ca->kind != TYPE_NAMED || (ca->typeArgs && ca->typeArgs->length > 0)) {
+            const Token* tok = callSite ? callSite : &tmpl->decl->name;
+            compilerErrorAtToken(
+                compiler,
+                tok,
+                "generic bound '%.*s: %.*s' requires a concrete named struct type",
+                tp->name.length, tp->name.start,
+                tp->boundTrait.length, tp->boundTrait.start
+            );
+            continue;
+        }
+
+        // Resolve/qualify bound trait name in the template's module scope.
+        const char* traitQ = NULL;
+        int traitQL = 0;
+        SymbolAlias* a = compilerFindAlias(compiler, tp->boundTrait.start, tp->boundTrait.length);
+        if (a && a->kind == ALIAS_TRAIT) {
+            traitQ = a->qualified;
+            traitQL = a->qualifiedLen;
+        } else if (compiler->currentModulePrefix) {
+            traitQ = compilerQualifyToken(compiler, &tp->boundTrait, &traitQL);
+        } else {
+            traitQ = tp->boundTrait.start;
+            traitQL = tp->boundTrait.length;
+        }
+
+        // Canonicalized type args use qualified names where possible.
+        const char* targetQ = ca->name.start;
+        int targetQL = ca->name.length;
+
+        if (!compilerHasTraitImplPair(compiler, traitQ, traitQL, targetQ, targetQL)) {
+            const Token* tok = callSite ? callSite : &tmpl->decl->name;
+            compilerErrorAtToken(
+                compiler,
+                tok,
+                "generic bound not satisfied: '%.*s' does not implement '%.*s' (missing `impl %.*s for %.*s {}`)",
+                targetQL, targetQ,
+                traitQL, traitQ,
+                traitQL, traitQ,
+                targetQL, targetQ
+            );
+        }
+
+        // Only free if we allocated via compilerQualifyToken.
+        if (traitQ && compiler->currentModulePrefix && !(a && a->kind == ALIAS_TRAIT)) {
+            free((char*)traitQ);
+        }
+    }
+
+    if (compiler->hadError) {
+        compiler->genericSubsts = savedSubsts;
+        compiler->currentFilePath = savedFile;
+        compiler->currentModulePrefix = savedPrefix;
+        compiler->currentModulePrefixLen = savedPrefixLen;
+        compiler->currentAliases = savedAliases;
+        free(instName);
+        return NULL;
     }
 
     // Compile monomorphized instance as a normal function under `instName`.
@@ -2600,27 +2712,28 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->length = p->name.length;
         variable->value = slot;
         variable->type = valueType;
-        variable->pointeeType = (p && p->type && p->type->kind == TYPE_REF)
-                                    ? (p->type->inner ? typeToLLVMType(compiler, p->type->inner, false)
-                                                      : LLVMInt32TypeInContext(compiler->context))
+        Type* pType = (p && p->type) ? compilerResolveGenericType(compiler, p->type) : NULL;
+        variable->pointeeType = (pType && pType->kind == TYPE_REF)
+                                    ? (pType->inner ? typeToLLVMType(compiler, pType->inner, false)
+                                                    : LLVMInt32TypeInContext(compiler->context))
                                     : NULL;
-        if (p->type && p->type->kind == TYPE_NAMED) {
-            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->name);
+        if (pType && pType->kind == TYPE_NAMED) {
+            StructInfo* info = compilerResolveStructByToken(compiler, &pType->name);
             if (info) {
                 variable->typeName = info->name;
                 variable->typeNameLength = info->nameLength;
             } else {
-                variable->typeName = p->type->name.start;
-                variable->typeNameLength = p->type->name.length;
+                variable->typeName = pType->name.start;
+                variable->typeNameLength = pType->name.length;
             }
-        } else if (p->type && p->type->kind == TYPE_REF && p->type->inner && p->type->inner->kind == TYPE_NAMED) {
-            StructInfo* info = compilerResolveStructByToken(compiler, &p->type->inner->name);
+        } else if (pType && pType->kind == TYPE_REF && pType->inner && pType->inner->kind == TYPE_NAMED) {
+            StructInfo* info = compilerResolveStructByToken(compiler, &pType->inner->name);
             if (info) {
                 variable->typeName = info->name;
                 variable->typeNameLength = info->nameLength;
             } else {
-                variable->typeName = p->type->inner->name.start;
-                variable->typeNameLength = p->type->inner->name.length;
+                variable->typeName = pType->inner->name.start;
+                variable->typeNameLength = pType->inner->name.length;
             }
         } else {
             variable->typeName = NULL;

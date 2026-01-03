@@ -1669,9 +1669,18 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
             do {
                 while (match(parser, TOKEN_SEMICOLON)) {}
                 Token p = consume(parser, TOKEN_IDENTIFIER, "Expect type parameter name");
-                Token* pp = malloc(sizeof(Token));
-                *pp = p;
-                listAppend(typeParams, pp);
+                TypeParamDecl* tp = malloc(sizeof(TypeParamDecl));
+                tp->name = p;
+                tp->hasBound = 0;
+                tp->boundTrait = (Token){0};
+
+                if (match(parser, TOKEN_COLON)) {
+                    Token tr = consume(parser, TOKEN_IDENTIFIER, "Expect trait name after ':' in type parameter bound");
+                    tp->hasBound = 1;
+                    tp->boundTrait = tr;
+                }
+
+                listAppend(typeParams, tp);
                 while (match(parser, TOKEN_SEMICOLON)) {}
             } while (match(parser, TOKEN_COMMA));
         }

@@ -1494,6 +1494,58 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
         if (compiler->hadError) return;
     }
 
+    // Pre-pass: record `impl Trait for Struct` pairs so generic bounds checks can work even when the
+    // impl statement appears after a generic call in source order. This is a declaration-only pass;
+    // validation is still performed when compiling the trait impl statement.
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_TRAIT_IMPL) continue;
+        TraitImplStmt* ti = (TraitImplStmt*)stmt;
+
+        // Qualify trait name token in this module scope.
+        const char* traitQ = NULL;
+        int traitQL = 0;
+        char* traitAlloc = NULL;
+        SymbolAlias* ta = compilerFindAlias(compiler, ti->traitName.start, ti->traitName.length);
+        if (ta && ta->kind == ALIAS_TRAIT) {
+            traitQ = ta->qualified;
+            traitQL = ta->qualifiedLen;
+        } else if (compiler->currentModulePrefix) {
+            traitAlloc = compilerQualifyToken(compiler, &ti->traitName, &traitQL);
+            traitQ = traitAlloc;
+        } else {
+            traitQ = ti->traitName.start;
+            traitQL = ti->traitName.length;
+        }
+
+        // Qualify target struct name token in this module scope.
+        const char* targetQ = NULL;
+        int targetQL = 0;
+        char* targetAlloc = NULL;
+        SymbolAlias* sa = compilerFindAlias(compiler, ti->targetName.start, ti->targetName.length);
+        if (sa && sa->kind == ALIAS_STRUCT) {
+            targetQ = sa->qualified;
+            targetQL = sa->qualifiedLen;
+        } else if (compiler->currentModulePrefix) {
+            targetAlloc = compilerQualifyToken(compiler, &ti->targetName, &targetQL);
+            targetQ = targetAlloc;
+        } else {
+            targetQ = ti->targetName.start;
+            targetQL = ti->targetName.length;
+        }
+
+        compilerRecordTraitImplPair(compiler, traitQ, traitQL, targetQ, targetQL);
+
+        if (traitAlloc) free(traitAlloc);
+        if (targetAlloc) free(targetAlloc);
+    }
+
     // Pre-pass: declare all `extern fn` prototypes (and `as` wrappers) first so
     // extern calls are order-independent within a module.
     for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {

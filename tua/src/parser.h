@@ -288,13 +288,19 @@ typedef struct {
     Token name;
     List* params;
     // Optional generic type parameters for a function template: `fn f<T,U>(...)`.
-    // Element type: Token* (identifier tokens).
+    // Element type: TypeParamDecl*
     List* typeParams;
     Type* returnType;
     List* returnTypes; // List<Type*>, NULL or empty => void
     List* body;
     Token externAlias; // only for `extern fn ... as <alias>`; otherwise {0}
 } FuncStmt;
+
+typedef struct TypeParamDecl {
+    Token name;         // e.g. `T`
+    Token boundTrait;   // e.g. `Trait` in `T: Trait`
+    int hasBound;       // 0/1
+} TypeParamDecl;
 
 // If statement structure
 typedef struct {

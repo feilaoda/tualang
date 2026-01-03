@@ -42,7 +42,8 @@
 - [ ] 泛型 + 单态化（高优先级）：通用类型参数（函数/struct/trait）+ 编译期实例化（monomorphization）
   - [x] v0 语法与 AST：`fn f<T>(...)` + 调用处显式 `f<int>(1)`（先不做推断）
   - [x] v0 单态化与缓存：同一组类型实参只生成一次实例；支持跨模块导入后的实例化
-  - [ ] v1 约束（bounds）：支持 `T: Trait`（依赖 trait v0 满足性检查）
+  - [x] v1 约束（bounds）：支持 `T: Trait`（基于 `impl Trait for Struct` 记录 + 实例化时检查）
+  - [ ] v0.5 类型实参推断（语法糖）：允许 `id(10)` 在可唯一推断时等价 `id<int>(10)`；否则报错要求显式 `id<T>(...)`
   - [ ] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）

@@ -1,0 +1,13 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S { id: int }
+
+fn getId<T: HasId>(x: T) -> int {
+  return 0
+}
+
+let s: S = S{ id: 1 }
+getId<S>(s)
+

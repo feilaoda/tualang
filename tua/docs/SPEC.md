@@ -360,12 +360,15 @@
   - **泛型定义**：带类型参数的 `fn/struct/trait`
   - **实例化**：在某个具体类型实参（如 `T=int`）下生成专用版本
   - **单态化**：把泛型调用在编译期展开成对实例化版本的直接调用
-- 第一版建议切片（Status: Implemented v0）：
+- 第一版建议切片（Status: Implemented v0/v1）：
   - 仅支持 **函数泛型**：`fn f<T>(...) ...`
   - 调用处要求 **显式类型实参**：`f<int>(1)`（暂不支持 `f(1)` 推断）
   - 实现方式：每组类型实参生成一个单态化实例函数（`__G__...` 形式的内部符号名），并缓存复用
+- v1 约束（Status: Implemented）：
+  - 语法：`fn g<T: Trait>(x: T) -> ...`
+  - 语义：实例化 `g<Concrete>(...)` 时，要求存在 `impl Trait for Concrete {}`（否则编译错误）
 - 当前限制（Planned）：
-  - 暂不支持约束（bounds）：`T: Trait`（后续结合 trait v1 静态分发）
+  - bounds 限制：目前仅支持单个 trait bound（`T: Trait`），且要求显式 `impl Trait for Concrete {}`（尚未支持结构化/自动满足或多重 bound）
   - 暂不支持泛型 `struct` / 泛型 `trait`
   - 暂不支持实例方法泛型（`x.m<T>(...)`）
   - `ns.f<T>(...)`（命名空间导入）支持；其余复杂成员路径的泛型调用后续补
