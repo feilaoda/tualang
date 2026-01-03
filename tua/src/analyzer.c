@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 typedef enum {
     AT_ANY = 0,
@@ -80,13 +81,28 @@ typedef struct Scope {
     List* vars; // List<VarInfo*>
     List* borrows; // List<BorrowInfo*>
     List* funcs; // List<FuncInfo*> (shared across nested scopes)
+    // Current statement index within this lexical block (0-based).
+    // Used for non-lexical-lifetime (NLL) borrow expiry.
+    int stmtIndex;
+    // Optional: last-use table for locals declared in this block.
+    // Entries are keyed by variable name and store the last statement index where the name is referenced.
+    List* lastUses; // List<LastUseInfo*>
 } Scope;
 
 typedef struct {
     char* name;
     int nameLen;
     int isMutable; // 1 => mutable/exclusive borrow, 0 => shared/readonly borrow
+    // Statement index (within the scope that owns this BorrowInfo) after which this borrow is considered ended.
+    // INT_MAX means lexical lifetime (ends with the scope).
+    int endIndex;
 } BorrowInfo;
+
+typedef struct {
+    char* name;
+    int nameLen;
+    int lastIndex;
+} LastUseInfo;
 
 static AType* atNew(ATypeKind k) {
     AType* t = (AType*)malloc(sizeof(AType));
@@ -260,7 +276,225 @@ static Scope* scopePush(Scope* parent) {
     s->vars = listNew();
     s->borrows = listNew();
     s->funcs = parent ? parent->funcs : listNew();
+    s->stmtIndex = parent ? parent->stmtIndex : 0;
+    s->lastUses = NULL;
     return s;
+}
+
+static LastUseInfo* lastUseFind(List* lastUses, const Token* name) {
+    if (!lastUses || !name || !name->start || name->length <= 0) return NULL;
+    for (ListNode* n = lastUses->head; n != NULL; n = n->next) {
+        LastUseInfo* lu = (LastUseInfo*)n->data;
+        if (!lu) continue;
+        if (lu->nameLen != name->length) continue;
+        if (memcmp(lu->name, name->start, (size_t)name->length) == 0) return lu;
+    }
+    return NULL;
+}
+
+static void lastUseMark(List* lastUses, const Token* name, int stmtIndex) {
+    if (!lastUses || !name || !name->start || name->length <= 0) return;
+    LastUseInfo* lu = lastUseFind(lastUses, name);
+    if (!lu) {
+        lu = (LastUseInfo*)malloc(sizeof(LastUseInfo));
+        lu->name = (char*)malloc((size_t)name->length + 1);
+        memcpy(lu->name, name->start, (size_t)name->length);
+        lu->name[name->length] = '\0';
+        lu->nameLen = name->length;
+        lu->lastIndex = stmtIndex;
+        listAppend(lastUses, lu);
+        return;
+    }
+    if (stmtIndex > lu->lastIndex) lu->lastIndex = stmtIndex;
+}
+
+static int lastUseIndexOf(Scope* scope, const Token* name) {
+    if (!scope || !scope->lastUses || !name || !name->start || name->length <= 0) return INT_MAX;
+    LastUseInfo* lu = lastUseFind(scope->lastUses, name);
+    if (!lu) return INT_MAX;
+    return lu->lastIndex;
+}
+
+static void collectLastUsesExpr(Expr* expr, List* lastUses, int stmtIndex);
+
+static void collectLastUsesStmt(Stmt* stmt, List* lastUses, int stmtIndex) {
+    if (!stmt || !lastUses) return;
+    switch (stmt->type) {
+        case STMT_VAR: {
+            VarStmt* v = (VarStmt*)stmt;
+            lastUseMark(lastUses, &v->name, stmtIndex); // definition counts as a use for NLL
+            collectLastUsesExpr(v->initializer, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_EXPR: {
+            ExprStmt* e = (ExprStmt*)stmt;
+            collectLastUsesExpr(e->expression, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectLastUsesStmt((Stmt*)n->data, lastUses, stmtIndex);
+            }
+            return;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            collectLastUsesExpr(i->condition, lastUses, stmtIndex);
+            collectLastUsesStmt(i->thenBranch, lastUses, stmtIndex);
+            if (i->elseBranch) collectLastUsesStmt(i->elseBranch, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)stmt;
+            collectLastUsesStmt(f->initializer, lastUses, stmtIndex);
+            collectLastUsesExpr(f->condition, lastUses, stmtIndex);
+            collectLastUsesExpr(f->increment, lastUses, stmtIndex);
+            collectLastUsesStmt(f->body, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)stmt;
+            collectLastUsesExpr(fi->range, lastUses, stmtIndex);
+            collectLastUsesStmt(fi->body, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)stmt;
+            collectLastUsesExpr(w->condition, lastUses, stmtIndex);
+            collectLastUsesStmt(w->body, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* d = (DoWhileStmt*)stmt;
+            collectLastUsesStmt(d->body, lastUses, stmtIndex);
+            collectLastUsesExpr(d->condition, lastUses, stmtIndex);
+            return;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            collectLastUsesExpr(r->value, lastUses, stmtIndex);
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    collectLastUsesExpr((Expr*)n->data, lastUses, stmtIndex);
+                }
+            }
+            return;
+        }
+        case STMT_DESTRUCTURE: {
+            DestructureStmt* d = (DestructureStmt*)stmt;
+            collectLastUsesExpr(d->value, lastUses, stmtIndex);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static void collectLastUsesExpr(Expr* expr, List* lastUses, int stmtIndex) {
+    if (!expr || !lastUses) return;
+    switch (expr->type) {
+        case EXPR_VARIABLE: {
+            VariableExpr* v = (VariableExpr*)expr;
+            lastUseMark(lastUses, &v->name, stmtIndex);
+            return;
+        }
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)expr;
+            lastUseMark(lastUses, &a->name, stmtIndex);
+            collectLastUsesExpr(a->value, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_GET: {
+            GetExpr* g = (GetExpr*)expr;
+            collectLastUsesExpr(g->object, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)expr;
+            collectLastUsesExpr(s->object, lastUses, stmtIndex);
+            collectLastUsesExpr(s->value, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)expr;
+            collectLastUsesExpr(i->object, lastUses, stmtIndex);
+            collectLastUsesExpr(i->index, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* is = (IndexSetExpr*)expr;
+            collectLastUsesExpr(is->object, lastUses, stmtIndex);
+            collectLastUsesExpr(is->index, lastUses, stmtIndex);
+            collectLastUsesExpr(is->value, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)expr;
+            collectLastUsesExpr(c->callee, lastUses, stmtIndex);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectLastUsesExpr((Expr*)n->data, lastUses, stmtIndex);
+            }
+            return;
+        }
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)expr;
+            collectLastUsesExpr(b->left, lastUses, stmtIndex);
+            collectLastUsesExpr(b->right, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_UNARY: {
+            UnaryExpr* u = (UnaryExpr*)expr;
+            collectLastUsesExpr(u->right, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_GROUPING: {
+            GroupingExpr* g = (GroupingExpr*)expr;
+            collectLastUsesExpr(g->expression, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_CAST: {
+            CastExpr* c = (CastExpr*)expr;
+            collectLastUsesExpr(c->value, lastUses, stmtIndex);
+            return;
+        }
+        case EXPR_LAMBDA: {
+            LambdaExpr* l = (LambdaExpr*)expr;
+            for (ListNode* n = l->body ? l->body->head : NULL; n != NULL; n = n->next) {
+                collectLastUsesStmt((Stmt*)n->data, lastUses, stmtIndex);
+            }
+            return;
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)expr;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* e = (MapEntry*)n->data;
+                if (e && e->value) collectLastUsesExpr(e->value, lastUses, stmtIndex);
+            }
+            return;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)expr;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                collectLastUsesExpr((Expr*)n->data, lastUses, stmtIndex);
+            }
+            return;
+        }
+        case EXPR_BRACE_LITERAL: {
+            // `{}` has no contained expressions.
+            return;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)expr;
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectLastUsesExpr(f->value, lastUses, stmtIndex);
+            }
+            return;
+        }
+        default:
+            return;
+    }
 }
 
 static FuncInfo* scopeFindFunc(Scope* scope, const Token* name) {
@@ -297,6 +531,7 @@ static void borrowCollectCounts(Scope* scope, const Token* name, int* outShared,
             for (ListNode* n = s->borrows ? s->borrows->head : NULL; n != NULL; n = n->next) {
                 BorrowInfo* b = (BorrowInfo*)n->data;
                 if (!b) continue;
+                if (b->endIndex != INT_MAX && s->stmtIndex > b->endIndex) continue; // expired (NLL)
                 if (b->nameLen != name->length) continue;
                 if (memcmp(b->name, name->start, (size_t)name->length) != 0) continue;
                 if (b->isMutable) mutable++;
@@ -314,7 +549,7 @@ static int borrowHasAny(Scope* scope, const Token* name) {
     return (s + m) > 0;
 }
 
-static void borrowRecord(Scope* scope, const Token* name, int isMutable) {
+static void borrowRecord(Scope* scope, const Token* name, int isMutable, int endIndex) {
     if (!scope || !name || !name->start || name->length <= 0) return;
     BorrowInfo* b = (BorrowInfo*)malloc(sizeof(BorrowInfo));
     b->name = (char*)malloc((size_t)name->length + 1);
@@ -322,6 +557,7 @@ static void borrowRecord(Scope* scope, const Token* name, int isMutable) {
     b->name[name->length] = '\0';
     b->nameLen = name->length;
     b->isMutable = isMutable ? 1 : 0;
+    b->endIndex = (endIndex < 0) ? INT_MAX : endIndex;
     listAppend(scope->borrows, b);
 }
 
@@ -330,6 +566,7 @@ static void borrowCheckAndRecord(
     Scope* scope,
     const Token* owner,
     int wantMutable,
+    int endIndex,
     const char* modulePath,
     int line
 ) {
@@ -348,7 +585,7 @@ static void borrowCheckAndRecord(
             );
             return;
         }
-        borrowRecord(scope, owner, 1);
+        borrowRecord(scope, owner, 1, endIndex);
     } else {
         if (mut > 0) {
             analyzeErrorAt(
@@ -361,7 +598,7 @@ static void borrowCheckAndRecord(
             );
             return;
         }
-        borrowRecord(scope, owner, 0);
+        borrowRecord(scope, owner, 0, endIndex);
     }
 }
 
@@ -971,7 +1208,7 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 if (!baseName && !mapBorrowName) {
                     analyzeErrorAt(compiler, modulePath, call->base.token.line, "mutable borrow argument must be a variable");
                 } else if (!baseName && mapBorrowName) {
-                    borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, modulePath, mapBorrowName->line);
+                    borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, INT_MAX, modulePath, mapBorrowName->line);
                 } else if (baseVar && baseVar->isRef && baseVar->refKind != 1) {
                     analyzeErrorAt(
                         compiler,
@@ -991,18 +1228,18 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                         baseName->start
                     );
                 } else {
-                    borrowCheckAndRecord(compiler, callScope, baseName, 1, modulePath, baseName->line);
+                    borrowCheckAndRecord(compiler, callScope, baseName, 1, INT_MAX, modulePath, baseName->line);
                 }
             } else {
                 // PARAM_CONST: shared borrow if this argument is a variable lvalue
                 if (baseName) {
-                    borrowCheckAndRecord(compiler, callScope, baseName, 0, modulePath, baseName->line);
+                    borrowCheckAndRecord(compiler, callScope, baseName, 0, INT_MAX, modulePath, baseName->line);
                 } else {
                     int mapBorrowMut = 0;
                     const Token* mapBorrowName = mapGetRefOwnerName(arg, &mapBorrowMut);
                     if (mapBorrowName) {
                         // Map element refs borrow the map to keep entry addresses stable.
-                        borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, modulePath, mapBorrowName->line);
+                        borrowCheckAndRecord(compiler, callScope, mapBorrowName, mapBorrowMut ? 1 : 0, INT_MAX, modulePath, mapBorrowName->line);
                     }
                 }
             }
@@ -1774,7 +2011,16 @@ static int stmtAlwaysReturns(Stmt* stmt) {
 
 static void analyzeBlock(Compiler* compiler, Scope* parent, List* stmts, const char* modulePath, List* expectedReturns) {
     Scope* scope = scopePush(parent);
-    for (ListNode* n = stmts ? stmts->head : NULL; n != NULL; n = n->next) {
+    // Pre-scan this block to compute last-use indices for simple non-lexical lifetime (NLL) borrow expiry.
+    scope->lastUses = listNew();
+    int scanIndex = 0;
+    for (ListNode* n = stmts ? stmts->head : NULL; n != NULL; n = n->next, scanIndex++) {
+        collectLastUsesStmt((Stmt*)n->data, scope->lastUses, scanIndex);
+    }
+
+    int stmtIndex = 0;
+    for (ListNode* n = stmts ? stmts->head : NULL; n != NULL; n = n->next, stmtIndex++) {
+        scope->stmtIndex = stmtIndex;
         analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, expectedReturns);
         if (compiler && compiler->hadError) return;
     }
@@ -1874,7 +2120,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             mapName->start
                         );
                     } else {
-                        borrowCheckAndRecord(compiler, scope, mapName, wantMut, modulePath, v->name.line);
+                        borrowCheckAndRecord(compiler, scope, mapName, wantMut, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
                     }
                 }
             }
@@ -1886,7 +2132,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 VarInfo* src = scopeFind(scope, &rv->name);
                 if (varIsMoveOnly(src)) {
                     isConstView = 1;
-                    borrowCheckAndRecord(compiler, scope, &rv->name, 0, modulePath, v->name.line);
+                    borrowCheckAndRecord(compiler, scope, &rv->name, 0, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
                 }
             }
 
@@ -1949,7 +2195,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             base->name.start
                         );
                     } else {
-                        borrowCheckAndRecord(compiler, scope, &base->name, wantMutable, modulePath, v->name.line);
+                        borrowCheckAndRecord(compiler, scope, &base->name, wantMutable, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
                     }
                 }
             }
@@ -1960,7 +2206,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     VariableExpr* rv = (VariableExpr*)init;
                     VarInfo* src = scopeFind(scope, &rv->name);
                     if (src && src->isRef) {
-                        borrowCheckAndRecord(compiler, scope, &rv->name, 0, modulePath, v->name.line);
+                        borrowCheckAndRecord(compiler, scope, &rv->name, 0, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
                     }
                 }
             }
@@ -2051,7 +2297,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 VarInfo* vi = scopeFind(scope, &recv->name);
                 if (vi && atIsMap(vi->type) && vi->type->value && atIsMoveOnly(vi->type->value, 0)) {
                     // Exclusive borrow for the duration of the loop body.
-                    borrowCheckAndRecord(compiler, loopScope, &recv->name, 1, modulePath, fi->range->token.line);
+                    borrowCheckAndRecord(compiler, loopScope, &recv->name, 1, INT_MAX, modulePath, fi->range->token.line);
                 }
             }
             analyzeStmt(compiler, loopScope, fi->body, modulePath, expectedReturns);
@@ -2410,7 +2656,16 @@ int analyzeModule(Compiler* compiler, List* statements, List* aliases, const cha
         listAppend(scope->funcs, fi);
     }
 
-    for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
+    // Pre-scan module statements to compute statement-granular last-use indices for NLL borrow expiry.
+    scope->lastUses = listNew();
+    int scanIndex = 0;
+    for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next, scanIndex++) {
+        collectLastUsesStmt((Stmt*)n->data, scope->lastUses, scanIndex);
+    }
+
+    int stmtIndex = 0;
+    for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next, stmtIndex++) {
+        scope->stmtIndex = stmtIndex;
         analyzeStmt(compiler, scope, (Stmt*)n->data, modulePath, NULL);
         if (compiler && compiler->hadError) {
             if (compiler) compiler->currentFilePath = savedFile;

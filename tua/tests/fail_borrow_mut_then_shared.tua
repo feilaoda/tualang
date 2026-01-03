@@ -5,4 +5,5 @@ struct Foo {
 let foo: Foo = Foo()
 let m: &Foo = &foo
 const r: &Foo = &foo
+println(m.x)
 println(r.x)

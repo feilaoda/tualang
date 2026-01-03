@@ -6,3 +6,5 @@ let o = m.getRefWrite("a")
 // m is mutably borrowed by `o`
 m.delete("a")
 
+// keep `o` alive past the mutation so the borrow can't end early (NLL)
+assert(o.isSome())

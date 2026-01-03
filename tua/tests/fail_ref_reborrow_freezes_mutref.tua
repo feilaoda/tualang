@@ -7,3 +7,4 @@ let r: Ref<Foo> = &foo
 
 const s: Ref<Foo> = r
 r.x = 2
+println(s.x)
