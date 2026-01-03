@@ -16,19 +16,25 @@ let m2: map<string,S> = { "a": S{a:1,b:2}, "b": S{a:3,b:4} }
 
 sum = 0
 for k2,v2 in m2 {
-    const s: S = v2
-    v2.b = s.b + 1
+    const s: S = v2.get()
+    v2.b = v2.b + 1
     println(s.b)
     println(v2.b)
-    
+    println(v3.b)
+}
+// const v3 = m2.getRefWrite(k2).unwrap()
+{
+    const v3 = m2.getRefWrite("b").unwrap()
+    println("v3.b=")
+    println(v3.b)
 }
 println("==")
 for k2,v2 in m2 {
-    const s: S = v2
+    const s: S = v2.get()
      println(k2)
      println(s.a)
      println(s.b)
     sum = sum + s.a + s.b
 }
 println(sum)
-assert(sum == 10)
+assert(sum == 12)

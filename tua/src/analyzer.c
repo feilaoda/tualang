@@ -2039,9 +2039,22 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
         }
         case STMT_FOR_IN: {
             ForInStmt* fi = (ForInStmt*)stmt;
-            // `for k,v in m { ... }` : just analyze iterable expression + body.
+            // `for k,v in m { ... }`
+            // Analyzer doesn't type loop vars yet, but we can enforce borrow rules:
+            // when iterating a typed map with non-scalar V, the loop binds element refs (exclusive),
+            // so mutating the map in the body would invalidate element addresses.
             inferExpr(compiler, scope, fi->range, modulePath);
-            analyzeStmt(compiler, scope, fi->body, modulePath, expectedReturns);
+
+            Scope* loopScope = scopePush(scope);
+            if (fi->range && fi->range->type == EXPR_VARIABLE) {
+                VariableExpr* recv = (VariableExpr*)fi->range;
+                VarInfo* vi = scopeFind(scope, &recv->name);
+                if (vi && atIsMap(vi->type) && vi->type->value && atIsMoveOnly(vi->type->value, 0)) {
+                    // Exclusive borrow for the duration of the loop body.
+                    borrowCheckAndRecord(compiler, loopScope, &recv->name, 1, modulePath, fi->range->token.line);
+                }
+            }
+            analyzeStmt(compiler, loopScope, fi->body, modulePath, expectedReturns);
             break;
         }
         case STMT_WHILE: {

@@ -22,6 +22,18 @@ static LLVMValueRef getOrCreateTuaMapIterNext(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_iter_next", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaMapGetRefWithOk(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get_ref_with_ok");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { mapType, vt, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(vtPtr, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_get_ref_with_ok", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
     if (existing) return existing;
@@ -137,6 +149,54 @@ static LLVMValueRef decodeTuaValueToType(Compiler* compiler, LLVMValueRef tv, LL
     }
 
     return tv;
+}
+
+static int typeKindIsScalarValueKind(TypeKind k) {
+    switch (k) {
+        case TYPE_BOOL:
+        case TYPE_STRING:
+        case TYPE_PTR:
+        case TYPE_BYTE:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_INT:
+        case TYPE_LONG:
+        case TYPE_ISIZE:
+        case TYPE_U8:
+        case TYPE_U16:
+        case TYPE_U32:
+        case TYPE_U64:
+        case TYPE_USIZE:
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF16:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static LLVMValueRef typedMapValueRefFromTuaValuePtr(Compiler* compiler, LLVMValueRef tvPtr, LLVMTypeRef valTy, int valIsStruct) {
+    if (!compiler || !tvPtr || !valTy) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+
+    // tvPtr: tua_value*
+    LLVMValueRef payloadField = LLVMBuildStructGEP2(builder, vt, tvPtr, 1, "payp"); // i64*
+    LLVMTypeRef outPtrTy = LLVMPointerType(valTy, 0);                               // Ref<V> lowered
+
+    if (valIsStruct) {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        LLVMValueRef bits = LLVMBuildLoad2(builder, i64, payloadField, "bits");
+        LLVMValueRef p8 = LLVMBuildIntToPtr(builder, bits, i8ptr, "p8");
+        return LLVMBuildBitCast(builder, p8, outPtrTy, "sp");
+    }
+
+    // Handle value (map/array): return a pointer to the stored payload bits (treat as pointer-sized slot).
+    return LLVMBuildBitCast(builder, payloadField, outPtrTy, "hp");
 }
 
 static char* tokenToHeapCString(Token tok) {
@@ -492,8 +552,10 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
         TypeKind valKind = TYPE_ANY;
         int valIsMap = 0;
         int valIsArray = 0;
+        int valIsStruct = 0;
         const char* valTypeName = NULL;
         int valTypeNameLen = 0;
+        int typedNonScalarRef = 0;
 
         if (rangeVar.isTypedMap && rangeVar.mapKeyType && rangeVar.mapValueType) {
             keyTy = rangeVar.mapKeyType;
@@ -504,15 +566,46 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
             valIsArray = (valKind == TYPE_ARRAY) ? 1 : 0;
             valTypeName = rangeVar.mapValueTypeName;
             valTypeNameLen = rangeVar.mapValueTypeNameLength;
+            // Prefer explicit struct name metadata (works under LLVM opaque pointers).
+            valIsStruct = (!valIsMap) && ((valKind == TYPE_NAMED) || (valTypeName && valTypeNameLen > 0));
+            typedNonScalarRef = !typeKindIsScalarValueKind(valKind);
         }
 
         VariableRef* loopV = NULL;
         VariableRef* loopValV = NULL;
         if (stmt->hasValueVar) {
             loopV = defineLoopValue(compiler, scope, stmt->loopVar, keyTy);
-            loopValV = defineLoopValue(compiler, scope, stmt->valueVar, valTy);
+            if (typedNonScalarRef) {
+                loopValV = defineLoopValue(compiler, scope, stmt->valueVar, LLVMPointerType(valTy, 0));
+                if (loopValV) {
+                    loopValV->pointeeType = valTy;
+                    loopValV->isBorrowed = 1;
+                    if (valIsMap) loopValV->isMap = 1;
+                    if (valIsArray) loopValV->isArray = 1;
+                    if (valIsStruct && valTypeName && valTypeNameLen > 0) {
+                        loopValV->typeName = valTypeName;
+                        loopValV->typeNameLength = valTypeNameLen;
+                    }
+                }
+            } else {
+                loopValV = defineLoopValue(compiler, scope, stmt->valueVar, valTy);
+            }
         } else {
-            loopV = defineLoopValue(compiler, scope, stmt->loopVar, valTy);
+            if (typedNonScalarRef) {
+                loopV = defineLoopValue(compiler, scope, stmt->loopVar, LLVMPointerType(valTy, 0));
+                if (loopV) {
+                    loopV->pointeeType = valTy;
+                    loopV->isBorrowed = 1;
+                    if (valIsMap) loopV->isMap = 1;
+                    if (valIsArray) loopV->isArray = 1;
+                    if (valIsStruct && valTypeName && valTypeNameLen > 0) {
+                        loopV->typeName = valTypeName;
+                        loopV->typeNameLength = valTypeNameLen;
+                    }
+                }
+            } else {
+                loopV = defineLoopValue(compiler, scope, stmt->loopVar, valTy);
+            }
         }
 
         if (loopV) {
@@ -557,20 +650,48 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
         // - for key,value in map: bind loopVar=key, valueVar=value
         if (stmt->hasValueVar) {
             LLVMValueRef kb = (rangeVar.isTypedMap && rangeVar.mapKeyType) ? decodeTuaValueToType(compiler, k, keyTy, keyKind, 0, 0, NULL, 0) : k;
-            LLVMValueRef vb = (rangeVar.isTypedMap && rangeVar.mapValueType)
-                                  ? decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen)
-                                  : v;
+            LLVMValueRef vb = NULL;
+            LLVMTypeRef vbTy = valTy;
+            if (typedNonScalarRef) {
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+                LLVMValueRef okPtr2 = LLVMBuildAlloca(builder, i32, "vokptr");
+                LLVMValueRef gfn = getOrCreateTuaMapGetRefWithOk(compiler);
+                LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                LLVMValueRef args3[3] = { iterable, k, okPtr2 };
+                LLVMValueRef tvPtr = LLVMBuildCall2(builder, gtype, gfn, args3, 3, "vitp");
+                vb = typedMapValueRefFromTuaValuePtr(compiler, tvPtr, valTy, valIsStruct);
+                vbTy = LLVMPointerType(valTy, 0);
+            } else if (rangeVar.isTypedMap && rangeVar.mapValueType) {
+                vb = decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen);
+            } else {
+                vb = v;
+            }
+
             if (!storeLoopVarValue(compiler, scope, stmt->loopVar, kb, keyTy) ||
-                !storeLoopVarValue(compiler, scope, stmt->valueVar, vb, valTy)) {
+                !storeLoopVarValue(compiler, scope, stmt->valueVar, vb, vbTy)) {
                 error("Failed to bind for-in loop vars\n");
                 compiler->current = saved;
                 return;
             }
         } else {
-            LLVMValueRef vb = (rangeVar.isTypedMap && rangeVar.mapValueType)
-                                  ? decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen)
-                                  : v;
-            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, vb, valTy)) {
+            LLVMValueRef vb = NULL;
+            LLVMTypeRef vbTy = valTy;
+            if (typedNonScalarRef) {
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+                LLVMValueRef okPtr2 = LLVMBuildAlloca(builder, i32, "vokptr");
+                LLVMValueRef gfn = getOrCreateTuaMapGetRefWithOk(compiler);
+                LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                LLVMValueRef args3[3] = { iterable, k, okPtr2 };
+                LLVMValueRef tvPtr = LLVMBuildCall2(builder, gtype, gfn, args3, 3, "vitp");
+                vb = typedMapValueRefFromTuaValuePtr(compiler, tvPtr, valTy, valIsStruct);
+                vbTy = LLVMPointerType(valTy, 0);
+            } else if (rangeVar.isTypedMap && rangeVar.mapValueType) {
+                vb = decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen);
+            } else {
+                vb = v;
+            }
+
+            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, vb, vbTy)) {
                 error("Failed to bind for-in loop var\n");
                 compiler->current = saved;
                 return;

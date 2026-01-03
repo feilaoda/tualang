@@ -139,9 +139,13 @@
       - `for v in m { ... }`：`v` 绑定为 value（类型为 `any`/`tua_value`）
       - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `any`/`tua_value`），`v` 绑定为 value（类型为 `any`/`tua_value`）
     - 若 `m` 是 `map<K,V>`：
-      - `for v in m { ... }`：`v` 绑定为 value（类型为 `V`）
-      - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `K`），`v` 绑定为 value（类型为 `V`）
-      - 说明：当前实现为“按值绑定”（struct 会拷贝；map/array 为句柄复制），如需原位修改请使用 `getRefWrite()`
+      - 当 `V` 为标量（`int/long/float/double/bool/string`）：
+        - `for v in m { ... }`：`v` 绑定为 value（类型为 `V`，按值拷贝）
+        - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `K`，按值拷贝），`v` 绑定为 value（类型为 `V`，按值拷贝）
+      - 当 `V` 为非标量（`struct/map/array`，以及嵌套）：
+        - `for v in m { ... }`：`v` 绑定为 value 的可写引用（类型为 `Ref<V>`，exclusive borrow）
+        - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `K`，按值拷贝），`v` 绑定为 value 的可写引用（类型为 `Ref<V>`，exclusive borrow）
+      - 约束（Frozen）：当 `for-in` 产生的 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
     - 若 `m` 是数组：
       - `for v in m { ... }`：`v` 绑定为 element（类型为 `T`）
       - `for v,i in m { ... }`：`v` 绑定为 element（类型为 `T`），`i` 绑定为 index（类型为 `int`）
