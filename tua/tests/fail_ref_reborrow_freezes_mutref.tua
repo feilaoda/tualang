@@ -1,6 +1,9 @@
-let x = 1
-let r = &x
+struct Foo {
+  x: int
+}
 
-const s = r
-*r = 2
+let foo: Foo = Foo()
+let r: Ref<Foo> = &foo
 
+const s: Ref<Foo> = r
+r.x = 2

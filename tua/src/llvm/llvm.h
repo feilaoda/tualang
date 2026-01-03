@@ -74,7 +74,6 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
 LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr);
 LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr);
-LLVMValueRef emitDerefSetExpr(Compiler* compiler, DerefSetExpr* expr);
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr);
 LLVMValueRef emitVariableExpr(Compiler* compiler, VariableExpr* expr);
 LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr);

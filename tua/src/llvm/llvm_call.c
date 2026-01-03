@@ -1905,6 +1905,31 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // If receiver resolves to a local and has a struct type, treat as instance method call.
         VariableRef recvVar = findVariableExpr(compiler, get->object);
 
+        // Ref.get(): load through a reference variable (replaces `*r` syntax).
+        if (recvVar.value && recvVar.pointeeType && tokenEquals(&get->name, "get")) {
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (got != 0) {
+                compilerErrorAt(compiler, get->name.line, "Ref.get expects 0 arguments");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMValueRef refPtr = NULL;
+            if (recvVar.isBoxed) {
+                if (!recvVar.boxPtrType) {
+                    compilerErrorAt(compiler, get->name.line, "missing boxed pointer type metadata");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cell");
+                refPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, cell, "refp");
+            } else {
+                refPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "refp");
+            }
+            LLVMValueRef out = LLVMBuildLoad2(compiler->builder, recvVar.pointeeType, refPtr, "rget");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return out;
+        }
+
         // Array built-in methods: `a.len()`, `a.clone()`
         if (recvVar.value && recvVar.isArray) {
             LLVMTypeRef arrType = compilerGetArrayType(compiler);

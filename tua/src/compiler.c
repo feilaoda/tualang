@@ -860,9 +860,6 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_ASSIGN:
             return emitAssignExpr(compiler, (AssignExpr*)expr);
             break;
-        case EXPR_DEREF_SET:
-            return emitDerefSetExpr(compiler, (DerefSetExpr*)expr);
-            break;
         case EXPR_CALL:
             return emitCallExpr(compiler, (CallExpr*)expr);
             break;

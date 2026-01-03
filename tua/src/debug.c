@@ -73,14 +73,6 @@ void printExpr(Expr* expr) {
         case EXPR_ASSIGN:
             printAssignExpr((AssignExpr*)expr);
             break;
-        case EXPR_DEREF_SET: {
-            DerefSetExpr* d = (DerefSetExpr*)expr;
-            printf("*");
-            printExpr(d->pointer);
-            printf(" = ");
-            printExpr(d->value);
-            break;
-        }
         case EXPR_CALL:
             printCallExpr((CallExpr*)expr);
             break;

@@ -33,7 +33,6 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_POSTFIX: return "Postfix";
         case EXPR_PREFIX: return "Prefix";
         case EXPR_ASSIGN: return "Assign";
-        case EXPR_DEREF_SET: return "DerefSet";
         case EXPR_GET: return "Get";
         case EXPR_SET: return "Set";
         case EXPR_LAMBDA: return "Lambda";
@@ -417,16 +416,6 @@ static Expr* newAssignExpr(Token name, Expr* value) {
     return (Expr*)expr;
 }
 
-static Expr* newDerefSetExpr(Token star, Expr* pointer, Expr* value) {
-    DerefSetExpr* expr = malloc(sizeof(DerefSetExpr));
-    expr->base.type = EXPR_DEREF_SET;
-    expr->base.token = star;
-    expr->base.inferredType = TYPE_ANY;
-    expr->pointer = pointer;
-    expr->value = value;
-    return (Expr*)expr;
-}
-
 static Expr* newGetExpr(Expr* object, Token name) {
     GetExpr* expr = malloc(sizeof(GetExpr));
     expr->base.type = EXPR_GET;
@@ -536,18 +525,10 @@ static Expr* parseExpression(Parser* parser) {
 #endif
     parserDebug("parser->current.type = %s\n", tokenToString(parser->current.type));
     if (match(parser, TOKEN_ASSIGN)) {
-        Token equals = parser->previous;
         Expr* value = parseExpression(parser);
         
         if (expr->type == EXPR_VARIABLE) {
             return newAssignExpr(((VariableExpr*)expr)->name, value);
-        }
-        if (expr->type == EXPR_UNARY) {
-            UnaryExpr* un = (UnaryExpr*)expr;
-            if (un->operator.type == TOKEN_STAR) {
-                // `*p = v` (pointer assignment)
-                return newDerefSetExpr(un->operator, un->right, value);
-            }
         }
         if (expr->type == EXPR_GET) {
             GetExpr* get = (GetExpr*)expr;
@@ -711,7 +692,6 @@ static Expr* parseUnaryExpr(Parser* parser) {
     if (match(parser, TOKEN_INC) || 
         match(parser, TOKEN_DEC) ||
         match(parser, TOKEN_MINUS) || 
-        match(parser, TOKEN_STAR) ||
         match(parser, TOKEN_NOT) ||
         match(parser, TOKEN_BNOT) ||
         match(parser, TOKEN_AMP) ||

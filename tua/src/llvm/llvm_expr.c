@@ -17,6 +17,12 @@ static LLVMValueRef castNumericToKind(Compiler* compiler, LLVMValueRef value, Ty
 static int fieldIndexOf(StructInfo* info, const Token* fieldName);
 static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx);
 
+static int tokenEquals(const Token* token, const char* s) {
+    if (!token || !s) return 0;
+    int len = (int)strlen(s);
+    return token->length == len && memcmp(token->start, s, (size_t)len) == 0;
+}
+
 static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_panic");
     if (existing) return existing;
@@ -612,12 +618,6 @@ static void collectLambdaLocalsExpr(List* locals, Expr* expr) {
             collectLambdaLocalsExpr(locals, a->value);
             break;
         }
-        case EXPR_DEREF_SET: {
-            DerefSetExpr* d = (DerefSetExpr*)expr;
-            collectLambdaLocalsExpr(locals, d->pointer);
-            collectLambdaLocalsExpr(locals, d->value);
-            break;
-        }
         case EXPR_GET: {
             GetExpr* g = (GetExpr*)expr;
             collectLambdaLocalsExpr(locals, g->object);
@@ -794,12 +794,6 @@ static void collectLambdaUsesExpr(List* uses, Expr* expr) {
             collectLambdaUsesExpr(uses, a->value);
             break;
         }
-        case EXPR_DEREF_SET: {
-            DerefSetExpr* d = (DerefSetExpr*)expr;
-            collectLambdaUsesExpr(uses, d->pointer);
-            collectLambdaUsesExpr(uses, d->value);
-            break;
-        }
         case EXPR_GET:
             collectLambdaUsesExpr(uses, ((GetExpr*)expr)->object);
             break;
@@ -953,12 +947,6 @@ static void collectNestedLambdasExpr(List* lambdas, Expr* expr) {
         case EXPR_ASSIGN:
             collectNestedLambdasExpr(lambdas, ((AssignExpr*)expr)->value);
             break;
-        case EXPR_DEREF_SET: {
-            DerefSetExpr* d = (DerefSetExpr*)expr;
-            collectNestedLambdasExpr(lambdas, d->pointer);
-            collectNestedLambdasExpr(lambdas, d->value);
-            break;
-        }
         case EXPR_GET:
             collectNestedLambdasExpr(lambdas, ((GetExpr*)expr)->object);
             break;
@@ -3415,14 +3403,36 @@ LLVMValueRef emitGetExpr(Compiler* compiler, GetExpr* expr) {
         }
     }
 
-    // Only support member access on variables for now.
-    if (expr->object->type != EXPR_VARIABLE) {
+    // Support member access on:
+    // - a variable receiver: `r.x`
+    // - `Ref.get()` sugar:   `r.get().x` (rewrites to `r.x` when `r` is a ref variable)
+    Expr* obj = expr->object;
+    while (obj && obj->type == EXPR_GROUPING) obj = ((GroupingExpr*)obj)->expression;
+    Expr* recvExpr = obj;
+    if (obj && obj->type == EXPR_CALL) {
+        CallExpr* c = (CallExpr*)obj;
+        if (c->callee && c->callee->type == EXPR_GET) {
+            GetExpr* g = (GetExpr*)c->callee;
+            if (tokenEquals(&g->name, "get") && (!c->arguments || c->arguments->length == 0)) {
+                Expr* base = g->object;
+                while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+                if (base && base->type == EXPR_VARIABLE) {
+                    VariableRef baseVar = findVariableExpr(compiler, base);
+                    if (baseVar.value && baseVar.pointeeType) {
+                        recvExpr = base;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!recvExpr || recvExpr->type != EXPR_VARIABLE) {
         error("Member access receiver must be a variable for now\n");
         return NULL;
     }
 
-    VariableExpr* recv = (VariableExpr*)expr->object;
-    VariableRef recvVar = findVariableExpr(compiler, expr->object);
+    VariableExpr* recv = (VariableExpr*)recvExpr;
+    VariableRef recvVar = findVariableExpr(compiler, recvExpr);
     if (!recvVar.value) {
         // Support enum variant access: `Enum.Variant`
         EnumInfo* enumInfo = compilerResolveEnumByToken(compiler, &recv->name);
@@ -3495,13 +3505,36 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
     emitDebug("emitSetExpr\n");
     if (!expr || !expr->object) return NULL;
 
-    if (expr->object->type != EXPR_VARIABLE) {
+    // Support member assignment on:
+    // - a variable receiver: `r.x = v`
+    // - `Ref.get()` sugar:   `r.get().x = v` (rewrites to `r.x = v` when `r` is a ref variable)
+    Expr* obj = expr->object;
+    while (obj && obj->type == EXPR_GROUPING) obj = ((GroupingExpr*)obj)->expression;
+    Expr* recvExpr = obj;
+    if (obj && obj->type == EXPR_CALL) {
+        CallExpr* c = (CallExpr*)obj;
+        if (c->callee && c->callee->type == EXPR_GET) {
+            GetExpr* g = (GetExpr*)c->callee;
+            if (tokenEquals(&g->name, "get") && (!c->arguments || c->arguments->length == 0)) {
+                Expr* base = g->object;
+                while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+                if (base && base->type == EXPR_VARIABLE) {
+                    VariableRef baseVar = findVariableExpr(compiler, base);
+                    if (baseVar.value && baseVar.pointeeType) {
+                        recvExpr = base;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!recvExpr || recvExpr->type != EXPR_VARIABLE) {
         error("Member assignment receiver must be a variable for now\n");
         return NULL;
     }
 
-    VariableExpr* recv = (VariableExpr*)expr->object;
-    VariableRef recvVar = findVariableExpr(compiler, expr->object);
+    VariableExpr* recv = (VariableExpr*)recvExpr;
+    VariableRef recvVar = findVariableExpr(compiler, recvExpr);
     if (!recvVar.value) {
         error("Undefined receiver\n");
         return NULL;
@@ -3550,63 +3583,12 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
     return rhs;
 }
 
-LLVMValueRef emitDerefSetExpr(Compiler* compiler, DerefSetExpr* expr) {
-    if (!compiler || !expr) return NULL;
-    LLVMBuilderRef builder = compiler->builder;
-
-    if (!expr->pointer || expr->pointer->type != EXPR_VARIABLE) {
-        compilerErrorAt(compiler, expr->base.token.line, "dereference assignment expects a reference variable");
-        return NULL;
-    }
-    VariableRef pv = findVariableExpr(compiler, expr->pointer);
-    if (!pv.value || !pv.type || !pv.pointeeType) {
-        compilerErrorAt(compiler, expr->base.token.line, "dereference assignment expects a typed reference variable");
-        return NULL;
-    }
-    LLVMTypeRef elemTy = pv.pointeeType;
-
-    LLVMValueRef ptr = compileExpr(compiler, expr->pointer);
-    if (!ptr) return NULL;
-
-    LLVMValueRef rhs = compileExpr(compiler, expr->value);
-    if (!rhs) return NULL;
-
-    LLVMTypeRef tuaValueTy = compilerGetTuaValueType(compiler);
-    LLVMValueRef storeV = rhs;
-    if (elemTy == tuaValueTy) {
-        if (LLVMTypeOf(rhs) != tuaValueTy) {
-            storeV = tuaValueFromValue(compiler, rhs);
-            if (!storeV) return NULL;
-        }
-    } else {
-        storeV = castToType(compiler, rhs, elemTy);
-    }
-
-    LLVMBuildStore(builder, storeV, ptr);
-    return storeV;
-}
-
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
     // Compile right expression
     LLVMBuilderRef builder = compiler->builder;
     
 
     switch (expr->operator.type) {
-        case TOKEN_STAR: {
-            if (!expr->right || expr->right->type != EXPR_VARIABLE) {
-                compilerErrorAt(compiler, expr->operator.line, "dereference expects a reference variable");
-                return NULL;
-            }
-            VariableRef pv = findVariableExpr(compiler, expr->right);
-            if (!pv.value || !pv.type || !pv.pointeeType) {
-                compilerErrorAt(compiler, expr->operator.line, "dereference expects a typed reference variable");
-                return NULL;
-            }
-            LLVMTypeRef elemTy = pv.pointeeType;
-            LLVMValueRef p = compileExpr(compiler, expr->right);
-            if (!p) return NULL;
-            return LLVMBuildLoad2(builder, elemTy, p, "deref");
-        }
         case TOKEN_AMP: {
             // Address-of: currently supports variables only.
             if (!expr->right || expr->right->type != EXPR_VARIABLE) {

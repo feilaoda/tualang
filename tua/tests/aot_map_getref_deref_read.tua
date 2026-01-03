@@ -2,6 +2,5 @@ let m: map = {}
 m["a"] = 1
 
 let p = m.getRef("a").unwrap()
-let v = *p
+let v = p.get()
 assert(v == 1)
-

@@ -456,6 +456,10 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
             GetExpr* get = (GetExpr*)call->callee;
             if (get->object && get->object->type == EXPR_VARIABLE) {
                 VariableRef rv = findVariableExpr(compiler, get->object);
+                // Ref.get(): returns the pointee type.
+                if (rv.value && rv.pointeeType && tokenEquals(&get->name, "get")) {
+                    return rv.pointeeType;
+                }
                 if (rv.value && rv.isMap && tokenEquals(&get->name, "get")) {
                     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                     LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;

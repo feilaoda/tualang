@@ -25,7 +25,6 @@ typedef enum {
     EXPR_POSTFIX,
     EXPR_PREFIX,
     EXPR_ASSIGN,
-    EXPR_DEREF_SET,
     EXPR_GET,
     EXPR_SET,
     EXPR_LAMBDA,
@@ -186,13 +185,6 @@ typedef struct AssignExpr{
     Token name;
     Expr* value;
 } AssignExpr;
-
-// Dereference assignment: `*ptr = value`
-typedef struct {
-    Expr base;
-    Expr* pointer;
-    Expr* value;
-} DerefSetExpr;
 
 typedef struct {
     Expr base;

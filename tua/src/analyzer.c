@@ -475,6 +475,19 @@ static const Token* mapGetRefOwnerName(Expr* expr, int* outMutable) {
     return &((VariableExpr*)get->object)->name;
 }
 
+// Detect `r.get()` where `r` is a reference variable, and return the reference variable name.
+static const Token* refGetOwnerName(Expr* expr) {
+    expr = unwrapGrouping(expr);
+    if (!expr || expr->type != EXPR_CALL) return NULL;
+    CallExpr* call = (CallExpr*)expr;
+    if (!call->callee || call->callee->type != EXPR_GET) return NULL;
+    GetExpr* get = (GetExpr*)call->callee;
+    if (!tokenTextEquals(&get->name, "get")) return NULL;
+    Expr* recv = unwrapGrouping(get->object);
+    if (!recv || recv->type != EXPR_VARIABLE) return NULL;
+    return &((VariableExpr*)recv)->name;
+}
+
 static void checkReturnExprNoAddrOfLocal(Compiler* compiler, Scope* scope, Expr* e, const char* modulePath, int line) {
     if (!e || !scope) return;
     if (e->type != EXPR_UNARY) return;
@@ -790,6 +803,19 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
     if (call->callee->type == EXPR_GET) {
         GetExpr* get = (GetExpr*)call->callee;
         AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
+        int isRefRecv = 0;
+        if (get->object && get->object->type == EXPR_VARIABLE) {
+            VariableExpr* recv = (VariableExpr*)get->object;
+            VarInfo* vi = scopeFind(scope, &recv->name);
+            isRefRecv = (vi && vi->isRef) ? 1 : 0;
+        }
+        if (tokenTextEquals(&get->name, "get") && isRefRecv) {
+            unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+            if (got != 0) {
+                analyzeErrorAt(compiler, modulePath, get->name.line, "Ref.get expects 0 arguments");
+            }
+            return atNew(AT_ANY);
+        }
         if (atIsOption(recvTy)) {
             if (tokenTextEquals(&get->name, "isSome")) return atNew(AT_BOOL);
             if (tokenTextEquals(&get->name, "isNone")) return atNew(AT_BOOL);
@@ -1245,54 +1271,6 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             }
             return inferReturn(expr, vi && vi->type ? vi->type : atNew(AT_ANY));
         }
-        case EXPR_DEREF_SET: {
-            DerefSetExpr* d = (DerefSetExpr*)expr;
-            Expr* ptr = unwrapGrouping(d->pointer);
-            if (!ptr || ptr->type != EXPR_VARIABLE) {
-                analyzeErrorAt(compiler, modulePath, d->base.token.line, "dereference assignment expects a reference variable");
-                inferExpr(compiler, scope, d->pointer, modulePath);
-                inferExpr(compiler, scope, d->value, modulePath);
-                return inferReturn(expr, atNew(AT_ANY));
-            }
-
-            VariableExpr* pv = (VariableExpr*)ptr;
-            VarInfo* vi = scopeFind(scope, &pv->name);
-            if (!vi || !vi->isRef) {
-                analyzeErrorAt(
-                    compiler,
-                    modulePath,
-                    d->base.token.line,
-                    "cannot dereference non-reference '%.*s'",
-                    pv->name.length,
-                    pv->name.start
-                );
-            } else {
-                if (vi->refKind != 1) {
-                    analyzeErrorAt(
-                        compiler,
-                        modulePath,
-                        d->base.token.line,
-                        "cannot write through shared reference '%.*s'",
-                        pv->name.length,
-                        pv->name.start
-                    );
-                }
-                // If the reference itself was reborrowed as shared, forbid using it mutably.
-                if (borrowHasAny(scope, &pv->name)) {
-                    analyzeErrorAt(
-                        compiler,
-                        modulePath,
-                        d->base.token.line,
-                        "cannot write through reference '%.*s' because it is borrowed",
-                        pv->name.length,
-                        pv->name.start
-                    );
-                }
-            }
-
-            inferExpr(compiler, scope, d->value, modulePath);
-            return inferReturn(expr, atNew(AT_ANY));
-        }
         case EXPR_BINARY:
             return inferReturn(expr, inferBinary(compiler, scope, (BinaryExpr*)expr, modulePath));
         case EXPR_UNARY: {
@@ -1339,27 +1317,6 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     }
                 }
                 return inferReturn(expr, outTy ? outTy : atNew(AT_ANY));
-            }
-            if (u->operator.type == TOKEN_STAR) {
-                Expr* rhs = unwrapGrouping(u->right);
-                if (!rhs || rhs->type != EXPR_VARIABLE) {
-                    analyzeErrorAt(compiler, modulePath, u->base.token.line, "dereference expects a reference variable");
-                    inferExpr(compiler, scope, u->right, modulePath);
-                    return inferReturn(expr, atNew(AT_ANY));
-                }
-                VariableExpr* v = (VariableExpr*)rhs;
-                VarInfo* vi = scopeFind(scope, &v->name);
-                if (!vi || !vi->isRef) {
-                    analyzeErrorAt(
-                        compiler,
-                        modulePath,
-                        u->base.token.line,
-                        "cannot dereference non-reference '%.*s'",
-                        v->name.length,
-                        v->name.start
-                    );
-                }
-                return inferReturn(expr, atNew(AT_ANY));
             }
             if (u->operator.type == TOKEN_BNOT) {
                 AType* rhs = inferExpr(compiler, scope, u->right, modulePath);
@@ -1518,6 +1475,40 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_SET: {
             // Member assignment: const/move checks first; keep type inference permissive.
             SetExpr* s = (SetExpr*)expr;
+            const Token* getOwner = refGetOwnerName(s->object);
+            if (getOwner) {
+                VarInfo* vi = scopeFind(scope, getOwner);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through const binding '%.*s'",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+                if (vi && vi->isRef && vi->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through shared reference '%.*s'",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+                if (vi && borrowHasAny(scope, getOwner)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        s->base.token.line,
+                        "cannot assign through '%.*s' because it is borrowed",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+            }
             if (s->object && s->object->type == EXPR_VARIABLE) {
                 VariableExpr* recv = (VariableExpr*)s->object;
                 VarInfo* vi = scopeFind(scope, &recv->name);
@@ -1560,6 +1551,40 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             return inferReturn(expr, inferIndex(compiler, scope, (IndexExpr*)expr, modulePath));
         case EXPR_INDEX_SET: {
             IndexSetExpr* is = (IndexSetExpr*)expr;
+            const Token* getOwner = refGetOwnerName(is->object);
+            if (getOwner) {
+                VarInfo* vi = scopeFind(scope, getOwner);
+                if (vi && vi->isConst) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through const binding '%.*s'",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+                if (vi && vi->isRef && vi->refKind != 1) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through shared reference '%.*s'",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+                if (vi && borrowHasAny(scope, getOwner)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        is->base.token.line,
+                        "cannot assign through '%.*s' because it is borrowed",
+                        getOwner->length,
+                        getOwner->start
+                    );
+                }
+            }
             if (is->object && is->object->type == EXPR_VARIABLE) {
                 VariableExpr* recv = (VariableExpr*)is->object;
                 VarInfo* vi = scopeFind(scope, &recv->name);
