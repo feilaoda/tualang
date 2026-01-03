@@ -467,6 +467,22 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 }
                 if (rv.value && rv.isMap && (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite"))) {
                     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                    if (rv.isTypedMap && rv.mapValueType && rv.mapValueType != vt) {
+                        LLVMTypeRef innerTy = rv.mapValueType;
+                        // Scalar typed map values do not support getRef/getRefWrite (see codegen); keep untyped fallback.
+                        LLVMTypeKind k = LLVMGetTypeKind(innerTy);
+                        int scalar = 0;
+                        if (k == LLVMIntegerTypeKind) scalar = LLVMGetIntTypeWidth(innerTy) == 1 || LLVMGetIntTypeWidth(innerTy) >= 8;
+                        else if (k == LLVMFloatTypeKind || k == LLVMDoubleTypeKind) scalar = 1;
+                        else if (k == LLVMPointerTypeKind) {
+                            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                            scalar = (innerTy == i8ptr);
+                        }
+                        if (!scalar) {
+                            LLVMTypeRef outPtrTy = LLVMPointerType(innerTy, 0);
+                            return compilerGetOptionType(compiler, outPtrTy);
+                        }
+                    }
                     LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
                     return compilerGetOptionType(compiler, vtPtr);
                 }
@@ -592,10 +608,13 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
     }
 }
 
-static int inferTypedMapKVFromLiteral(Compiler* compiler, MapLiteralExpr* lit, LLVMTypeRef* outKeyTy, LLVMTypeRef* outValTy) {
+static int inferTypedMapKVFromLiteral(Compiler* compiler, MapLiteralExpr* lit, LLVMTypeRef* outKeyTy, LLVMTypeRef* outValTy,
+                                      TypeKind* outKeyKind, TypeKind* outValKind) {
     if (!compiler || !lit || !outKeyTy || !outValTy) return 0;
     *outKeyTy = NULL;
     *outValTy = NULL;
+    if (outKeyKind) *outKeyKind = TYPE_ANY;
+    if (outValKind) *outValKind = TYPE_ANY;
 
     // key inference (string vs numeric only; mixed => no inference)
     int sawStringKey = 0;
@@ -616,9 +635,11 @@ static int inferTypedMapKVFromLiteral(Compiler* compiler, MapLiteralExpr* lit, L
     if (sawStringKey && sawNumericKey) return 0;
     if (sawStringKey) {
         *outKeyTy = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        if (outKeyKind) *outKeyKind = TYPE_STRING;
     } else {
         *outKeyTy = sawLongKey ? LLVMInt64TypeInContext(compiler->context)
                                : LLVMInt32TypeInContext(compiler->context);
+        if (outKeyKind) *outKeyKind = sawLongKey ? TYPE_LONG : TYPE_INT;
     }
 
     // value inference: only when all values are non-null literals of a consistent family.
@@ -649,21 +670,26 @@ static int inferTypedMapKVFromLiteral(Compiler* compiler, MapLiteralExpr* lit, L
 
     if (sawString) {
         *outValTy = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        if (outValKind) *outValKind = TYPE_STRING;
         return 1;
     }
     if (sawBool) {
         *outValTy = LLVMInt1TypeInContext(compiler->context);
+        if (outValKind) *outValKind = TYPE_BOOL;
         return 1;
     }
     if (sawDouble) {
         *outValTy = LLVMDoubleTypeInContext(compiler->context);
+        if (outValKind) *outValKind = TYPE_DOUBLE;
         return 1;
     }
     if (sawLong) {
         *outValTy = LLVMInt64TypeInContext(compiler->context);
+        if (outValKind) *outValKind = TYPE_LONG;
         return 1;
     }
     *outValTy = LLVMInt32TypeInContext(compiler->context);
+    if (outValKind) *outValKind = TYPE_INT;
     return 1;
 }
 
@@ -884,8 +910,17 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     int inferredTypedMap = 0;
     LLVMTypeRef inferredKeyTy = NULL;
     LLVMTypeRef inferredValTy = NULL;
+    TypeKind inferredKeyKind = TYPE_ANY;
+    TypeKind inferredValKind = TYPE_ANY;
     if (!stmt->type && stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
-        inferredTypedMap = inferTypedMapKVFromLiteral(compiler, (MapLiteralExpr*)stmt->initializer, &inferredKeyTy, &inferredValTy);
+        inferredTypedMap = inferTypedMapKVFromLiteral(
+            compiler,
+            (MapLiteralExpr*)stmt->initializer,
+            &inferredKeyTy,
+            &inferredValTy,
+            &inferredKeyKind,
+            &inferredValKind
+        );
     }
 
     // `const view = x` (move-only) creates a non-owning view; for structs, this is represented as a pointer.
@@ -1091,8 +1126,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             } else if (inferredTypedMap) {
                 compiler->expectedMapKeyType = inferredKeyTy;
                 compiler->expectedMapValueType = inferredValTy;
-                compiler->expectedMapKeyKind = TYPE_ANY;
-                compiler->expectedMapValueKind = TYPE_ANY;
+                compiler->expectedMapKeyKind = inferredKeyKind;
+                compiler->expectedMapValueKind = inferredValKind;
             }
         }
         if (valueType == compilerGetArrayType(compiler) &&
@@ -1379,7 +1414,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->pointeeType = stmt->type->inner ? toLLVMType(compiler, stmt->type->inner) : NULL;
     }
 
-    // `m.getRef(...).unwrap()` / `m.getRefWrite(...).unwrap()` returns `tua_value*` for untyped map.
+    // `m.getRef(...).unwrap()` / `m.getRefWrite(...).unwrap()` returns:
+    // - `tua_value*` for untyped map
+    // - `V*` (as `Ref<V>`) for typed map when V is non-scalar (struct/map/array)
     if (!variable->pointeeType && stmt->initializer && stmt->initializer->type == EXPR_CALL) {
         CallExpr* c1 = (CallExpr*)stmt->initializer;
         if (c1->callee && c1->callee->type == EXPR_GET) {
@@ -1389,7 +1426,20 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 if (c0->callee && c0->callee->type == EXPR_GET) {
                     GetExpr* g0 = (GetExpr*)c0->callee;
                     if (tokenEquals(&g0->name, "getRef") || tokenEquals(&g0->name, "getRefWrite")) {
-                        variable->pointeeType = compilerGetTuaValueType(compiler);
+                        LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                        variable->pointeeType = vt;
+                        if (g0->object && g0->object->type == EXPR_VARIABLE) {
+                            VariableRef mv = findVariableExpr(compiler, g0->object);
+                            if (mv.value && mv.isTypedMap && mv.mapValueType && mv.mapValueType != vt) {
+                                // Best-effort: treat non-scalar typed map values as `Ref<V>`.
+                                // Scalar typed map getRef is rejected in codegen.
+                                variable->pointeeType = mv.mapValueType;
+                                if (!variable->typeName && mv.mapValueTypeName) {
+                                    variable->typeName = mv.mapValueTypeName;
+                                    variable->typeNameLength = mv.mapValueTypeNameLength;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1406,6 +1456,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->mapValueType = NULL;
     variable->mapKeyKind = TYPE_ANY;
     variable->mapValueKind = TYPE_ANY;
+    variable->mapValueIsMap = 0;
+    variable->mapValueTypeName = NULL;
+    variable->mapValueTypeNameLength = 0;
     variable->isArray = 0;
     variable->arrayElemType = NULL;
     variable->arrayElemKind = TYPE_ANY;
@@ -1420,18 +1473,46 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         Type* kAst = (Type*)stmt->type->typeArgs->head->data;
         Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
         int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
-        int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
-                             vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+        // Value types:
+        // - scalar: int/long/float/double/bool/string
+        // - aggregate/handle: struct(named), map(named), arrays
+        int okVal = 0;
+        if (vAst) {
+            if (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL) {
+                okVal = 1;
+            } else if (vAst->kind == TYPE_ARRAY) {
+                okVal = 1;
+            } else if (vAst->kind == TYPE_NAMED) {
+                // Allow struct types and `map` (with or without type args).
+                okVal = 1;
+            }
+        }
         if (!okKey) {
             error("map<K,V> key type must be string/int/long for now\n");
         } else if (!okVal) {
-            error("map<K,V> value type must be int/long/float/double/bool/string for now\n");
+            error("map<K,V> value type must be scalar/struct/map/array for now\n");
         } else {
             variable->isTypedMap = 1;
             variable->mapKeyType = toLLVMType(compiler, kAst);
             variable->mapValueType = toLLVMType(compiler, vAst);
             variable->mapKeyKind = kAst ? kAst->kind : TYPE_ANY;
             variable->mapValueKind = vAst ? vAst->kind : TYPE_ANY;
+            variable->mapValueIsMap = (vAst && vAst->kind == TYPE_NAMED &&
+                                       vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)
+                                          ? 1
+                                          : 0;
+            // Preserve struct type name for `map<K, S>` so refs from getRef can resolve fields.
+            if (vAst && vAst->kind == TYPE_NAMED && !(vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)) {
+                StructInfo* info = compilerResolveStructByToken(compiler, &vAst->name);
+                if (info) {
+                    variable->mapValueTypeName = info->name;
+                    variable->mapValueTypeNameLength = info->nameLength;
+                } else {
+                    variable->mapValueTypeName = vAst->name.start;
+                    variable->mapValueTypeNameLength = vAst->name.length;
+                }
+            }
         }
     }
 
@@ -1446,6 +1527,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isTypedMap = 1;
         variable->mapKeyType = inferredKeyTy;
         variable->mapValueType = inferredValTy;
+        variable->mapKeyKind = inferredKeyKind;
+        variable->mapValueKind = inferredValKind;
     }
 
     if (valueType == compilerGetMapType(compiler) && stmt->initializer && stmt->initializer->type == EXPR_MAP_LITERAL) {
@@ -1485,6 +1568,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->mapValueType = base.mapValueType;
                 variable->mapKeyKind = base.mapKeyKind;
                 variable->mapValueKind = base.mapValueKind;
+                variable->mapValueIsMap = base.mapValueIsMap;
+                variable->mapValueTypeName = base.mapValueTypeName;
+                variable->mapValueTypeNameLength = base.mapValueTypeNameLength;
             }
             if (!variable->isArray && base.isArray) {
                 variable->isArray = 1;

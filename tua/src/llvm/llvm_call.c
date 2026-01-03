@@ -1272,11 +1272,62 @@ static int isStringLLVMType(Compiler* compiler, LLVMTypeRef t) {
     return t == i8ptr;
 }
 
+static int isBoolLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMIntegerTypeKind) return 0;
+    return LLVMGetIntTypeWidth(t) == 1;
+}
+
 static int isNumericLLVMType(LLVMTypeRef t) {
     if (!t) return 0;
     LLVMTypeKind k = LLVMGetTypeKind(t);
     if (k != LLVMIntegerTypeKind) return 0;
     return LLVMGetIntTypeWidth(t) != 1;
+}
+
+static int isScalarValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    if (isStringLLVMType(compiler, t)) return 1;
+    if (isBoolLLVMType(t)) return 1;
+    if (LLVMGetTypeKind(t) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(t) != 1) return 1;
+    if (LLVMGetTypeKind(t) == LLVMFloatTypeKind || LLVMGetTypeKind(t) == LLVMDoubleTypeKind) return 1;
+    return 0;
+}
+
+// Under LLVM opaque pointers, all pointers share the same LLVM type (`ptr`), so LLVMTypeRef
+// checks cannot distinguish `string` vs `map` vs `array`. For typed map semantics, prefer
+// stored TypeKind metadata from the parser/analyzer.
+static int typeKindIsScalarValueKind(TypeKind k) {
+    switch (k) {
+        case TYPE_BOOL:
+        case TYPE_STRING:
+        case TYPE_PTR:
+        case TYPE_BYTE:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_INT:
+        case TYPE_LONG:
+        case TYPE_ISIZE:
+        case TYPE_U8:
+        case TYPE_U16:
+        case TYPE_U32:
+        case TYPE_U64:
+        case TYPE_USIZE:
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF16:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int typedMapValueIsScalarMeta(const VariableRef* recvVar) {
+    if (!recvVar || !recvVar->isTypedMap) return 0;
+    if (typeKindIsScalarValueKind(recvVar->mapValueKind)) return 1;
+    // Arrays, maps, and structs are all non-scalar for get/getRef dispatch.
+    return 0;
 }
 
 static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, LLVMValueRef keyVal) {
@@ -1930,6 +1981,123 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             return out;
         }
 
+        // Built-in methods on `Ref<map>` / `Ref<T[]>`:
+        // When receiver is a reference to a map/array handle, load the handle and call the same runtime APIs.
+        if (recvVar.value && recvVar.pointeeType == compilerGetMapType(compiler)) {
+            LLVMTypeRef mapType = compilerGetMapType(compiler);
+            LLVMValueRef refPtr = loadLocalValue(compiler, recvVar); // tua_map**
+            if (!refPtr) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMValueRef mapPtr = LLVMBuildLoad2(compiler->builder, mapType, refPtr, "mref");
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("map.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { mapPtr };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "mlen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "hasKey")) {
+                if (got != 1) {
+                    emitDebug("map.hasKey expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapHas(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args2[2] = { mapPtr, key };
+                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mhas");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "ok");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return ok;
+            }
+
+            if (tokenEquals(&get->name, "delete")) {
+                if (got != 1) {
+                    emitDebug("map.delete expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                Expr* keyAst = (Expr*)expr->arguments->head->data;
+                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                if (!key) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapDelete(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args2[2] = { mapPtr, key };
+                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mdel32");
+                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return ok;
+            }
+
+            if (tokenEquals(&get->name, "clear")) {
+                if (got != 0) {
+                    emitDebug("map.clear expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaMapClear(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { mapPtr };
+                LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+            }
+        }
+
+        if (recvVar.value && recvVar.pointeeType == compilerGetArrayType(compiler)) {
+            LLVMTypeRef arrType = compilerGetArrayType(compiler);
+            LLVMValueRef refPtr = loadLocalValue(compiler, recvVar); // tua_array**
+            if (!refPtr) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            LLVMValueRef arrPtr = LLVMBuildLoad2(compiler->builder, arrType, refPtr, "aref");
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("array.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMContextRef context = compiler->context;
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+                LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
+                if (!arrStruct) {
+                    compilerErrorAt(compiler, get->name.line, "missing tua_array type for array.len");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arrPtr, 0, "alenp");
+                LLVMValueRef len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "alen64");
+                LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "alen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+        }
+
         // Array built-in methods: `a.len()`, `a.clone()`
         if (recvVar.value && recvVar.isArray) {
             LLVMTypeRef arrType = compilerGetArrayType(compiler);
@@ -2116,13 +2284,15 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
-                if (recvVar.isTypedMap) {
-                    compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is not supported on typed map<K,V> yet");
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
                 Expr* keyAst = (Expr*)expr->arguments->head->data;
                 LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                if (recvVar.isTypedMap && recvVar.mapKeyType) {
+                    if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+                        compilerErrorAt(compiler, keyAst ? keyAst->token.line : get->name.line, "typed map key type mismatch");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                }
                 LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
                 if (!key) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -2140,12 +2310,71 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
                 LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                 LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
-                LLVMValueRef payload = castValueToType(compiler, p, vtPtr);
+                LLVMValueRef tvPtr = castValueToType(compiler, p, vtPtr);
 
-                LLVMTypeRef optType = compilerGetOptionType(compiler, vtPtr);
+                // Untyped map: return Option<tua_value*>
+                if (!recvVar.isTypedMap || !recvVar.mapValueType) {
+                    LLVMTypeRef optType = compilerGetOptionType(compiler, vtPtr);
+                    LLVMValueRef opt = LLVMGetUndef(optType);
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, tvPtr, 1, "o1");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return opt;
+                }
+
+                // Typed map: only support getRef/getRefWrite when V is non-scalar (struct/map/array),
+                // and return Option<Ref<V>> (lowered as pointer to V).
+                LLVMTypeRef innerTy = recvVar.mapValueType;
+                if (typedMapValueIsScalarMeta(&recvVar)) {
+                    compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is not supported for scalar typed map values; use get()");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+
+                LLVMContextRef context = compiler->context;
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+                // When ok==false, return null payload.
+                LLVMTypeRef outPtrTy = LLVMPointerType(innerTy, 0);
+                LLVMValueRef outPtr = LLVMConstNull(outPtrTy);
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "mref.some");
+                LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "mref.none");
+                LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "mref.cont");
+                LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, someBB);
+                // tvPtr points to tua_value { tag:i32, payload:i64 }.
+                LLVMValueRef payloadField = LLVMBuildStructGEP2(compiler->builder, vt, tvPtr, 1, "payp");
+                LLVMValueRef ptrV = NULL;
+                if (LLVMGetTypeKind(innerTy) == LLVMStructTypeKind) {
+                    // payload contains a heap pointer to the struct bytes.
+                    LLVMValueRef bits = LLVMBuildLoad2(compiler->builder, i64, payloadField, "bits");
+                    LLVMValueRef p8 = LLVMBuildIntToPtr(compiler->builder, bits, i8ptr, "p8");
+                    ptrV = LLVMBuildBitCast(compiler->builder, p8, outPtrTy, "sp");
+                } else {
+                    // innerTy is a handle/pointer type (e.g. tua_map* / tua_array* / ptr / Ref<...>):
+                    // return a pointer to the stored payload bits (treating it as a pointer-sized slot).
+                    ptrV = LLVMBuildBitCast(compiler->builder, payloadField, outPtrTy, "hp");
+                }
+                LLVMBuildBr(compiler->builder, contBB);
+                LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
+                LLVMBuildBr(compiler->builder, contBB);
+                LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contBB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, outPtrTy, "mrefv");
+                LLVMAddIncoming(phi, &ptrV, &someEnd, 1);
+                LLVMAddIncoming(phi, &outPtr, &noneEnd, 1);
+
+                LLVMTypeRef optType = compilerGetOptionType(compiler, outPtrTy);
                 LLVMValueRef opt = LLVMGetUndef(optType);
                 opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
-                opt = LLVMBuildInsertValue(compiler->builder, opt, payload, 1, "o1");
+                opt = LLVMBuildInsertValue(compiler->builder, opt, phi, 1, "o1");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return opt;
             }
@@ -2187,6 +2416,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
                 LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                 LLVMTypeRef innerType = recvVar.isTypedMap && recvVar.mapValueType ? recvVar.mapValueType : vt;
+                if (recvVar.isTypedMap && recvVar.mapValueType && !typedMapValueIsScalarMeta(&recvVar)) {
+                    compilerErrorAt(compiler, get->name.line, "map.get is not supported for non-scalar typed map values; use getRef/getRefWrite");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
 
                 LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
                 LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);

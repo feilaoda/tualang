@@ -138,6 +138,10 @@
     - 若 `m` 是 `map`：
       - `for v in m { ... }`：`v` 绑定为 value（类型为 `any`/`tua_value`）
       - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `any`/`tua_value`），`v` 绑定为 value（类型为 `any`/`tua_value`）
+    - 若 `m` 是 `map<K,V>`：
+      - `for v in m { ... }`：`v` 绑定为 value（类型为 `V`）
+      - `for k,v in m { ... }`：`k` 绑定为 key（类型为 `K`），`v` 绑定为 value（类型为 `V`）
+      - 说明：当前实现为“按值绑定”（struct 会拷贝；map/array 为句柄复制），如需原位修改请使用 `getRefWrite()`
     - 若 `m` 是数组：
       - `for v in m { ... }`：`v` 绑定为 element（类型为 `T`）
       - `for v,i in m { ... }`：`v` 绑定为 element（类型为 `T`），`i` 绑定为 index（类型为 `int`）
@@ -332,7 +336,9 @@
   - `map`：不带类型参数的 map（value 在 runtime 中以 `tua_value` 存储）
   - `map<K,V>`：带类型参数的 map（第一版）
     - `K` 当前仅允许：`string/int/long`
-    - `V` 当前仅允许：`int/long/double/bool/string`
+    - `V` 允许：
+      - 标量（Copy）：`int/long/double/bool/string`
+      - 复合/引用型（move-only）：`struct`、`map`、数组 `T[]/T[N]`（以及它们的嵌套组合）
 - 字面量（Status: Implemented）：
   - 语法：`{ key: value, ... }`
   - `key` 仅允许常量字面量：`int/long/string`
@@ -340,6 +346,7 @@
   - 允许尾逗号：`{ "a": 1, }`
 - 读取（Status: Implemented）：
   - `m[k] -> Option<V>`（对 `map` 则为 `Option<tua_value>`）
+  - 限制（Frozen for now）：当 `V` 为 move-only（如 `struct/map/array`）时，`m[k]` / `m.get(k)` **不提供按值读取**（避免隐式复制/移动出容器）；编译期报错并提示使用 `getRef/getRefWrite`
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
 - 写入（Status: Implemented）：
@@ -357,8 +364,12 @@
   - `m.getRef(k) -> Option<Ref<V>>`：返回 value 的共享只读引用（shared borrow）
   - `m.getRefWrite(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
   - 约束（Frozen）：当 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
-  - 当前实现（Status: Implemented for `map`）：`map`（无类型参数）返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）；`map<K,V>` 暂不支持 `getRef/getRefWrite`（编译期报错）
-  - 用法（Status: Implemented for `map`）：
+  - 当前实现（Status: Implemented）：
+    - 对 `map`（无类型参数）：返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）
+    - 对 `map<K,V>`：
+      - 当 `V` 为 move-only（`struct/map/array`）时：返回 `Option<Ref<V>>`（可用于字段写/调用容器方法）
+      - 当 `V` 为标量（Copy）时：`getRef/getRefWrite` 暂不支持（第一版），请用 `get(k)` / `m[k]`
+  - 用法（Status: Implemented）：
     - `let p = m.getRef("k").unwrap(); let v = p.get()`（读 `tua_value`）
     - 不提供 `*p = v` / `p.set(v)` 原地写回（第一版）；需要写回时用 `m[k] = v`（且要求没有存活的 element ref）
 - 遍历（Status: Implemented）：

@@ -521,6 +521,14 @@ static int isNumericLLVMType(LLVMTypeRef t) {
     return (k == LLVMFloatTypeKind || k == LLVMDoubleTypeKind);
 }
 
+static int isScalarValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !t) return 0;
+    if (isStringLLVMType(compiler, t)) return 1;
+    if (isBoolLLVMType(t)) return 1;
+    if (isNumericLLVMType(t)) return 1;
+    return 0;
+}
+
 static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, LLVMValueRef keyVal) {
     if (!compiler || !expectedKeyTy || !keyVal) return 0;
     LLVMTypeRef actualTy = LLVMTypeOf(keyVal);
@@ -539,6 +547,9 @@ static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy
     LLVMTypeRef actualTy = LLVMTypeOf(rawVal);
     if (isTuaValueLLVMType(compiler, actualTy)) return 0;
 
+    // Allow aggregate/handle values for typed maps:
+    // - structs by value
+    // - map/array handles (runtime pointers)
     if (isStringLLVMType(compiler, expectedValTy)) {
         return isStringLLVMType(compiler, actualTy);
     }
@@ -550,6 +561,13 @@ static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy
     }
     if (LLVMGetTypeKind(expectedValTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(expectedValTy) != 1) {
         return isNumericLLVMType(actualTy);
+    }
+    if (LLVMGetTypeKind(expectedValTy) == LLVMStructTypeKind) {
+        return LLVMGetTypeKind(actualTy) == LLVMStructTypeKind && actualTy == expectedValTy;
+    }
+    if (LLVMGetTypeKind(expectedValTy) == LLVMPointerTypeKind) {
+        // Treat pointer-typed values as exact-match only (e.g. map/array handles).
+        return actualTy == expectedValTy;
     }
     return 0;
 }
@@ -2227,6 +2245,14 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     if (expr->object && expr->object->type == EXPR_VARIABLE) {
         if (recvVar.value && recvVar.isTypedMap && recvVar.mapValueType) {
             innerType = recvVar.mapValueType;
+            if (!isScalarValueLLVMType(compiler, innerType)) {
+                compilerErrorAt(
+                    compiler,
+                    expr->base.token.line,
+                    "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
+                );
+                return NULL;
+            }
         }
     }
 

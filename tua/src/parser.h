@@ -9,6 +9,11 @@ typedef struct {
     const char* currentFilePath;
     Token current;
     Token previous;
+    // When parsing nested generic types like `map<string, map<string,int>>`,
+    // the lexer tokenizes `>>` as TOKEN_SHR. The parser can split it into two
+    // `>` tokens by stashing one here.
+    Token pushed;
+    bool hasPushed;
     bool hadError;
     bool panicMode;
 } Parser;

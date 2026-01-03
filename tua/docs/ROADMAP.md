@@ -76,7 +76,7 @@
 - [x] 多返回值：在赋值/参数传递中的解构规则（`let a,b = f()` / `a,b = f()`）
 - [x] 数据结构：优先实现 `map`（键值容器），后续再补数组
   - [x] 字面量：`{ key: value, ... }`（key 仅常量；重复 key 后者覆盖；允许尾逗号）
-  - [x] 类型：`map` 与 `map<K,V>`（K: `string/int/long`；V: `int/long/double/bool/string`，第一版）
+  - [x] 类型：`map` 与 `map<K,V>`（K: `string/int/long`；V: 标量 + `struct/map/array`，第一版）
   - [x] 读取：`m[k] -> Option<V>`（未命中返回 `None()`；可用 `??` 提供默认值）
   - [x] 写入：`m[k] = v`（当 `m` 为变量且为 `null` 时自动初始化）
   - [x] 内建方法：`len()/hasKey()/get()/delete()/clear()`

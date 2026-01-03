@@ -54,6 +54,13 @@ void initParser(Parser* parser, Lexer* lexer, const char* currentFilePath) {
     parser->panicMode = false;
     parser->previous.type = TOKEN_ERROR;
     parser->current.type = TOKEN_ERROR;
+    parser->pushed.type = TOKEN_ERROR;
+    parser->pushed.start = NULL;
+    parser->pushed.length = 0;
+    parser->pushed.line = 0;
+    parser->pushed.col = 0;
+    parser->pushed.hasDot = 0;
+    parser->hasPushed = false;
 }
 
 static Stmt* declaration(Parser* parser);
@@ -104,7 +111,12 @@ static void errorPrint(Parser* parser, const char* message) {
 // Basic parser functions
 static void advance(Parser* parser) {
     parser->previous = parser->current;
-    parser->current = scanToken(parser->lexer);
+    if (parser->hasPushed) {
+        parser->current = parser->pushed;
+        parser->hasPushed = false;
+    } else {
+        parser->current = scanToken(parser->lexer);
+    }
     parserDebug("parser advance scanToken code:[%.*s],token: [%s]\n", parser->current.length,parser->current.start, tokenToString(parser->current.type));
     if (parser->current.type == TOKEN_ERROR) {
         errorAtCurrent(parser, parser->current.start);
@@ -130,7 +142,39 @@ static Token consume(Parser* parser, TokenType type, const char* message) {
         return token;
     }
     printError(parser, message);
+    // Ensure forward progress even when callers don't synchronize (e.g. parseType()).
+    if (parser->current.type != TOKEN_EOF) {
+        advance(parser);
+    }
     return (Token){TOKEN_ERROR, NULL, 0, 0, 0, 0};
+}
+
+// In type parsing contexts we want to accept nested generics like `T<U<V>>`.
+// The lexer produces `>>` as TOKEN_SHR; split it into two TOKEN_GT tokens.
+static void splitShrIntoGtGt(Parser* parser) {
+    if (!parser) return;
+    if (parser->current.type != TOKEN_SHR) return;
+    if (parser->current.length < 2 || !parser->current.start) return;
+    if (parser->hasPushed) return;
+
+    Token t = parser->current;
+    Token second = t;
+    second.type = TOKEN_GT;
+    second.start = t.start + 1;
+    second.length = 1;
+    second.col = t.col + 1;
+
+    parser->current.type = TOKEN_GT;
+    parser->current.length = 1;
+    parser->pushed = second;
+    parser->hasPushed = true;
+}
+
+static Token consumeTypeGt(Parser* parser, const char* message) {
+    if (parser && parser->current.type == TOKEN_SHR) {
+        splitShrIntoGtGt(parser);
+    }
+    return consume(parser, TOKEN_GT, message);
 }
 
 static void synchronize(Parser* parser) {
@@ -2118,7 +2162,7 @@ static Type* parseType(Parser* parser) {
                         if (!match(parser, TOKEN_COMMA)) break;
                     }
                 }
-                consume(parser, TOKEN_GT, "Expect '>' after Ref type argument");
+                consumeTypeGt(parser, "Expect '>' after Ref type argument");
 
                 Type* type = malloc(sizeof(Type));
                 type->kind = TYPE_REF;
@@ -2149,7 +2193,7 @@ static Type* parseType(Parser* parser) {
                     listAppend(args, a);
                 } while (match(parser, TOKEN_COMMA));
             }
-            consume(parser, TOKEN_GT, "Expect '>' after generic type arguments");
+            consumeTypeGt(parser, "Expect '>' after generic type arguments");
             type->typeArgs = args;
         }
         base = type;

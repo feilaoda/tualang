@@ -516,6 +516,12 @@ static int tokenTextEquals(const Token* tok, const char* s) {
     return tok->length == n && memcmp(tok->start, s, (size_t)n) == 0;
 }
 
+static int tokenLooksLikeTypeNameA(const Token* tok) {
+    if (!tok || !tok->start || tok->length <= 0) return 0;
+    unsigned char c = (unsigned char)tok->start[0];
+    return c >= 'A' && c <= 'Z';
+}
+
 static AType* atFromAstType(Type* t) {
     if (!t) return atNew(AT_ANY);
     switch (t->kind) {
@@ -797,6 +803,14 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
         if (tokenTextEquals(&v->name, "None")) {
             return atOption(atNew(AT_ANY));
         }
+        // Best-effort: treat `TypeName(...)` as a struct constructor returning `TypeName`.
+        if (tokenLooksLikeTypeNameA(&v->name)) {
+            // Still analyze args for nested errors.
+            for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
+                inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+            }
+            return atNamed(v->name.start, v->name.length);
+        }
     }
 
         // Map built-in method calls: m.get(k) / m.len() / ...
@@ -829,9 +843,6 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
         if (atIsMap(recvTy)) {
             // Borrowing reads: m.getRef(k) / m.getRefWrite(k)
             if (tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite")) {
-                if ((recvTy->key && !atIsAny(recvTy->key)) || (recvTy->value && !atIsAny(recvTy->value))) {
-                    analyzeErrorAt(compiler, modulePath, get->name.line, "map.getRef/getRefWrite is not supported on typed map<K,V> yet");
-                }
                 if (get->object && get->object->type == EXPR_VARIABLE) {
                     VariableExpr* recv = (VariableExpr*)get->object;
                     VarInfo* vi = scopeFind(scope, &recv->name);
@@ -1464,7 +1475,18 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 if (!f) continue;
                 inferExpr(compiler, scope, f->value, modulePath);
             }
-            return inferReturn(expr, atNew(AT_ANY));
+            // Best-effort: infer struct type from the callee token.
+            AType* out = atNew(AT_ANY);
+            Expr* callee = si->callee;
+            callee = unwrapGrouping(callee);
+            if (callee && callee->type == EXPR_VARIABLE) {
+                VariableExpr* v = (VariableExpr*)callee;
+                out = atNamed(v->name.start, v->name.length);
+            } else if (callee && callee->type == EXPR_GET) {
+                GetExpr* g = (GetExpr*)callee;
+                out = atNamed(g->name.start, g->name.length);
+            }
+            return inferReturn(expr, out);
         }
         case EXPR_GET: {
             // Member access type inference is incomplete; keep permissive.

@@ -1904,16 +1904,43 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             Type* kAst = (Type*)p->type->typeArgs->head->data;
             Type* vAst = (Type*)p->type->typeArgs->head->next->data;
             int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
-            int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
-                                 vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+            int okVal = 0;
+            if (vAst) {
+                if (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                    vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL) {
+                    okVal = 1;
+                } else if (vAst->kind == TYPE_ARRAY) {
+                    okVal = 1;
+                } else if (vAst->kind == TYPE_NAMED) {
+                    okVal = 1;
+                }
+            }
             if (!okKey) {
                 error("map<K,V> key type must be string/int/long for now\n");
             } else if (!okVal) {
-                error("map<K,V> value type must be int/long/float/double/bool/string for now\n");
+                error("map<K,V> value type must be scalar/struct/map/array for now\n");
             } else {
                 variable->isTypedMap = 1;
                 variable->mapKeyType = typeToLLVMType(compiler, kAst, false);
                 variable->mapValueType = typeToLLVMType(compiler, vAst, false);
+                variable->mapKeyKind = kAst ? kAst->kind : TYPE_ANY;
+                variable->mapValueKind = vAst ? vAst->kind : TYPE_ANY;
+                variable->mapValueIsMap = (vAst && vAst->kind == TYPE_NAMED &&
+                                           vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)
+                                              ? 1
+                                              : 0;
+                variable->mapValueTypeName = NULL;
+                variable->mapValueTypeNameLength = 0;
+                if (vAst && vAst->kind == TYPE_NAMED && !(vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)) {
+                    StructInfo* info = compilerResolveStructByToken(compiler, &vAst->name);
+                    if (info) {
+                        variable->mapValueTypeName = info->name;
+                        variable->mapValueTypeNameLength = info->nameLength;
+                    } else {
+                        variable->mapValueTypeName = vAst->name.start;
+                        variable->mapValueTypeNameLength = vAst->name.length;
+                    }
+                }
             }
         }
 

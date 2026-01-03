@@ -39,6 +39,12 @@ typedef struct VariableRef {
     LLVMTypeRef mapValueType;
     TypeKind mapKeyKind;
     TypeKind mapValueKind;
+    // When V is a named type, record whether it is the builtin `map` to disambiguate
+    // from struct names under LLVM opaque pointers.
+    int mapValueIsMap;
+    // Optional: when V is a struct type, keep its name for field/method resolution on refs from getRef().
+    const char* mapValueTypeName;
+    int mapValueTypeNameLength;
 
     // Optional: array metadata for `T[]` / `T[N]` variables/params.
     int isArray;

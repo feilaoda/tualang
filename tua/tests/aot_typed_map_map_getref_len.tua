@@ -1,0 +1,9 @@
+let m: map<string, map<string, int>> = {}
+
+// Insert a temporary map literal as value (runtime handle).
+m["a"] = { "k": 1 }
+
+let r = m.getRef("a").unwrap()
+assert(r.len() == 1)
+let v = m["a"]
+println(v.len())

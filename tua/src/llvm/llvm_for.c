@@ -30,6 +30,115 @@ static LLVMValueRef getOrCreateTuaPanic(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_panic", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaValueToInt(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_int");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_int", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToLong(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_long");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_long", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToDouble(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_double");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMDoubleTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_double", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToBool(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_bool");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_bool", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaValueToString(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_value_to_string");
+    if (existing) return existing;
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef params[1] = { vt };
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_value_to_string", fnType);
+}
+
+static LLVMValueRef decodeTuaValueToType(Compiler* compiler, LLVMValueRef tv, LLVMTypeRef targetTy, TypeKind targetKind,
+                                        int targetIsMap, int targetIsArray, const char* targetTypeName, int targetTypeNameLen) {
+    if (!compiler || !tv || !targetTy) return tv;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (LLVMTypeOf(tv) != vt) return tv;
+
+    // Scalars use runtime decoders.
+    if (targetKind == TYPE_STRING) {
+        LLVMValueRef fn = getOrCreateTuaValueToString(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        return LLVMBuildCall2(builder, fnType, fn, &tv, 1, "s");
+    }
+    if (targetKind == TYPE_BOOL) {
+        LLVMValueRef fn = getOrCreateTuaValueToBool(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef b32 = LLVMBuildCall2(builder, fnType, fn, &tv, 1, "b32");
+        return LLVMBuildTrunc(builder, b32, LLVMInt1TypeInContext(context), "b");
+    }
+    if (targetKind == TYPE_DOUBLE || targetKind == TYPE_FLOAT || targetKind == TYPE_F16 || targetKind == TYPE_BF16) {
+        LLVMValueRef fn = getOrCreateTuaValueToDouble(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef d = LLVMBuildCall2(builder, fnType, fn, &tv, 1, "d");
+        if (LLVMGetTypeKind(targetTy) == LLVMFloatTypeKind) return LLVMBuildFPTrunc(builder, d, targetTy, "f");
+        return d;
+    }
+    if (targetKind == TYPE_LONG || targetKind == TYPE_U64 || targetKind == TYPE_ISIZE || targetKind == TYPE_USIZE) {
+        LLVMValueRef fn = getOrCreateTuaValueToLong(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef i64 = LLVMBuildCall2(builder, fnType, fn, &tv, 1, "i64");
+        if (LLVMTypeOf(i64) != targetTy) return LLVMBuildTrunc(builder, i64, targetTy, "itr");
+        return i64;
+    }
+    if (targetKind == TYPE_INT || targetKind == TYPE_U32 || targetKind == TYPE_I16 || targetKind == TYPE_U16 ||
+        targetKind == TYPE_I8 || targetKind == TYPE_U8 || targetKind == TYPE_BYTE) {
+        LLVMValueRef fn = getOrCreateTuaValueToInt(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef i32 = LLVMBuildCall2(builder, fnType, fn, &tv, 1, "i32");
+        if (LLVMTypeOf(i32) != targetTy) return LLVMBuildTrunc(builder, i32, targetTy, "itr");
+        return i32;
+    }
+
+    // Handles (map/array) and boxed structs: payload bits -> pointer.
+    if (targetIsMap || targetIsArray || targetKind == TYPE_ARRAY || targetKind == TYPE_NAMED) {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        LLVMValueRef bits = LLVMBuildExtractValue(builder, tv, 1, "bits");
+        if (LLVMTypeOf(bits) != i64) bits = LLVMBuildIntCast2(builder, bits, i64, 0, "b64");
+        LLVMValueRef p8 = LLVMBuildIntToPtr(builder, bits, i8ptr, "p8");
+        LLVMTypeRef outPtrTy = LLVMPointerType(targetTy, 0);
+        if (LLVMGetTypeKind(targetTy) == LLVMStructTypeKind && targetKind == TYPE_NAMED && targetTypeName && targetTypeNameLen > 0) {
+            LLVMValueRef sp = LLVMBuildBitCast(builder, p8, outPtrTy, "sp");
+            return LLVMBuildLoad2(builder, targetTy, sp, "sv");
+        }
+        // map/array handles are pointer values; bitcast payload pointer into the handle type.
+        return LLVMBuildBitCast(builder, p8, targetTy, "hp");
+    }
+
+    return tv;
+}
+
 static char* tokenToHeapCString(Token tok) {
     char* s = malloc((size_t)tok.length + 1);
     memcpy(s, tok.start, (size_t)tok.length);
@@ -83,6 +192,9 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->mapValueType = NULL;
     variable->mapKeyKind = TYPE_ANY;
     variable->mapValueKind = TYPE_ANY;
+    variable->mapValueIsMap = 0;
+    variable->mapValueTypeName = NULL;
+    variable->mapValueTypeNameLength = 0;
     variable->isArray = 0;
     variable->arrayElemType = NULL;
     variable->arrayElemKind = TYPE_ANY;
@@ -374,9 +486,46 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
 
     if (rangeVar.isMap) {
         LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-        defineLoopValue(compiler, scope, stmt->loopVar, vt);
+        LLVMTypeRef keyTy = vt;
+        LLVMTypeRef valTy = vt;
+        TypeKind keyKind = TYPE_ANY;
+        TypeKind valKind = TYPE_ANY;
+        int valIsMap = 0;
+        int valIsArray = 0;
+        const char* valTypeName = NULL;
+        int valTypeNameLen = 0;
+
+        if (rangeVar.isTypedMap && rangeVar.mapKeyType && rangeVar.mapValueType) {
+            keyTy = rangeVar.mapKeyType;
+            valTy = rangeVar.mapValueType;
+            keyKind = rangeVar.mapKeyKind;
+            valKind = rangeVar.mapValueKind;
+            valIsMap = rangeVar.mapValueIsMap ? 1 : 0;
+            valIsArray = (valKind == TYPE_ARRAY) ? 1 : 0;
+            valTypeName = rangeVar.mapValueTypeName;
+            valTypeNameLen = rangeVar.mapValueTypeNameLength;
+        }
+
+        VariableRef* loopV = NULL;
+        VariableRef* loopValV = NULL;
         if (stmt->hasValueVar) {
-            defineLoopValue(compiler, scope, stmt->valueVar, vt);
+            loopV = defineLoopValue(compiler, scope, stmt->loopVar, keyTy);
+            loopValV = defineLoopValue(compiler, scope, stmt->valueVar, valTy);
+        } else {
+            loopV = defineLoopValue(compiler, scope, stmt->loopVar, valTy);
+        }
+
+        if (loopV) {
+            loopV->typeKind = stmt->hasValueVar ? keyKind : valKind;
+        }
+        if (loopValV) {
+            loopValV->typeKind = valKind;
+            if (valIsMap) loopValV->isMap = 1;
+            if (valIsArray) loopValV->isArray = 1;
+            if (valKind == TYPE_NAMED && !valIsMap && valTypeName && valTypeNameLen > 0) {
+                loopValV->typeName = valTypeName;
+                loopValV->typeNameLength = valTypeNameLen;
+            }
         }
 
         LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
@@ -407,14 +556,21 @@ void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {
         // - for value in map: bind loopVar to value
         // - for key,value in map: bind loopVar=key, valueVar=value
         if (stmt->hasValueVar) {
-            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, k, vt) ||
-                !storeLoopVarValue(compiler, scope, stmt->valueVar, v, vt)) {
+            LLVMValueRef kb = (rangeVar.isTypedMap && rangeVar.mapKeyType) ? decodeTuaValueToType(compiler, k, keyTy, keyKind, 0, 0, NULL, 0) : k;
+            LLVMValueRef vb = (rangeVar.isTypedMap && rangeVar.mapValueType)
+                                  ? decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen)
+                                  : v;
+            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, kb, keyTy) ||
+                !storeLoopVarValue(compiler, scope, stmt->valueVar, vb, valTy)) {
                 error("Failed to bind for-in loop vars\n");
                 compiler->current = saved;
                 return;
             }
         } else {
-            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, v, vt)) {
+            LLVMValueRef vb = (rangeVar.isTypedMap && rangeVar.mapValueType)
+                                  ? decodeTuaValueToType(compiler, v, valTy, valKind, valIsMap, valIsArray, valTypeName, valTypeNameLen)
+                                  : v;
+            if (!storeLoopVarValue(compiler, scope, stmt->loopVar, vb, valTy)) {
                 error("Failed to bind for-in loop var\n");
                 compiler->current = saved;
                 return;

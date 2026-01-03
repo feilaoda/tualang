@@ -8,3 +8,27 @@ for k,v in m {
 
 assert(sum == 7)
 
+struct S {
+    a: int
+    b: int
+}
+let m2: map<string,S> = { "a": S{a:1,b:2}, "b": S{a:3,b:4} }
+
+sum = 0
+for k2,v2 in m2 {
+    const s: S = v2
+    v2.b = s.b + 1
+    println(s.b)
+    println(v2.b)
+    
+}
+println("==")
+for k2,v2 in m2 {
+    const s: S = v2
+     println(k2)
+     println(s.a)
+     println(s.b)
+    sum = sum + s.a + s.b
+}
+println(sum)
+assert(sum == 10)
