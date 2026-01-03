@@ -1,0 +1,14 @@
+trait HasId { fn id() -> int }
+
+struct Base { id: int }
+impl Base { fn id() -> int { return id } }
+
+struct Girl { ...Base }
+impl HasId for Girl {}
+
+let users:map<string, HasId> = {}
+users["girl"] = Girl{ base: Base{ id: 1 } }
+
+let g = users.getRef("girl").unwrap()
+assert(g.id() == 1)
+

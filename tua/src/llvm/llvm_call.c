@@ -2515,10 +2515,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // If receiver resolves to a local and has a struct type, treat as instance method call.
         VariableRef recvVar = findVariableExpr(compiler, get->object);
 
-        // Ref.get(): load through a reference variable (replaces `*r` syntax).
-        if (recvVar.value && recvVar.pointeeType && tokenEquals(&get->name, "get")) {
-            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
-            if (got != 0) {
+	        // Ref.get(): load through a reference variable (replaces `*r` syntax).
+	        if (recvVar.value && recvVar.pointeeType && tokenEquals(&get->name, "get")) {
+	            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+	            if (got != 0) {
                 compilerErrorAt(compiler, get->name.line, "Ref.get expects 0 arguments");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return NULL;
@@ -2536,13 +2536,111 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 refPtr = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "refp");
             }
             LLVMValueRef out = LLVMBuildLoad2(compiler->builder, recvVar.pointeeType, refPtr, "rget");
-            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-            return out;
-        }
+	            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	            return out;
+	        }
 
-        // Built-in methods on `Ref<map>` / `Ref<T[]>`:
-        // When receiver is a reference to a map/array handle, load the handle and call the same runtime APIs.
-        if (recvVar.value && recvVar.pointeeType == compilerGetMapType(compiler)) {
+	        // Trait object method call (dynamic dispatch) through a reference:
+	        // `r: Ref<Trait>` allows `r.m(...)` without extracting an owned trait object value.
+	        if (recvVar.value && recvVar.pointeeType) {
+	            TraitInfo* trait = findTraitByObjType(compiler, recvVar.pointeeType);
+	            if (trait) {
+	                int midx = traitMethodIndex(trait, &get->name);
+	                if (midx < 0) {
+	                    compilerErrorAtToken(
+	                        compiler,
+	                        &get->name,
+	                        "method '%.*s' is not in trait '%.*s'",
+	                        get->name.length,
+	                        get->name.start,
+	                        trait->nameLength,
+	                        trait->name
+	                    );
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+	                TraitMethodDecl* m = traitMethodDeclAt(trait, midx);
+	                if (!m) {
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+
+	                LLVMValueRef objPtr = loadLocalValue(compiler, recvVar); // Trait__obj*
+	                if (!objPtr) {
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+	                LLVMValueRef obj = LLVMBuildLoad2(compiler->builder, recvVar.pointeeType, objPtr, "to_ref");
+	                LLVMTypeRef objTy = LLVMTypeOf(obj);
+	                if (LLVMGetTypeKind(objTy) != LLVMStructTypeKind || LLVMCountStructElementTypes(objTy) != 2) {
+	                    compilerErrorAtToken(compiler, &get->name, "invalid trait object representation");
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+
+	                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+	                LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, obj, 0, "to_data");
+	                LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, obj, 1, "to_vt");
+
+	                LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, trait);
+	                LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "vtptr");
+	                LLVMValueRef slotPtr = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, (unsigned)(1 + midx), "vt_m_p");
+	                LLVMValueRef fnRaw = LLVMBuildLoad2(compiler->builder, i8ptr, slotPtr, "vt_m");
+
+	                int argc = m->params ? m->params->length : 0;
+	                unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+	                if (got != (unsigned)argc) {
+	                    compilerErrorAtToken(
+	                        compiler,
+	                        &get->name,
+	                        "argument count mismatch for call '%.*s': expected %d, got %u",
+	                        get->name.length,
+	                        get->name.start,
+	                        argc,
+	                        got
+	                    );
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+
+	                LLVMTypeRef retTy = llvmReturnTypeForTraitMethod(compiler, m);
+	                LLVMTypeRef* pts = malloc(sizeof(LLVMTypeRef) * (size_t)(1 + argc));
+	                pts[0] = i8ptr;
+	                for (int i = 0; i < argc; i++) {
+	                    Parameter* p = (Parameter*)listGet(m->params, i);
+	                    pts[1 + i] = llvmParamTypeForTraitMethod(compiler, p);
+	                }
+	                LLVMTypeRef fnTy = LLVMFunctionType(retTy, pts, (unsigned)(1 + argc), 0);
+
+	                LLVMValueRef fn = LLVMBuildBitCast(compiler->builder, fnRaw, LLVMPointerType(fnTy, 0), "vt_fn");
+
+	                LLVMValueRef* args = malloc(sizeof(LLVMValueRef) * (size_t)(1 + argc));
+	                args[0] = data;
+	                for (int i = 0; i < argc; i++) {
+	                    Expr* argAst = (Expr*)listGet(expr->arguments, i);
+	                    LLVMValueRef av = compileCallArgForParam(compiler, argAst, pts[1 + i]);
+	                    if (!av) {
+	                        free(pts);
+	                        free(args);
+	                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                        return NULL;
+	                    }
+	                    args[1 + i] = av;
+	                }
+	                free(pts);
+
+	                LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnTy, fn, args, (unsigned)(1 + argc), callInstNameForFnType(fnTy));
+	                free(args);
+	                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retTy);
+	                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                return out;
+	            }
+	        }
+
+	        // Built-in methods on `Ref<map>` / `Ref<T[]>`:
+	        // When receiver is a reference to a map/array handle, load the handle and call the same runtime APIs.
+	        if (recvVar.value && recvVar.pointeeType == compilerGetMapType(compiler)) {
             LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef refPtr = loadLocalValue(compiler, recvVar); // tua_map**
             if (!refPtr) {

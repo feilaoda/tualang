@@ -784,12 +784,12 @@ static Expr* parsePrimaryExpr(Parser* parser) {
             // Parse first expression, then decide map vs array based on ':'.
             // This avoids committing early for cases like `{1 + 2}`.
             Expr* first = parseExpression(parser);
-            if (match(parser, TOKEN_COLON)) {
-                // Map literal.
-                if (!first || first->type != EXPR_LITERAL) {
-                    printError(parser, "Map key must be a constant literal (int/long/string)");
-                    return NULL;
-                }
+	            if (match(parser, TOKEN_COLON)) {
+	                // Map literal.
+	                if (!first || first->type != EXPR_LITERAL) {
+	                    printError(parser, "Map key must be a constant literal (int/long/string)");
+	                    return NULL;
+	                }
                 LiteralExpr* lit = (LiteralExpr*)first;
                 Token keyTok = lit->value;
                 if (!(keyTok.type == TOKEN_INT || keyTok.type == TOKEN_LONG || keyTok.type == TOKEN_STRING_LITERAL)) {
@@ -804,11 +804,11 @@ static Expr* parsePrimaryExpr(Parser* parser) {
                 e->value = value;
                 listAppend(entries, e);
 
-                while (match(parser, TOKEN_COMMA)) {
-                    while (match(parser, TOKEN_SEMICOLON)) {}
-                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
+	                while (match(parser, TOKEN_COMMA)) {
+	                    while (match(parser, TOKEN_SEMICOLON)) {}
+	                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
 
-                    Token key = (Token){0};
+	                    Token key = (Token){0};
                     if (match(parser, TOKEN_INT) || match(parser, TOKEN_LONG) || match(parser, TOKEN_STRING_LITERAL)) {
                         key = parser->previous;
                     } else {
@@ -819,26 +819,28 @@ static Expr* parsePrimaryExpr(Parser* parser) {
                     Expr* v = parseExpression(parser);
                     MapEntry* me = malloc(sizeof(MapEntry));
                     me->key = key;
-                    me->value = v;
-                    listAppend(entries, me);
-                }
-                consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
-                expr = newMapLiteralExpr(lbrace, entries);
-            } else {
-                // Array literal.
-                List* elements = listNew();
-                listAppend(elements, first);
-                while (match(parser, TOKEN_COMMA)) {
-                    while (match(parser, TOKEN_SEMICOLON)) {}
-                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
-                    Expr* e = parseExpression(parser);
-                    listAppend(elements, e);
-                }
-                consume(parser, TOKEN_RBRACE, "Expect '}' after array literal");
-                expr = newArrayLiteralExpr(lbrace, elements);
-            }
-        }
-    } else if (match(parser, TOKEN_LBRACKET)) {
+	                    me->value = v;
+	                    listAppend(entries, me);
+	                }
+	                while (match(parser, TOKEN_SEMICOLON)) {}
+	                consume(parser, TOKEN_RBRACE, "Expect '}' after map literal");
+	                expr = newMapLiteralExpr(lbrace, entries);
+	            } else {
+	                // Array literal.
+	                List* elements = listNew();
+	                listAppend(elements, first);
+	                while (match(parser, TOKEN_COMMA)) {
+	                    while (match(parser, TOKEN_SEMICOLON)) {}
+	                    if (check(parser, TOKEN_RBRACE)) break; // allow trailing comma
+	                    Expr* e = parseExpression(parser);
+	                    listAppend(elements, e);
+	                }
+	                while (match(parser, TOKEN_SEMICOLON)) {}
+	                consume(parser, TOKEN_RBRACE, "Expect '}' after array literal");
+	                expr = newArrayLiteralExpr(lbrace, elements);
+	            }
+	        }
+	    } else if (match(parser, TOKEN_LBRACKET)) {
         // Array literal: [] or [e1, e2, ...]
         Token lbracket = parser->previous;
         List* elements = listNew();

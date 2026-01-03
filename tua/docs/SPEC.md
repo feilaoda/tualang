@@ -312,7 +312,7 @@
     - 否则回退到固有/提升方法解析（调用 `ConcreteType__m` 或 promoted method）
   - 约束：在 `T: Trait` 上调用的方法必须在 `Trait` 中声明，否则为编译错误
 - v2 动态分发（Implemented，第一版；无 `dyn` 关键字）：
-  - `TraitName` 在类型位置表示 trait object（接口值）：一个 fat pointer `{ data: ptr, vtable: ptr }`
+- `TraitName` 在类型位置表示 trait object（接口值）：一个 fat pointer `{ data: ptr, vtable: ptr }`
   - vtable 布局（冻结 ABI，第一版）：`{ drop(i8*), m0(i8*, ...), m1(i8*, ...), ... }`（方法顺序按 trait 声明顺序）
   - 对 `let x: TraitName = S{...}`：
     - 要求存在 `impl TraitName for S {}`
@@ -324,6 +324,7 @@
 - 自动“静态优先 / 动态降级”（Implemented，第一版）：
   - 若存在 `fn f(x: TraitName) { ... }`，编译器会额外注册一个等价的合成泛型模板 `fn f<T0: TraitName>(x: T0) { ... }`
   - 调用 `f(S{...})` 时若可推断出具体类型，则优先走静态单态化；当参数实参本身是 trait object（或无法推断）时回退到动态版本
+  - `Ref<TraitName>`（例如来自 `map.getRef()`）支持直接调用 trait 方法：`r.m()` 等价于对 `r.get()` 得到的 `{data,vtable}` 做一次 vtable 分发（实现上为编译期重写）
 - 当前限制（Planned）：
   - trait 泛型（`trait Trait<T>`）、多重 bound、默认方法、`dyn` 显式关键字与 object-safety 规则仍待完善
 
@@ -431,11 +432,14 @@
     - `V` 允许：
       - 标量（Copy）：`int/long/double/bool/string`
       - 复合/引用型（move-only）：`struct`、`map`、数组 `T[]/T[N]`（以及它们的嵌套组合）
+      - trait object（move-only）：`TraitName`（见 7.2，运行时为 `{data,vtable}`）
 - 字面量（Status: Implemented）：
   - 语法：`{ key: value, ... }`
   - `key` 仅允许常量字面量：`int/long/string`
   - 重复 key：后者覆盖前者
   - 允许尾逗号：`{ "a": 1, }`
+  - 当 `V` 为 trait object（`map<K, TraitName>`）时：
+    - 允许写入具体 `struct` 值（例如 `Girl{...}`），前提是存在 `impl TraitName for Girl {}`；编译期会把 `Girl` box 成 owning trait object 再存入 map
 - 读取（Status: Implemented）：
   - 对 `map`（无类型参数）：`m[k] -> Option<any>`（即 `Option<tua_value>`）
   - 对 `map<K,V>`：
@@ -448,6 +452,7 @@
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
   - 对 `map<K,V>`：写入时会做静态检查（key/value 类型不匹配会编译错误；禁止写入 `null`）
+  - 当 `V` 为 trait object（`TraitName`）时：允许写入具体 `struct` 值并自动 box（同上）
 - 内建方法（Status: Implemented）：
   - `m.len() -> int`
   - `m.hasKey(k) -> bool`
@@ -463,6 +468,7 @@
     - 对 `map`（无类型参数）：返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）
     - 对 `map<K,V>`：
       - 当 `V` 为 move-only（`struct/map/array`）时：返回 `Option<Ref<V>>`（可用于字段写/调用容器方法）
+      - 当 `V` 为 trait object（`TraitName`）时：返回 `Option<Ref<TraitName>>`，允许在 `Ref` 上直接调用 trait 方法（零拷贝分发）
       - 当 `V` 为标量（Copy）时：`getRef/getRefWrite` 暂不支持（第一版），请用 `get(k)` / `m[k]`
   - 用法（Status: Implemented）：
     - `let p = m.getRef("k").unwrap(); let v = p.get()`（读 `tua_value`）

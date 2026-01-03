@@ -2055,6 +2055,92 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
     if (returnValue == NULL) {
         returnValue = LLVMConstNull(returnType);
     }
+
+    // Trait object return: if the function return type is a trait object (`Trait__obj`) and the
+    // return expression produced a concrete struct value, box it and return an owning interface value.
+    if (compiler && returnValue && returnType) {
+        TraitInfo* retTrait = NULL;
+        if (compiler->traits) {
+            for (ListNode* n = compiler->traits->head; n != NULL; n = n->next) {
+                TraitInfo* ti = (TraitInfo*)n->data;
+                if (!ti) continue;
+                LLVMTypeRef objTy = compilerGetTraitObjType(compiler, ti);
+                if (objTy && objTy == returnType) {
+                    retTrait = ti;
+                    break;
+                }
+            }
+        }
+        if (retTrait) {
+            LLVMTypeRef objTy = compilerGetTraitObjType(compiler, retTrait);
+            if (objTy && LLVMTypeOf(returnValue) != objTy) {
+                LLVMTypeRef concreteTy = LLVMTypeOf(returnValue);
+                if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+                    compilerErrorAt(compiler, stmt ? stmt->keyword.line : 0, "trait object return requires a struct value");
+                    return;
+                }
+                const char* structName = LLVMGetStructName(concreteTy);
+                int structLen = structName ? (int)strlen(structName) : 0;
+                if (!structName || structLen <= 0) {
+                    compilerErrorAt(compiler, stmt ? stmt->keyword.line : 0, "trait object return requires a named struct type");
+                    return;
+                }
+
+                // vtable global name: `__VT__<Trait>__<Struct>`
+                const char* prefix = "__VT__";
+                const int prefixLen = 5;
+                const int sepLen = 2;
+                int gLen = prefixLen + retTrait->nameLength + sepLen + structLen;
+                char* gname = malloc((size_t)gLen + 1);
+                memcpy(gname, prefix, (size_t)prefixLen);
+                memcpy(gname + prefixLen, retTrait->name, (size_t)retTrait->nameLength);
+                memcpy(gname + prefixLen + retTrait->nameLength, "__", (size_t)sepLen);
+                memcpy(gname + prefixLen + retTrait->nameLength + sepLen, structName, (size_t)structLen);
+                gname[gLen] = '\0';
+
+                LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, gname);
+                free(gname);
+                if (!vt) {
+                    compilerErrorAt(
+                        compiler,
+                        stmt ? stmt->keyword.line : 0,
+                        "missing trait impl for trait object return"
+                    );
+                    return;
+                }
+
+                // Declare malloc if needed.
+                LLVMValueRef mallocFn = LLVMGetNamedFunction(compiler->module, "malloc");
+                if (!mallocFn) {
+                    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    LLVMTypeRef mt = LLVMFunctionType(i8ptr, &i64, 1, 0);
+                    mallocFn = LLVMAddFunction(compiler->module, "malloc", mt);
+                }
+
+                LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+                LLVMValueRef raw = LLVMBuildCall2(
+                    compiler->builder,
+                    LLVMGlobalGetValueType(mallocFn),
+                    mallocFn,
+                    &sizeV,
+                    1,
+                    "malloc"
+                );
+                LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+                LLVMBuildStore(compiler->builder, returnValue, cell);
+
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                LLVMValueRef dataI8 = LLVMBuildBitCast(compiler->builder, cell, i8ptr, "data");
+                LLVMValueRef vtI8 = LLVMBuildBitCast(compiler->builder, vt, i8ptr, "vt");
+                LLVMValueRef obj = LLVMGetUndef(objTy);
+                obj = LLVMBuildInsertValue(compiler->builder, obj, dataI8, 0, "o0");
+                obj = LLVMBuildInsertValue(compiler->builder, obj, vtI8, 1, "o1");
+                returnValue = obj;
+            }
+        }
+    }
+
     returnValue = castValueToType(compiler, returnValue, returnType);
     emitDropForCurrentFunctionScopes(compiler);
     LLVMBuildRet(builder, returnValue);

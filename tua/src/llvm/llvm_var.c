@@ -920,8 +920,18 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         Type* kAst = (Type*)stmt->type->typeArgs->head->data;
         Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
         int okKey = kAst && (kAst->kind == TYPE_STRING || kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG);
-        int okVal = vAst && (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
-                             vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL);
+        int okVal = 0;
+        if (vAst) {
+            if (vAst->kind == TYPE_STRING || vAst->kind == TYPE_INT || vAst->kind == TYPE_LONG ||
+                vAst->kind == TYPE_FLOAT || vAst->kind == TYPE_DOUBLE || vAst->kind == TYPE_BOOL) {
+                okVal = 1;
+            } else if (vAst->kind == TYPE_ARRAY) {
+                okVal = 1;
+            } else if (vAst->kind == TYPE_NAMED) {
+                // Named: struct / trait object / map / Option / etc (checked later during codegen as needed).
+                okVal = 1;
+            }
+        }
         if (okKey && okVal) {
             hasAnnotatedTypedMap = 1;
             annotatedKeyTy = toLLVMType(compiler, kAst);

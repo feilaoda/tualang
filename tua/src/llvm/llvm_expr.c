@@ -637,6 +637,17 @@ static int typedMapKeyCompatible(Compiler* compiler, LLVMTypeRef expectedKeyTy, 
     return LLVMGetTypeKind(actualTy) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(actualTy) != 1;
 }
 
+static TraitInfo* findTraitByObjType(Compiler* compiler, LLVMTypeRef t) {
+    if (!compiler || !compiler->traits || !t) return NULL;
+    for (ListNode* n = compiler->traits->head; n != NULL; n = n->next) {
+        TraitInfo* ti = (TraitInfo*)n->data;
+        if (!ti) continue;
+        if (!ti->objType) continue;
+        if (ti->objType == t) return ti;
+    }
+    return NULL;
+}
+
 static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy, LLVMValueRef rawVal) {
     if (!compiler || !expectedValTy || !rawVal) return 0;
     LLVMTypeRef actualTy = LLVMTypeOf(rawVal);
@@ -658,6 +669,11 @@ static int typedMapValueCompatible(Compiler* compiler, LLVMTypeRef expectedValTy
         return isNumericLLVMType(actualTy);
     }
     if (LLVMGetTypeKind(expectedValTy) == LLVMStructTypeKind) {
+        // Trait objects are named structs `{ i8* data, i8* vtable }`. Allow concrete struct values
+        // here and let the caller perform the concrete->trait conversion (boxing + vtable).
+        if (findTraitByObjType(compiler, expectedValTy)) {
+            return LLVMGetTypeKind(actualTy) == LLVMStructTypeKind;
+        }
         return LLVMGetTypeKind(actualTy) == LLVMStructTypeKind && actualTy == expectedValTy;
     }
     if (LLVMGetTypeKind(expectedValTy) == LLVMPointerTypeKind) {
@@ -2025,25 +2041,70 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
             }
         }
 
-        LLVMValueRef rawValue = compileExpr(compiler, e->value);
-        if (!rawValue) return NULL;
-        if (expectedValTy) {
-            if (!typedMapValueCompatible(compiler, expectedValTy, rawValue)) {
-                compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map value type mismatch");
-                return NULL;
-            }
-            TypeKind srcVK = e->value ? e->value->inferredType : TYPE_ANY;
-            TypeKind dstVK = compiler->expectedMapValueKind;
-            LLVMValueRef cv = NULL;
-            if (dstVK != TYPE_ANY &&
-                (typeKindIsInt(dstVK) || typeKindIsFloat(dstVK) || typeKindIsFp8(dstVK)) &&
-                (typeKindIsInt(srcVK) || typeKindIsFloat(srcVK) || typeKindIsFp8(srcVK))) {
-                cv = castNumericToKind(compiler, rawValue, srcVK, dstVK);
-            }
-            rawValue = cv ? cv : castToType(compiler, rawValue, expectedValTy);
-        }
-        LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
-        if (!v) return NULL;
+	        LLVMValueRef rawValue = compileExpr(compiler, e->value);
+	        if (!rawValue) return NULL;
+	        if (expectedValTy) {
+	            if (!typedMapValueCompatible(compiler, expectedValTy, rawValue)) {
+	                compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map value type mismatch");
+	                return NULL;
+	            }
+	            TypeKind srcVK = e->value ? e->value->inferredType : TYPE_ANY;
+	            TypeKind dstVK = compiler->expectedMapValueKind;
+	            LLVMValueRef cv = NULL;
+	            if (dstVK != TYPE_ANY &&
+	                (typeKindIsInt(dstVK) || typeKindIsFloat(dstVK) || typeKindIsFp8(dstVK)) &&
+	                (typeKindIsInt(srcVK) || typeKindIsFloat(srcVK) || typeKindIsFp8(srcVK))) {
+	                cv = castNumericToKind(compiler, rawValue, srcVK, dstVK);
+	            }
+	            rawValue = cv ? cv : rawValue;
+
+	            // Typed map value is a trait object: allow `V = ConcreteStruct` and box it into an owning trait object.
+	            TraitInfo* trait = findTraitByObjType(compiler, expectedValTy);
+	            if (trait && LLVMTypeOf(rawValue) != expectedValTy) {
+	                LLVMTypeRef concreteTy = LLVMTypeOf(rawValue);
+	                if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+	                    compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map trait value must be a struct");
+	                    return NULL;
+	                }
+	                const char* structName = LLVMGetStructName(concreteTy);
+	                if (!structName) {
+	                    compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map trait value must be a named struct");
+	                    return NULL;
+	                }
+	                int structLen = (int)strlen(structName);
+	                char* vtName = malloc((size_t)(5 + trait->nameLength + 2 + structLen) + 1);
+	                memcpy(vtName, "__VT__", 5);
+	                memcpy(vtName + 5, trait->name, (size_t)trait->nameLength);
+	                memcpy(vtName + 5 + trait->nameLength, "__", 2);
+	                memcpy(vtName + 5 + trait->nameLength + 2, structName, (size_t)structLen);
+	                vtName[5 + trait->nameLength + 2 + structLen] = '\0';
+	                LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, vtName);
+	                free(vtName);
+	                if (!vt) {
+	                    compilerErrorAt(compiler, e->value ? e->value->token.line : e->key.line, "typed map trait value requires an impl");
+	                    return NULL;
+	                }
+
+	                LLVMTypeRef i8ptr2 = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+	                LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+	                LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+	                LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+	                LLVMValueRef cell = LLVMBuildBitCast(builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+	                LLVMBuildStore(builder, rawValue, cell);
+	                LLVMValueRef dataI8 = LLVMBuildBitCast(builder, cell, i8ptr2, "data");
+	                LLVMValueRef vtI8 = LLVMBuildBitCast(builder, vt, i8ptr2, "vt");
+
+	                LLVMTypeRef objTy = expectedValTy;
+	                LLVMValueRef obj = LLVMGetUndef(objTy);
+	                obj = LLVMBuildInsertValue(builder, obj, dataI8, 0, "o0");
+	                obj = LLVMBuildInsertValue(builder, obj, vtI8, 1, "o1");
+	                rawValue = obj;
+	            } else {
+	                rawValue = castToType(compiler, rawValue, expectedValTy);
+	            }
+	        }
+	        LLVMValueRef v = tuaValueFromValue(compiler, rawValue);
+	        if (!v) return NULL;
 
         LLVMValueRef args[3] = { mapVal, key, v };
         LLVMBuildCall2(builder, setType, setFn, args, 3, "");
@@ -2691,7 +2752,50 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
                             "typed map value type mismatch");
             return NULL;
         }
-        rawValue = castToType(compiler, rawValue, expectedValTy);
+        // Typed map value is a trait object: allow `V = ConcreteStruct` and box it into an owning trait object.
+        TraitInfo* trait = findTraitByObjType(compiler, expectedValTy);
+        if (trait && LLVMTypeOf(rawValue) != expectedValTy) {
+            LLVMTypeRef concreteTy = LLVMTypeOf(rawValue);
+            if (LLVMGetTypeKind(concreteTy) != LLVMStructTypeKind) {
+                compilerErrorAt(compiler, expr->value ? expr->value->token.line : expr->base.token.line, "typed map trait value must be a struct");
+                return NULL;
+            }
+            const char* structName = LLVMGetStructName(concreteTy);
+            if (!structName) {
+                compilerErrorAt(compiler, expr->value ? expr->value->token.line : expr->base.token.line, "typed map trait value must be a named struct");
+                return NULL;
+            }
+            int structLen = (int)strlen(structName);
+            char* vtName = malloc((size_t)(5 + trait->nameLength + 2 + structLen) + 1);
+            memcpy(vtName, "__VT__", 5);
+            memcpy(vtName + 5, trait->name, (size_t)trait->nameLength);
+            memcpy(vtName + 5 + trait->nameLength, "__", 2);
+            memcpy(vtName + 5 + trait->nameLength + 2, structName, (size_t)structLen);
+            vtName[5 + trait->nameLength + 2 + structLen] = '\0';
+            LLVMValueRef vt = LLVMGetNamedGlobal(compiler->module, vtName);
+            free(vtName);
+            if (!vt) {
+                compilerErrorAt(compiler, expr->value ? expr->value->token.line : expr->base.token.line, "typed map trait value requires an impl");
+                return NULL;
+            }
+
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(concreteTy);
+            LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+            LLVMValueRef cell = LLVMBuildBitCast(builder, raw, LLVMPointerType(concreteTy, 0), "cell");
+            LLVMBuildStore(builder, rawValue, cell);
+            LLVMValueRef dataI8 = LLVMBuildBitCast(builder, cell, i8ptr, "data");
+            LLVMValueRef vtI8 = LLVMBuildBitCast(builder, vt, i8ptr, "vt");
+
+            LLVMTypeRef objTy = expectedValTy;
+            LLVMValueRef obj = LLVMGetUndef(objTy);
+            obj = LLVMBuildInsertValue(builder, obj, dataI8, 0, "o0");
+            obj = LLVMBuildInsertValue(builder, obj, vtI8, 1, "o1");
+            rawValue = obj;
+        } else {
+            rawValue = castToType(compiler, rawValue, expectedValTy);
+        }
     }
 
     TypeKind keyK = expr->index ? expr->index->inferredType : TYPE_ANY;
