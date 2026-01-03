@@ -641,6 +641,17 @@ Type* compilerResolveGenericType(Compiler* compiler, Type* type) {
     return type;
 }
 
+GenericSubst* compilerFindGenericSubst(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler || !compiler->genericSubsts || !name || nameLen <= 0) return NULL;
+    for (ListNode* n = compiler->genericSubsts->head; n != NULL; n = n->next) {
+        GenericSubst* s = (GenericSubst*)n->data;
+        if (!s || !s->name || s->nameLen <= 0) continue;
+        if (s->nameLen != nameLen) continue;
+        if (memcmp(s->name, name, (size_t)nameLen) == 0) return s;
+    }
+    return NULL;
+}
+
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
     if (type == NULL) {
         return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
@@ -1032,9 +1043,28 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
         Type* ca = (Type*)listGet(canon, i);
         if (!tp || !ca) continue;
         GenericSubst* s = malloc(sizeof(GenericSubst));
+        memset(s, 0, sizeof(*s));
         s->name = tp->name.start;
         s->nameLen = tp->name.length;
         s->type = ca;
+        s->boundTraitName = NULL;
+        s->boundTraitNameLen = 0;
+        if (tp->hasBound) {
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &tp->boundTrait);
+            if (!ti) {
+                const Token* tok = callSite ? callSite : &tmpl->decl->name;
+                compilerErrorAtToken(
+                    compiler,
+                    tok,
+                    "unknown trait in generic bound: %.*s",
+                    tp->boundTrait.length,
+                    tp->boundTrait.start
+                );
+            } else {
+                s->boundTraitName = ti->name;
+                s->boundTraitNameLen = ti->nameLength;
+            }
+        }
         listAppend(compiler->genericSubsts, s);
     }
 
@@ -1056,19 +1086,10 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
             continue;
         }
 
-        // Resolve/qualify bound trait name in the template's module scope.
-        const char* traitQ = NULL;
-        int traitQL = 0;
-        SymbolAlias* a = compilerFindAlias(compiler, tp->boundTrait.start, tp->boundTrait.length);
-        if (a && a->kind == ALIAS_TRAIT) {
-            traitQ = a->qualified;
-            traitQL = a->qualifiedLen;
-        } else if (compiler->currentModulePrefix) {
-            traitQ = compilerQualifyToken(compiler, &tp->boundTrait, &traitQL);
-        } else {
-            traitQ = tp->boundTrait.start;
-            traitQL = tp->boundTrait.length;
-        }
+        GenericSubst* s = compilerFindGenericSubst(compiler, tp->name.start, tp->name.length);
+        const char* traitQ = s ? s->boundTraitName : NULL;
+        int traitQL = s ? s->boundTraitNameLen : 0;
+        if (!traitQ || traitQL <= 0) continue;
 
         // Canonicalized type args use qualified names where possible.
         const char* targetQ = ca->name.start;
@@ -1085,11 +1106,6 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
                 traitQL, traitQ,
                 targetQL, targetQ
             );
-        }
-
-        // Only free if we allocated via compilerQualifyToken.
-        if (traitQ && compiler->currentModulePrefix && !(a && a->kind == ALIAS_TRAIT)) {
-            free((char*)traitQ);
         }
     }
 
@@ -2274,6 +2290,15 @@ static int traitMethodMatchesFunc(Compiler* compiler, TraitMethodDecl* req, Func
     return returnTypesEquals(compiler, req->returnTypes, impl->returnTypes);
 }
 
+static TraitMethodDecl* traitFindMethodDeclByName(TraitInfo* trait, const Token* name) {
+    if (!trait || !trait->decl || !name) return NULL;
+    for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next) {
+        TraitMethodDecl* req = (TraitMethodDecl*)mn->data;
+        if (req && tokenEqualsTokenRaw(&req->name, name)) return req;
+    }
+    return NULL;
+}
+
 void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
     if (!compiler || !stmt) return;
 
@@ -2289,14 +2314,125 @@ void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
         return;
     }
 
-    // Inline methods inside `impl Trait for Struct { ... }` are treated as normal struct methods.
+    // Ensure the impl pair is recorded for generic bounds checks (prepass should do this too).
+    compilerRecordTraitImplPair(compiler, trait->name, trait->nameLength, target->name, target->nameLength);
+
+    // Compile inline methods inside `impl Trait for Struct { ... }` as trait-namespaced methods:
+    // `<Struct>__<Trait>__<method>`. They do NOT participate in the struct's inherent method set.
     if (stmt->methods && stmt->methods->length > 0) {
-        ImplStmt tmp;
-        memset(&tmp, 0, sizeof(tmp));
-        tmp.base.type = STMT_IMPL;
-        tmp.name = stmt->targetName;
-        tmp.methods = stmt->methods;
-        compileImplStmt(compiler, &tmp);
+        Token structTok = stmt->targetName;
+        structTok.start = target->name;
+        structTok.length = target->nameLength;
+        Token traitTok = stmt->traitName;
+        traitTok.start = trait->name;
+        traitTok.length = trait->nameLength;
+
+        // Reject duplicates inside the same trait impl block.
+        for (int i = 0; i < stmt->methods->length; i++) {
+            FuncStmt* m = (FuncStmt*)listGet(stmt->methods, i);
+            if (!m) continue;
+            for (int j = i + 1; j < stmt->methods->length; j++) {
+                FuncStmt* n = (FuncStmt*)listGet(stmt->methods, j);
+                if (!n) continue;
+                if (tokenEqualsTokenRaw(&m->name, &n->name)) {
+                    compilerErrorAtToken(compiler, &n->name, "duplicate trait impl method: %.*s", n->name.length, n->name.start);
+                    break;
+                }
+            }
+        }
+
+        for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
+            FuncStmt* method = (FuncStmt*)node->data;
+            if (!method) continue;
+
+            TraitMethodDecl* req = traitFindMethodDeclByName(trait, &method->name);
+            if (!req) {
+                compilerErrorAtToken(
+                    compiler,
+                    &method->name,
+                    "unknown trait method '%.*s' in `impl %.*s for %.*s`",
+                    method->name.length, method->name.start,
+                    stmt->traitName.length, stmt->traitName.start,
+                    stmt->targetName.length, stmt->targetName.start
+                );
+                continue;
+            }
+            if (!traitMethodMatchesFunc(compiler, req, method)) {
+                compilerErrorAtToken(
+                    compiler,
+                    &method->name,
+                    "trait impl signature mismatch for '%.*s.%.*s'",
+                    stmt->traitName.length, stmt->traitName.start,
+                    method->name.length, method->name.start
+                );
+                continue;
+            }
+
+            int stLen = 0;
+            char* st = mangleTwo(&structTok, &traitTok, "__", &stLen);
+            Token stTok = (Token){TOKEN_IDENTIFIER, st, stLen, method->name.line, method->name.col, 0};
+
+            int mangledLen = 0;
+            char* mangled = mangleTwo(&stTok, &method->name, "__", &mangledLen);
+
+            LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, mangled);
+            if (existing) {
+                compilerErrorAtToken(
+                    compiler,
+                    &method->name,
+                    "duplicate trait impl method definition: %.*s for %.*s",
+                    stmt->traitName.length, stmt->traitName.start,
+                    stmt->targetName.length, stmt->targetName.start
+                );
+                free(st);
+                free(mangled);
+                continue;
+            }
+
+            Token mangledTok = method->name;
+            mangledTok.start = mangled;
+            mangledTok.length = mangledLen;
+
+            // Build params: this + original params
+            List* params = listNew();
+            Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
+
+            Type* thisInner = malloc(sizeof(Type));
+            thisInner->kind = TYPE_NAMED;
+            thisInner->name = structTok;
+            thisInner->inner = NULL;
+            thisInner->paramTypes = NULL;
+            thisInner->returnTypes = NULL;
+            thisInner->typeArgs = NULL;
+
+            Type* thisType = malloc(sizeof(Type));
+            thisType->kind = TYPE_REF;
+            thisType->name = (Token){0};
+            thisType->inner = thisInner;
+            thisType->paramTypes = NULL;
+            thisType->returnTypes = NULL;
+            thisType->typeArgs = NULL;
+
+            Parameter* thisParam = malloc(sizeof(Parameter));
+            thisParam->name = thisNameTok;
+            thisParam->type = thisType;
+            thisParam->mode = PARAM_CONST;
+            listAppend(params, thisParam);
+
+            if (method->params) {
+                for (ListNode* p = method->params->head; p != NULL; p = p->next) {
+                    listAppend(params, p->data);
+                }
+            }
+
+            FuncStmt tmp = *method;
+            tmp.name = mangledTok;
+            tmp.params = params;
+            compileFuncStmt(compiler, &tmp);
+
+            free(st);
+            free(mangled);
+        }
         if (compiler->hadError) return;
     }
 
@@ -2304,6 +2440,14 @@ void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
     for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next) {
         TraitMethodDecl* req = (TraitMethodDecl*)mn->data;
         if (!req) continue;
+
+        // If this method is implemented in the trait impl block, it satisfies the requirement directly.
+        int hasInline = 0;
+        for (ListNode* in = stmt->methods ? stmt->methods->head : NULL; in != NULL; in = in->next) {
+            FuncStmt* im = (FuncStmt*)in->data;
+            if (im && tokenEqualsTokenRaw(&im->name, &req->name)) { hasInline = 1; break; }
+        }
+        if (hasInline) continue;
 
         PromotedMethodSigPath path = {0};
         int r = resolvePromotedMethodSigPath(compiler, target, &req->name, &path);
@@ -2753,6 +2897,34 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->arrayFixedLen = -1;
         variable->isStackArray = 0;
         variable->stackArrayData = NULL;
+        variable->genericParamName = NULL;
+        variable->genericParamNameLength = 0;
+        variable->genericBoundTraitName = NULL;
+        variable->genericBoundTraitNameLength = 0;
+
+        // Record generic type-param origin (for trait static dispatch).
+        if (p && p->type) {
+            if (p->type->kind == TYPE_NAMED && (!p->type->typeArgs || p->type->typeArgs->length == 0) &&
+                !astTypeIsBuiltinNamed(&p->type->name)) {
+                GenericSubst* gs = compilerFindGenericSubst(compiler, p->type->name.start, p->type->name.length);
+                if (gs) {
+                    variable->genericParamName = gs->name;
+                    variable->genericParamNameLength = gs->nameLen;
+                    variable->genericBoundTraitName = gs->boundTraitName;
+                    variable->genericBoundTraitNameLength = gs->boundTraitNameLen;
+                }
+            } else if (p->type->kind == TYPE_REF && p->type->inner && p->type->inner->kind == TYPE_NAMED &&
+                       (!p->type->inner->typeArgs || p->type->inner->typeArgs->length == 0) &&
+                       !astTypeIsBuiltinNamed(&p->type->inner->name)) {
+                GenericSubst* gs = compilerFindGenericSubst(compiler, p->type->inner->name.start, p->type->inner->name.length);
+                if (gs) {
+                    variable->genericParamName = gs->name;
+                    variable->genericParamNameLength = gs->nameLen;
+                    variable->genericBoundTraitName = gs->boundTraitName;
+                    variable->genericBoundTraitNameLength = gs->boundTraitNameLen;
+                }
+            }
+        }
 
         if (p->type && p->type->kind == TYPE_NAMED &&
             p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&

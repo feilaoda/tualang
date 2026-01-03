@@ -55,6 +55,14 @@ typedef struct VariableRef {
     // Optional: fast-path metadata for stack-backed fixed arrays.
     int isStackArray;
     LLVMValueRef stackArrayData; // elemTy* (only valid when isStackArray && arrayFixedLen>=0)
+
+    // Optional: when this variable is typed as a generic type parameter (e.g. `T`) in a monomorphized
+    // generic function body, keep the original type param name and its bound trait (if any) so that
+    // trait static dispatch can be resolved consistently.
+    const char* genericParamName;
+    int genericParamNameLength;
+    const char* genericBoundTraitName;
+    int genericBoundTraitNameLength;
 }VariableRef;
 
 

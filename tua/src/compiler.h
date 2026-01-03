@@ -205,6 +205,9 @@ typedef struct GenericSubst {
     const char* name;
     int nameLen;
     Type* type; // concrete type AST
+    // Optional: qualified bound trait name for this type parameter (v1 bounds).
+    const char* boundTraitName;
+    int boundTraitNameLen;
 } GenericSubst;
 
 typedef struct GenericFuncTemplate {
@@ -240,6 +243,7 @@ GenericFuncTemplate* compilerFindGenericFuncTemplate(Compiler* compiler, const c
 // If `type` is a type parameter name in the current monomorphization context, return its substituted concrete type.
 // Otherwise return `type` unchanged.
 Type* compilerResolveGenericType(Compiler* compiler, Type* type);
+GenericSubst* compilerFindGenericSubst(Compiler* compiler, const char* name, int nameLen);
 
 // Instantiate a generic function template with explicit type arguments.
 // Returns the monomorphized LLVM function value, or NULL if no template is registered for `baseName`.

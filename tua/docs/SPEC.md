@@ -286,23 +286,33 @@
   - 已支持解析 `init(){...}` / `deinit(){...}` 为方法
   - 自动调用时机/析构语义尚未定义（见内存模型规划）
 
-#### 7.2 trait（Status: Implemented v0）
-- 目标：提供“结构体满足某能力”的编译期契约；第一版仅做 **满足性检查**，不引入泛型/trait object
+#### 7.2 trait（Status: Implemented v1）
+- 目标：提供“结构体满足某能力”的编译期契约；v1 提供 **静态分发**（通过泛型单态化），不引入 `dyn Trait`
 - 声明：
   - `trait TraitName { fn m(a: T, ...) -> R }`
   - trait 方法目前仅支持 **签名**（不支持默认实现/方法体）
-- 实现声明（满足性检查）：
-  - `impl TraitName for StructName { ... }`
-    - `{ ... }` 内的方法会按普通 `impl StructName { ... }` 的规则编译为实例方法
-    - 随后编译器检查 `StructName` 的方法集是否满足 `TraitName` 的全部方法
-  - `impl TraitName for StructName {}` 允许空实现块（仅触发检查）
-- 方法集（Frozen）：
-  - `StructName` 自己定义的方法 + `impl StructName { ... }` 中的方法
-  - 以及通过 `...Base` 的方法提升得到的 promoted methods
+- 实现声明（满足性检查 + 可选提供方法体）：
+  - `impl TraitName for StructName {}`：允许空实现块（仅触发检查/记录 impl pair，用于泛型 bounds）
+  - `impl TraitName for StructName { fn m(...) ... }`：
+    - 只能实现 trait 中声明的方法（多余方法为编译错误）
+    - 方法体会被编译为 trait 命名空间下的函数：`StructName__TraitName__m`（不会加入 `StructName` 的固有方法集）
+    - 该方法体用于 v1 的静态分发（见下）；对具体类型调用 `x.m()` 默认仍解析为固有方法
+- 满足性（Frozen）：
+  - 对每个 trait 方法 `m`：
+    - 若 `impl Trait for Struct {}` 内提供了 `m` 的方法体，则视为已实现
+    - 否则要求 `Struct` 的 **固有方法集**存在 `m`（含 promoted methods），且签名一致
+  - 固有方法集：
+    - `struct StructName { fn ... }` + `impl StructName { ... }`
+    - 以及通过 `...Base` 的方法提升得到的 promoted methods
   - 遮蔽/歧义规则与“方法提升”一致：自身同名优先；多个 embedded 命中时报歧义错误
+- v1 静态分发（Implemented）：
+  - 泛型 bounds：`fn f<T: Trait>(x: T)` 在实例化时要求存在 `impl Trait for ConcreteType {}`
+  - 在泛型函数体内，若 `x` 的静态类型为 `T` 且 `T: Trait`，则 `x.m(...)` 按 trait 分发：
+    - 若存在 `ConcreteType__Trait__m`，则调用该函数（trait impl 方法体）
+    - 否则回退到固有/提升方法解析（调用 `ConcreteType__m` 或 promoted method）
+  - 约束：在 `T: Trait` 上调用的方法必须在 `Trait` 中声明，否则为编译错误
 - 当前限制（Planned）：
-  - 还不能把 `TraitName` 作为值类型/参数类型使用；也不支持 `dyn Trait`
-  - 不支持泛型约束（如 `fn f<T: Trait>(x: T)`）
+  - 不能把 `TraitName` 作为值类型/参数类型使用；不支持 `dyn Trait`（需要冻结 ABI + vtable 方案）
 
 #### 7.3 impl（Status: Implemented，Rust 风格）
 - 语法：

@@ -10,6 +10,14 @@ static int tokenEquals(const Token* token, const char* s) {
     return token->length == len && memcmp(token->start, s, (size_t)len) == 0;
 }
 
+static int isBuiltinNamedTypeToken(const Token* name) {
+    if (!name) return 0;
+    if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
+    if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
+    if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    return 0;
+}
+
 static char* tokenToCString(const Token* token) {
     if (!token) return NULL;
     char* s = malloc((size_t)token->length + 1);
@@ -1489,6 +1497,33 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->arrayFixedLen = -1;
     variable->isStackArray = 0;
     variable->stackArrayData = NULL;
+    variable->genericParamName = NULL;
+    variable->genericParamNameLength = 0;
+    variable->genericBoundTraitName = NULL;
+    variable->genericBoundTraitNameLength = 0;
+
+    if (stmt->type && compiler && compiler->genericSubsts) {
+        if (stmt->type->kind == TYPE_NAMED && (!stmt->type->typeArgs || stmt->type->typeArgs->length == 0) &&
+            !isBuiltinNamedTypeToken(&stmt->type->name)) {
+            GenericSubst* gs = compilerFindGenericSubst(compiler, stmt->type->name.start, stmt->type->name.length);
+            if (gs) {
+                variable->genericParamName = gs->name;
+                variable->genericParamNameLength = gs->nameLen;
+                variable->genericBoundTraitName = gs->boundTraitName;
+                variable->genericBoundTraitNameLength = gs->boundTraitNameLen;
+            }
+        } else if (stmt->type->kind == TYPE_REF && stmt->type->inner && stmt->type->inner->kind == TYPE_NAMED &&
+                   (!stmt->type->inner->typeArgs || stmt->type->inner->typeArgs->length == 0) &&
+                   !isBuiltinNamedTypeToken(&stmt->type->inner->name)) {
+            GenericSubst* gs = compilerFindGenericSubst(compiler, stmt->type->inner->name.start, stmt->type->inner->name.length);
+            if (gs) {
+                variable->genericParamName = gs->name;
+                variable->genericParamNameLength = gs->nameLen;
+                variable->genericBoundTraitName = gs->boundTraitName;
+                variable->genericBoundTraitNameLength = gs->boundTraitNameLen;
+            }
+        }
+    }
 
     if (stmt->type && stmt->type->kind == TYPE_NAMED &&
         stmt->type->name.length == 3 && memcmp(stmt->type->name.start, "map", 3) == 0 &&

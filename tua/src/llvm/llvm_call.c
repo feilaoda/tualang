@@ -506,6 +506,17 @@ typedef struct {
     int isAmbiguous;
 } PromotedMethodPath;
 
+static int traitDeclHasMethod(TraitInfo* trait, const Token* methodName) {
+    if (!trait || !trait->decl || !methodName) return 0;
+    for (ListNode* mn = trait->decl->methods ? trait->decl->methods->head : NULL; mn != NULL; mn = mn->next) {
+        TraitMethodDecl* req = (TraitMethodDecl*)mn->data;
+        if (!req) continue;
+        if (req->name.length != methodName->length) continue;
+        if (memcmp(req->name.start, methodName->start, (size_t)methodName->length) == 0) return 1;
+    }
+    return 0;
+}
+
 static int fieldLooksEmbedded(const FieldDeclaration* f) {
     if (!f) return 0;
     if (f->isEmbedded) return 1;
@@ -2674,14 +2685,52 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
 
         bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
+        bool isTraitDispatch = isInstance && recvVar.genericBoundTraitName != NULL && recvVar.genericBoundTraitNameLength > 0;
         if (hasTypeArgs && isInstance) {
             compilerErrorAtToken(compiler, &get->name, "generic type arguments on instance methods are not supported yet");
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
 
+        if (isTraitDispatch) {
+            TraitInfo* boundTrait = compilerFindTrait(compiler, recvVar.genericBoundTraitName, recvVar.genericBoundTraitNameLength);
+            if (!boundTrait || !boundTrait->decl) {
+                compilerErrorAtToken(compiler, &get->name, "unknown trait bound for dispatch");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            if (!traitDeclHasMethod(boundTrait, &get->name)) {
+                compilerErrorAtToken(
+                    compiler,
+                    &get->name,
+                    "method '%.*s' is not in trait bound '%.*s'",
+                    get->name.length,
+                    get->name.start,
+                    recvVar.genericBoundTraitNameLength,
+                    recvVar.genericBoundTraitName
+                );
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+        }
+
         int mangledLen = 0;
         char* mangled = NULL;
+        LLVMValueRef func = NULL;
+
+        if (isTraitDispatch) {
+            // First try trait-namespaced method implementation: `<Struct>__<Trait>__<method>`.
+            Token traitTok = (Token){TOKEN_IDENTIFIER, recvVar.genericBoundTraitName, recvVar.genericBoundTraitNameLength, get->name.line, get->name.col, 0};
+            int stLen = 0;
+            char* st = mangleRawAndToken(recvVar.typeName, recvVar.typeNameLength, &traitTok, &stLen);
+            mangled = mangleRawAndToken(st, stLen, &get->name, &mangledLen);
+            free(st);
+            func = LLVMGetNamedFunction(compiler->module, mangled);
+            free(mangled);
+            mangled = NULL;
+            mangledLen = 0;
+        }
+
         if (isInstance) {
             mangled = mangleRawAndToken(recvVar.typeName, recvVar.typeNameLength, &get->name, &mangledLen);
         } else {
@@ -2701,7 +2750,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
+        if (!func) {
+            func = LLVMGetNamedFunction(compiler->module, mangled);
+        }
         free(mangled);
 
         PromotedMethodPath promoted = {0};

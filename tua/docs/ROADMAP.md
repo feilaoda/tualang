@@ -62,7 +62,7 @@
 - [x] 编译器内建函数：从字符串特判改为 `BuiltinId` 表驱动（便于扩展与跨平台 stdlib/rt 绑定）
 - [x] `struct` 嵌入字段 + 字段/方法提升（Go 风格但无子类型）：`...Base` / `...Base as name`，遮蔽优先、歧义报错、支持嵌套提升
 - [x] trait v0（language/spec + compiler）：`trait` 声明 + `impl Trait for Struct` 满足性检查（方法集检查，含 promoted methods），支持跨模块导入/导出
-  - [ ] trait v1：静态分发（泛型单态化，例如 `fn f<T: Trait>(x: T)`）
+  - [x] trait v1：静态分发（泛型单态化，例如 `fn f<T: Trait>(x: T)`；支持 `impl Trait for Struct { fn ... }` 提供 trait 方法体并在 bound 上分发）
   - [ ] trait v2：动态分发 `dyn Trait`（fat pointer/vtable，需冻结 ABI）
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案

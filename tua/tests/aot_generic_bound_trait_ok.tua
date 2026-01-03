@@ -18,7 +18,7 @@ let s: S = S{ id: 9 }
 assert(getId<S>(s) == 9)
 
 trait HasId2 {
-  fn id() -> int
+  fn id2() -> int
 }
 
 impl HasId2 for S {
