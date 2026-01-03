@@ -38,6 +38,10 @@ typedef struct Compiler{
     List* structs; // List<StructInfo*>
     List* traits;  // List<TraitInfo*>
     List* enums;   // List<EnumInfo*>
+    // Generic function templates registered per module (`fn f<T>(...) { ... }`).
+    List* genericFuncTemplates; // List<GenericFuncTemplate*>
+    // Active generic type substitutions while compiling a monomorphized instance.
+    List* genericSubsts; // List<GenericSubst*>
 
     List* loopStack; // List<LoopTarget*>
 
@@ -194,6 +198,43 @@ typedef struct TraitInfo {
 
 TraitInfo* compilerFindTrait(Compiler* compiler, const char* name, int length);
 TraitInfo* compilerResolveTraitByToken(Compiler* compiler, const Token* name);
+
+typedef struct GenericSubst {
+    const char* name;
+    int nameLen;
+    Type* type; // concrete type AST
+} GenericSubst;
+
+typedef struct GenericFuncTemplate {
+    char* qualifiedName;
+    int qualifiedNameLen;
+    FuncStmt* decl; // AST function template (with typeParams)
+    const char* filePath; // for diagnostics
+    const char* modulePrefix;
+    int modulePrefixLen;
+    List* aliases; // List<SymbolAlias*> for the template's module
+} GenericFuncTemplate;
+
+void compilerRegisterGenericFuncTemplate(
+    Compiler* compiler,
+    FuncStmt* decl,
+    const char* qualifiedName,
+    int qualifiedNameLen,
+    const char* filePath,
+    const char* modulePrefix,
+    int modulePrefixLen,
+    List* aliases
+);
+
+GenericFuncTemplate* compilerFindGenericFuncTemplate(Compiler* compiler, const char* qualifiedName, int qualifiedNameLen);
+
+// If `type` is a type parameter name in the current monomorphization context, return its substituted concrete type.
+// Otherwise return `type` unchanged.
+Type* compilerResolveGenericType(Compiler* compiler, Type* type);
+
+// Instantiate a generic function template with explicit type arguments.
+// Returns the monomorphized LLVM function value, or NULL if no template is registered for `baseName`.
+LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* baseName, int baseNameLen, List* typeArgs, const Token* callSite);
 
 typedef struct EnumInfo {
     char* name;

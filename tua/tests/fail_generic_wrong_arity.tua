@@ -1,0 +1,6 @@
+fn id<T>(x: T) -> T {
+  return x
+}
+
+id<int, long>(1)
+

@@ -84,6 +84,8 @@ static void zeroMemory(Compiler* compiler, LLVMValueRef ptrI8, LLVMValueRef byte
 
 static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
+    Type* subst = compilerResolveGenericType(compiler, type);
+    if (subst && subst != type) return toLLVMType(compiler, subst);
 
     switch (type->kind) {
         case TYPE_I8:

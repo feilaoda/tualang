@@ -183,6 +183,11 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
                              : LLVMInt32TypeInContext(compiler->context);
     }
 
+    Type* subst = compilerResolveGenericType(compiler, type);
+    if (subst && subst != type) {
+        return lambdaTypeToLLVMType(compiler, subst, defaultToVoid);
+    }
+
     switch (type->kind) {
         case TYPE_I8:
         case TYPE_U8:
@@ -259,7 +264,9 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
     }
 }
 
-static int astTypeIsNamedStructValue(Type* t) {
+static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
+    if (!t) return 0;
+    t = compilerResolveGenericType(compiler, t);
     if (!t || t->kind != TYPE_NAMED) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
@@ -4104,7 +4111,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     for (int i = 0; i < paramCount; i++) {
         Parameter* p = listGet(expr->params, i);
         LLVMTypeRef pt = lambdaTypeToLLVMType(compiler, p ? p->type : NULL, false);
-        if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(p->type)) {
+        if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(compiler, p->type)) {
             pt = LLVMPointerType(pt, 0);
         }
         paramTypes[i + 1] = pt;

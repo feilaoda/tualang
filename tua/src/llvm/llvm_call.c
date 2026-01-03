@@ -252,6 +252,8 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
     if (!type) return LLVMInt32TypeInContext(compiler->context);
+    Type* subst = compilerResolveGenericType(compiler, type);
+    if (subst && subst != type) return typeToLLVMType(compiler, subst);
     switch (type->kind) {
         case TYPE_I8:
         case TYPE_U8:
@@ -1586,6 +1588,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     emitDebug("emitCallExpr\n");
 
     if (!expr || !expr->callee) return NULL;
+    int hasTypeArgs = expr->typeArgs && expr->typeArgs->length > 0;
 
     // Multi-return selection is only for the current call's return value.
     // Nested calls (arguments) should keep the default "first value" rule.
@@ -1594,6 +1597,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
     // Immediate lambda call: (fn(...) { ... })(args)
     if (expr->callee->type == EXPR_LAMBDA) {
+        if (hasTypeArgs) {
+            compilerErrorAtToken(compiler, &expr->base.token, "generic type arguments are not supported on lambda calls");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
         LLVMValueRef closureVal = compileExpr(compiler, expr->callee);
         LLVMTypeRef closureType = compilerGetClosureType(compiler);
         if (!closureVal || LLVMTypeOf(closureVal) != closureType) {
@@ -1661,6 +1669,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     // Requires that the base function has an explicit (possibly nested) closure return type.
     Expr* calleeExpr = unwrapGroupingExpr(expr->callee);
     if (calleeExpr && calleeExpr->type == EXPR_CALL) {
+        if (hasTypeArgs) {
+            compilerErrorAtToken(compiler, &expr->base.token, "generic type arguments are not supported on closure calls");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
         int depth = 0;
         CallExpr* baseCall = findInnermostCallInChain(calleeExpr, &depth);
         int level = depth > 0 ? (depth - 1) : 0;
@@ -1745,6 +1758,22 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (a && a->kind == ALIAS_MODULE) {
                 int ql = 0;
                 char* q = mangleRawAndToken(a->qualified, a->qualifiedLen, &get->name, &ql);
+                if (hasTypeArgs) {
+                    LLVMValueRef gen = compilerInstantiateGenericFunc(compiler, q, ql, expr->typeArgs, &get->name);
+                    if (!gen) {
+                        free(q);
+                        compilerErrorAtToken(compiler, &get->name, "undefined generic function '%.*s' in namespace '%.*s'",
+                            get->name.length, get->name.start, ns->name.length, ns->name.start);
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    LLVMValueRef out = emitDirectFuncCall(compiler, gen, expr, get->name.line);
+                    free(q);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
                 LLVMValueRef func = LLVMGetNamedFunction(compiler->module, q);
                 if (func) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -2645,6 +2674,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
 
         bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
+        if (hasTypeArgs && isInstance) {
+            compilerErrorAtToken(compiler, &get->name, "generic type arguments on instance methods are not supported yet");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
 
         int mangledLen = 0;
         char* mangled = NULL;
@@ -2809,6 +2843,12 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
     BuiltinId builtinId = lookupBuiltinId(&callee->name);
     int isPrintln = builtinId == BI_PRINTLN;
     int isPrint = builtinId == BI_PRINT;
+
+    if (hasTypeArgs && builtinId != BI_NONE) {
+        compilerErrorAtToken(compiler, &callee->name, "built-in '%.*s' does not accept generic type arguments", callee->name.length, callee->name.start);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return NULL;
+    }
 
     if (builtinId == BI_SOME) {
         unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
@@ -3897,6 +3937,39 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         int foundQualified = 0;
         int foundAlias = 0;
 
+        if (hasTypeArgs) {
+            // Generic calls instantiate a function template; templates are registered with qualified names.
+            if (compiler->currentModulePrefix) {
+                int ql = 0;
+                char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+                if (q) {
+                    if (compilerFindGenericFuncTemplate(compiler, q, ql)) {
+                        func = compilerInstantiateGenericFunc(compiler, q, ql, expr->typeArgs, &callee->name);
+                        foundQualified = func != NULL;
+                    }
+                    free(q);
+                }
+            }
+            if (!func) {
+                SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+                if (a && a->kind == ALIAS_FUNC) {
+                    if (compilerFindGenericFuncTemplate(compiler, a->qualified, a->qualifiedLen)) {
+                        func = compilerInstantiateGenericFunc(compiler, a->qualified, a->qualifiedLen, expr->typeArgs, &callee->name);
+                        foundAlias = func != NULL;
+                    }
+                }
+            }
+            if (!func) {
+                if (compilerFindGenericFuncTemplate(compiler, callee->name.start, callee->name.length)) {
+                    func = compilerInstantiateGenericFunc(compiler, callee->name.start, callee->name.length, expr->typeArgs, &callee->name);
+                }
+            }
+            if (!func) {
+                compilerErrorAtToken(compiler, &callee->name, "type arguments provided but '%.*s' is not a generic function", callee->name.length, callee->name.start);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+        } else {
         if (compiler->currentModulePrefix) {
             int ql = 0;
             char* q = compilerQualifyToken(compiler, &callee->name, &ql);
@@ -3958,12 +4031,46 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
             }
 
+            // If a generic template exists for this name, require explicit type arguments in v0.
+            int hasTemplate = 0;
+            if (compiler->currentModulePrefix) {
+                int ql = 0;
+                char* q = compilerQualifyToken(compiler, &callee->name, &ql);
+                if (q) {
+                    if (compilerFindGenericFuncTemplate(compiler, q, ql)) hasTemplate = 1;
+                    free(q);
+                }
+            }
+            if (!hasTemplate) {
+                SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+                if (a && a->kind == ALIAS_FUNC) {
+                    if (compilerFindGenericFuncTemplate(compiler, a->qualified, a->qualifiedLen)) hasTemplate = 1;
+                }
+            }
+            if (!hasTemplate) {
+                if (compilerFindGenericFuncTemplate(compiler, callee->name.start, callee->name.length)) hasTemplate = 1;
+            }
+            if (hasTemplate) {
+                compilerErrorAtToken(
+                    compiler,
+                    &callee->name,
+                    "generic function '%.*s' requires explicit type arguments (e.g. %.*s<int>(...))",
+                    callee->name.length,
+                    callee->name.start,
+                    callee->name.length,
+                    callee->name.start
+                );
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
             compilerErrorAtToken(compiler, &callee->name, "undefined function '%.*s'",
                 callee->name.length, callee->name.start);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
         }
         free(name);
+        }
 
         LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
         unsigned expected = LLVMCountParamTypes(funcType);

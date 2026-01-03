@@ -39,6 +39,11 @@
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
 - [x] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
+- [ ] 泛型 + 单态化（高优先级）：通用类型参数（函数/struct/trait）+ 编译期实例化（monomorphization）
+  - [x] v0 语法与 AST：`fn f<T>(...)` + 调用处显式 `f<int>(1)`（先不做推断）
+  - [x] v0 单态化与缓存：同一组类型实参只生成一次实例；支持跨模块导入后的实例化
+  - [ ] v1 约束（bounds）：支持 `T: Trait`（依赖 trait v0 满足性检查）
+  - [ ] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
   - [x] 借用（第一版）：`const r = &x` 共享、`let r = &x` 独占；禁止冲突借用/被借用时写或 move

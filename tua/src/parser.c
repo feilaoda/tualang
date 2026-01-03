@@ -64,6 +64,9 @@ void initParser(Parser* parser, Lexer* lexer, const char* currentFilePath) {
 }
 
 static Stmt* declaration(Parser* parser);
+static int looksLikeGenericCall(Parser* parser);
+static List* parseCallTypeArgs(Parser* parser);
+static Expr* finishCallWithTypeArgs(Parser* parser, Expr* callee, List* typeArgs);
 
 // Error handling
 void errorAtCurrent(Parser* parser, const char* message) {
@@ -243,6 +246,7 @@ static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* retur
     stmt->base.type = STMT_FUNC;
     stmt->name = name;
     stmt->params = params;
+    stmt->typeParams = NULL;
     stmt->returnType = returnType;
     stmt->returnTypes = returnTypes;
     stmt->body = body;
@@ -859,9 +863,15 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         parserDebug("parsePrimaryExpr: current code:[%.*s],[%s]\n", parser->current.length,parser->current.start, tokenToString(parser->previous.type));
         expr = newVariableExpr(parser->previous);
         
-        // Function call: identifier followed by '('
-        if (match(parser, TOKEN_LPAREN)) {
-
+        // Function call: identifier followed by optional `<typeArgs>` and '('.
+        if (check(parser, TOKEN_LT)) {
+            // Lookahead-only disambiguation: treat `<...>(` as type args; otherwise `<` is a binary op.
+            if (looksLikeGenericCall(parser)) {
+                List* typeArgs = parseCallTypeArgs(parser);
+                consume(parser, TOKEN_LPAREN, "Expect '(' after generic type arguments");
+                expr = finishCallWithTypeArgs(parser, expr, typeArgs);
+            }
+        } else if (match(parser, TOKEN_LPAREN)) {
             expr = finishCall(parser, expr);
         }
 
@@ -869,6 +879,14 @@ static Expr* parsePrimaryExpr(Parser* parser) {
         while (match(parser, TOKEN_DOT)) {
             Token member = consume(parser, TOKEN_IDENTIFIER, "Expect member name after '.'");
             expr = newGetExpr(expr, member);
+            if (check(parser, TOKEN_LT)) {
+                if (looksLikeGenericCall(parser)) {
+                    List* typeArgs = parseCallTypeArgs(parser);
+                    consume(parser, TOKEN_LPAREN, "Expect '(' after generic type arguments");
+                    expr = finishCallWithTypeArgs(parser, expr, typeArgs);
+                    continue;
+                }
+            }
             if (match(parser, TOKEN_LPAREN)) {
                 expr = finishCall(parser, expr);
             }
@@ -954,6 +972,54 @@ static Expr* parsePrimaryExpr(Parser* parser) {
     return expr;
 }
 
+// Lookahead to disambiguate `f < x` from `f<T>(...)`.
+// Returns true if the upcoming token stream matches `< ... > (` (allowing nested `<>` and `>>`).
+static int looksLikeGenericCall(Parser* parser) {
+    if (!parser) return 0;
+    if (parser->current.type != TOKEN_LT) return 0;
+
+    Lexer lx = *parser->lexer;
+    int depth = 1;
+
+    for (int guard = 0; guard < 4096; guard++) {
+        Token t = scanToken(&lx);
+        if (t.type == TOKEN_EOF || t.type == TOKEN_ERROR) return 0;
+        if (t.type == TOKEN_LT) {
+            depth++;
+            continue;
+        }
+        if (t.type == TOKEN_GT) {
+            depth--;
+        } else if (t.type == TOKEN_SHR) {
+            depth -= 2;
+        }
+
+        if (depth <= 0) {
+            // After closing '>', the next token must be '(' to be a generic call.
+            Token n = scanToken(&lx);
+            while (n.type == TOKEN_SEMICOLON) n = scanToken(&lx);
+            return n.type == TOKEN_LPAREN;
+        }
+    }
+
+    return 0;
+}
+
+static List* parseCallTypeArgs(Parser* parser) {
+    consume(parser, TOKEN_LT, "Expect '<' for generic type arguments");
+    List* args = listNew();
+    while (match(parser, TOKEN_SEMICOLON)) {}
+    if (!check(parser, TOKEN_GT) && !check(parser, TOKEN_SHR)) {
+        do {
+            Type* a = parseType(parser);
+            listAppend(args, a);
+            while (match(parser, TOKEN_SEMICOLON)) {}
+        } while (match(parser, TOKEN_COMMA));
+    }
+    consumeTypeGt(parser, "Expect '>' after generic type arguments");
+    return args;
+}
+
 static Expr* finishCall(Parser* parser, Expr* callee) {
     parserDebugStart("finishCall");
     List* arguments = listNew();
@@ -971,8 +1037,34 @@ static Expr* finishCall(Parser* parser, Expr* callee) {
     expr->base.token = parser->previous;
     expr->base.inferredType = TYPE_ANY;
     expr->callee = callee;
+    expr->caller = NULL;
     expr->arguments = arguments;
+    expr->typeArgs = NULL;
     parserDebugEnd("finishCall");
+    return (Expr*)expr;
+}
+
+static Expr* finishCallWithTypeArgs(Parser* parser, Expr* callee, List* typeArgs) {
+    parserDebugStart("finishCallWithTypeArgs");
+    List* arguments = listNew();
+
+    if (!check(parser, TOKEN_RPAREN)) {
+        do {
+            listAppend(arguments, parseExpression(parser));
+        } while (match(parser, TOKEN_COMMA));
+    }
+
+    consume(parser, TOKEN_RPAREN, "Expect ')' after arguments");
+
+    CallExpr* expr = malloc(sizeof(CallExpr));
+    expr->base.type = EXPR_CALL;
+    expr->base.token = parser->previous;
+    expr->base.inferredType = TYPE_ANY;
+    expr->callee = callee;
+    expr->caller = NULL;
+    expr->arguments = arguments;
+    expr->typeArgs = typeArgs;
+    parserDebugEnd("finishCallWithTypeArgs");
     return (Expr*)expr;
 }
 
@@ -1567,6 +1659,25 @@ static List* parseBlock(Parser* parser) {
 
 static Stmt* parseFunctionDeclaration(Parser* parser) {
     Token name = consume(parser, TOKEN_IDENTIFIER, "Expect function name");
+
+    // Generic function: `fn f<T,U>(...) ...`
+    List* typeParams = NULL;
+    if (match(parser, TOKEN_LT)) {
+        typeParams = listNew();
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (!check(parser, TOKEN_GT) && !check(parser, TOKEN_SHR)) {
+            do {
+                while (match(parser, TOKEN_SEMICOLON)) {}
+                Token p = consume(parser, TOKEN_IDENTIFIER, "Expect type parameter name");
+                Token* pp = malloc(sizeof(Token));
+                *pp = p;
+                listAppend(typeParams, pp);
+                while (match(parser, TOKEN_SEMICOLON)) {}
+            } while (match(parser, TOKEN_COMMA));
+        }
+        consumeTypeGt(parser, "Expect '>' after type parameter list");
+    }
+
     consume(parser, TOKEN_LPAREN, "Expect '(' after function name");
     
     List* parameters = listNew();
@@ -1614,11 +1725,16 @@ static Stmt* parseFunctionDeclaration(Parser* parser) {
     
     List* body = parseBlock(parser);
     
-    return newFuncStmt(name, parameters, returnType, returnTypes, body);
+    FuncStmt* fn = (FuncStmt*)newFuncStmt(name, parameters, returnType, returnTypes, body);
+    fn->typeParams = typeParams;
+    return (Stmt*)fn;
 }
 
 static Stmt* parseExternFunctionDeclaration(Parser* parser) {
     Token name = consume(parser, TOKEN_IDENTIFIER, "Expect function name");
+    if (check(parser, TOKEN_LT)) {
+        errorAtCurrent(parser, "extern fn does not support generic type parameters");
+    }
     consume(parser, TOKEN_LPAREN, "Expect '(' after function name");
 
     List* parameters = listNew();

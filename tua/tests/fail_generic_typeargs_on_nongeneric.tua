@@ -1,0 +1,6 @@
+fn f(x: int) -> int {
+  return x
+}
+
+f<int>(1)
+

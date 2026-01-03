@@ -33,7 +33,9 @@ static int tokenEqualsCString(const Token* token, const char* s) {
     return token->length == (int)len && memcmp(token->start, s, len) == 0;
 }
 
-static int astTypeIsNamedStructValue(Type* t) {
+static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
+    if (!t) return 0;
+    t = compilerResolveGenericType(compiler, t);
     if (!t || t->kind != TYPE_NAMED) return 0;
     // Exclude built-in named types that are pointer-like or special-cased.
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
@@ -46,6 +48,8 @@ void initCompiler(Compiler* compiler) {
     compiler->structs = listNew();
     compiler->traits = listNew();
     compiler->enums = listNew();
+    compiler->genericFuncTemplates = listNew();
+    compiler->genericSubsts = NULL;
     compiler->loopStack = listNew();
 
     compiler->currentFilePath = NULL;
@@ -571,10 +575,80 @@ EnumInfo* compilerResolveEnumByToken(Compiler* compiler, const Token* name) {
     return compilerFindEnum(compiler, name->start, name->length);
 }
 
+GenericFuncTemplate* compilerFindGenericFuncTemplate(Compiler* compiler, const char* qualifiedName, int qualifiedNameLen) {
+    if (!compiler || !compiler->genericFuncTemplates || !qualifiedName || qualifiedNameLen <= 0) return NULL;
+    for (int i = 0; i < compiler->genericFuncTemplates->length; i++) {
+        GenericFuncTemplate* g = listGet(compiler->genericFuncTemplates, i);
+        if (!g) continue;
+        if (g->qualifiedNameLen != qualifiedNameLen) continue;
+        if (memcmp(g->qualifiedName, qualifiedName, (size_t)qualifiedNameLen) == 0) return g;
+    }
+    return NULL;
+}
+
+void compilerRegisterGenericFuncTemplate(
+    Compiler* compiler,
+    FuncStmt* decl,
+    const char* qualifiedName,
+    int qualifiedNameLen,
+    const char* filePath,
+    const char* modulePrefix,
+    int modulePrefixLen,
+    List* aliases
+) {
+    if (!compiler || !decl || !qualifiedName || qualifiedNameLen <= 0) return;
+    if (!decl->typeParams || decl->typeParams->length <= 0) return;
+    if (!decl->body) return;
+
+    if (!compiler->genericFuncTemplates) compiler->genericFuncTemplates = listNew();
+    if (compilerFindGenericFuncTemplate(compiler, qualifiedName, qualifiedNameLen)) {
+        compilerErrorAtToken(compiler, &decl->name, "duplicate generic function template: %.*s", decl->name.length, decl->name.start);
+        return;
+    }
+
+    GenericFuncTemplate* g = malloc(sizeof(GenericFuncTemplate));
+    memset(g, 0, sizeof(*g));
+    g->qualifiedName = malloc((size_t)qualifiedNameLen + 1);
+    memcpy(g->qualifiedName, qualifiedName, (size_t)qualifiedNameLen);
+    g->qualifiedName[qualifiedNameLen] = '\0';
+    g->qualifiedNameLen = qualifiedNameLen;
+    g->decl = decl;
+    g->filePath = filePath;
+    g->modulePrefix = modulePrefix;
+    g->modulePrefixLen = modulePrefixLen;
+    g->aliases = aliases;
+    listAppend(compiler->genericFuncTemplates, g);
+}
+
+Type* compilerResolveGenericType(Compiler* compiler, Type* type) {
+    if (!compiler || !compiler->genericSubsts || !type) return type;
+    if (type->kind != TYPE_NAMED) return type;
+    if (type->typeArgs && type->typeArgs->length > 0) return type;
+    // Builtins are never generic type params.
+    if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) return type;
+    if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) return type;
+    if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) return type;
+
+    for (ListNode* n = compiler->genericSubsts->head; n != NULL; n = n->next) {
+        GenericSubst* s = (GenericSubst*)n->data;
+        if (!s || !s->name || s->nameLen <= 0 || !s->type) continue;
+        if (s->nameLen != type->name.length) continue;
+        if (memcmp(s->name, type->name.start, (size_t)s->nameLen) == 0) {
+            return s->type;
+        }
+    }
+    return type;
+}
+
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid) {
     if (type == NULL) {
         return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
                              : LLVMInt32TypeInContext(compiler->context);
+    }
+
+    Type* subst = compilerResolveGenericType(compiler, type);
+    if (subst && subst != type) {
+        return typeToLLVMType(compiler, subst, defaultToVoid);
     }
 
     switch (type->kind) {
@@ -657,6 +731,285 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             return defaultToVoid ? LLVMVoidTypeInContext(compiler->context)
                                  : LLVMInt32TypeInContext(compiler->context);
     }
+}
+
+static int isBuiltinNamedTypeToken(const Token* name) {
+    if (!name) return 0;
+    if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
+    if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
+    if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    return 0;
+}
+
+static Type* canonicalizeTypeForGenericArg(Compiler* compiler, Type* t) {
+    if (!t) return NULL;
+    Type* src = compilerResolveGenericType(compiler, t);
+    if (!src) return NULL;
+
+    Type* out = malloc(sizeof(Type));
+    memset(out, 0, sizeof(*out));
+    out->kind = src->kind;
+    out->name = src->name;
+    out->inner = NULL;
+    out->typeArgs = NULL;
+    out->paramTypes = NULL;
+    out->returnTypes = NULL;
+    out->arrayLen = src->arrayLen;
+
+    switch (src->kind) {
+        case TYPE_REF:
+            out->inner = canonicalizeTypeForGenericArg(compiler, src->inner);
+            return out;
+        case TYPE_ARRAY:
+            out->inner = canonicalizeTypeForGenericArg(compiler, src->inner);
+            return out;
+        case TYPE_FUNC: {
+            // v0: allow function types as type args in syntax, but don't attempt deep encoding yet.
+            // Keep them structurally canonicalized for future use.
+            List* ps = listNew();
+            int pc = src->paramTypes ? src->paramTypes->length : 0;
+            for (int i = 0; i < pc; i++) {
+                Type* pt = listGet(src->paramTypes, i);
+                listAppend(ps, canonicalizeTypeForGenericArg(compiler, pt));
+            }
+            List* rs = listNew();
+            int rc = src->returnTypes ? src->returnTypes->length : 0;
+            for (int i = 0; i < rc; i++) {
+                Type* rt = listGet(src->returnTypes, i);
+                listAppend(rs, canonicalizeTypeForGenericArg(compiler, rt));
+            }
+            out->paramTypes = ps;
+            out->returnTypes = rs;
+            return out;
+        }
+        case TYPE_NAMED: {
+            // Canonicalize named struct/enum types to their qualified names so instantiation
+            // does not depend on the template module's import context.
+            if (!isBuiltinNamedTypeToken(&src->name)) {
+                StructInfo* si = compilerResolveStructByToken(compiler, &src->name);
+                if (si) {
+                    out->name.start = si->name;
+                    out->name.length = si->nameLength;
+                } else {
+                    EnumInfo* ei = compilerResolveEnumByToken(compiler, &src->name);
+                    if (ei) {
+                        out->name.start = ei->name;
+                        out->name.length = ei->nameLength;
+                    }
+                }
+            }
+            if (src->typeArgs && src->typeArgs->length > 0) {
+                List* args = listNew();
+                for (ListNode* n = src->typeArgs->head; n != NULL; n = n->next) {
+                    listAppend(args, canonicalizeTypeForGenericArg(compiler, (Type*)n->data));
+                }
+                out->typeArgs = args;
+            }
+            return out;
+        }
+        default:
+            return out;
+    }
+}
+
+typedef struct {
+    char* buf;
+    int len;
+    int cap;
+} StrBuf;
+
+static void sbInit(StrBuf* sb, int cap) {
+    sb->len = 0;
+    sb->cap = cap > 0 ? cap : 64;
+    sb->buf = malloc((size_t)sb->cap);
+    sb->buf[0] = '\0';
+}
+
+static void sbEnsure(StrBuf* sb, int add) {
+    if (sb->len + add + 1 <= sb->cap) return;
+    int nc = sb->cap * 2;
+    while (sb->len + add + 1 > nc) nc *= 2;
+    sb->buf = realloc(sb->buf, (size_t)nc);
+    sb->cap = nc;
+}
+
+static void sbAppendN(StrBuf* sb, const char* s, int n) {
+    if (!s || n <= 0) return;
+    sbEnsure(sb, n);
+    memcpy(sb->buf + sb->len, s, (size_t)n);
+    sb->len += n;
+    sb->buf[sb->len] = '\0';
+}
+
+static void sbAppendC(StrBuf* sb, char c) {
+    sbEnsure(sb, 1);
+    sb->buf[sb->len++] = c;
+    sb->buf[sb->len] = '\0';
+}
+
+static void sbAppendSanitizedToken(StrBuf* sb, const Token* tok) {
+    if (!tok || !tok->start || tok->length <= 0) return;
+    for (int i = 0; i < tok->length; i++) {
+        char c = tok->start[i];
+        int ok =
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            (c == '_');
+        sbAppendC(sb, ok ? c : '_');
+    }
+}
+
+static void sbAppendTypeMangle(StrBuf* sb, Type* t) {
+    if (!sb) return;
+    if (!t) {
+        sbAppendN(sb, "any", 3);
+        return;
+    }
+    switch (t->kind) {
+        case TYPE_BOOL: sbAppendN(sb, "bool", 4); return;
+        case TYPE_STRING: sbAppendN(sb, "string", 6); return;
+        case TYPE_I8: sbAppendN(sb, "i8", 2); return;
+        case TYPE_I16: sbAppendN(sb, "i16", 3); return;
+        case TYPE_INT: sbAppendN(sb, "int", 3); return;
+        case TYPE_LONG: sbAppendN(sb, "long", 4); return;
+        case TYPE_ISIZE: sbAppendN(sb, "isize", 5); return;
+        case TYPE_U8: sbAppendN(sb, "u8", 2); return;
+        case TYPE_U16: sbAppendN(sb, "u16", 3); return;
+        case TYPE_U32: sbAppendN(sb, "u32", 3); return;
+        case TYPE_U64: sbAppendN(sb, "u64", 3); return;
+        case TYPE_USIZE: sbAppendN(sb, "usize", 5); return;
+        case TYPE_BYTE: sbAppendN(sb, "byte", 4); return;
+        case TYPE_F16: sbAppendN(sb, "f16", 3); return;
+        case TYPE_FLOAT: sbAppendN(sb, "f32", 3); return;
+        case TYPE_DOUBLE: sbAppendN(sb, "f64", 3); return;
+        case TYPE_PTR: sbAppendN(sb, "ptr", 3); return;
+        case TYPE_REF:
+            sbAppendN(sb, "Ref_", 4);
+            sbAppendTypeMangle(sb, t->inner);
+            return;
+        case TYPE_ARRAY:
+            sbAppendN(sb, "Arr_", 4);
+            sbAppendTypeMangle(sb, t->inner);
+            if (t->arrayLen < 0) {
+                sbAppendN(sb, "_dyn", 4);
+            } else {
+                sbAppendN(sb, "_N", 2);
+                char tmp[32];
+                snprintf(tmp, sizeof(tmp), "%lld", (long long)t->arrayLen);
+                sbAppendN(sb, tmp, (int)strlen(tmp));
+            }
+            return;
+        case TYPE_FUNC:
+            // v0: keep coarse encoding to avoid huge symbol names.
+            sbAppendN(sb, "Fn", 2);
+            return;
+        case TYPE_NAMED:
+            sbAppendSanitizedToken(sb, &t->name);
+            if (t->typeArgs && t->typeArgs->length > 0) {
+                for (ListNode* n = t->typeArgs->head; n != NULL; n = n->next) {
+                    sbAppendC(sb, '_');
+                    sbAppendTypeMangle(sb, (Type*)n->data);
+                }
+            }
+            return;
+        default:
+            sbAppendN(sb, "any", 3);
+            return;
+    }
+}
+
+static char* mangleGenericInstanceName(const char* baseName, int baseNameLen, List* canonArgs) {
+    StrBuf sb;
+    sbInit(&sb, baseNameLen + 64);
+    sbAppendN(&sb, baseName, baseNameLen);
+    sbAppendN(&sb, "__G__", 5);
+    int ac = canonArgs ? canonArgs->length : 0;
+    for (int i = 0; i < ac; i++) {
+        if (i > 0) sbAppendC(&sb, '_');
+        sbAppendTypeMangle(&sb, (Type*)listGet(canonArgs, i));
+    }
+    return sb.buf;
+}
+
+LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* baseName, int baseNameLen, List* typeArgs, const Token* callSite) {
+    if (!compiler || !baseName || baseNameLen <= 0) return NULL;
+    GenericFuncTemplate* tmpl = compilerFindGenericFuncTemplate(compiler, baseName, baseNameLen);
+    if (!tmpl || !tmpl->decl) return NULL;
+
+    int expected = tmpl->decl->typeParams ? tmpl->decl->typeParams->length : 0;
+    int got = typeArgs ? typeArgs->length : 0;
+    if (got != expected) {
+        const Token* tok = callSite ? callSite : &tmpl->decl->name;
+        compilerErrorAtToken(
+            compiler,
+            tok,
+            "generic type argument count mismatch for '%.*s': expected %d, got %d",
+            tok ? tok->length : 0,
+            tok ? tok->start : "",
+            expected,
+            got
+        );
+        return NULL;
+    }
+
+    List* canon = listNew();
+    for (int i = 0; i < got; i++) {
+        Type* a = listGet(typeArgs, i);
+        Type* ca = canonicalizeTypeForGenericArg(compiler, a);
+        listAppend(canon, ca);
+    }
+
+    char* instName = mangleGenericInstanceName(baseName, baseNameLen, canon);
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, instName);
+    if (existing) {
+        free(instName);
+        return existing;
+    }
+
+    // Switch compiler context to the template's module for correct name resolution in the body.
+    const char* savedFile = compiler->currentFilePath;
+    const char* savedPrefix = compiler->currentModulePrefix;
+    int savedPrefixLen = compiler->currentModulePrefixLen;
+    List* savedAliases = compiler->currentAliases;
+    List* savedSubsts = compiler->genericSubsts;
+
+    compiler->currentFilePath = tmpl->filePath;
+    compiler->currentModulePrefix = tmpl->modulePrefix;
+    compiler->currentModulePrefixLen = tmpl->modulePrefixLen;
+    compiler->currentAliases = tmpl->aliases;
+
+    compiler->genericSubsts = listNew();
+    for (int i = 0; i < expected; i++) {
+        Token* tp = (Token*)listGet(tmpl->decl->typeParams, i);
+        Type* ca = (Type*)listGet(canon, i);
+        if (!tp || !ca) continue;
+        GenericSubst* s = malloc(sizeof(GenericSubst));
+        s->name = tp->start;
+        s->nameLen = tp->length;
+        s->type = ca;
+        listAppend(compiler->genericSubsts, s);
+    }
+
+    // Compile monomorphized instance as a normal function under `instName`.
+    FuncStmt tmp = *tmpl->decl;
+    Token nt = tmp.name;
+    nt.start = instName;
+    nt.length = (int)strlen(instName);
+    tmp.name = nt;
+    tmp.typeParams = NULL;
+    compileFuncStmt(compiler, &tmp);
+
+    // Restore context.
+    compiler->genericSubsts = savedSubsts;
+    compiler->currentFilePath = savedFile;
+    compiler->currentModulePrefix = savedPrefix;
+    compiler->currentModulePrefixLen = savedPrefixLen;
+    compiler->currentAliases = savedAliases;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, instName);
+    free(instName);
+    return fn;
 }
 
 static void compilerRegisterClosureReturnSigChain(Compiler* compiler, const char* name, int nameLen, Type* type) {
@@ -2017,6 +2370,17 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
 void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compilerDebug("Compiling function statement %.*s\n", stmt->name.length, stmt->name.start);
 
+    if (stmt && stmt->typeParams && stmt->typeParams->length > 0) {
+        compilerErrorAtToken(
+            compiler,
+            &stmt->name,
+            "generic function templates are not compiled directly; call with explicit type arguments (e.g. %.*s<int>(...))",
+            stmt->name.length,
+            stmt->name.start
+        );
+        return;
+    }
+
     char* funcName = malloc((size_t)stmt->name.length + 1);
     memcpy(funcName, stmt->name.start, (size_t)stmt->name.length);
     funcName[stmt->name.length] = '\0';
@@ -2037,7 +2401,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         for (int i = 0; i < paramCount; i++) {
             Parameter* p = listGet(stmt->params, i);
             LLVMTypeRef pt = typeToLLVMType(compiler, p ? p->type : NULL, false);
-            if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(p->type)) {
+            if (p && p->mode != PARAM_MOVE && astTypeIsNamedStructValue(compiler, p->type)) {
                 pt = LLVMPointerType(pt, 0);
             }
             paramTypes[i] = pt;

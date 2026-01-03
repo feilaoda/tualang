@@ -1468,6 +1468,32 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
     compiler->currentModulePrefixLen = module->prefixLen;
     compiler->currentAliases = module->aliases;
 
+    // Pre-pass: register all generic function templates in this module so calls can instantiate them
+    // even when used before their declaration.
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_FUNC) continue;
+        FuncStmt* f = (FuncStmt*)stmt;
+        if (!f->body) continue;
+        if (!f->typeParams || f->typeParams->length <= 0) continue;
+
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &f->name, &ql);
+        if (q) {
+            compilerRegisterGenericFuncTemplate(compiler, f, q, ql, module->path, module->prefix, module->prefixLen, module->aliases);
+            free(q);
+        } else {
+            compilerRegisterGenericFuncTemplate(compiler, f, f->name.start, f->name.length, module->path, module->prefix, module->prefixLen, module->aliases);
+        }
+        if (compiler->hadError) return;
+    }
+
     // Pre-pass: declare all `extern fn` prototypes (and `as` wrappers) first so
     // extern calls are order-independent within a module.
     for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
@@ -1501,6 +1527,10 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
             FuncStmt* f = (FuncStmt*)stmt;
             // `extern fn` binds to an external symbol and must not be qualified.
             if (f->body == NULL) {
+                continue;
+            }
+            // Generic function templates are not compiled directly; they are instantiated on demand.
+            if (f->typeParams && f->typeParams->length > 0) {
                 continue;
             }
             int ql = 0;

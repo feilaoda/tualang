@@ -198,6 +198,9 @@ typedef struct {
     Expr* callee;
     Expr* caller;
     List* arguments;
+    // Optional explicit type arguments for generic calls: `f<int,string>(...)`.
+    // Element type: Type*
+    List* typeArgs;
 } CallExpr;
 
 typedef struct {
@@ -284,6 +287,9 @@ typedef struct {
     Stmt base;
     Token name;
     List* params;
+    // Optional generic type parameters for a function template: `fn f<T,U>(...)`.
+    // Element type: Token* (identifier tokens).
+    List* typeParams;
     Type* returnType;
     List* returnTypes; // List<Type*>, NULL or empty => void
     List* body;
