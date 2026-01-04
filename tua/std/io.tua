@@ -49,15 +49,8 @@ impl Cursor {
         if avail <= 0L { return 0, 0L }
         let toRead = avail
         if n <= avail { toRead = n }
-
-        let i: long = 0L
-        while i < toRead {
-            let e, v = bstd.Bytes.getU8(data, pos + i)
-            if e != 0 { return e, 0L }
-            let we = bstd.Bytes.setU8(dst, off + i, v)
-            if we != 0 { return we, 0L }
-            i = i + 1L
-        }
+        let e = bstd.Bytes.copy(dst, off, data, pos, toRead)
+        if e != 0 { return e, 0L }
 
         pos = pos + toRead
         return 0, toRead
@@ -180,15 +173,8 @@ impl BufReader {
             let avail = this.available()
             let take = avail
             if left <= avail { take = left }
-
-            let i: long = 0L
-            while i < take {
-                let e0, v0 = bstd.Bytes.getU8(buf, start + i)
-                if e0 != 0 { return e0, total }
-                let e1 = bstd.Bytes.setU8(dst, at + i, v0)
-                if e1 != 0 { return e1, total }
-                i = i + 1L
-            }
+            let ce = bstd.Bytes.copy(dst, at, buf, start, take)
+            if ce != 0 { return ce, total }
 
             start = start + take
             at = at + take
@@ -282,6 +268,35 @@ impl BufReader {
 
 impl Reader for BufReader {}
 
+// Mmap-backed file reader (read-only, position-based).
+// Owns the `bytes` mapping so it auto-unmaps on drop.
+struct MmapFileReader {
+    data: bytes
+    pos: long
+}
+
+impl MmapFileReader {
+    fn remaining() long {
+        let n = bstd.Bytes.len(data)
+        if pos >= n { return 0L }
+        return n - pos
+    }
+
+    fn read(dst: bytes, off: long, n: long) -> int, long {
+        if n <= 0L { return 0, 0L }
+        let avail = this.remaining()
+        if avail <= 0L { return 0, 0L }
+        let toRead = avail
+        if n <= avail { toRead = n }
+        let e = bstd.Bytes.copy(dst, off, data, pos, toRead)
+        if e != 0 { return e, 0L }
+        pos = pos + toRead
+        return 0, toRead
+    }
+}
+
+impl Reader for MmapFileReader {}
+
 object Io {
     fn cursorFromBytes(move data: bytes) -> Cursor {
         return Cursor{ data: data, pos: 0L }
@@ -296,5 +311,11 @@ object Io {
             start: 0L,
             end: 0L,
         }
+    }
+
+    fn mmapFileReader(path: string) -> int, MmapFileReader {
+        let err, b = bstd.Bytes.mmapFile(path)
+        if err != 0 { return err, MmapFileReader{ data: null, pos: 0L } }
+        return 0, MmapFileReader{ data: b, pos: 0L }
     }
 }

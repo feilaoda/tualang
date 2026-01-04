@@ -234,7 +234,7 @@
 #### 11.3 `std`（通用库，LLM 可复用）
 - [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
 - [x] `std.bytes` / `std.io`（v0）：`bytes` v0 + LE 读取工具 + `Reader/Cursor/BufReader`（std 版拷贝实现）
-- [ ] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化 + 流式 file reader（避免逐字节 set/get）
+- [x] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化（`Bytes.copy`）+ mmap-backed file reader（避免逐字节 set/get）
 - [ ] `std.utf8`：UTF-8 边界工具（用于 tokenizer、文本切片）
 - [ ] `std.json`（轻量实现即可）：模型配置/metadata/推理参数解析
 - [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能

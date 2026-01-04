@@ -29,6 +29,10 @@ int32_t tua_bytes_is_readonly(tua_bytes* b);
 tua_err_t tua_bytes_get_u8(tua_bytes* b, int64_t idx, int32_t* out);
 tua_err_t tua_bytes_set_u8(tua_bytes* b, int64_t idx, int32_t v);
 
+// Copies `n` bytes from `src[src_off..]` into `dst[dst_off..]`.
+// Returns TUA_E_ACCESS if `dst` is readonly; TUA_E_INVALID on bounds/NULL.
+tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_t src_off, int64_t n);
+
 void tua_bytes_free(tua_bytes* b);
 
 #endif

@@ -531,13 +531,14 @@
   - 内容为原始字节序列，可包含 `0`，不要求 UTF-8/NUL 结尾
   - drop（RAII）：作用域结束/覆盖赋值/`return` 路径自动释放（free 或 munmap）
   - API（v0，先在 `std` 侧落地；后续可加 `b.len()/b.get()` 语法糖）：
-    - `std/bytes.tua`：`Bytes.mmapFile/len/isReadonly/getU8/setU8/fromString/new` + `readU16LE/readU32LE/readU64LE/readI16LE/readI32LE/readI64LE`
+    - `std/bytes.tua`：`Bytes.mmapFile/len/isReadonly/getU8/setU8/copy/fromString/new` + `readU16LE/readU32LE/readU64LE/readI16LE/readI32LE/readI64LE`
     - `tua_bytes_mmap_file/tua_bytes_len/tua_bytes_get_u8/tua_bytes_set_u8/tua_bytes_free`
 - `std/io.tua`（基于 `bytes` 的最小 Reader 抽象，Status: Implemented v0）：
   - `trait Reader { fn read(dst: bytes, off: long, n: long) -> int, long }`（`n==0 && err==0` 表示 EOF）
   - `Cursor`：内存 buffer reader（拥有 `bytes` 所有权，读取会前进 position）
   - `BufReader`：对任意 `Reader` 做缓冲（v0 为字节拷贝实现；后续在 `tua_rt` 加 memcpy 优化）
   - 工厂函数：`Io.cursorFromBytes(move b)` / `Io.bufReader(move inner, cap)`
+  - `MmapFileReader`：mmap-backed Reader（拥有 `bytes` 映射；自动 unmap），工厂 `Io.mmapFileReader(path)`
 - `Slice<T>`（借用视图，指针 + 长度，Planned）：
   - 语义：`Slice<T>` 是借用值（非 owning），其可写性由绑定的 `const/let` 决定（与 `Ref<T>` 一致）
   - 生命周期/借用检查（NLL v0，语句级）：当 `Slice<T>` 存活时，禁止对其 owner 执行 move/可能失效的写；借用在“最后一次使用”后结束

@@ -140,6 +140,20 @@ tua_err_t tua_bytes_set_u8(tua_bytes* b, int64_t idx, int32_t v) {
     return TUA_OK;
 }
 
+tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_t src_off, int64_t n) {
+    if (!dst || !src) return TUA_E_INVALID;
+    if (dst->readonly) return TUA_E_ACCESS;
+    if (n < 0) return TUA_E_INVALID;
+    if (n == 0) return TUA_OK;
+    if (!dst->data || !src->data) return TUA_E_INVALID;
+    if (dst_off < 0 || src_off < 0) return TUA_E_INVALID;
+    if (dst_off > dst->len || src_off > src->len) return TUA_E_INVALID;
+    if (dst_off + n > dst->len) return TUA_E_INVALID;
+    if (src_off + n > src->len) return TUA_E_INVALID;
+    memmove(dst->data + dst_off, src->data + src_off, (size_t)n);
+    return TUA_OK;
+}
+
 void tua_bytes_free(tua_bytes* b) {
     if (!b) return;
     if (b->drop_fn) {

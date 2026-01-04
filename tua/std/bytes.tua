@@ -6,6 +6,7 @@ extern fn tua_bytes_mmap_file(path: string, outBytes: &bytes) int
 extern fn tua_bytes_len(b: bytes) long
 extern fn tua_bytes_get_u8(b: bytes, idx: long, out: &int) int
 extern fn tua_bytes_set_u8(b: bytes, idx: long, v: int) int
+extern fn tua_bytes_copy(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int
 extern fn tua_bytes_is_readonly(b: bytes) int
 
 object Bytes {
@@ -40,6 +41,10 @@ object Bytes {
 
     fn setU8(b: bytes, idx: long, v: int) int {
         return tua_bytes_set_u8(b, idx, v)
+    }
+
+    fn copy(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int {
+        return tua_bytes_copy(dst, dstOff, src, srcOff, n)
     }
 
     // ====================

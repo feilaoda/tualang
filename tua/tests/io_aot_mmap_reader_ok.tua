@@ -1,0 +1,15 @@
+import "std/bytes" as bstd
+import MmapFileReader, Io from "std/io"
+
+let err, r = Io.mmapFileReader("README.md")
+assert(err == 0)
+assert(r.data != null)
+
+let out = bstd.Bytes.new(4)
+let e, n = r.read(out, 0L, 4L)
+assert(e == 0)
+assert(n == 4L)
+
+let e0, b0 = bstd.Bytes.getU8(out, 0L)
+assert(e0 == 0)
+assert(b0 == 35) // '#'
