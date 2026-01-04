@@ -540,8 +540,21 @@ static int isKeywordIdent(const char* s, int len) {
     if (!s || len <= 0) return 0;
     // Keep in sync with lexer keyword set; this is only used for default import namespaces.
     static const char* kws[] = {
+        // Decls / control flow
         "let","var","const","if","else","for","while","do","break","continue","goto","return",
-        "import","from","as","private","struct","object","enum","impl","trait","move","true","false","null",
+        "import","from","as","private","extern","struct","object","enum","trait","impl","init","deinit",
+        // Builtins / operators spelled as idents
+        "this","move","not","print","println",
+        // Literals
+        "true","false","null",
+        // Primitive / numeric type tokens (cannot be used as identifiers)
+        "int","long","double","float","string","bool","boolean","byte",
+        "u8","u16","u32","u64","usize",
+        "i8","i16","isize",
+        "f8","f16","f32","f64",
+        "bf8","bf16",
+        // Alternate spellings
+        "fn","func",
     };
     for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
         const char* k = kws[i];

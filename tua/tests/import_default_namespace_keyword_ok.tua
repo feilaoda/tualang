@@ -1,0 +1,5 @@
+import "modules/string"
+
+assert(ok() == 123)
+assert(_string.ok() == 123)
+
