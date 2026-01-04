@@ -15,6 +15,7 @@ static int isBuiltinNamedTypeToken(const Token* name) {
     if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
     return 0;
 }
 
@@ -298,8 +299,14 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_NAMED: {
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
             if (ti) return compilerGetTraitObjType(compiler, ti);
+            if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
+            }
+            if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
+                return compilerGetBytesType(compiler);
             }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
@@ -1486,9 +1493,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             VariableRef base = findVariableExpr(compiler, stmt->initializer);
             int shouldMoveMap = base.isMap;
             int shouldMoveArr = base.isArray && !base.isStackArray;
+            int shouldMoveBytes = base.isBytes;
             int shouldMoveTrait = base.isTraitObj;
             int shouldMoveClosure = base.type == compilerGetClosureType(compiler);
-            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait || shouldMoveClosure) && base.value && base.type) {
+            if ((shouldMoveMap || shouldMoveArr || shouldMoveBytes || shouldMoveTrait || shouldMoveClosure) && base.value && base.type) {
                 LLVMValueRef nullv = LLVMConstNull(base.type);
                 if (base.isBoxed) {
                     if (!base.boxPtrType) {
@@ -1731,6 +1739,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->boxOwns = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     variable->isMap = 0;
+    variable->isBytes = 0;
     variable->isTraitObj = 0;
     variable->traitName = NULL;
     variable->traitNameLength = 0;
@@ -1861,6 +1870,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isMap = 1;
     }
 
+    // `bytes` is an owning runtime handle.
+    if (variable->type == compilerGetBytesType(compiler)) {
+        variable->isBytes = 1;
+    }
+
     // Propagate container kind for typed-map index reads that return handles by value:
     // `let v = m["k"]` where `m: map<..., map<...>>` => `v` is a map handle.
     if (stmt->initializer && stmt->initializer->type == EXPR_INDEX) {
@@ -1916,6 +1930,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->arrayElemType = base.arrayElemType;
                 variable->arrayFixedLen = base.arrayFixedLen;
                 variable->arrayElemKind = base.arrayElemKind;
+            }
+            if (!variable->isBytes && base.isBytes) {
+                variable->isBytes = 1;
             }
         }
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {

@@ -1,0 +1,155 @@
+#include "tua_bytes.h"
+
+#include "rt/rt_alloc.h"
+#include "rt/rt_fs.h"
+
+#include <limits.h>
+#include <string.h>
+
+typedef void (*tua_bytes_drop_fn)(void* ctx, uint8_t* data, int64_t len);
+
+struct tua_bytes {
+    int64_t len;
+    int64_t cap;
+    uint8_t* data;
+    int32_t readonly;
+    void* drop_ctx;
+    tua_bytes_drop_fn drop_fn;
+};
+
+static void tua_bytes_drop_free(void* ctx, uint8_t* data, int64_t len) {
+    (void)ctx;
+    (void)len;
+    tua_free(data);
+}
+
+static void tua_bytes_drop_mmap(void* ctx, uint8_t* data, int64_t len) {
+    (void)data;
+    (void)len;
+    tua_fs_mmap_close((tua_mmap_t*)ctx);
+}
+
+tua_bytes* tua_bytes_new(int64_t len) {
+    if (len < 0) return NULL;
+    tua_bytes* b = (tua_bytes*)tua_malloc(sizeof(tua_bytes));
+    if (!b) return NULL;
+    memset(b, 0, sizeof(*b));
+    b->len = len;
+    b->cap = len;
+    b->readonly = 0;
+    b->drop_ctx = NULL;
+    b->drop_fn = tua_bytes_drop_free;
+    if (len == 0) {
+        b->data = NULL;
+        return b;
+    }
+    if ((uint64_t)len > (uint64_t)SIZE_MAX) {
+        tua_free(b);
+        return NULL;
+    }
+    b->data = (uint8_t*)tua_malloc((size_t)len);
+    if (!b->data) {
+        tua_free(b);
+        return NULL;
+    }
+    memset(b->data, 0, (size_t)len);
+    return b;
+}
+
+tua_bytes* tua_bytes_from_copy(const void* data, int64_t len) {
+    if (len < 0) return NULL;
+    if (len == 0) return tua_bytes_new(0);
+    if (!data) return NULL;
+    tua_bytes* b = tua_bytes_new(len);
+    if (!b || !b->data) return b;
+    memcpy(b->data, data, (size_t)len);
+    return b;
+}
+
+tua_bytes* tua_bytes_from_string_copy(const char* s) {
+    if (!s) return tua_bytes_new(0);
+    size_t n = strlen(s);
+    if (n > (size_t)LLONG_MAX) return NULL;
+    return tua_bytes_from_copy(s, (int64_t)n);
+}
+
+tua_err_t tua_bytes_mmap_file(const char* path_utf8, tua_bytes** out_bytes) {
+    if (!out_bytes) return TUA_E_INVALID;
+    *out_bytes = NULL;
+
+    tua_mmap_t* map = NULL;
+    tua_err_t err = tua_fs_mmap_ro(path_utf8, &map);
+    if (err != TUA_OK) return err;
+    if (!map) return TUA_E_INVALID;
+
+    int64_t len = tua_fs_mmap_len(map);
+    const uint8_t* data = tua_fs_mmap_data(map);
+    if (len < 0 || (len > 0 && data == NULL)) {
+        tua_fs_mmap_close(map);
+        return TUA_E_INVALID;
+    }
+
+    tua_bytes* b = (tua_bytes*)tua_malloc(sizeof(tua_bytes));
+    if (!b) {
+        tua_fs_mmap_close(map);
+        return TUA_E_NOMEM;
+    }
+    memset(b, 0, sizeof(*b));
+    b->len = len;
+    b->cap = len;
+    b->data = (uint8_t*)data; // read-only mapping; mutation via bytes.set is UB (guarded at language level later)
+    b->readonly = 1;
+    b->drop_ctx = map;
+    b->drop_fn = tua_bytes_drop_mmap;
+    *out_bytes = b;
+    return TUA_OK;
+}
+
+int64_t tua_bytes_len(tua_bytes* b) {
+    if (!b) return 0;
+    return b->len;
+}
+
+uint8_t* tua_bytes_data(tua_bytes* b) {
+    if (!b) return NULL;
+    return b->data;
+}
+
+int32_t tua_bytes_is_readonly(tua_bytes* b) {
+    if (!b) return 0;
+    return b->readonly ? 1 : 0;
+}
+
+tua_err_t tua_bytes_get_u8(tua_bytes* b, int64_t idx, int32_t* out) {
+    if (!out) return TUA_E_INVALID;
+    *out = 0;
+    if (!b) return TUA_E_INVALID;
+    if (idx < 0 || idx >= b->len) return TUA_E_INVALID;
+    if (!b->data) return TUA_E_INVALID;
+    *out = (int32_t)b->data[idx];
+    return TUA_OK;
+}
+
+tua_err_t tua_bytes_set_u8(tua_bytes* b, int64_t idx, int32_t v) {
+    if (!b) return TUA_E_INVALID;
+    if (b->readonly) return TUA_E_ACCESS;
+    if (idx < 0 || idx >= b->len) return TUA_E_INVALID;
+    if (!b->data) return TUA_E_INVALID;
+    if (v < 0 || v > 255) return TUA_E_INVALID;
+    b->data[idx] = (uint8_t)v;
+    return TUA_OK;
+}
+
+void tua_bytes_free(tua_bytes* b) {
+    if (!b) return;
+    if (b->drop_fn) {
+        b->drop_fn(b->drop_ctx, b->data, b->len);
+    }
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+    b->readonly = 0;
+    b->drop_ctx = NULL;
+    b->drop_fn = NULL;
+    tua_free(b);
+}

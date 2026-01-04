@@ -1227,9 +1227,10 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 
     char* mapC = joinPath(srcDir, "tua_map.c");
     char* arrC = joinPath(srcDir, "tua_array.c");
+    char* bytesC = joinPath(srcDir, "tua_bytes.c");
     char* rtArchive = findRuntimeArchivePath(argv0);
 
-    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC>
+    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC> <bytesC>
     const char* clangExe = "clang";
     const char* optFlag = "-O0";
     switch (compiler->llvmOptLevel) {
@@ -1257,6 +1258,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     args[n++] = objTemplate;
     args[n++] = mapC;
     args[n++] = arrC;
+    if (bytesC && fileExists(bytesC)) args[n++] = bytesC;
     if (rtArchive) args[n++] = rtArchive;
 
     // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
@@ -1287,6 +1289,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     unlink(objTemplate);
     free(mapC);
     free(arrC);
+    free(bytesC);
     free(rtArchive);
     free(srcDir);
     free(args);

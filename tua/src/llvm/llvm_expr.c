@@ -134,6 +134,15 @@ static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_free", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_free");
+    if (existing) return existing;
+    LLVMTypeRef bytesType = compilerGetBytesType(compiler);
+    LLVMTypeRef params[1] = { bytesType };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_free", fnType);
+}
+
 static LLVMTypeRef tuaBoxDropFnType(Compiler* compiler) {
     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
     LLVMTypeRef params[1] = { i8ptr };
@@ -3070,7 +3079,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
 
     // Drop old container value on overwrite (RAII, best-effort).
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
-    if ((var.isMap || var.isArray || var.isTraitObj || var.type == cloTy) && !(var.isArray && var.isStackArray)) {
+    if ((var.isMap || var.isArray || var.isBytes || var.isTraitObj || var.type == cloTy) && !(var.isArray && var.isStackArray)) {
         LLVMValueRef oldv = NULL;
         if (var.isBoxed) {
             if (!var.boxPtrType) return NULL;
@@ -3103,7 +3112,9 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
                 }
             }
         } else {
-            LLVMValueRef freeFn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+            LLVMValueRef freeFn =
+                var.isArray ? getOrCreateTuaArrayFree(compiler)
+                            : (var.isBytes ? getOrCreateTuaBytesFree(compiler) : getOrCreateTuaMapFree(compiler));
             if (freeFn) {
                 LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
                 LLVMValueRef args1[1] = { oldv };
@@ -3176,7 +3187,7 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
         VariableExpr* rv = (VariableExpr*)expr->value;
         VariableRef rhsVar = findVariableExpr(compiler, (Expr*)rv);
         if (rhsVar.value &&
-            (rhsVar.isMap || rhsVar.isArray || rhsVar.isTraitObj || rhsVar.type == cloTy) &&
+            (rhsVar.isMap || rhsVar.isArray || rhsVar.isBytes || rhsVar.isTraitObj || rhsVar.type == cloTy) &&
             !(rhsVar.isArray && rhsVar.isStackArray) &&
             !(rv->name.length == expr->name.length && memcmp(rv->name.start, expr->name.start, (size_t)expr->name.length) == 0)) {
             LLVMValueRef nullv = LLVMConstNull(rhsVar.type);
@@ -3305,6 +3316,17 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
         case TYPE_STRING: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_PTR: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (f->type->name.length == 3 && memcmp(f->type->name.start, "map", 3) == 0) {
+                return compilerGetMapType(compiler);
+            }
+            if (f->type->name.length == 5 && memcmp(f->type->name.start, "bytes", 5) == 0) {
+                return compilerGetBytesType(compiler);
+            }
+            if (f->type->name.length == 3 && memcmp(f->type->name.start, "ptr", 3) == 0) {
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            }
+            TraitInfo* ti = compilerResolveTraitByToken(compiler, &f->type->name);
+            if (ti) return compilerGetTraitObjType(compiler, ti);
             StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
             if (!inner) return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             return inner->type;
@@ -3349,6 +3371,8 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
                 default: return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
         }
+        case TYPE_ARRAY:
+            return compilerGetArrayType(compiler);
         default: return LLVMInt32TypeInContext(compiler->context);
     }
 }
@@ -3805,6 +3829,9 @@ static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type) {
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
+                return compilerGetBytesType(compiler);
+            }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (type->typeArgs && type->typeArgs->length == 1) inner = (Type*)type->typeArgs->head->data;
@@ -4161,9 +4188,10 @@ LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr) {
             // Runtime move for container values: null out the source after `move x`.
             int shouldMoveMap = (var.type == compilerGetMapType(compiler)) && var.isMap;
             int shouldMoveArr = (var.type == compilerGetArrayType(compiler)) && var.isArray && !var.isStackArray;
+            int shouldMoveBytes = (var.type == compilerGetBytesType(compiler)) && var.isBytes;
             int shouldMoveTrait = var.isTraitObj;
             int shouldMoveClosure = var.type == compilerGetClosureType(compiler);
-            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait || shouldMoveClosure) && var.value) {
+            if ((shouldMoveMap || shouldMoveArr || shouldMoveBytes || shouldMoveTrait || shouldMoveClosure) && var.value) {
                 LLVMValueRef nullv = LLVMConstNull(var.type);
                 if (var.isBoxed) {
                     if (!var.boxPtrType) {

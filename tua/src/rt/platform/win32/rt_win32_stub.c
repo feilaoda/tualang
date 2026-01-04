@@ -233,6 +233,26 @@ void tua_fs_dirlist_free(char** names, size_t count) {
     (void)count;
 }
 
+tua_err_t tua_fs_mmap_ro(const char* path_utf8, tua_mmap_t** out_map) {
+    (void)path_utf8;
+    if (out_map) *out_map = NULL;
+    return TUA_E_NOTSUP;
+}
+
+void tua_fs_mmap_close(tua_mmap_t* map) {
+    (void)map;
+}
+
+const uint8_t* tua_fs_mmap_data(tua_mmap_t* map) {
+    (void)map;
+    return NULL;
+}
+
+int64_t tua_fs_mmap_len(tua_mmap_t* map) {
+    (void)map;
+    return 0;
+}
+
 tua_array* tua_fs_readdir_arr(const char* path_utf8, int32_t* out_err) {
     (void)path_utf8;
     if (out_err) *out_err = TUA_E_NOTSUP;

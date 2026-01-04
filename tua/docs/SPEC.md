@@ -518,6 +518,24 @@
   - 若存在期望类型且为数组类型，则 `{}` 表示空数组
   - 否则默认 `{}` 表示空 map
 
+#### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` 规划中）
+- 目标：为二进制解析（GGUF/量化/bit-pack）与大文件 mmap 提供“零拷贝读取”的基础类型。
+- `bytes`（拥有所有权，move-only，Implemented）：
+  - 运行时表示：`tua_bytes*`（见 `src/tua_bytes.h`）
+  - 内容为原始字节序列，可包含 `0`，不要求 UTF-8/NUL 结尾
+  - drop（RAII）：作用域结束/覆盖赋值/`return` 路径自动释放（free 或 munmap）
+  - API（v0，先在 `std` 侧落地；后续可加 `b.len()/b.get()` 语法糖）：
+    - `std/bytes.tua`：`Bytes.mmapFile/len/getU8/setU8/isReadonly/fromString/new`
+    - `tua_bytes_mmap_file/tua_bytes_len/tua_bytes_get_u8/tua_bytes_set_u8/tua_bytes_free`
+- `Slice<T>`（借用视图，指针 + 长度，Planned）：
+  - 语义：`Slice<T>` 是借用值（非 owning），其可写性由绑定的 `const/let` 决定（与 `Ref<T>` 一致）
+  - 生命周期/借用检查（NLL v0，语句级）：当 `Slice<T>` 存活时，禁止对其 owner 执行 move/可能失效的写；借用在“最后一次使用”后结束
+  - 运行时布局（ABI）：`{ T* data, long len }`
+  - 方法（第一版）：
+    - `s.len() -> long`
+    - `s.get(i: long) -> T`（当前仅保证 `T` 为标量时可用；越界触发运行时错误）
+    - `s.set(i: long, v: T) -> int`（需要 `s` 为可写绑定；当前仅保证 `T` 为标量时可用）
+
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景
 - 赋值与类型（Frozen）：
@@ -639,11 +657,17 @@
 - 容器句柄：
   - `map -> tua_map*`（见 `src/tua_map.h`）
   - `T[]/T[N] -> tua_array*`（见 `src/tua_array.h`，其中 `elem_size/fixed_len` 描述元素大小与定长信息）
+- 二进制：
+  - `bytes -> tua_bytes*`（见 `src/tua_bytes.h`）
+  - `Slice<T> -> { T* data, int64_t len }`
 - `Option<T>`：当前实现为 `{ i1 ok, T payload }` 的二元结构体（Planned：冻结更严格的跨边界表示与 nil 规则）
 - 多返回：当前实现为“LLVM struct 返回”（JIT/AOT 具体 ABI 取决于平台对结构体返回的约定）
 
 #### 11.3 跨 ABI 的所有权规则（Planned，先冻结最小集）
 - `extern fn` 的参数默认是“借用”（callee 不应释放传入的 `map/array/string/ptr`），除非该函数名/文档明确标注为“接管所有权”。
+- `bytes`/`Slice<T>`：
+  - `bytes` 参数默认按借用传递（callee 不得释放；如需持有必须 clone/retain 并定义清晰释放约定）
+  - `Slice<T>` 仅是视图（borrow）；callee 不得缓存其 `data` 指针到返回值/全局（否则会悬垂）
 - 对于 `extern fn` 的 callback 参数：
   - 默认视为“借用回调值”；callee 不得直接 drop 参数本身
   - 若 callee 需要把回调保存到未来（escaping callback），必须显式 retain 一份，并在完成/取消/错误路径 release

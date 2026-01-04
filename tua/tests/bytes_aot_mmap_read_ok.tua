@@ -1,0 +1,15 @@
+import "std/bytes" as bstd
+
+let err, b = bstd.Bytes.mmapFile("README.md")
+assert(err == 0)
+assert(b != null)
+assert(bstd.Bytes.len(b) > 0L)
+
+let e0, v0 = bstd.Bytes.getU8(b, 0L)
+assert(e0 == 0)
+assert(v0 == 35) // '#'
+
+// mmap bytes are read-only
+let we = bstd.Bytes.setU8(b, 0L, 36) // '$'
+assert(we != 0)
+

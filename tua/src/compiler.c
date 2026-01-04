@@ -84,6 +84,7 @@ void initCompiler(Compiler* compiler) {
     compiler->closureType = NULL;
     compiler->mapType = NULL;
     compiler->arrayType = NULL;
+    compiler->bytesType = NULL;
     compiler->tuaValueType = NULL;
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
@@ -451,6 +452,15 @@ LLVMTypeRef compilerGetArrayType(Compiler* compiler) {
     return compiler->arrayType;
 }
 
+LLVMTypeRef compilerGetBytesType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    if (compiler->bytesType) return compiler->bytesType;
+    LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, "tua_bytes");
+    if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_bytes");
+    compiler->bytesType = LLVMPointerType(t, 0);
+    return compiler->bytesType;
+}
+
 static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
     if (!compiler) return NULL;
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_map_free");
@@ -469,6 +479,16 @@ static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
     LLVMTypeRef params[1] = { arrType };
     LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_array_free", fty);
+}
+
+static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_bytes_free");
+    if (fn) return fn;
+    LLVMTypeRef bytesType = compilerGetBytesType(compiler);
+    LLVMTypeRef params[1] = { bytesType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_free", fty);
 }
 
 static LLVMValueRef getOrCreateFree(Compiler* compiler) {
@@ -576,7 +596,7 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
     if (var.isBorrowed) return;
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
     int isClosure = (var.type == cloTy);
-    if (!var.isMap && !var.isArray && !var.isTraitObj && !isClosure) return;
+    if (!var.isMap && !var.isArray && !var.isBytes && !var.isTraitObj && !isClosure) return;
 
     LLVMValueRef cur = loadLocalVarValueForDrop(compiler, var, "drop_cur");
     if (!cur) return;
@@ -606,7 +626,9 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
                 LLVMBuildCall2(compiler->builder, fty, decFn, &env, 1, "");
             }
         } else {
-            LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+            LLVMValueRef fn =
+                var.isArray ? getOrCreateTuaArrayFree(compiler) :
+                (var.isBytes ? getOrCreateTuaBytesFree(compiler) : getOrCreateTuaMapFree(compiler));
             if (!fn) return;
             LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
             LLVMValueRef args1[1] = { cur };
@@ -642,7 +664,7 @@ static void moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
     if (!v.value || !v.type) return;
     if (v.isArray && v.isStackArray) return;
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
-    if (!v.isMap && !v.isArray && !v.isTraitObj && v.type != cloTy) return;
+    if (!v.isMap && !v.isArray && !v.isBytes && !v.isTraitObj && v.type != cloTy) return;
     LLVMValueRef nullv = LLVMConstNull(v.type);
     storeLocalVarValueForDrop(compiler, v, nullv);
 }
@@ -697,6 +719,20 @@ LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info)
                 LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
             }
             LLVMBuildStore(compiler->builder, LLVMConstNull(mapTy), fieldPtr);
+            continue;
+        }
+
+        // bytes: free handle
+        if (f->type->kind == TYPE_NAMED && f->type->name.length == 5 && memcmp(f->type->name.start, "bytes", 5) == 0) {
+            LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+            LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, bytesTy, fieldPtr, "bcur");
+            LLVMValueRef freeFn = getOrCreateTuaBytesFree(compiler);
+            if (freeFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+                LLVMValueRef args1[1] = { cur };
+                LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+            }
+            LLVMBuildStore(compiler->builder, LLVMConstNull(bytesTy), fieldPtr);
             continue;
         }
 
@@ -785,15 +821,17 @@ LLVMValueRef compilerGetOrCreateBoxDropFn(
 
     LLVMTypeRef mapTy = compilerGetMapType(compiler);
     LLVMTypeRef arrTy = compilerGetArrayType(compiler);
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
 
     int isMap = (valueType == mapTy);
     int isArray = (valueType == arrTy);
+    int isBytes = (valueType == bytesTy);
     int isClosure = (valueType == cloTy);
     StructInfo* structInfo = NULL;
     TraitInfo* traitInfo = NULL;
 
-    if (!isMap && !isArray && !isClosure) {
+    if (!isMap && !isArray && !isBytes && !isClosure) {
         if (isTraitObj) {
             if (traitName && traitNameLen > 0) {
                 traitInfo = compilerFindTrait(compiler, traitName, traitNameLen);
@@ -808,12 +846,13 @@ LLVMValueRef compilerGetOrCreateBoxDropFn(
         }
     }
 
-    if (!isMap && !isArray && !isClosure && !structInfo && !traitInfo) return NULL;
+    if (!isMap && !isArray && !isBytes && !isClosure && !structInfo && !traitInfo) return NULL;
 
     const char* base = NULL;
     int baseLen = 0;
     if (isMap) { base = "map"; baseLen = 3; }
     else if (isArray) { base = "array"; baseLen = 5; }
+    else if (isBytes) { base = "bytes"; baseLen = 5; }
     else if (isClosure) { base = "closure"; baseLen = 7; }
     else if (traitInfo) { base = traitInfo->name; baseLen = traitInfo->nameLength; }
     else if (structInfo) { base = structInfo->name; baseLen = structInfo->nameLength; }
@@ -877,6 +916,15 @@ LLVMValueRef compilerGetOrCreateBoxDropFn(
             LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
         }
         LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), payloadPtr);
+    } else if (isBytes) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, bytesTy, payloadPtr, "bcur");
+        LLVMValueRef freeFn = getOrCreateTuaBytesFree(compiler);
+        if (freeFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+            LLVMValueRef args1[1] = { cur };
+            LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(bytesTy), payloadPtr);
     } else if (isClosure) {
         LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, cloTy, payloadPtr, "ccur");
         LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");
@@ -1266,6 +1314,9 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
+                return compilerGetBytesType(compiler);
+            }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (type->typeArgs && type->typeArgs->length == 1) {
@@ -1311,6 +1362,7 @@ static int isBuiltinNamedTypeToken(const Token* name) {
     if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
     return 0;
 }
 
@@ -2903,6 +2955,7 @@ static int astTypeIsBuiltinNamed(const Token* name) {
     if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
     return 0;
 }
 
@@ -3711,6 +3764,7 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isStackArray = 0;
             variable->stackArrayData = NULL;
             variable->isMap = (targetType == compilerGetMapType(compiler));
+            variable->isBytes = (targetType == compilerGetBytesType(compiler));
             listAppend(compiler->current->variables, variable);
         }
     } else {
@@ -4068,6 +4122,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->boxOwns = isBoxed ? 1 : 0;
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
         variable->isMap = 0;
+        variable->isBytes = 0;
         variable->isTypedMap = 0;
         variable->mapKeyType = NULL;
         variable->mapValueType = NULL;
@@ -4156,6 +4211,11 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
             p->type->name.length == 3 && memcmp(p->type->name.start, "map", 3) == 0 &&
             (!p->type->typeArgs || p->type->typeArgs->length == 0)) {
             variable->isMap = 1;
+        }
+
+        if (p->type && p->type->kind == TYPE_NAMED &&
+            p->type->name.length == 5 && memcmp(p->type->name.start, "bytes", 5) == 0) {
+            variable->isBytes = 1;
         }
 
         if (p->type && p->type->kind == TYPE_ARRAY && valueType == compilerGetArrayType(compiler)) {

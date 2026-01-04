@@ -30,11 +30,13 @@
 
 ### 5. 标准库与内建函数
 - 先内建：`print(x)` / `println(x)`（映射到 `printf`）
+- [x] `print/println` 格式化（第一版）：`println("a {} b {}", x, y)`（占位符 `{}` 数量必须匹配参数个数）
 - 后续：字符串/数组/Map、错误类型与 `Ok()/Error()`、模块与 package
 
 ### 6. 工程化
 - CLI：`tuac <file.tua>`（编译 + 运行 + IR/ASM dump）
 - 测试：增加 `examples/` 对应的“可运行用例”，并能在脚本中批量跑
+- [x] tests 目录按主题重构命名：`map_* / array_* / trait_* / generic_* / ...`（runner 仍按 `aot_*`/`fail_*` 识别）
 
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
@@ -55,6 +57,9 @@
   - [x] `const` 视图（第一版）：`const view = x` 对 move-only 值创建共享只读视图；view 存活期间禁止 move/写
   - [x] 引用类型语法（`language/spec`）：类型层统一 `Ref<T>`；`&T` 为过渡别名并逐步废弃
   - [x] 重借用（reborrow，`language/spec`）：允许独占 -> 共享降级；共享存活期间冻结原独占引用（诊断要清晰）
+  - [x] 借用寿命（NLL v0，语句级）：借用在“最后一次使用”后结束（不必延伸到词法作用域末尾）
+  - [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（LLM/IO/ABI 的核心前置）
+  - [ ] `Slice<T>` 借用视图（指针+长度）+ NLL 规则 + ABI 冻结
 - [x] 引用读取（第一版）：`r.get()`（替代 `*r`；不提供 `*r = v` 形式写回）
 - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
 - [x] 逃逸分析（第一版）：闭包仅 boxing 被捕获的局部/参数；栈默认、堆按需（后续可继续细化临时对象内联/寄存器化）
@@ -103,7 +108,7 @@
 - [ ] 内存模型 v1：
   - [x] closure env drop + 回调 retain/release（无 GC）
   - [ ] `struct deinit` + deep drop（容器元素级析构）
-  - [ ] std 中“裸指针 free”收敛为明确的资源句柄 `close()` 或拥有型 `bytes/string` drop
+- [ ] std 中“裸指针 free”收敛为明确的资源句柄 `close()` 或拥有型 `bytes/string` drop（`bytes` 已完成，`string` 待做）
 
 ### 9. 错误与入口（建议）
 - [x] 诊断统一（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时一致）
@@ -192,21 +197,11 @@
 - `std` 提供可复用的通用库（bytes/io/json/tokenizer 等）；LLM 逻辑优先放到独立的 `llm` 包/库中（Tua + 可选 C 内核）。
 
 #### 11.0 LLM 跑通所需基础能力（分层归属）
-说明：这里列的是“要跑通 CPU baseline 推理（能加载模型并输出 token）”最常见的依赖，按归属层标注。
-- [ ] [`language/spec`] 位运算/移位：`~ & | ^ << >>`（PRNG/量化/bit-pack 解码必需）
-- [ ] [`language/spec`] 内存模型 v0：`bytes/slice` 所有权、mmap 生命周期、FFI 释放约定
-- [ ] [`tua_rt`] 大文件：流式读取 + `mmap/munmap`（POSIX 第一版；Windows stub）
-- [ ] [`tua_rt`] 并发：TLS/atomics + workqueue + CPU feature 探测（线程数/核心数）
-- [ ] [`tua_rt`] RNG：可复现 RNG 原语（seed/nextU32/nextU64）
-  - 说明：RNG 属于通用基础能力（不仅 LLM）；`llm` 层只消费它做 sampling，避免把推理专用逻辑塞进运行时
-- [ ] [`std`] `std.bytes`/`std.io`：bytes/slice 视图、端序读写、BufReader/Reader、UTF-8 边界工具
-- [ ] [`std`] `std.json`：轻量 JSON（读模型配置/metadata/推理参数）
-- [ ] [`std`] Tokenizer：BPE 或 sentencepiece（择一，先正确性再性能）
-- [ ] [`llm`] 模型格式：GGUF（建议）解析 + tensor metadata + 权重映射（mmap/stream）
-- [ ] [`llm`] 推理核心：f32 baseline `matmul/dot` + softmax +（rms/layer）norm + rope + 激活函数
-- [ ] [`llm`] KV cache：数据结构/布局/更新（prefill/decode）
-- [ ] [`llm`] 采样：temperature/top-k/top-p/repetition penalty（调用 `tua_rt` RNG）
-- [ ] [`llm`] Runner：`examples/llm/run.tua`（token-by-token 输出、参数解析、基准跑法）
+说明：本节不重复列项；以下各层的 TODO 为唯一事实来源：
+- `language/spec`：见 7（内存模型）与 11.1（通用语言/编译器能力）
+- `tua_rt`：见 11.2
+- `std`：见 11.3
+- `llm`：见 11.4
 
 #### 11.1 语言/编译器（通用能力，不专属于 LLM）
 - [x] 基础数值类型 + 溢出/转换规则（第一版）
@@ -217,8 +212,7 @@
     - [x] `(T)expr`：不检查（截断/扩展/浮点转换）
     - [x] `expr as T`：可检查转换，返回 `Option<T>`（范围检查；NaN/超范围为 `None()`）
   - [ ] 后续：FP8（E4M3/E5M2 等）具体格式与算术/向量化支持（为 AI 量化做准备）
-- [ ] 位运算/移位（`~ & | ^ << >>`）：为 PRNG/量化/bit-pack 解码准备
-- [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器；优先在 `std` 落地，必要时补语言语法/ABI）
+- [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器；`bytes` v0 已落地，`slice<T>` 待实现）
 - [x] 通用 FFI：Tua 侧声明外部符号与签名（例如 `extern fn ...`），避免在编译器里维护函数名白名单
 - [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
   - [x] CLI：`tuac` 支持 `--link-search/-L`、`--link-lib/-l`、`--link-arg`（透传到系统链接器）
@@ -237,7 +231,7 @@
 
 #### 11.3 `std`（通用库，LLM 可复用）
 - [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
-- [ ] `std.bytes` / `std.io`：Reader/BufReader、bytes 操作、UTF-8 边界工具
+- [ ] `std.bytes` / `std.io`：Reader/BufReader、bytes 操作、UTF-8 边界工具（`std.bytes` v0 已落地）
 - [ ] `std.json`（轻量实现即可）：模型配置/metadata/推理参数解析
 - [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能
 
@@ -249,11 +243,11 @@
 - [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
 - [ ] Runner：提供 `examples/llm/run.tua`（或独立 CLI 工具），通过 `tuac run ...` 运行
 
-#### 11.2 R-llm-1：性能与量化
+#### 11.5 R-llm-1：性能与量化
 - [ ] 量化：q4/q8（至少一种）+ 对应 dot kernel
 - [ ] SIMD：SSE/AVX/NEON（按平台探测），逐步替换 baseline
 - [ ] Prefill/Decode 调度：线程划分、batch、缓存友好
 
-#### 11.3 R-llm-2：工程化与生态
+#### 11.6 R-llm-2：工程化与生态
 - [ ] `std.http`（可选）：模型/配置加载
 - [ ] 流式输出：token-by-token callback/iterator 语义（对接 UI/Agent）

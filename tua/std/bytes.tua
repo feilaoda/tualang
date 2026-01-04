@@ -1,0 +1,44 @@
+import "std/rt" as rt
+
+extern fn tua_bytes_new(len: long) -> bytes
+extern fn tua_bytes_from_string_copy(s: string) -> bytes
+extern fn tua_bytes_mmap_file(path: string, outBytes: &bytes) int
+extern fn tua_bytes_len(b: bytes) long
+extern fn tua_bytes_get_u8(b: bytes, idx: long, out: &int) int
+extern fn tua_bytes_set_u8(b: bytes, idx: long, v: int) int
+extern fn tua_bytes_is_readonly(b: bytes) int
+
+object Bytes {
+    fn new(len: int) -> bytes {
+        let n: long = len
+        return tua_bytes_new(n)
+    }
+
+    fn fromString(s: string) -> bytes {
+        return tua_bytes_from_string_copy(s)
+    }
+
+    fn mmapFile(path: string) -> int, bytes {
+        let b: bytes = null
+        let err = tua_bytes_mmap_file(path, &b)
+        return err, b
+    }
+
+    fn len(b: bytes) long {
+        return tua_bytes_len(b)
+    }
+
+    fn isReadonly(b: bytes) int {
+        return tua_bytes_is_readonly(b)
+    }
+
+    fn getU8(b: bytes, idx: long) -> int, int {
+        let out: int = 0
+        let err = tua_bytes_get_u8(b, idx, &out)
+        return err, out
+    }
+
+    fn setU8(b: bytes, idx: long, v: int) int {
+        return tua_bytes_set_u8(b, idx, v)
+    }
+}

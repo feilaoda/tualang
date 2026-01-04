@@ -392,6 +392,9 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
+            if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
+                return compilerGetBytesType(compiler);
+            }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (type->typeArgs && type->typeArgs->length == 1) {

@@ -47,5 +47,12 @@ tua_err_t tua_fs_realpath_alloc(const char* path_utf8, char** out_path_utf8);
 tua_err_t tua_fs_readdir(const char* path_utf8, char*** out_names, size_t* out_count);
 void tua_fs_dirlist_free(char** names, size_t count);
 
-#endif
+// Read-only file mmap (POSIX: mmap; Windows: stub for now).
+// The returned mapping must be closed via `tua_fs_mmap_close`.
+typedef struct tua_mmap tua_mmap_t;
+tua_err_t tua_fs_mmap_ro(const char* path_utf8, tua_mmap_t** out_map);
+void tua_fs_mmap_close(tua_mmap_t* map);
+const uint8_t* tua_fs_mmap_data(tua_mmap_t* map);
+int64_t tua_fs_mmap_len(tua_mmap_t* map);
 
+#endif

@@ -33,6 +33,7 @@ typedef struct VariableRef {
 
     // Optional: container type tags for pointer-like runtime types (LLVM opaque pointers can't distinguish).
     int isMap;
+    int isBytes;
     int isTraitObj;
     const char* traitName;
     int traitNameLength;

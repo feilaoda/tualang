@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 static tua_err_t tua_read_all_fd(int fd, uint8_t** out, size_t* out_len) {
@@ -276,6 +277,84 @@ void tua_fs_dirlist_free(char** names, size_t count) {
         tua_free(names[i]);
     }
     tua_free(names);
+}
+
+typedef struct tua_mmap {
+    const uint8_t* data;
+    int64_t len;
+    int owns;
+} tua_mmap_t;
+
+static const uint8_t TUA_EMPTY_MMAP[1] = {0};
+
+tua_err_t tua_fs_mmap_ro(const char* path_utf8, tua_mmap_t** out_map) {
+    if (path_utf8 == NULL || out_map == NULL) return TUA_E_INVALID;
+    *out_map = NULL;
+
+    int fd = open(path_utf8, O_RDONLY);
+    if (fd < 0) {
+        return tua_err_from_errno(errno);
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        tua_err_t err = tua_err_from_errno(errno);
+        close(fd);
+        return err;
+    }
+    if (st.st_size < 0) {
+        close(fd);
+        return TUA_E_INVALID;
+    }
+    if ((uint64_t)st.st_size > (uint64_t)INT64_MAX) {
+        close(fd);
+        return TUA_E_NOMEM;
+    }
+
+    int64_t len = (int64_t)st.st_size;
+    const uint8_t* data = TUA_EMPTY_MMAP;
+    int owns = 0;
+
+    if (len > 0) {
+        void* addr = mmap(NULL, (size_t)len, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (addr == MAP_FAILED) {
+            tua_err_t err = tua_err_from_errno(errno);
+            close(fd);
+            return err;
+        }
+        data = (const uint8_t*)addr;
+        owns = 1;
+    }
+    close(fd);
+
+    tua_mmap_t* m = (tua_mmap_t*)tua_malloc(sizeof(tua_mmap_t));
+    if (m == NULL) {
+        if (owns) munmap((void*)data, (size_t)len);
+        return TUA_E_NOMEM;
+    }
+    m->data = data;
+    m->len = len;
+    m->owns = owns;
+    *out_map = m;
+    return TUA_OK;
+}
+
+void tua_fs_mmap_close(tua_mmap_t* map) {
+    if (map == NULL) return;
+    if (map->owns && map->data && map->len > 0) {
+        munmap((void*)map->data, (size_t)map->len);
+    }
+    tua_free(map);
+}
+
+const uint8_t* tua_fs_mmap_data(tua_mmap_t* map) {
+    if (map == NULL) return NULL;
+    return map->data;
+}
+
+int64_t tua_fs_mmap_len(tua_mmap_t* map) {
+    if (map == NULL) return 0;
+    return map->len;
 }
 
 #endif
