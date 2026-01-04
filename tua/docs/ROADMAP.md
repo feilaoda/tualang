@@ -60,6 +60,8 @@
   - [x] 借用寿命（NLL v0，语句级）：借用在“最后一次使用”后结束（不必延伸到词法作用域末尾）
   - [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（LLM/IO/ABI 的核心前置）
   - [ ] `Slice<T>` 借用视图（指针+长度）+ NLL 规则 + ABI 冻结
+    - [x] v0：`bytes.slice(off,n) -> Slice<byte>` + `Slice.len/get` + borrow 阻止 move（语句级 NLL）
+    - [ ] v1：可写 slice（`set`）、更完整的 copy/借用语义、以及 array->slice 等扩展
 - [x] 引用读取（第一版）：`r.get()`（替代 `*r`；不提供 `*r = v` 形式写回）
 - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
 - [x] 逃逸分析（第一版）：闭包仅 boxing 被捕获的局部/参数；栈默认、堆按需（后续可继续细化临时对象内联/寄存器化）

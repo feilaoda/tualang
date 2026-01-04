@@ -3322,6 +3322,13 @@ static LLVMTypeRef fieldLLVMType(Compiler* compiler, StructInfo* info, int idx) 
             if (f->type->name.length == 5 && memcmp(f->type->name.start, "bytes", 5) == 0) {
                 return compilerGetBytesType(compiler);
             }
+            if (f->type->name.length == 5 && memcmp(f->type->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (f->type->typeArgs && f->type->typeArgs->length == 1) inner = (Type*)f->type->typeArgs->head->data;
+                LLVMTypeRef innerTy = (LLVMTypeRef)astTypeToLLVMType(compiler, inner);
+                if (!innerTy) innerTy = LLVMInt8TypeInContext(compiler->context);
+                return compilerGetSliceType(compiler, innerTy);
+            }
             if (f->type->name.length == 3 && memcmp(f->type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
@@ -3831,6 +3838,12 @@ static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type) {
             }
             if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
                 return compilerGetBytesType(compiler);
+            }
+            if (type->name.length == 5 && memcmp(type->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) inner = (Type*)type->typeArgs->head->data;
+                LLVMTypeRef innerTy = inner ? astTypeToLLVMType(compiler, inner) : LLVMInt8TypeInContext(compiler->context);
+                return compilerGetSliceType(compiler, innerTy);
             }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;

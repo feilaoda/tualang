@@ -85,6 +85,8 @@ void initCompiler(Compiler* compiler) {
     compiler->mapType = NULL;
     compiler->arrayType = NULL;
     compiler->bytesType = NULL;
+    compiler->sliceTypes = listNew();
+    compiler->sliceTypeCounter = 0;
     compiler->tuaValueType = NULL;
     compiler->closureSigs = listNew();
     compiler->closureReturnSigs = listNew();
@@ -118,6 +120,11 @@ void initCompiler(Compiler* compiler) {
     compiler->hadError = false;
     compiler->panicMode = false;
 }
+
+typedef struct {
+    LLVMTypeRef elem;
+    LLVMTypeRef slice;
+} SliceTypeEntry;
 
 static int tokenSetContains(List* set, const char* name, int len) {
     if (!set || !name || len <= 0) return 0;
@@ -459,6 +466,32 @@ LLVMTypeRef compilerGetBytesType(Compiler* compiler) {
     if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_bytes");
     compiler->bytesType = LLVMPointerType(t, 0);
     return compiler->bytesType;
+}
+
+LLVMTypeRef compilerGetSliceType(Compiler* compiler, LLVMTypeRef elemType) {
+    if (!compiler || !elemType) return NULL;
+    if (!compiler->sliceTypes) compiler->sliceTypes = listNew();
+    for (int i = 0; i < compiler->sliceTypes->length; i++) {
+        SliceTypeEntry* e = (SliceTypeEntry*)listGet(compiler->sliceTypes, i);
+        if (e && e->elem == elemType) return e->slice;
+    }
+
+    LLVMContextRef ctx = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef elemPtr = LLVMPointerType(elemType, 0);
+
+    char name[64];
+    snprintf(name, sizeof(name), "tua_slice$%d", compiler->sliceTypeCounter++);
+    LLVMTypeRef st = LLVMStructCreateNamed(ctx, name);
+    LLVMTypeRef fields[2] = { elemPtr, i64 };
+    LLVMStructSetBody(st, fields, 2, 0);
+
+    LLVMTypeRef sliceTy = st;
+    SliceTypeEntry* ent = (SliceTypeEntry*)malloc(sizeof(SliceTypeEntry));
+    ent->elem = elemType;
+    ent->slice = sliceTy;
+    listAppend(compiler->sliceTypes, ent);
+    return sliceTy;
 }
 
 static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
@@ -821,12 +854,15 @@ LLVMValueRef compilerGetOrCreateBoxDropFn(
 
     LLVMTypeRef mapTy = compilerGetMapType(compiler);
     LLVMTypeRef arrTy = compilerGetArrayType(compiler);
-    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
 
     int isMap = (valueType == mapTy);
     int isArray = (valueType == arrTy);
-    int isBytes = (valueType == bytesTy);
+    int isBytes = 0;
+    if (astType && astType->kind == TYPE_NAMED &&
+        astType->name.length == 5 && memcmp(astType->name.start, "bytes", 5) == 0) {
+        isBytes = 1;
+    }
     int isClosure = (valueType == cloTy);
     StructInfo* structInfo = NULL;
     TraitInfo* traitInfo = NULL;
@@ -917,6 +953,7 @@ LLVMValueRef compilerGetOrCreateBoxDropFn(
         }
         LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), payloadPtr);
     } else if (isBytes) {
+        LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
         LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, bytesTy, payloadPtr, "bcur");
         LLVMValueRef freeFn = getOrCreateTuaBytesFree(compiler);
         if (freeFn) {
@@ -1317,6 +1354,14 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
             if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
                 return compilerGetBytesType(compiler);
             }
+            if (type->name.length == 5 && memcmp(type->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                LLVMTypeRef innerTy = inner ? typeToLLVMType(compiler, inner, false) : LLVMInt8TypeInContext(compiler->context);
+                return compilerGetSliceType(compiler, innerTy);
+            }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (type->typeArgs && type->typeArgs->length == 1) {
@@ -1363,6 +1408,7 @@ static int isBuiltinNamedTypeToken(const Token* name) {
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
     if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "Slice", 5) == 0) return 1;
     return 0;
 }
 
@@ -2956,6 +3002,7 @@ static int astTypeIsBuiltinNamed(const Token* name) {
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
     if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "Slice", 5) == 0) return 1;
     return 0;
 }
 
@@ -3764,7 +3811,11 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isStackArray = 0;
             variable->stackArrayData = NULL;
             variable->isMap = (targetType == compilerGetMapType(compiler));
-            variable->isBytes = (targetType == compilerGetBytesType(compiler));
+            // Do NOT infer `bytes` from LLVM pointer equality under opaque pointers; use AST type names only.
+            variable->isBytes = 0;
+            variable->isSlice = 0;
+            variable->sliceElemType = NULL;
+            variable->sliceElemKind = TYPE_ANY;
             listAppend(compiler->current->variables, variable);
         }
     } else {
@@ -4123,6 +4174,9 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
         variable->isMap = 0;
         variable->isBytes = 0;
+        variable->isSlice = 0;
+        variable->sliceElemType = NULL;
+        variable->sliceElemKind = TYPE_ANY;
         variable->isTypedMap = 0;
         variable->mapKeyType = NULL;
         variable->mapValueType = NULL;
@@ -4216,6 +4270,19 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         if (p->type && p->type->kind == TYPE_NAMED &&
             p->type->name.length == 5 && memcmp(p->type->name.start, "bytes", 5) == 0) {
             variable->isBytes = 1;
+        }
+
+        if (p->type && p->type->kind == TYPE_NAMED &&
+            p->type->name.length == 5 && memcmp(p->type->name.start, "Slice", 5) == 0) {
+            variable->isSlice = 1;
+            if (p->type->typeArgs && p->type->typeArgs->length == 1) {
+                Type* inner = (Type*)p->type->typeArgs->head->data;
+                variable->sliceElemType = inner ? typeToLLVMType(compiler, inner, false) : LLVMInt8TypeInContext(compiler->context);
+                variable->sliceElemKind = inner ? inner->kind : TYPE_BYTE;
+            } else {
+                variable->sliceElemType = LLVMInt8TypeInContext(compiler->context);
+                variable->sliceElemKind = TYPE_BYTE;
+            }
         }
 
         if (p->type && p->type->kind == TYPE_ARRAY && valueType == compilerGetArrayType(compiler)) {

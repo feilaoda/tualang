@@ -36,6 +36,7 @@ typedef enum {
     AT_OPTION,
     AT_MAP,
     AT_ARRAY,
+    AT_SLICE,
     AT_NAMED
 } ATypeKind;
 
@@ -63,6 +64,11 @@ typedef struct VarInfo {
     int refKind; // for isRef: 1 => mutable/exclusive, 0 => shared/readonly, -1 => unknown
     int isParam; // true if this binding is a function parameter
     int isBorrowed; // true if this binding is a borrow (non-owning view / borrow param)
+    // If this binding is a borrow view derived from an owner variable (e.g. Slice<byte> from bytes.slice),
+    // record the owner name for move/borrow diagnostics.
+    char* borrowedFrom;
+    int borrowedFromLen;
+    int borrowedFromMut; // 1 => exclusive, 0 => shared
     Scope* owner;
 } VarInfo;
 
@@ -117,6 +123,12 @@ static AType* atOption(AType* inner) {
     return t;
 }
 
+static AType* atSlice(AType* inner) {
+    AType* t = atNew(AT_SLICE);
+    t->inner = inner ? inner : atNew(AT_ANY);
+    return t;
+}
+
 static AType* atMap(AType* key, AType* value) {
     AType* t = atNew(AT_MAP);
     t->key = key ? key : atNew(AT_ANY);
@@ -147,6 +159,7 @@ static AType* atFunc(List* paramTypes, List* returnTypes) {
 
 static int atIsOption(const AType* t) { return t && t->kind == AT_OPTION; }
 static int atIsMap(const AType* t) { return t && t->kind == AT_MAP; }
+static int atIsSlice(const AType* t) { return t && t->kind == AT_SLICE; }
 static int atIsArray(const AType* t) { return t && t->kind == AT_ARRAY; }
 static int atIsAny(const AType* t) { return !t || t->kind == AT_ANY; }
 static int atIsNull(const AType* t) { return t && t->kind == AT_NULL; }
@@ -616,6 +629,9 @@ static void scopeDefine(Scope* scope, const Token* name, AType* type, int isCons
     v->refKind = isRef ? refKind : -1;
     v->isParam = isParam ? 1 : 0;
     v->isBorrowed = isBorrowed ? 1 : 0;
+    v->borrowedFrom = NULL;
+    v->borrowedFromLen = 0;
+    v->borrowedFromMut = 0;
     v->owner = scope;
     listAppend(scope->vars, v);
 }
@@ -639,6 +655,7 @@ static int varIsMoveOnly(const VarInfo* v) {
     // Shared references are copyable; exclusive references are move-only to prevent aliasing.
     if (v->isRef) return v->refKind == 1 ? 1 : 0;
     if (v->type->kind == AT_MAP || v->type->kind == AT_ARRAY) return 1;
+    if (v->type->kind == AT_SLICE) return 1; // v0: make Slice move-only to avoid silent copy extending borrow lifetime
     if (v->type->kind == AT_FUNC) return 1; // closure values own env; move-only
     if (v->type->kind == AT_NAMED) {
         // `ptr` is treated as a raw pointer and remains copyable for now.
@@ -652,6 +669,7 @@ static int atIsMoveOnly(AType* t, int isRef) {
     if (!t) return 0;
     if (isRef) return 0;
     if (t->kind == AT_MAP || t->kind == AT_ARRAY) return 1;
+    if (t->kind == AT_SLICE) return 1;
     if (t->kind == AT_FUNC) return 1;
     if (t->kind == AT_NAMED) {
         if (t->nameLen == 3 && memcmp(t->name, "ptr", 3) == 0) return 0;
@@ -755,6 +773,19 @@ static int tokenTextEquals(const Token* tok, const char* s) {
     return tok->length == n && memcmp(tok->start, s, (size_t)n) == 0;
 }
 
+// Detect `b.slice(off, n)` where `b` is a bytes variable.
+static const Token* bytesSliceOwnerName(Expr* expr) {
+    expr = unwrapGrouping(expr);
+    if (!expr) return NULL;
+    if (expr->type != EXPR_CALL) return NULL;
+    CallExpr* call = (CallExpr*)expr;
+    if (!call->callee || call->callee->type != EXPR_GET) return NULL;
+    GetExpr* get = (GetExpr*)call->callee;
+    if (!tokenTextEquals(&get->name, "slice")) return NULL;
+    if (!get->object || get->object->type != EXPR_VARIABLE) return NULL;
+    return &((VariableExpr*)get->object)->name;
+}
+
 static int tokenLooksLikeTypeNameA(const Token* tok) {
     if (!tok || !tok->start || tok->length <= 0) return 0;
     unsigned char c = (unsigned char)tok->start[0];
@@ -812,6 +843,11 @@ static AType* atFromAstType(Type* t) {
                 }
                 return atMap(atFromAstType(k), atFromAstType(v));
             }
+            if (t->name.length == 5 && memcmp(t->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (t->typeArgs && t->typeArgs->length == 1) inner = (Type*)t->typeArgs->head->data;
+                return atSlice(atFromAstType(inner));
+            }
             return atNamed(t->name.start, t->name.length);
         }
         case TYPE_FUNC: {
@@ -838,6 +874,7 @@ static int atAssignable(Compiler* compiler, AType* to, AType* from) {
     if (to->kind == from->kind) {
         if (to->kind == AT_OPTION) return atAssignable(compiler, to->inner, from->inner);
         if (to->kind == AT_MAP) return atAssignable(compiler, to->key, from->key) && atAssignable(compiler, to->value, from->value);
+        if (to->kind == AT_SLICE) return atAssignable(compiler, to->inner, from->inner);
         if (to->kind == AT_ARRAY) {
             if (!atAssignable(compiler, to->inner, from->inner)) return 0;
             if (to->arrayLen >= 0) return from->arrayLen == to->arrayLen;
@@ -2157,6 +2194,29 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 }
             }
 
+            // bytes.slice(...) borrows the bytes owner for as long as the slice binding is live.
+            // v0: shared/readonly borrow; Slice<T> is move-only to avoid silent copies extending borrows.
+            const Token* bytesSliceOwner = NULL;
+            {
+                bytesSliceOwner = bytesSliceOwnerName(v->initializer);
+                if (bytesSliceOwner) {
+                    VarInfo* bv = scopeFind(scope, bytesSliceOwner);
+                    int ok = (bv && bv->type && bv->type->kind == AT_NAMED &&
+                              bv->type->nameLen == 5 && memcmp(bv->type->name, "bytes", 5) == 0);
+                    if (!ok) {
+                        analyzeErrorAt(compiler, modulePath, v->name.line, "bytes.slice receiver must be a bytes variable");
+                    } else {
+                        // If annotated, enforce Slice<byte> for now.
+                        if (annotated && annotated->kind == AT_SLICE) {
+                            if (!annotated->inner || annotated->inner->kind != AT_BYTE) {
+                                analyzeErrorAt(compiler, modulePath, v->name.line, "bytes.slice currently returns Slice<byte> only");
+                            }
+                        }
+                        borrowCheckAndRecord(compiler, scope, bytesSliceOwner, 0, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                    }
+                }
+            }
+
             // `const view = x` creates a shared borrow view for move-only values.
             int isConstView = 0;
             if (v->isConst && !isRefBinding && v->initializer && v->initializer->type == EXPR_VARIABLE) {
@@ -2205,6 +2265,22 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             );
                         } else {
                             src->isMoved = 1;
+                            // Propagate Slice<T> borrow across moves (`let s2 = s1`).
+                            if (src->type && src->type->kind == AT_SLICE && src->borrowedFrom && src->borrowedFromLen > 0) {
+                                Token ownerTok = (Token){0};
+                                ownerTok.start = src->borrowedFrom;
+                                ownerTok.length = src->borrowedFromLen;
+                                ownerTok.line = rv->name.line;
+                                borrowCheckAndRecord(
+                                    compiler,
+                                    scope,
+                                    &ownerTok,
+                                    src->borrowedFromMut ? 1 : 0,
+                                    lastUseIndexOf(scope, &v->name),
+                                    modulePath,
+                                    rv->name.line
+                                );
+                            }
                         }
                     }
                 }
@@ -2288,6 +2364,29 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 0,
                 (isRefBinding || isConstView) ? 1 : 0
             );
+
+            // Attach borrow-source metadata for Slice<T> so moves can propagate borrows.
+            if (bytesSliceOwner) {
+                VarInfo* dst = scopeFind(scope, &v->name);
+                if (dst) {
+                    dst->borrowedFrom = (char*)malloc((size_t)bytesSliceOwner->length + 1);
+                    memcpy(dst->borrowedFrom, bytesSliceOwner->start, (size_t)bytesSliceOwner->length);
+                    dst->borrowedFrom[bytesSliceOwner->length] = '\0';
+                    dst->borrowedFromLen = bytesSliceOwner->length;
+                    dst->borrowedFromMut = 0;
+                }
+            } else if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)v->initializer;
+                VarInfo* src = scopeFind(scope, &rv->name);
+                VarInfo* dst = scopeFind(scope, &v->name);
+                if (src && dst && src->type && src->type->kind == AT_SLICE && src->borrowedFrom && src->borrowedFromLen > 0) {
+                    dst->borrowedFrom = (char*)malloc((size_t)src->borrowedFromLen + 1);
+                    memcpy(dst->borrowedFrom, src->borrowedFrom, (size_t)src->borrowedFromLen);
+                    dst->borrowedFrom[src->borrowedFromLen] = '\0';
+                    dst->borrowedFromLen = src->borrowedFromLen;
+                    dst->borrowedFromMut = src->borrowedFromMut;
+                }
+            }
             break;
         }
         case STMT_EXPR: {

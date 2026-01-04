@@ -518,7 +518,7 @@
   - 若存在期望类型且为数组类型，则 `{}` 表示空数组
   - 否则默认 `{}` 表示空 map
 
-#### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` 规划中）
+#### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` v0 已实现一部分）
 - 目标：为二进制解析（GGUF/量化/bit-pack）与大文件 mmap 提供“零拷贝读取”的基础类型。
 - `bytes`（拥有所有权，move-only，Implemented）：
   - 运行时表示：`tua_bytes*`（见 `src/tua_bytes.h`）
@@ -534,7 +534,11 @@
   - 方法（第一版）：
     - `s.len() -> long`
     - `s.get(i: long) -> T`（当前仅保证 `T` 为标量时可用；越界触发运行时错误）
-    - `s.set(i: long, v: T) -> int`（需要 `s` 为可写绑定；当前仅保证 `T` 为标量时可用）
+    - `s.set(i: long, v: T) -> int`（Planned：需要 `s` 为可写绑定；当前仅保证 `T` 为标量时可用）
+  - 当前实现（v0）：
+    - `bytes.slice(off, n) -> Slice<byte>`（只读视图，越界触发运行时错误）
+    - `Slice<T>.len()` / `Slice<T>.get(i)` 已实现（只读）
+    - `Slice<T>` 当前按 **move-only** 处理（避免隐式 copy 导致 borrow 生命周期变长且难以静态追踪）
 
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景

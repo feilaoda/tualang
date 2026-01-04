@@ -1,0 +1,9 @@
+import "std/bytes" as bstd
+
+let b: bytes = bstd.Bytes.fromString("abc")
+let s: Slice<byte> = b.slice(1L, 2L)
+
+assert(s.len() == 2L)
+assert((int)s.get(0L) == 98) // 'b'
+assert((int)s.get(1L) == 99) // 'c'
+

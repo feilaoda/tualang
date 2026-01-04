@@ -74,6 +74,9 @@ typedef struct Compiler{
 	    LLVMTypeRef mapType;     // cached %tua_map* type
 	    LLVMTypeRef arrayType;   // cached %tua_array* type
 	    LLVMTypeRef bytesType;   // cached %tua_bytes* type
+        // Cached Slice<T> struct types (keyed by element LLVMTypeRef).
+        List* sliceTypes;       // List<SliceTypeEntry*>
+        int sliceTypeCounter;
 	    LLVMTypeRef tuaValueType; // cached {i32, i64} tagged value type
 	    List* closureSigs;       // List<ClosureSig*>, variable name -> function type
 	    List* closureReturnSigs; // List<ClosureReturnSig*>, function name -> closure return signature(s) for nested returns
@@ -329,6 +332,7 @@ void compilerEmitDropForCurrentFunctionScopes(Compiler* compiler);
 	LLVMTypeRef compilerGetMapType(Compiler* compiler);
 	LLVMTypeRef compilerGetArrayType(Compiler* compiler);
 	LLVMTypeRef compilerGetBytesType(Compiler* compiler);
+    LLVMTypeRef compilerGetSliceType(Compiler* compiler, LLVMTypeRef elemType);
 	LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
 	LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner);
 LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info);

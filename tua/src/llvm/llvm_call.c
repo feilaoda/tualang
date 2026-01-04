@@ -395,6 +395,14 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
             if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
                 return compilerGetBytesType(compiler);
             }
+            if (type->name.length == 5 && memcmp(type->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) {
+                    inner = (Type*)type->typeArgs->head->data;
+                }
+                LLVMTypeRef innerTy = inner ? typeToLLVMType(compiler, inner) : LLVMInt8TypeInContext(compiler->context);
+                return compilerGetSliceType(compiler, innerTy);
+            }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (type->typeArgs && type->typeArgs->length == 1) {
@@ -1577,6 +1585,47 @@ static LLVMValueRef getOrCreateTuaArrayPush(Compiler* compiler) {
     LLVMTypeRef params[2] = { arrType, i8ptr };
     LLVMTypeRef fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 2, 0);
     return LLVMAddFunction(compiler->module, "tua_array_push", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaBytesLen(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_len");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef params[1] = { bytesTy };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_len", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaBytesData(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_data");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { bytesTy };
+    LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_data", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaBytesGetU8(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_get_u8");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { bytesTy, i64, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_get_u8", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaBytesSetU8(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_set_u8");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { bytesTy, i64, i32 };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_set_u8", fnType);
 }
 
 static LLVMValueRef getOrCreateTuaParseInt(Compiler* compiler) {
@@ -3079,6 +3128,245 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             compilerErrorAt(compiler, get->name.line, "unknown array method: %.*s", get->name.length, get->name.start);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return NULL;
+        }
+
+        // Bytes built-in methods:
+        // - `b.len() -> long`
+        // - `b.get(i: long) -> byte` (panics on invalid)
+        // - `b.set(i: long, v: int) -> int` (returns err code)
+        // - `b.slice(off: long, n: long) -> Slice<byte>` (panics on invalid)
+        if (recvVar.value && recvVar.isBytes) {
+            LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+            LLVMValueRef bytesPtr = NULL;
+            if (recvVar.isBoxed) {
+                if (!recvVar.boxPtrType) {
+                    emitDebug("Missing boxed pointer type for bytes receiver\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cell");
+                bytesPtr = LLVMBuildLoad2(compiler->builder, bytesTy, cell, "bval");
+            } else {
+                bytesPtr = LLVMBuildLoad2(compiler->builder, bytesTy, recvVar.value, "bval");
+            }
+
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+            LLVMTypeRef i8 = LLVMInt8TypeInContext(compiler->context);
+
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("bytes.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaBytesLen(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { bytesPtr };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "blen");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "get")) {
+                if (got != 1) {
+                    emitDebug("bytes.get expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                if (!idx) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                idx = castValueToType(compiler, idx, i64);
+                LLVMValueRef outSlot = LLVMBuildAlloca(compiler->builder, i32, "bout");
+                LLVMValueRef fn = getOrCreateTuaBytesGetU8(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args3[3] = { bytesPtr, idx, outSlot };
+                LLVMValueRef err = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "berr");
+
+                LLVMValueRef ok = LLVMBuildICmp(compiler->builder, LLVMIntEQ, err, LLVMConstInt(i32, 0, 0), "bok");
+                LLVMBasicBlockRef thenB = LLVMAppendBasicBlock(compiler->current->func, "bget_ok");
+                LLVMBasicBlockRef elseB = LLVMAppendBasicBlock(compiler->current->func, "bget_bad");
+                LLVMBasicBlockRef contB = LLVMAppendBasicBlock(compiler->current->func, "bget_cont");
+                LLVMBuildCondBr(compiler->builder, ok, thenB, elseB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, elseB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "bytes.get out of bounds or null", "bgetmsg");
+                LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, thenB);
+                LLVMValueRef out32 = LLVMBuildLoad2(compiler->builder, i32, outSlot, "out32");
+                LLVMValueRef out8 = LLVMBuildTrunc(compiler->builder, out32, i8, "out8");
+                LLVMBuildBr(compiler->builder, contB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, i8, "bget");
+                LLVMAddIncoming(phi, &out8, &thenB, 1);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return phi;
+            }
+
+            if (tokenEquals(&get->name, "set")) {
+                if (got != 2) {
+                    emitDebug("bytes.set expects 2 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef v0 = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                if (!idx || !v0) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                idx = castValueToType(compiler, idx, i64);
+                v0 = castValueToType(compiler, v0, i32);
+                LLVMValueRef fn = getOrCreateTuaBytesSetU8(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args3[3] = { bytesPtr, idx, v0 };
+                LLVMValueRef err = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "bset");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return err;
+            }
+
+            if (tokenEquals(&get->name, "slice")) {
+                if (got != 2) {
+                    emitDebug("bytes.slice expects 2 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef off = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef n = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                if (!off || !n) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                off = castValueToType(compiler, off, i64);
+                n = castValueToType(compiler, n, i64);
+
+                LLVMValueRef lenFn = getOrCreateTuaBytesLen(compiler);
+                LLVMTypeRef lenTy = LLVMGlobalGetValueType(lenFn);
+                LLVMValueRef lenArgs[1] = { bytesPtr };
+                LLVMValueRef blen = LLVMBuildCall2(compiler->builder, lenTy, lenFn, lenArgs, 1, "blen2");
+
+                LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
+                LLVMValueRef offNeg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, off, zero, "offneg");
+                LLVMValueRef nNeg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, n, zero, "nneg");
+                LLVMValueRef sum = LLVMBuildAdd(compiler->builder, off, n, "sum");
+                LLVMValueRef oob = LLVMBuildICmp(compiler->builder, LLVMIntSGT, sum, blen, "oob");
+                LLVMValueRef bad1 = LLVMBuildOr(compiler->builder, offNeg, nNeg, "bad1");
+                LLVMValueRef bad = LLVMBuildOr(compiler->builder, bad1, oob, "bad");
+
+                LLVMBasicBlockRef okB = LLVMAppendBasicBlock(compiler->current->func, "bs_ok");
+                LLVMBasicBlockRef badB = LLVMAppendBasicBlock(compiler->current->func, "bs_bad");
+                LLVMBasicBlockRef contB = LLVMAppendBasicBlock(compiler->current->func, "bs_cont");
+                LLVMBuildCondBr(compiler->builder, bad, badB, okB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, badB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "bytes.slice out of bounds or null", "bsmsg");
+                LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, okB);
+                LLVMValueRef dataFn = getOrCreateTuaBytesData(compiler);
+                LLVMTypeRef dataTy = LLVMGlobalGetValueType(dataFn);
+                LLVMValueRef dataArgs[1] = { bytesPtr };
+                LLVMValueRef data = LLVMBuildCall2(compiler->builder, dataTy, dataFn, dataArgs, 1, "bdata");
+                LLVMValueRef dataOff = LLVMBuildGEP2(compiler->builder, i8, data, &off, 1, "bdata_off");
+
+                LLVMTypeRef sliceTy = compilerGetSliceType(compiler, i8);
+                LLVMValueRef s = LLVMGetUndef(sliceTy);
+                s = LLVMBuildInsertValue(compiler->builder, s, dataOff, 0, "s0");
+                s = LLVMBuildInsertValue(compiler->builder, s, n, 1, "s1");
+                LLVMBuildBr(compiler->builder, contB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, sliceTy, "slice");
+                LLVMAddIncoming(phi, &s, &okB, 1);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return phi;
+            }
+
+            compilerErrorAt(compiler, get->name.line, "unknown bytes method: %.*s", get->name.length, get->name.start);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+
+        // Slice<T> built-in methods (v0: readonly only):
+        // - `s.len() -> long`
+        // - `s.get(i: long) -> T` (panics on invalid)
+        if (recvVar.value && recvVar.isSlice && recvVar.sliceElemType) {
+            LLVMValueRef sliceVal = loadLocalValue(compiler, recvVar);
+            if (!sliceVal) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+            LLVMTypeRef elemTy = recvVar.sliceElemType;
+
+            LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, sliceVal, 0, "sdata");
+            LLVMValueRef len = LLVMBuildExtractValue(compiler->builder, sliceVal, 1, "slen");
+
+            if (tokenEquals(&get->name, "len")) {
+                if (got != 0) {
+                    emitDebug("Slice.len expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return len;
+            }
+
+            if (tokenEquals(&get->name, "get")) {
+                if (got != 1) {
+                    emitDebug("Slice.get expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                if (!idx) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                idx = castValueToType(compiler, idx, i64);
+                LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
+                LLVMValueRef neg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, idx, zero, "idxneg");
+                LLVMValueRef ge = LLVMBuildICmp(compiler->builder, LLVMIntSGE, idx, len, "idxge");
+                LLVMValueRef bad = LLVMBuildOr(compiler->builder, neg, ge, "bad");
+
+                LLVMBasicBlockRef okB = LLVMAppendBasicBlock(compiler->current->func, "sg_ok");
+                LLVMBasicBlockRef badB = LLVMAppendBasicBlock(compiler->current->func, "sg_bad");
+                LLVMBasicBlockRef contB = LLVMAppendBasicBlock(compiler->current->func, "sg_cont");
+                LLVMBuildCondBr(compiler->builder, bad, badB, okB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, badB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "Slice.get out of bounds", "sgmsg");
+                LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, okB);
+                LLVMTypeRef elemPtrTy = LLVMPointerType(elemTy, 0);
+                LLVMValueRef typed = castValueToType(compiler, data, elemPtrTy);
+                LLVMValueRef ptr = LLVMBuildGEP2(compiler->builder, elemTy, typed, &idx, 1, "ep");
+                LLVMValueRef val = LLVMBuildLoad2(compiler->builder, elemTy, ptr, "sv");
+                LLVMBuildBr(compiler->builder, contB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, elemTy, "sget");
+                LLVMAddIncoming(phi, &val, &okB, 1);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return phi;
+            }
         }
 
         // Map built-in methods: `m.hasKey(k)`, `m.get(k)`, `m.len()`

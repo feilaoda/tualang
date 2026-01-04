@@ -1,0 +1,10 @@
+import "std/bytes" as bstd
+
+let b: bytes = bstd.Bytes.fromString("abc")
+let s: Slice<byte> = b.slice(0L, 1L)
+
+// cannot move because `s` still borrows `b`
+let b2 = b
+
+assert(s.len() == 1L)
+

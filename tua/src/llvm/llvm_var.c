@@ -16,6 +16,7 @@ static int isBuiltinNamedTypeToken(const Token* name) {
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
     if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "Slice", 5) == 0) return 1;
     return 0;
 }
 
@@ -307,6 +308,12 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
             }
             if (type->name.length == 5 && memcmp(type->name.start, "bytes", 5) == 0) {
                 return compilerGetBytesType(compiler);
+            }
+            if (type->name.length == 5 && memcmp(type->name.start, "Slice", 5) == 0) {
+                Type* inner = NULL;
+                if (type->typeArgs && type->typeArgs->length == 1) inner = (Type*)type->typeArgs->head->data;
+                LLVMTypeRef innerTy = inner ? toLLVMType(compiler, inner) : LLVMInt8TypeInContext(compiler->context);
+                return compilerGetSliceType(compiler, innerTy);
             }
             if (type->name.length == 6 && memcmp(type->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
@@ -1740,6 +1747,9 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     variable->isMap = 0;
     variable->isBytes = 0;
+    variable->isSlice = 0;
+    variable->sliceElemType = NULL;
+    variable->sliceElemKind = TYPE_ANY;
     variable->isTraitObj = 0;
     variable->traitName = NULL;
     variable->traitNameLength = 0;
@@ -1793,6 +1803,24 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->traitNameLength = ti->nameLength;
             variable->typeName = NULL;
             variable->typeNameLength = 0;
+        }
+    }
+
+    if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+        stmt->type->name.length == 5 && memcmp(stmt->type->name.start, "bytes", 5) == 0) {
+        variable->isBytes = 1;
+    }
+
+    if (stmt->type && stmt->type->kind == TYPE_NAMED &&
+        stmt->type->name.length == 5 && memcmp(stmt->type->name.start, "Slice", 5) == 0) {
+        variable->isSlice = 1;
+        if (stmt->type->typeArgs && stmt->type->typeArgs->length == 1) {
+            Type* inner = (Type*)stmt->type->typeArgs->head->data;
+            variable->sliceElemType = inner ? toLLVMType(compiler, inner) : LLVMInt8TypeInContext(compiler->context);
+            variable->sliceElemKind = inner ? inner->kind : TYPE_BYTE;
+        } else {
+            variable->sliceElemType = LLVMInt8TypeInContext(compiler->context);
+            variable->sliceElemKind = TYPE_BYTE;
         }
     }
 
@@ -1870,10 +1898,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->isMap = 1;
     }
 
-    // `bytes` is an owning runtime handle.
-    if (variable->type == compilerGetBytesType(compiler)) {
-        variable->isBytes = 1;
-    }
+    // Note: do NOT infer `bytes` from LLVM type equality under opaque pointers; use AST type names.
 
     // Propagate container kind for typed-map index reads that return handles by value:
     // `let v = m["k"]` where `m: map<..., map<...>>` => `v` is a map handle.
@@ -1933,6 +1958,11 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             }
             if (!variable->isBytes && base.isBytes) {
                 variable->isBytes = 1;
+            }
+            if (!variable->isSlice && base.isSlice) {
+                variable->isSlice = 1;
+                variable->sliceElemType = base.sliceElemType;
+                variable->sliceElemKind = base.sliceElemKind;
             }
         }
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
