@@ -108,4 +108,10 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 	LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);
 	LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr);
 
+// Closure capture analysis helper.
+// Returns a Token-set (List<Token*>) that must be freed by the caller:
+// - free each Token* element
+// - then listFree(list)
+List* compilerComputeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr);
+
 #endif

@@ -1142,7 +1142,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         }
     }
 
-    int shouldBox = compiler && compiler->boxAllLocals;
+    int shouldBox = compilerShouldBoxLocal(compiler, stmt->name.start, stmt->name.length);
     LLVMTypeRef boxPtrType = shouldBox ? LLVMPointerType(valueType, 0) : NULL;
     LLVMTypeRef slotElemType = shouldBox ? boxPtrType : valueType;
     LLVMValueRef slot = buildEntryAlloca(compiler, slotElemType, var);

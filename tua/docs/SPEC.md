@@ -212,7 +212,7 @@
     - `f(args...)`
     - 立即调用：`(fn(...) -> T { ... })(args...)`
   - 实现策略（当前 LLVM-JIT 版本）：
-    - 当函数体内出现匿名函数时，本函数的局部变量/参数会自动使用“heap box”存储以保证被捕获后仍然有效
+    - 逃逸分析（第一版，Status: Implemented）：仅将**被闭包捕获**的局部变量/参数放入 “heap box”，未捕获的局部仍保持栈分配（降低闭包带来的全局 boxing 开销）
     - box/env 使用引用计数 box（`tua_box_alloc/inc/dec`）；closure drop 时释放 env（无 GC）
     - 对于会“保存到未来再调用”的回调（如 `afterMs/post/*_async_cl`），runtime 在注册时会 retain 一份回调 env，并在触发/取消/错误路径 release（避免回调引用外层变量时产生悬垂）
   - 当前限制（后续规划补齐）：

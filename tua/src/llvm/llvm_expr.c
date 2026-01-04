@@ -1351,7 +1351,7 @@ static void collectNestedLambdasStmt(List* lambdas, Stmt* stmt) {
     }
 }
 
-static List* computeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
+List* compilerComputeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
     (void)compiler;
     List* locals = listNew();
     if (expr->params) {
@@ -1388,7 +1388,7 @@ static List* computeLambdaFreeNames(Compiler* compiler, LambdaExpr* expr) {
     for (ListNode* n = nested->head; n != NULL; n = n->next) {
         LambdaExpr* child = (LambdaExpr*)n->data;
         if (!child) continue;
-        List* childFree = computeLambdaFreeNames(compiler, child);
+        List* childFree = compilerComputeLambdaFreeNames(compiler, child);
         for (ListNode* m = childFree ? childFree->head : NULL; m != NULL; m = m->next) {
             Token* t = (Token*)m->data;
             if (!t) continue;
@@ -4377,7 +4377,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     if (!compiler || !expr) return NULL;
 
     // Compute direct free variable names (excluding nested lambdas).
-    List* freeNames = computeLambdaFreeNames(compiler, expr);
+    List* freeNames = compilerComputeLambdaFreeNames(compiler, expr);
 
     LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;

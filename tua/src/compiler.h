@@ -65,6 +65,10 @@ typedef struct Compiler{
 
     // Closure / lambda (LLVM JIT path)
     int boxAllLocals;        // when true, locals/params stored in heap boxes
+    // Escape analysis v1: when non-NULL, this function-scoped name set (List<Token*>) indicates
+    // which locals/params must be boxed because they are captured by an escaping closure.
+    // When set, codegen should box only these names (unless boxAllLocals is also set).
+    List* boxedLocals;
     int lambdaCount;         // unique lambda id
 	    LLVMTypeRef closureType; // cached {ptr,ptr} closure value type
 	    LLVMTypeRef mapType;     // cached %tua_map* type
@@ -124,6 +128,9 @@ typedef struct Compiler{
     // Generic diagnostics: instantiation backtrace for monomorphization errors.
     List* genericInstStack; // List<GenericInstFrame*>
 } Compiler;
+
+// Returns true if the current function should box the local binding `name` (escape analysis).
+int compilerShouldBoxLocal(Compiler* compiler, const char* name, int nameLen);
 
 typedef struct GenericInstFrame {
     const char* file; // may be NULL

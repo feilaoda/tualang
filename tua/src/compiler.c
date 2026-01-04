@@ -79,6 +79,7 @@ void initCompiler(Compiler* compiler) {
     compiler->wantMultiValue = 0;
 
     compiler->boxAllLocals = 0;
+    compiler->boxedLocals = NULL;
     compiler->lambdaCount = 0;
     compiler->closureType = NULL;
     compiler->mapType = NULL;
@@ -115,6 +116,43 @@ void initCompiler(Compiler* compiler) {
     // Debug information
     compiler->hadError = false;
     compiler->panicMode = false;
+}
+
+static int tokenSetContains(List* set, const char* name, int len) {
+    if (!set || !name || len <= 0) return 0;
+    for (ListNode* n = set->head; n != NULL; n = n->next) {
+        Token* t = (Token*)n->data;
+        if (!t) continue;
+        if (t->length != len) continue;
+        if (memcmp(t->start, name, (size_t)len) == 0) return 1;
+    }
+    return 0;
+}
+
+static void tokenSetAdd(List* set, const char* name, int len) {
+    if (!set || !name || len <= 0) return;
+    if (tokenSetContains(set, name, len)) return;
+    Token* t = (Token*)malloc(sizeof(Token));
+    memset(t, 0, sizeof(*t));
+    t->type = TOKEN_IDENTIFIER;
+    t->start = name;
+    t->length = len;
+    listAppend(set, t);
+}
+
+static void tokenSetFree(List* set) {
+    if (!set) return;
+    for (ListNode* n = set->head; n != NULL; n = n->next) {
+        free(n->data);
+    }
+    listFree(set);
+}
+
+int compilerShouldBoxLocal(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler) return 0;
+    if (compiler->boxAllLocals) return 1;
+    if (!compiler->boxedLocals) return 0;
+    return tokenSetContains(compiler->boxedLocals, name, nameLen);
 }
 
 static void compilerPrintGenericInstStack(Compiler* compiler) {
@@ -2123,6 +2161,172 @@ static int stmtHasLambdaLiteral(Stmt* s) {
     }
 }
 
+static void collectTopLevelLambdasExpr(List* lambdas, Expr* e);
+static void collectTopLevelLambdasStmt(List* lambdas, Stmt* s) {
+    if (!lambdas || !s) return;
+    if (s->type == STMT_PRIVATE) {
+        collectTopLevelLambdasStmt(lambdas, ((PrivateStmt*)s)->inner);
+        return;
+    }
+    // Do not traverse into nested named function declarations; they are compiled separately.
+    if (s->type == STMT_FUNC) return;
+
+    switch (s->type) {
+        case STMT_VAR:
+            collectTopLevelLambdasExpr(lambdas, ((VarStmt*)s)->initializer);
+            break;
+        case STMT_DESTRUCTURE:
+            collectTopLevelLambdasExpr(lambdas, ((DestructureStmt*)s)->value);
+            break;
+        case STMT_EXPR:
+            collectTopLevelLambdasExpr(lambdas, ((ExprStmt*)s)->expression);
+            break;
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)s;
+            if (r->values) {
+                for (ListNode* n = r->values->head; n != NULL; n = n->next) {
+                    collectTopLevelLambdasExpr(lambdas, (Expr*)n->data);
+                }
+            } else {
+                collectTopLevelLambdasExpr(lambdas, r->value);
+            }
+            break;
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)s;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectTopLevelLambdasStmt(lambdas, (Stmt*)n->data);
+            }
+            break;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)s;
+            collectTopLevelLambdasExpr(lambdas, i->condition);
+            collectTopLevelLambdasStmt(lambdas, i->thenBranch);
+            collectTopLevelLambdasStmt(lambdas, i->elseBranch);
+            break;
+        }
+        case STMT_FOR: {
+            ForStmt* f = (ForStmt*)s;
+            collectTopLevelLambdasStmt(lambdas, f->initializer);
+            collectTopLevelLambdasExpr(lambdas, f->condition);
+            collectTopLevelLambdasExpr(lambdas, f->increment);
+            collectTopLevelLambdasStmt(lambdas, f->body);
+            break;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* fi = (ForInStmt*)s;
+            collectTopLevelLambdasExpr(lambdas, fi->range);
+            collectTopLevelLambdasStmt(lambdas, fi->body);
+            break;
+        }
+        case STMT_WHILE: {
+            WhileStmt* w = (WhileStmt*)s;
+            collectTopLevelLambdasExpr(lambdas, w->condition);
+            collectTopLevelLambdasStmt(lambdas, w->body);
+            break;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* dw = (DoWhileStmt*)s;
+            collectTopLevelLambdasStmt(lambdas, dw->body);
+            collectTopLevelLambdasExpr(lambdas, dw->condition);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void collectTopLevelLambdasExpr(List* lambdas, Expr* e) {
+    if (!lambdas || !e) return;
+    if (e->type == EXPR_LAMBDA) {
+        listAppend(lambdas, e);
+        return; // stop at nested lambda; captured vars will be handled transitively by this lambda's free set
+    }
+    switch (e->type) {
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, b->left);
+            collectTopLevelLambdasExpr(lambdas, b->right);
+            break;
+        }
+        case EXPR_UNARY:
+            collectTopLevelLambdasExpr(lambdas, ((UnaryExpr*)e)->right);
+            break;
+        case EXPR_GROUPING:
+            collectTopLevelLambdasExpr(lambdas, ((GroupingExpr*)e)->expression);
+            break;
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, c->callee);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectTopLevelLambdasExpr(lambdas, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_ASSIGN:
+            collectTopLevelLambdasExpr(lambdas, ((AssignExpr*)e)->value);
+            break;
+        case EXPR_GET:
+            collectTopLevelLambdasExpr(lambdas, ((GetExpr*)e)->object);
+            break;
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, s->object);
+            collectTopLevelLambdasExpr(lambdas, s->value);
+            break;
+        }
+        case EXPR_CAST:
+            collectTopLevelLambdasExpr(lambdas, ((CastExpr*)e)->value);
+            break;
+        case EXPR_POSTFIX:
+            collectTopLevelLambdasExpr(lambdas, ((PostfixExpr*)e)->operand);
+            break;
+        case EXPR_PREFIX:
+            collectTopLevelLambdasExpr(lambdas, ((PrefixExpr*)e)->operand);
+            break;
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me) collectTopLevelLambdasExpr(lambdas, me->value);
+            }
+            break;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                collectTopLevelLambdasExpr(lambdas, (Expr*)n->data);
+            }
+            break;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* i = (IndexExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, i->object);
+            collectTopLevelLambdasExpr(lambdas, i->index);
+            break;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* s = (IndexSetExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, s->object);
+            collectTopLevelLambdasExpr(lambdas, s->index);
+            collectTopLevelLambdasExpr(lambdas, s->value);
+            break;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, si->callee);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectTopLevelLambdasExpr(lambdas, f->value);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 static int tailrecIsSelfCall(Compiler* compiler, const Token* calleeName) {
     if (!compiler || !calleeName) return 0;
     if (!compiler->current || !compiler->current->func) return 0;
@@ -3442,7 +3646,7 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             memcpy(varName, nameTok->start, (size_t)nameTok->length);
             varName[nameTok->length] = '\0';
 
-            int isBoxed = compiler->boxAllLocals;
+            int isBoxed = compilerShouldBoxLocal(compiler, nameTok->start, nameTok->length);
             LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(targetType, 0) : NULL;
             LLVMValueRef slot = NULL;
             if (isBoxed) {
@@ -3548,14 +3752,36 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     memcpy(funcName, stmt->name.start, (size_t)stmt->name.length);
     funcName[stmt->name.length] = '\0';
 
-    // If this function contains any lambda literal, box all locals/params to make
-    // upvalue-by-reference safe without a separate "close upvalues" phase.
+    // Escape analysis v1 (closures): box only locals/params captured by any top-level lambda in this function.
+    // This keeps closure-by-reference safe while avoiding boxing unrelated locals.
     int savedBox = compiler->boxAllLocals;
+    List* savedBoxedLocals = compiler->boxedLocals;
     int containsLambda = 0;
     for (ListNode* n = stmt->body ? stmt->body->head : NULL; n != NULL; n = n->next) {
         if (stmtHasLambdaLiteral((Stmt*)n->data)) { containsLambda = 1; break; }
     }
-    compiler->boxAllLocals = containsLambda ? 1 : savedBox;
+    compiler->boxAllLocals = savedBox;
+    compiler->boxedLocals = NULL;
+    if (containsLambda) {
+        List* lambdas = listNew();
+        for (ListNode* n = stmt->body ? stmt->body->head : NULL; n != NULL; n = n->next) {
+            collectTopLevelLambdasStmt(lambdas, (Stmt*)n->data);
+        }
+
+        List* boxed = listNew();
+        for (ListNode* n = lambdas->head; n != NULL; n = n->next) {
+            LambdaExpr* le = (LambdaExpr*)n->data;
+            if (!le) continue;
+            List* freeNames = compilerComputeLambdaFreeNames(compiler, le);
+            for (ListNode* m = freeNames ? freeNames->head : NULL; m != NULL; m = m->next) {
+                Token* t = (Token*)m->data;
+                if (t) tokenSetAdd(boxed, t->start, t->length);
+            }
+            tokenSetFree(freeNames);
+        }
+        listFree(lambdas);
+        compiler->boxedLocals = boxed->length > 0 ? boxed : (tokenSetFree(boxed), (List*)NULL);
+    }
 
     int paramCount = stmt->params ? stmt->params->length : 0;
     LLVMTypeRef* paramTypes = NULL;
@@ -3699,10 +3925,10 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     funcBlock->labels = listNew();
     compiler->current = funcBlock;
 
-    // Tail recursion elimination: enable only when this function is not using boxing for closures.
+    // Tail recursion elimination: enable only when this function does not use boxing for closures.
     // Boxing makes tail-call frame reuse observable for captured variables.
     TailrecState tr = {0};
-    tr.enabled = compiler->boxAllLocals ? 0 : 1;
+    tr.enabled = (compiler->boxAllLocals || (compiler->boxedLocals && compiler->boxedLocals->length > 0)) ? 0 : 1;
     tr.func = func;
     tr.paramCount = paramCount;
     if (paramCount > 0) {
@@ -3729,7 +3955,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         paramName[p->name.length] = '\0';
 
         LLVMValueRef slot = NULL;
-        int isBoxed = compiler->boxAllLocals;
+        int isBoxed = compilerShouldBoxLocal(compiler, p->name.start, p->name.length);
         LLVMTypeRef valueType = paramTypes[i];
         LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(valueType, 0) : NULL;
         Type* pType = (p && p->type) ? compilerResolveGenericType(compiler, p->type) : NULL;
@@ -3962,6 +4188,8 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compiler->current = savedCurrent;
     LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
     compiler->boxAllLocals = savedBox;
+    if (compiler->boxedLocals && compiler->boxedLocals != savedBoxedLocals) tokenSetFree(compiler->boxedLocals);
+    compiler->boxedLocals = savedBoxedLocals;
     compiler->lastSetFilePath = savedLastSetFilePath;
     compiler->lastSetLine = savedLastSetLine;
     compiler->lastSetCol = savedLastSetCol;

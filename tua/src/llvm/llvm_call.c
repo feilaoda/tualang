@@ -4773,6 +4773,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         } else {
         int genericTemplateSeen = 0;
         int genericInferFailed = 0;
+        GenericFuncTemplate* seenTmpl = NULL;
 
         // v0.5: type argument inference for generic calls when no explicit `<T>` is provided.
         // If a generic template exists for this name, infer from argument expressions and instantiate.
@@ -4804,6 +4805,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
             if (tmpl && tmpl->qualifiedName && tmpl->qualifiedNameLen > 0) {
                 genericTemplateSeen = 1;
+                seenTmpl = tmpl;
                 List* inferred = inferTypeArgsForGenericCall(compiler, tmpl, expr);
                 if (inferred) {
                     func = compilerInstantiateGenericFunc(compiler, tmpl->qualifiedName, tmpl->qualifiedNameLen, inferred, &callee->name);
@@ -4855,15 +4857,32 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
 
         if (!func && genericTemplateSeen && genericInferFailed) {
-            compilerErrorAtToken(
-                compiler,
-                &callee->name,
-                "cannot infer generic type arguments for '%.*s'; write '%.*s<...>(...)'",
-                callee->name.length,
-                callee->name.start,
-                callee->name.length,
-                callee->name.start
-            );
+            int expectedTypeParams = 0;
+            if (seenTmpl && seenTmpl->decl && seenTmpl->decl->typeParams) {
+                expectedTypeParams = seenTmpl->decl->typeParams->length;
+            }
+            if (expectedTypeParams > 0) {
+                compilerErrorAtToken(
+                    compiler,
+                    &callee->name,
+                    "cannot infer generic type arguments for '%.*s' (expects %d type params); write '%.*s<...>(...)'",
+                    callee->name.length,
+                    callee->name.start,
+                    expectedTypeParams,
+                    callee->name.length,
+                    callee->name.start
+                );
+            } else {
+                compilerErrorAtToken(
+                    compiler,
+                    &callee->name,
+                    "cannot infer generic type arguments for '%.*s'; write '%.*s<...>(...)'",
+                    callee->name.length,
+                    callee->name.start,
+                    callee->name.length,
+                    callee->name.start
+                );
+            }
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             free(name);
             return NULL;
