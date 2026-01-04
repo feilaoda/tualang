@@ -1,0 +1,10 @@
+import "std/bytes"
+
+let b: bytes = bytes.Bytes.fromString("abc")
+assert(b != null)
+assert(bytes.Bytes.len(b) == 3L)
+
+let s: Slice<byte> = b.slice(1L, 2L)
+assert(s.len() == 2L)
+assert((int)s.get(0L) == 98) // 'b'
+

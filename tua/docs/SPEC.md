@@ -369,7 +369,7 @@
 ### 8. 模块（Status: Implemented）
 - 默认全部导出；声明前加 `private` 则不导出（`private fn/struct/object/enum`）
 - 语法：
-  - `import "relative/or/absolute/path.tua"`：执行模块，并把该模块所有可导出符号引入到当前作用域（import-all）
+  - `import "relative/or/absolute/path.tua"`：执行模块，并把该模块所有可导出符号引入到当前作用域（import-all）；同时自动生成默认命名空间别名（见下）
   - `import "path.tua" as ns`：执行模块，但不把符号直接引入当前作用域；后续通过 `ns.Name` 访问（命名空间导入）
   - `import A,B,C from "path.tua"`：把导出的符号引入到当前模块作用域
     - 支持重命名：`import A as A1, B as B1 from "path.tua"`
@@ -386,6 +386,11 @@
   - 仅支持导入 `fn/struct/trait/object/enum`；不支持导入模块级变量
   - 任何导入形式（import-all / named import / namespace import）若引入同名符号（或同名命名空间别名）冲突，会直接报错并停止（可用 `as` 或命名空间导入来消歧义）
   - 命名空间导入的成员访问：已支持 `ns.F(...)`、`ns.StructCtor(...)`、`ns.Obj.method(...)`、`ns.Enum.Variant`
+  - 默认命名空间别名（Implemented）：
+    - 对于 `import "path"`（无 `as` / 无 `from`），编译器会用 **路径最后一段文件名（去掉 `.tua`）** 生成一个默认命名空间别名
+      - 例：`import "std/bytes"` 可用 `bytes.Bytes.xxx` 访问
+    - 若文件名不是合法标识符，会做最小的“标识符化”处理（非法字符替换为 `_`；首字符为数字或关键字则前缀 `_`）
+    - 若该默认别名与当前作用域已有符号冲突，会报错并提示用 `as` 重命名
 
 ### 8.5 泛型与单态化（Status: Partial，高优先级）
 - 目标：提供通用类型参数（函数/struct/trait），并采用 **编译期单态化**（monomorphization）实现零成本抽象

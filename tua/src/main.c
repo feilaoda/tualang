@@ -536,6 +536,66 @@ static char* resolveImportPath(ModuleSystem* sys, ModuleInfo* module, const char
     return ensureTuaExt(joinPath(module->dir, raw));
 }
 
+static int isKeywordIdent(const char* s, int len) {
+    if (!s || len <= 0) return 0;
+    // Keep in sync with lexer keyword set; this is only used for default import namespaces.
+    static const char* kws[] = {
+        "let","var","const","if","else","for","while","do","break","continue","goto","return",
+        "import","from","as","private","struct","object","enum","impl","trait","move","true","false","null",
+    };
+    for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++) {
+        const char* k = kws[i];
+        int klen = (int)strlen(k);
+        if (klen == len && memcmp(s, k, (size_t)len) == 0) return 1;
+    }
+    return 0;
+}
+
+// Derive a default namespace identifier from an import raw path:
+// - take the last path segment
+// - strip optional `.tua` suffix
+// - sanitize to a valid identifier (non [A-Za-z0-9_] => '_', leading digit => prefix '_')
+static char* defaultNamespaceFromImportRaw(const char* raw) {
+    if (!raw || raw[0] == '\0') return NULL;
+    const char* last = raw;
+    for (const char* p = raw; *p; p++) {
+        if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    if (!last || last[0] == '\0') return NULL;
+
+    int len = (int)strlen(last);
+    if (len >= 4 && memcmp(last + len - 4, ".tua", 4) == 0) {
+        len -= 4;
+    }
+    if (len <= 0) return NULL;
+
+    // Worst case: prefix '_' + len chars + '\0'
+    char* out = (char*)malloc((size_t)len + 2);
+    int j = 0;
+    // Leading digit => prefix '_'
+    if (last[0] >= '0' && last[0] <= '9') out[j++] = '_';
+
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)last[i];
+        int ok = (c == '_') ||
+                 (c >= 'a' && c <= 'z') ||
+                 (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9');
+        out[j++] = ok ? (char)c : '_';
+    }
+    out[j] = '\0';
+
+    if (isKeywordIdent(out, j)) {
+        // Make it an identifier token by prefixing '_'.
+        char* out2 = (char*)malloc((size_t)j + 2);
+        out2[0] = '_';
+        memcpy(out2 + 1, out, (size_t)j + 1);
+        free(out);
+        return out2;
+    }
+    return out;
+}
+
 static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
     if (!module || !module->statements) return;
     if (!module->aliases) module->aliases = listNew();
@@ -546,6 +606,10 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
         if (s->type == STMT_IMPORT) {
             ImportStmt* imp = (ImportStmt*)s;
             char* raw = stripQuotesToken(imp->path);
+            char* defaultNs = NULL;
+            if (!imp->hasAlias) {
+                defaultNs = defaultNamespaceFromImportRaw(raw);
+            }
             char* full = resolveImportPath(sys, module, raw, imp->path);
             free(raw);
             if (!full) return;
@@ -570,6 +634,28 @@ static void moduleScanImports(ModuleSystem* sys, ModuleInfo* module) {
                 a->kind = ALIAS_MODULE;
                 listAppend(module->aliases, a);
             } else {
+                // Default namespace: `import "path"` creates a namespace alias based on the file name,
+                // so users can write `bytes.X` even when also using import-all.
+                if (defaultNs && defaultNs[0] != '\0') {
+                    int nsLen = (int)strlen(defaultNs);
+                    if (moduleHasAliasFor(module, defaultNs, nsLen)) {
+                        moduleImportErrorAt(sys, module->path, imp->keyword.line, imp->keyword.col,
+                            "import name conflict '%.*s' while importing %s (already defined in this module scope); use `as` to rename",
+                            nsLen, defaultNs, dep->path);
+                        free(defaultNs);
+                        return;
+                    }
+                    SymbolAlias* a = malloc(sizeof(SymbolAlias));
+                    a->local = defaultNs; // transfer ownership
+                    a->localLen = nsLen;
+                    a->qualified = dupCStringN(dep->prefix, dep->prefixLen);
+                    a->qualifiedLen = dep->prefixLen;
+                    a->kind = ALIAS_MODULE;
+                    listAppend(module->aliases, a);
+                    defaultNs = NULL;
+                }
+                if (defaultNs) free(defaultNs);
+
                 // Import-all: bring every non-private exported symbol into current module scope.
                 for (ListNode* en = dep->exports ? dep->exports->head : NULL; en != NULL; en = en->next) {
                     ExportSymbol* ex = (ExportSymbol*)en->data;
