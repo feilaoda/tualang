@@ -1,0 +1,6 @@
+fn same<T>(move a: T, move b: T) -> T {
+  return a
+}
+
+same(1, 2.0)
+

@@ -45,6 +45,8 @@
   - [x] v1 约束（bounds）：支持 `T: Trait`（基于 `impl Trait for Struct` 记录 + 实例化时检查）
   - [x] v0.5 类型实参推断（语法糖）：允许 `id(10)` 在可唯一推断时等价 `id<int>(10)`；否则报错要求显式 `id<T>(...)`
   - [ ] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
+    - [x] 推断失败原因（missing/conflict/trait object）提示（第一版）
+    - [x] 实例化回溯（generic instantiation stack，第一版）
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
   - [x] 借用（第一版）：`const r = &x` 共享、`let r = &x` 独占；禁止冲突借用/被借用时写或 move

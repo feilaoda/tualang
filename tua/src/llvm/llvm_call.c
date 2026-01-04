@@ -555,17 +555,114 @@ static int astNamedTypeEqualsName(Type* t, const char* name, int nameLen) {
     return memcmp(t->name.start, name, (size_t)nameLen) == 0;
 }
 
-static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate* tmpl, CallExpr* call) {
+static int astTypeEqualsDeep(Type* a, Type* b) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->kind != b->kind) return 0;
+    switch (a->kind) {
+        case TYPE_NAMED: {
+            if (a->name.length != b->name.length) return 0;
+            if (memcmp(a->name.start, b->name.start, (size_t)a->name.length) != 0) return 0;
+            int ac = a->typeArgs ? a->typeArgs->length : 0;
+            int bc = b->typeArgs ? b->typeArgs->length : 0;
+            if (ac != bc) return 0;
+            for (int i = 0; i < ac; i++) {
+                if (!astTypeEqualsDeep((Type*)listGet(a->typeArgs, i), (Type*)listGet(b->typeArgs, i))) return 0;
+            }
+            return 1;
+        }
+        case TYPE_REF:
+            return astTypeEqualsDeep(a->inner, b->inner);
+        case TYPE_ARRAY:
+            if (a->arrayLen != b->arrayLen) return 0;
+            return astTypeEqualsDeep(a->inner, b->inner);
+        case TYPE_FUNC:
+            // Keep coarse equality for now; generic inference does not depend on deep func-type matching.
+            return 1;
+        default:
+            // scalar/builtin kinds compare by kind only.
+            return 1;
+    }
+}
+
+typedef enum {
+    GEN_INFER_OK = 0,
+    GEN_INFER_NOT_APPLICABLE,
+    GEN_INFER_ARGC_MISMATCH,
+    GEN_INFER_MISSING_TP,
+    GEN_INFER_CONFLICT,
+    GEN_INFER_TRAIT_OBJECT_ARG
+} GenericInferStatus;
+
+typedef struct {
+    GenericInferStatus status;
+    int expectedTypeParams;
+    int argc;
+    int pc;
+    int tpIndex;        // which type param (0-based), when applicable
+    int firstArgIndex;  // 1-based
+    int secondArgIndex; // 1-based
+    Token tpName;       // type param name token (best-effort)
+} GenericInferDiag;
+
+static void initGenericInferDiag(GenericInferDiag* d) {
+    if (!d) return;
+    memset(d, 0, sizeof(*d));
+    d->status = GEN_INFER_NOT_APPLICABLE;
+    d->tpIndex = -1;
+    d->firstArgIndex = 0;
+    d->secondArgIndex = 0;
+}
+
+static void freeTypeTreeDeep(Type* t) {
+    if (!t) return;
+    if (t->inner) freeTypeTreeDeep(t->inner);
+    if (t->typeArgs) {
+        for (ListNode* n = t->typeArgs->head; n != NULL; n = n->next) {
+            freeTypeTreeDeep((Type*)n->data);
+        }
+        listFree(t->typeArgs);
+    }
+    if (t->paramTypes) {
+        for (ListNode* n = t->paramTypes->head; n != NULL; n = n->next) {
+            freeTypeTreeDeep((Type*)n->data);
+        }
+        listFree(t->paramTypes);
+    }
+    if (t->returnTypes) {
+        for (ListNode* n = t->returnTypes->head; n != NULL; n = n->next) {
+            freeTypeTreeDeep((Type*)n->data);
+        }
+        listFree(t->returnTypes);
+    }
+    free(t);
+}
+
+static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate* tmpl, CallExpr* call, GenericInferDiag* diag) {
+    initGenericInferDiag(diag);
     if (!compiler || !tmpl || !tmpl->decl || !call) return NULL;
     int expected = tmpl->decl->typeParams ? tmpl->decl->typeParams->length : 0;
     if (expected <= 0) return NULL;
+    if (diag) {
+        diag->status = GEN_INFER_NOT_APPLICABLE;
+        diag->expectedTypeParams = expected;
+    }
 
     int argc = call->arguments ? call->arguments->length : 0;
     int pc = tmpl->decl->params ? tmpl->decl->params->length : 0;
-    if (argc != pc) return NULL;
+    if (argc != pc) {
+        if (diag) {
+            diag->status = GEN_INFER_ARGC_MISMATCH;
+            diag->argc = argc;
+            diag->pc = pc;
+        }
+        return NULL;
+    }
 
     Type** inferred = malloc(sizeof(Type*) * (size_t)expected);
+    int* inferredFromArg = malloc(sizeof(int) * (size_t)expected);
     for (int i = 0; i < expected; i++) inferred[i] = NULL;
+    for (int i = 0; i < expected; i++) inferredFromArg[i] = -1;
 
     for (int i = 0; i < pc; i++) {
         Parameter* p = (Parameter*)listGet(tmpl->decl->params, i);
@@ -595,6 +692,9 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
             }
         }
         if (tpIndex < 0) continue;
+        if (diag) {
+            diag->tpName = ((TypeParamDecl*)listGet(tmpl->decl->typeParams, tpIndex))->name;
+        }
 
         Type* it = inferTypeFromValueExpr(compiler, arg);
         if (!it) continue;
@@ -603,26 +703,39 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
         if ((it->kind == TYPE_NAMED && compilerResolveTraitByToken(compiler, &it->name)) ||
             (it->kind == TYPE_REF && it->inner && it->inner->kind == TYPE_NAMED && compilerResolveTraitByToken(compiler, &it->inner->name))) {
             for (int j = 0; j < expected; j++) {
-                if (inferred[j]) free(inferred[j]);
+                if (inferred[j]) freeTypeTreeDeep(inferred[j]);
             }
-            free(it);
+            freeTypeTreeDeep(it);
+            free(inferredFromArg);
             free(inferred);
+            if (diag) {
+                diag->status = GEN_INFER_TRAIT_OBJECT_ARG;
+                diag->tpIndex = tpIndex;
+                diag->secondArgIndex = i + 1;
+            }
             return NULL;
         }
         if (!inferred[tpIndex]) {
             inferred[tpIndex] = it;
+            inferredFromArg[tpIndex] = i;
         } else {
-            // Best-effort consistency check.
-            if (inferred[tpIndex]->kind != it->kind) {
+            // Consistency check across arguments.
+            if (!astTypeEqualsDeep(inferred[tpIndex], it)) {
+                for (int j = 0; j < expected; j++) {
+                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+                }
+                freeTypeTreeDeep(it);
+                free(inferredFromArg);
                 free(inferred);
+                if (diag) {
+                    diag->status = GEN_INFER_CONFLICT;
+                    diag->tpIndex = tpIndex;
+                    diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
+                    diag->secondArgIndex = i + 1;
+                }
                 return NULL;
             }
-            if (it->kind == TYPE_NAMED) {
-                if (!astNamedTypeEqualsName(inferred[tpIndex], it->name.start, it->name.length)) {
-                    free(inferred);
-                    return NULL;
-                }
-            }
+            freeTypeTreeDeep(it);
         }
     }
 
@@ -630,11 +743,23 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
     for (int i = 0; i < expected; i++) {
         if (!inferred[i]) {
             listFree(out);
+            for (int j = 0; j < expected; j++) {
+                if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+            }
+            free(inferredFromArg);
             free(inferred);
+            if (diag) {
+                diag->status = GEN_INFER_MISSING_TP;
+                diag->tpIndex = i;
+                TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, i);
+                if (td) diag->tpName = td->name;
+            }
             return NULL;
         }
         listAppend(out, inferred[i]);
     }
+    if (diag) diag->status = GEN_INFER_OK;
+    free(inferredFromArg);
     free(inferred);
     return out;
 }
@@ -4774,6 +4899,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         int genericTemplateSeen = 0;
         int genericInferFailed = 0;
         GenericFuncTemplate* seenTmpl = NULL;
+        GenericInferDiag inferDiag;
+        initGenericInferDiag(&inferDiag);
 
         // v0.5: type argument inference for generic calls when no explicit `<T>` is provided.
         // If a generic template exists for this name, infer from argument expressions and instantiate.
@@ -4806,7 +4933,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (tmpl && tmpl->qualifiedName && tmpl->qualifiedNameLen > 0) {
                 genericTemplateSeen = 1;
                 seenTmpl = tmpl;
-                List* inferred = inferTypeArgsForGenericCall(compiler, tmpl, expr);
+                List* inferred = inferTypeArgsForGenericCall(compiler, tmpl, expr, &inferDiag);
                 if (inferred) {
                     func = compilerInstantiateGenericFunc(compiler, tmpl->qualifiedName, tmpl->qualifiedNameLen, inferred, &callee->name);
                     // inferred list elements are heap-allocated Type*; keep for compiler cache lifetime.
@@ -4861,27 +4988,109 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             if (seenTmpl && seenTmpl->decl && seenTmpl->decl->typeParams) {
                 expectedTypeParams = seenTmpl->decl->typeParams->length;
             }
-            if (expectedTypeParams > 0) {
-                compilerErrorAtToken(
-                    compiler,
-                    &callee->name,
-                    "cannot infer generic type arguments for '%.*s' (expects %d type params); write '%.*s<...>(...)'",
-                    callee->name.length,
-                    callee->name.start,
-                    expectedTypeParams,
-                    callee->name.length,
-                    callee->name.start
-                );
-            } else {
-                compilerErrorAtToken(
-                    compiler,
-                    &callee->name,
-                    "cannot infer generic type arguments for '%.*s'; write '%.*s<...>(...)'",
-                    callee->name.length,
-                    callee->name.start,
-                    callee->name.length,
-                    callee->name.start
-                );
+            switch (inferDiag.status) {
+                case GEN_INFER_MISSING_TP:
+                    if (inferDiag.tpName.start && inferDiag.tpName.length > 0) {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s': type parameter '%.*s' is unconstrained; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            inferDiag.tpName.length,
+                            inferDiag.tpName.start,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    } else {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s'%s%d%s; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            expectedTypeParams > 0 ? " (expects " : "",
+                            expectedTypeParams,
+                            expectedTypeParams > 0 ? " type params)" : "",
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    }
+                    break;
+                case GEN_INFER_CONFLICT:
+                    if (inferDiag.tpName.start && inferDiag.tpName.length > 0) {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s': conflicting inference for '%.*s' between argument %d and %d; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            inferDiag.tpName.length,
+                            inferDiag.tpName.start,
+                            inferDiag.firstArgIndex,
+                            inferDiag.secondArgIndex,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    } else {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s': conflicting argument types; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    }
+                    break;
+                case GEN_INFER_ARGC_MISMATCH:
+                    compilerErrorAtToken(
+                        compiler,
+                        &callee->name,
+                        "argument count mismatch for generic call '%.*s': expected %d, got %d",
+                        callee->name.length,
+                        callee->name.start,
+                        inferDiag.pc,
+                        inferDiag.argc
+                    );
+                    break;
+                case GEN_INFER_TRAIT_OBJECT_ARG:
+                    compilerErrorAtToken(
+                        compiler,
+                        &callee->name,
+                        "cannot infer generic type arguments for '%.*s': argument %d is a trait object; provide a concrete struct value or write '%.*s<...>(...)'",
+                        callee->name.length,
+                        callee->name.start,
+                        inferDiag.secondArgIndex,
+                        callee->name.length,
+                        callee->name.start
+                    );
+                    break;
+                default:
+                    if (expectedTypeParams > 0) {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s' (expects %d type params); write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            expectedTypeParams,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    } else {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s'; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    }
+                    break;
             }
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             free(name);
