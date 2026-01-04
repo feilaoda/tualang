@@ -4,6 +4,7 @@
 
 - 规范：`docs/SPEC.md`
 - 路线图：`docs/ROADMAP.md`
+- 语法参考（ANTLR4）：`tuaparser.g4`（包含 lexer+parser；`tualexer.g4` 已弃用）
 
 ## 构建与运行
 
@@ -30,6 +31,12 @@ AOT 生成可执行文件：
 
 ```bash
 ./tests/run.sh
+```
+
+ANTLR 语法回归（只做 parse，不做编译/运行）：
+
+```bash
+./tools/antlr_parse_check.sh
 ```
 
 标准库目录：

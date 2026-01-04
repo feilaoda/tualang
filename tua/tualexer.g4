@@ -1,3 +1,9 @@
+// DEPRECATED (legacy).
+//
+// This lexer grammar is out-of-sync with the actual Tua implementation
+// (`src/lexer.c` + `src/parser.c`) and is kept only for historical reference.
+//
+// Use `tuaparser.g4` instead (it contains the up-to-date lexer+parser rules).
 lexer grammar tualexer;
 
 options {

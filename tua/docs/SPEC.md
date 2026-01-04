@@ -4,6 +4,10 @@
 
 约定：本文用 `Status: Implemented | Partial | Planned` 标记当前实现进度。
 
+语法参考（ANTLR4）：
+- `tuaparser.g4`：参考语法（lexer+parser，面向工具/文档）
+- 说明：语义与边界以 `src/lexer.c`/`src/parser.c` 和本文为准；`tualexer.g4` 为历史遗留，已弃用
+
 ### 0. 核心语义冻结（v0）
 本节列出已冻结的核心语义点：实现可以逐步补齐，但语义以本文为准；如需破坏性变更，需要先更新 SPEC 并同步 ROADMAP。
 - `struct` 的 move/引用语义（见 7.1）

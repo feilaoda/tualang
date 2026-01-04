@@ -349,11 +349,23 @@ equalityExpr
   ;
 
 relationalExpr
-  : shiftExpr ((LT | GT | LE | GE) shiftExpr)*
+  : shiftExpr (relOp shiftExpr)*
   ;
 
 shiftExpr
-  : additiveExpr ((SHL | SHR) additiveExpr)*
+  : additiveExpr (shiftOp additiveExpr)*
+  ;
+
+relOp
+  : LE
+  | GE
+  | LT { _input.LA(1) != LT }?
+  | GT { _input.LA(1) != GT }?
+  ;
+
+shiftOp
+  : LT LT
+  | GT GT
   ;
 
 additiveExpr
@@ -664,8 +676,6 @@ LE       : '<=';
 GE       : '>=';
 EQ       : '==';
 NEQ      : '!=';
-SHL      : '<<';
-SHR      : '>>';
 AND      : '&&';
 OR       : '||';
 INC      : '++';
