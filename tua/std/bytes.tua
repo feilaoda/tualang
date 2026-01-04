@@ -41,4 +41,81 @@ object Bytes {
     fn setU8(b: bytes, idx: long, v: int) int {
         return tua_bytes_set_u8(b, idx, v)
     }
+
+    // ====================
+    // Binary reads (LE)
+    // ====================
+
+    fn readU16LE(b: bytes, off: long) -> int, u16 {
+        let e0, v0 = Bytes.getU8(b, off)
+        if e0 != 0 { return e0, (u16)0 }
+        let e1, v1 = Bytes.getU8(b, off + 1L)
+        if e1 != 0 { return e1, (u16)0 }
+        let r: int = ((int)v0) + (((int)v1) * 256)
+        return 0, (u16)r
+    }
+
+    fn readU32LE(b: bytes, off: long) -> int, u32 {
+        let e0, v0 = Bytes.getU8(b, off)
+        if e0 != 0 { return e0, (u32)0 }
+        let e1, v1 = Bytes.getU8(b, off + 1L)
+        if e1 != 0 { return e1, (u32)0 }
+        let e2, v2 = Bytes.getU8(b, off + 2L)
+        if e2 != 0 { return e2, (u32)0 }
+        let e3, v3 = Bytes.getU8(b, off + 3L)
+        if e3 != 0 { return e3, (u32)0 }
+
+        let r: long = ((long)v0)
+        r = r + (((long)v1) * 256L)
+        r = r + (((long)v2) * 65536L)
+        r = r + (((long)v3) * 16777216L)
+        return 0, (u32)r
+    }
+
+    fn readU64LE(b: bytes, off: long) -> int, u64 {
+        let e0, v0 = Bytes.getU8(b, off)
+        if e0 != 0 { return e0, (u64)0 }
+        let e1, v1 = Bytes.getU8(b, off + 1L)
+        if e1 != 0 { return e1, (u64)0 }
+        let e2, v2 = Bytes.getU8(b, off + 2L)
+        if e2 != 0 { return e2, (u64)0 }
+        let e3, v3 = Bytes.getU8(b, off + 3L)
+        if e3 != 0 { return e3, (u64)0 }
+        let e4, v4 = Bytes.getU8(b, off + 4L)
+        if e4 != 0 { return e4, (u64)0 }
+        let e5, v5 = Bytes.getU8(b, off + 5L)
+        if e5 != 0 { return e5, (u64)0 }
+        let e6, v6 = Bytes.getU8(b, off + 6L)
+        if e6 != 0 { return e6, (u64)0 }
+        let e7, v7 = Bytes.getU8(b, off + 7L)
+        if e7 != 0 { return e7, (u64)0 }
+
+        let r: long = ((long)v0)
+        r = r + (((long)v1) * 256L)
+        r = r + (((long)v2) * 65536L)
+        r = r + (((long)v3) * 16777216L)
+        r = r + (((long)v4) * 4294967296L)
+        r = r + (((long)v5) * 1099511627776L)
+        r = r + (((long)v6) * 281474976710656L)
+        r = r + (((long)v7) * 72057594037927936L)
+        return 0, (u64)r
+    }
+
+    fn readI16LE(b: bytes, off: long) -> int, i16 {
+        let e, u = Bytes.readU16LE(b, off)
+        if e != 0 { return e, (i16)0 }
+        return 0, (i16)u
+    }
+
+    fn readI32LE(b: bytes, off: long) -> int, int {
+        let e, u = Bytes.readU32LE(b, off)
+        if e != 0 { return e, 0 }
+        return 0, (int)u
+    }
+
+    fn readI64LE(b: bytes, off: long) -> int, long {
+        let e, u = Bytes.readU64LE(b, off)
+        if e != 0 { return e, 0L }
+        return 0, (long)u
+    }
 }

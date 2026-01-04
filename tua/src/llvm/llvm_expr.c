@@ -424,6 +424,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     t = compilerResolveGenericType(compiler, t);
     if (!t || t->kind != TYPE_NAMED) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+    if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
     if (compilerResolveTraitByToken(compiler, &t->name)) return 0;

@@ -50,6 +50,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (!t || t->kind != TYPE_NAMED) return 0;
     // Exclude built-in named types that are pointer-like or special-cased.
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+    if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
     if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
@@ -642,14 +643,25 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
         if (!vtTy) return;
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
 
-        LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "to_data");
         LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, cur, 1, "to_vt");
+        LLVMValueRef isNull = LLVMBuildIsNull(compiler->builder, vtp, "to_vt_isnull");
+
+        LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(compiler->builder));
+        LLVMBasicBlockRef dropBB = LLVMAppendBasicBlock(fn, "to_drop");
+        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "to_drop_cont");
+        LLVMBuildCondBr(compiler->builder, isNull, contBB, dropBB);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, dropBB);
+        LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "to_data");
         LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "vtptr");
         LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "vt_drop_p");
         LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "vt_drop");
         LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
         LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "dropfn");
         LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+        LLVMBuildBr(compiler->builder, contBB);
+
+        LLVMPositionBuilderAtEnd(compiler->builder, contBB);
     } else {
         if (isClosure) {
             LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");

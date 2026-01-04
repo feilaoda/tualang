@@ -1395,6 +1395,25 @@ static StructInfo* resolveStructForInitExpr(Compiler* compiler, Expr* callee, To
     return NULL;
 }
 
+static void moveOutOnStructFieldInitIfNeeded(Compiler* compiler, Expr* srcExpr) {
+    if (!compiler || !srcExpr) return;
+    if (srcExpr->type != EXPR_VARIABLE) return;
+    VariableRef v = findVariableExpr(compiler, srcExpr);
+    if (!v.value || !v.type) return;
+    if (v.isArray && v.isStackArray) return;
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+    if (!v.isMap && !v.isArray && !v.isBytes && !v.isTraitObj && v.type != cloTy) return;
+
+    LLVMValueRef nullv = LLVMConstNull(v.type);
+    if (v.isBoxed) {
+        if (!v.boxPtrType) return;
+        LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, v.boxPtrType, v.value, "mv_cell");
+        LLVMBuildStore(compiler->builder, nullv, cell);
+    } else {
+        LLVMBuildStore(compiler->builder, nullv, v.value);
+    }
+}
+
 LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr) {
     if (!compiler || !expr || !expr->callee) return NULL;
 
@@ -1456,6 +1475,12 @@ LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr) {
         }
         initVal = castValueToType(compiler, initVal, fType);
         LLVMBuildStore(compiler->builder, initVal, fieldPtr);
+
+        // Move-only fields: when initializing from a variable, move ownership into the struct
+        // by nulling out the source slot to prevent later drops (map/array/bytes/trait objects/closures).
+        if (provided && provided[i]) {
+            moveOutOnStructFieldInitIfNeeded(compiler, provided[i]);
+        }
     }
 
     if (provided) free(provided);

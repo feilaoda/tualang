@@ -11,6 +11,8 @@
 
 ## 模块列表
 
+- `std/bytes`：二进制 bytes（mmap + 读写 + LE 读取工具）
+- `std/io`：Reader/Cursor/BufReader（基于 `bytes`）
 - `std/strconv`：字符串与数字转换（`Int.parse`）
 - `std/rt`：运行时绑定（loop/workqueue/deadline/free）
 - `std/time`：时间与 sleep
