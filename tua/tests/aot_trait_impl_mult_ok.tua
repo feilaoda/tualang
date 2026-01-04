@@ -5,9 +5,10 @@
 
   struct Girl { ...Base as b, extra2: int }
   struct Boy  { ...Base, extra3: int }
-
+struct None { ...Base as b }
   impl HasId for Girl {}
   impl HasId for Boy {}
+  impl HasId for None {}
 
   fn whos(t: string) -> HasId {
     if t == "girl" {
@@ -15,11 +16,10 @@
     } else if t == "boy" {
       return Boy{ base: Base{ id: 6 }, extra3: 3 }
     } else {
-      return null
+      return None{ b: Base{ id: 7 } }
     }
   }
 
   let p: HasId = whos("girl1")
   println(p.id())
-
 

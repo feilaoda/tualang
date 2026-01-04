@@ -2815,22 +2815,31 @@ static Stmt* declaration(Parser* parser) {
     return parseStatement(parser);
 }
 
-bool parse(Parser* parser, List** statements) {
-    parser->hadError = false;
-    parser->panicMode = false;
-    *statements = listNew();
-    
-    advance(parser);
-    while (!match(parser, TOKEN_EOF)) {
-        Stmt* stmt = declaration(parser);
-        if (stmt != NULL) {
-            listAppend(*statements, stmt);
-        }
-        
-        if (parser->panicMode) {
-            synchronize(parser);
-        }
-    }
-    
-    return !parser->hadError;
-}
+	bool parse(Parser* parser, List** statements) {
+	    parser->hadError = false;
+	    parser->panicMode = false;
+	    *statements = listNew();
+	    
+	    advance(parser);
+	    while (!match(parser, TOKEN_EOF)) {
+	        Token before = parser->current;
+	        Stmt* stmt = declaration(parser);
+	        if (stmt != NULL) {
+	            listAppend(*statements, stmt);
+	        }
+	        
+	        if (parser->panicMode) {
+	            synchronize(parser);
+	        } else if (stmt == NULL &&
+	                   parser->current.type == before.type &&
+	                   parser->current.start == before.start &&
+	                   parser->current.length == before.length &&
+	                   parser->current.line == before.line &&
+	                   parser->current.col == before.col) {
+	            // Ensure progress to avoid infinite loops on unexpected tokens at top-level.
+	            advance(parser);
+	        }
+	    }
+	    
+	    return !parser->hadError;
+	}

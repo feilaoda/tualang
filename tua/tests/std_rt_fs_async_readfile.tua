@@ -23,4 +23,4 @@ assert(ok == 1)
 
 rt.Rt.workqueueFree(wq)
 rt.Rt.loopFree(loop)
-
+println("ok")

@@ -22,7 +22,7 @@ assert(g.id() == 5)
 assert(b.id() == 6)
 
 
-let a = users.getRef("girl").unwrap()
-println(a.id())
+let a = users.getRef("girl1")
+println(a.isSome())
 
   
