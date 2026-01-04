@@ -4890,6 +4890,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     func = compilerInstantiateGenericFunc(compiler, callee->name.start, callee->name.length, expr->typeArgs, &callee->name);
                 }
             }
+            if (!func && compiler && compiler->hadError) {
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
             if (!func) {
                 compilerErrorAtToken(compiler, &callee->name, "type arguments provided but '%.*s' is not a generic function", callee->name.length, callee->name.start);
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;

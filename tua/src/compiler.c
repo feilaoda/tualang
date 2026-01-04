@@ -1566,6 +1566,19 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
         return NULL;
     }
 
+    // Before doing any potentially expensive canonicalization/mangling, guard against runaway
+    // recursive instantiation that would otherwise blow up symbol names or crash the compiler.
+    if (compiler->genericInstStack && compiler->genericInstStack->length >= TUA_GENERIC_INST_MAX_DEPTH) {
+        const Token* tok = callSite ? callSite : &tmpl->decl->name;
+        compilerErrorAtToken(
+            compiler,
+            tok,
+            "generic instantiation depth limit (%d) exceeded",
+            (int)TUA_GENERIC_INST_MAX_DEPTH
+        );
+        return NULL;
+    }
+
     List* canon = listNew();
     for (int i = 0; i < got; i++) {
         Type* a = listGet(typeArgs, i);

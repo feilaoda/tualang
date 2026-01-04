@@ -139,6 +139,10 @@ typedef struct GenericInstFrame {
     char* pretty; // e.g. "foo<int, string>"
 } GenericInstFrame;
 
+#ifndef TUA_GENERIC_INST_MAX_DEPTH
+#define TUA_GENERIC_INST_MAX_DEPTH 64
+#endif
+
 typedef struct MultiReturnInfo {
     char* name;
     int nameLen;

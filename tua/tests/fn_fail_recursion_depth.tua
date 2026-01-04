@@ -1,0 +1,6 @@
+fn grow(i: int) -> int {
+  return grow(i-1)
+}
+
+let a = grow(0)
+println(a)
