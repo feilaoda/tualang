@@ -11,6 +11,24 @@ static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "malloc", fnType);
 }
 
+static LLVMTypeRef tuaBoxDropFnType(Compiler* compiler) {
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    return LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+}
+
+static LLVMValueRef getOrCreateTuaBoxAlloc(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_alloc");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef dropFnTy = tuaBoxDropFnType(compiler);
+    LLVMTypeRef dropFnPtrTy = LLVMPointerType(dropFnTy, 0);
+    LLVMTypeRef params[2] = { i64, dropFnPtrTy };
+    LLVMTypeRef fty = LLVMFunctionType(i8ptr, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_alloc", fty);
+}
+
 static LLVMValueRef getOrCreateTuaMapIterNext(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_iter_next");
     if (existing) return existing;
@@ -214,16 +232,16 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     LLVMValueRef slot = LLVMBuildAlloca(compiler->builder, slotElemType, name);
 
     if (shouldBox) {
-        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+        LLVMValueRef dropFn = compilerGetOrCreateBoxDropFn(compiler, valueType, NULL, 0, NULL, 0);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMValueRef sizeV = LLVMSizeOf(valueType);
-        LLVMValueRef raw = LLVMBuildCall2(
-            compiler->builder,
-            LLVMGlobalGetValueType(mallocFn),
-            mallocFn,
-            &sizeV,
-            1,
-            "malloc"
-        );
+        LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+        LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+        LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+        LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+        LLVMValueRef args2[2] = { size64, dropArg };
+        LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
         LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
         LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), cell);
         LLVMBuildStore(compiler->builder, cell, slot);
@@ -245,6 +263,7 @@ static VariableRef* defineLoopValue(Compiler* compiler, Block* scope, Token name
     variable->isBorrowed = 0;
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
+    variable->boxOwns = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     variable->isMap = 0;
     variable->isTypedMap = 0;

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "rt/rt_alloc.h"
+#include "rt/rt_box.h"
 #include "rt/rt_cancel.h"
 #include "rt/rt_err.h"
 #include "rt/rt_fs.h"

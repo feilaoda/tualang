@@ -47,6 +47,159 @@ static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "malloc", fnType);
 }
 
+static LLVMTypeRef tuaBoxDropFnType(Compiler* compiler) {
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    return LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+}
+
+static LLVMValueRef getOrCreateTuaBoxAlloc(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_alloc");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef dropFnTy = tuaBoxDropFnType(compiler);
+    LLVMTypeRef dropFnPtrTy = LLVMPointerType(dropFnTy, 0);
+    LLVMTypeRef params[2] = { i64, dropFnPtrTy };
+    LLVMTypeRef fty = LLVMFunctionType(i8ptr, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_alloc", fty);
+}
+
+static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_dec");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_dec", fty);
+}
+
+static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_map_free");
+    if (fn) return fn;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_free", fty);
+}
+
+static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_array_free");
+    if (fn) return fn;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_free", fty);
+}
+
+static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueType, Type* astType, TraitInfo* traitInfo) {
+    if (!compiler || !valueType) return NULL;
+    LLVMTypeRef mapTy = compilerGetMapType(compiler);
+    LLVMTypeRef arrTy = compilerGetArrayType(compiler);
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+
+    int isMap = (valueType == mapTy);
+    int isArray = (valueType == arrTy);
+    int isClosure = (valueType == cloTy);
+    StructInfo* structInfo = NULL;
+
+    if (!isMap && !isArray && !isClosure && !traitInfo && astType && astType->kind == TYPE_NAMED) {
+        structInfo = compilerResolveStructByToken(compiler, &astType->name);
+    } else if (!isMap && !isArray && !isClosure && !traitInfo && LLVMGetTypeKind(valueType) == LLVMStructTypeKind) {
+        const char* llvmName = LLVMGetStructName(valueType);
+        if (llvmName && llvmName[0] != '\0') {
+            structInfo = compilerFindStruct(compiler, llvmName, (int)strlen(llvmName));
+        }
+    }
+
+    if (!isMap && !isArray && !isClosure && !traitInfo && !structInfo) return NULL;
+
+    const char* base = NULL;
+    int baseLen = 0;
+    if (isMap) { base = "map"; baseLen = 3; }
+    else if (isArray) { base = "array"; baseLen = 5; }
+    else if (isClosure) { base = "closure"; baseLen = 7; }
+    else if (traitInfo) { base = traitInfo->name; baseLen = traitInfo->nameLength; }
+    else if (structInfo) { base = structInfo->name; baseLen = structInfo->nameLength; }
+
+    int fnNameLen = 11 + baseLen; // "__boxdrop__" + base
+    char* fnName = malloc((size_t)fnNameLen + 1);
+    memcpy(fnName, "__boxdrop__", 11);
+    memcpy(fnName + 11, base, (size_t)baseLen);
+    fnName[fnNameLen] = '\0';
+
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, fnName);
+    if (existing) {
+        free(fnName);
+        return existing;
+    }
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnTy = tuaBoxDropFnType(compiler);
+    LLVMValueRef fn = LLVMAddFunction(compiler->module, fnName, fnTy);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+    free(fnName);
+
+    LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+    Block* savedCurrent = compiler->current;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
+    LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+    LLVMValueRef payloadI8 = LLVMGetParam(fn, 0);
+    LLVMTypeRef payloadPtrTy = LLVMPointerType(valueType, 0);
+    LLVMValueRef payloadPtr = LLVMBuildBitCast(compiler->builder, payloadI8, payloadPtrTy, "p");
+
+    if (traitInfo) {
+        LLVMTypeRef objTy = compilerGetTraitObjType(compiler, traitInfo);
+        LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, traitInfo);
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, objTy, payloadPtr, "tcur");
+        LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "t_data");
+        LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, cur, 1, "t_vt");
+        LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "t_vtptr");
+        LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "t_drop_p");
+        LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "t_drop");
+        LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+        LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "t_dropfn");
+        LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(objTy), payloadPtr);
+    } else if (isMap) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, mapTy, payloadPtr, "mcur");
+        LLVMValueRef freeFn = getOrCreateTuaMapFree(compiler);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+        LLVMValueRef args1[1] = { cur };
+        LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(mapTy), payloadPtr);
+    } else if (isArray) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, arrTy, payloadPtr, "acur");
+        LLVMValueRef freeFn = getOrCreateTuaArrayFree(compiler);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+        LLVMValueRef args1[1] = { cur };
+        LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), payloadPtr);
+    } else if (isClosure) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, cloTy, payloadPtr, "ccur");
+        LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");
+        LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(decFn);
+        LLVMBuildCall2(compiler->builder, fty, decFn, &env, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(cloTy), payloadPtr);
+    } else if (structInfo) {
+        LLVMValueRef dropFn = compilerGetOrCreateStructDrop(compiler, structInfo);
+        if (dropFn) {
+            LLVMTypeRef dropTy = LLVMGlobalGetValueType(dropFn);
+            LLVMValueRef args1[1] = { payloadPtr };
+            LLVMBuildCall2(compiler->builder, dropTy, dropFn, args1, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), payloadPtr);
+    }
+
+    LLVMBuildRetVoid(compiler->builder);
+
+    if (savedBlock) LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+    compiler->current = savedCurrent;
+    return fn;
+}
+
 static LLVMValueRef getOrCreateTuaArrayNew(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_array_new");
     if (existing) return existing;
@@ -910,6 +1063,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     var[stmt->name.length] = '\0';
     emitDebug("emitVarStmt var name:%s\n", var);
     LLVMTypeRef valueType = stmt->type ? toLLVMType(compiler, stmt->type) : inferLLVMTypeFromInitializer(compiler, stmt->initializer);
+    TraitInfo* declaredTrait = (stmt->type && stmt->type->kind == TYPE_NAMED) ? compilerResolveTraitByToken(compiler, &stmt->type->name) : NULL;
 
     int hasAnnotatedTypedMap = 0;
     LLVMTypeRef annotatedKeyTy = NULL;
@@ -1309,16 +1463,16 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             initValue = nv ? nv : castIfNeeded(compiler, initValue, valueType);
         }
         if (shouldBox) {
-            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+            LLVMValueRef dropFn = (!isConstView) ? getOrCreateBoxDropFn(compiler, valueType, stmt->type, declaredTrait) : NULL;
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
             LLVMValueRef sizeV = LLVMSizeOf(valueType);
-            LLVMValueRef raw = LLVMBuildCall2(
-                compiler->builder,
-                LLVMGlobalGetValueType(mallocFn),
-                mallocFn,
-                &sizeV,
-                1,
-                "malloc"
-            );
+            LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+            LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+            LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+            LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+            LLVMValueRef args2[2] = { size64, dropArg };
+            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
             LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
             if (initValue) LLVMBuildStore(compiler->builder, initValue, cell);
             LLVMBuildStore(compiler->builder, cell, slot);
@@ -1326,14 +1480,15 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             if (initValue) LLVMBuildStore(compiler->builder, initValue, slot);
         }
 
-        // Runtime move: for move-only container types (map/array), null out the source after `let b = a`.
+        // Runtime move: for move-only container types (map/array/trait/closure), null out the source after `let b = a`.
         // `const view = a` is a borrow view and must not move.
         if (!stmt->isConst && stmt->initializer->type == EXPR_VARIABLE) {
             VariableRef base = findVariableExpr(compiler, stmt->initializer);
             int shouldMoveMap = base.isMap;
             int shouldMoveArr = base.isArray && !base.isStackArray;
             int shouldMoveTrait = base.isTraitObj;
-            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait) && base.value && base.type) {
+            int shouldMoveClosure = base.type == compilerGetClosureType(compiler);
+            if ((shouldMoveMap || shouldMoveArr || shouldMoveTrait || shouldMoveClosure) && base.value && base.type) {
                 LLVMValueRef nullv = LLVMConstNull(base.type);
                 if (base.isBoxed) {
                     if (!base.boxPtrType) {
@@ -1360,16 +1515,16 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMValueRef initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, args4, 4, "arr");
         initValue = castIfNeeded(compiler, initValue, valueType);
         if (shouldBox) {
-            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+            LLVMValueRef dropFn = getOrCreateBoxDropFn(compiler, valueType, stmt->type, declaredTrait);
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
             LLVMValueRef sizeV = LLVMSizeOf(valueType);
-            LLVMValueRef raw = LLVMBuildCall2(
-                compiler->builder,
-                LLVMGlobalGetValueType(mallocFn),
-                mallocFn,
-                &sizeV,
-                1,
-                "malloc"
-            );
+            LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+            LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+            LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+            LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+            LLVMValueRef args2[2] = { size64, dropArg };
+            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
             LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
             LLVMBuildStore(compiler->builder, initValue, cell);
             LLVMBuildStore(compiler->builder, cell, slot);
@@ -1390,16 +1545,16 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         LLVMValueRef initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, NULL, 0, "newmap");
         initValue = castIfNeeded(compiler, initValue, valueType);
         if (shouldBox) {
-            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+            LLVMValueRef dropFn = getOrCreateBoxDropFn(compiler, valueType, stmt->type, declaredTrait);
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
             LLVMValueRef sizeV = LLVMSizeOf(valueType);
-            LLVMValueRef raw = LLVMBuildCall2(
-                compiler->builder,
-                LLVMGlobalGetValueType(mallocFn),
-                mallocFn,
-                &sizeV,
-                1,
-                "malloc"
-            );
+            LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+            LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+            LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+            LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+            LLVMValueRef args2[2] = { size64, dropArg };
+            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
             LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
             LLVMBuildStore(compiler->builder, initValue, cell);
             LLVMBuildStore(compiler->builder, cell, slot);
@@ -1407,16 +1562,16 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             LLVMBuildStore(compiler->builder, initValue, slot);
         }
     } else if (shouldBox) {
-        LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+        LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+        LLVMValueRef dropFn = getOrCreateBoxDropFn(compiler, valueType, stmt->type, declaredTrait);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMValueRef sizeV = LLVMSizeOf(valueType);
-        LLVMValueRef raw = LLVMBuildCall2(
-            compiler->builder,
-            LLVMGlobalGetValueType(mallocFn),
-            mallocFn,
-            &sizeV,
-            1,
-            "malloc"
-        );
+        LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+        LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+        LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+        LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+        LLVMValueRef args2[2] = { size64, dropArg };
+        LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
         LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
         LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), cell);
         LLVMBuildStore(compiler->builder, cell, slot);
@@ -1573,6 +1728,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isBorrowed = isConstView ? 1 : 0;
     variable->isGlobal = 0;
     variable->isBoxed = shouldBox ? 1 : 0;
+    variable->boxOwns = shouldBox ? 1 : 0;
     variable->boxPtrType = shouldBox ? boxPtrType : NULL;
     variable->isMap = 0;
     variable->isTraitObj = 0;

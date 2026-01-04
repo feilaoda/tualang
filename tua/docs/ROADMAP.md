@@ -97,7 +97,10 @@
   - [x] 类型推断（第一版）：从字面量推导 `map<K,V>`（仅当 key/value 都是非空字面量且类型一致时）
 - [ ] 基础类型：把 `string` 做成真正的运行时基础类型（而不是仅 `i8*`/printf 直出）
 - [ ] 空值：实现 `null` 作为空值，并定义比较/打印/条件判断/赋值规则
-- [ ] 内存模型 v1：补齐 `struct deinit`/closure env drop/deep drop；并把 std 中“裸指针 free”收敛为明确的资源句柄 `close()` 或拥有型 `bytes/string` drop（无 GC）
+- [ ] 内存模型 v1：
+  - [x] closure env drop + 回调 retain/release（无 GC）
+  - [ ] `struct deinit` + deep drop（容器元素级析构）
+  - [ ] std 中“裸指针 free”收敛为明确的资源句柄 `close()` 或拥有型 `bytes/string` drop
 
 ### 9. 错误与入口（建议）
 - [x] 诊断统一（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时一致）

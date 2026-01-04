@@ -1751,16 +1751,16 @@ static Stmt* parseExternFunctionDeclaration(Parser* parser) {
     List* parameters = listNew();
     if (!check(parser, TOKEN_RPAREN)) {
         do {
-            if (check(parser, TOKEN_CONST) || check(parser, TOKEN_VAR) || check(parser, TOKEN_MOVE)) {
-                printError(parser, "extern fn parameters do not support let/const/move modifiers");
-                advance(parser);
-            }
+            int mode = PARAM_CONST;
+            if (match(parser, TOKEN_CONST)) mode = PARAM_CONST;
+            else if (match(parser, TOKEN_VAR)) mode = PARAM_LET;
+            else if (match(parser, TOKEN_MOVE)) mode = PARAM_MOVE;
             Token param = consume(parser, TOKEN_IDENTIFIER, "Expect parameter name");
             Type* type = NULL;
             if (match(parser, TOKEN_COLON)) {
                 type = parseType(parser);
             }
-            listAppend(parameters, newParameter(param, type, PARAM_CONST));
+            listAppend(parameters, newParameter(param, type, mode));
         } while (match(parser, TOKEN_COMMA));
     }
     consume(parser, TOKEN_RPAREN, "Expect ')' after parameters");

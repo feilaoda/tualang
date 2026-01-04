@@ -3,6 +3,7 @@
 #if defined(TUA_OS_POSIX)
 
 #include "rt/rt_alloc.h"
+#include "rt/rt_box.h"
 #include "rt/rt_cancel.h"
 #include "rt/rt_err.h"
 #include "rt/rt_fs_async.h"
@@ -23,6 +24,22 @@ typedef struct {
     void* fn;
     void* env;
 } tua_closure_t;
+
+static void tua_closure_retain(tua_closure_t* c) {
+    if (c == NULL) return;
+    if (c->env != NULL) {
+        tua_box_inc(c->env);
+    }
+}
+
+static void tua_closure_release(tua_closure_t* c) {
+    if (c == NULL) return;
+    if (c->env != NULL) {
+        tua_box_dec(c->env);
+        c->env = NULL;
+    }
+    c->fn = NULL;
+}
 
 static void tua_call_void0(tua_closure_t c) {
     if (c.fn == NULL) return;
@@ -76,6 +93,7 @@ static void tua_timer_after_ms_cb(void* arg) {
     tua_timer_after_ms_ctx_t* ctx = (tua_timer_after_ms_ctx_t*)arg;
     if (ctx == NULL) return;
     tua_call_void0(ctx->cb);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -92,9 +110,11 @@ tua_err_t tua_timer_after_ms_cl(tua_loop_t* loop, int64_t delay_ms, tua_closure_
         return TUA_E_NOMEM;
     }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
 
     tua_err_t err = tua_timer_start(loop, NULL, (uint64_t)delay_ms, 0, tua_timer_after_ms_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return err;
     }
@@ -110,6 +130,7 @@ static void tua_post_cl_task(void* arg) {
     tua_post_cl_ctx_t* ctx = (tua_post_cl_ctx_t*)arg;
     if (ctx == NULL) return;
     tua_call_void0(ctx->cb);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -123,8 +144,10 @@ tua_err_t tua_loop_post_cl(tua_loop_t* loop, tua_closure_t cb) {
     }
     ctx->loop = loop;
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     tua_err_t err = tua_loop_post(loop, tua_post_cl_task, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return err;
     }
@@ -146,6 +169,7 @@ static void tua_timer_every_cl_cb(void* arg) {
 static void tua_timer_every_free_task(void* arg) {
     tua_timer_every_cl_handle_t* h = (tua_timer_every_cl_handle_t*)arg;
     if (h == NULL) return;
+    tua_closure_release(&h->cb);
     tua_free(h);
 }
 
@@ -168,9 +192,11 @@ tua_err_t tua_timer_every_ms_cl(
     h->loop = loop;
     h->timer = NULL;
     h->cb = cb;
+    tua_closure_retain(&h->cb);
 
     tua_err_t err = tua_timer_start(loop, &h->timer, (uint64_t)interval_ms, (uint64_t)interval_ms, tua_timer_every_cl_cb, h);
     if (err != TUA_OK) {
+        tua_closure_release(&h->cb);
         tua_free(h);
         return err;
     }
@@ -205,6 +231,7 @@ typedef struct {
 static void tua_connect_cl_cb(tua_err_t err, tua_tcp_socket_t* sock, void* arg) {
     tua_connect_cl_ctx_t* ctx = (tua_connect_cl_ctx_t*)arg;
     tua_call_void2(ctx->cb, (int32_t)err, (void*)sock);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -221,8 +248,10 @@ tua_err_t tua_tcp_connect_async_cl(
         return TUA_E_NOMEM;
     }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     tua_err_t err = tua_tcp_connect_async(loop, wq, host_utf8, port_utf8, deadline, tua_connect_cl_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;
@@ -266,8 +295,10 @@ tua_err_t tua_tcp_accept_start_cl(
     }
     h->inner = NULL;
     h->cb = cb;
+    tua_closure_retain(&h->cb);
     tua_err_t err = tua_tcp_accept_start(loop, lst, tua_accept_cl_cb, h, &h->inner);
     if (err != TUA_OK) {
+        tua_closure_release(&h->cb);
         tua_free(h);
         return err;
     }
@@ -282,6 +313,7 @@ void tua_tcp_accept_cancel_cl(void* handle) {
         tua_tcp_accept_cancel(h->inner);
         h->inner = NULL;
     }
+    tua_closure_release(&h->cb);
     tua_free(h);
 }
 
@@ -304,6 +336,7 @@ static void tua_read_alloc_cb(tua_err_t err, size_t n, void* arg) {
         ctx->buf = NULL;
         tua_call_void3(ctx->cb, (int32_t)err, NULL, 0);
     }
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -319,15 +352,26 @@ tua_err_t tua_tcp_read_alloc_async_cl(
         return TUA_OK;
     }
     tua_read_alloc_ctx_t* ctx = (tua_read_alloc_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     ctx->max = max;
     ctx->buf = (uint8_t*)tua_malloc((size_t)max + 1);
     if (ctx->buf == NULL) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return TUA_E_NOMEM;
     }
-    return tua_tcp_read_async(loop, sock, ctx->buf, (size_t)max, deadline, tua_read_alloc_cb, ctx);
+    tua_err_t err = tua_tcp_read_async(loop, sock, ctx->buf, (size_t)max, deadline, tua_read_alloc_cb, ctx);
+    if (err != TUA_OK) {
+        tua_free(ctx->buf);
+        ctx->buf = NULL;
+        tua_closure_release(&ctx->cb);
+        tua_free(ctx);
+    }
+    return err;
 }
 
 typedef struct {
@@ -337,6 +381,7 @@ typedef struct {
 static void tua_write_cb(tua_err_t err, size_t n, void* arg) {
     tua_write_ctx_t* ctx = (tua_write_ctx_t*)arg;
     tua_call_void1_i64(ctx->cb, (int32_t)err, (int64_t)n);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -352,11 +397,15 @@ tua_err_t tua_tcp_write_str_async_cl(
         return TUA_OK;
     }
     tua_write_ctx_t* ctx = (tua_write_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     size_t len = strlen(s);
     tua_err_t err = tua_tcp_write_async(loop, sock, (const uint8_t*)s, len, deadline, tua_write_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;
@@ -369,6 +418,7 @@ typedef struct {
 static void tua_writefile_cb(tua_err_t err, void* arg) {
     tua_writefile_ctx_t* ctx = (tua_writefile_ctx_t*)arg;
     tua_call_void2(ctx->cb, (int32_t)err, NULL);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -380,12 +430,16 @@ tua_err_t tua_fs_writefile_str_async_cl(
     tua_closure_t cb
 ) {
     tua_writefile_ctx_t* ctx = (tua_writefile_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     const uint8_t* bytes = (const uint8_t*)(data ? data : "");
     size_t len = data ? strlen(data) : 0;
     tua_err_t err = tua_fs_writefile_async(loop, wq, path_utf8, bytes, len, tua_writefile_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;
@@ -400,6 +454,7 @@ static void tua_readfile_cl_cb(tua_err_t err, uint8_t* data, size_t len, void* a
     if (err != TUA_OK) {
         if (data) tua_free(data);
         tua_call_void3(ctx->cb, (int32_t)err, NULL, 0);
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return;
     }
@@ -408,6 +463,7 @@ static void tua_readfile_cl_cb(tua_err_t err, uint8_t* data, size_t len, void* a
     if (z == NULL) {
         if (data) tua_free(data);
         tua_call_void3(ctx->cb, (int32_t)TUA_E_NOMEM, NULL, 0);
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return;
     }
@@ -417,6 +473,7 @@ static void tua_readfile_cl_cb(tua_err_t err, uint8_t* data, size_t len, void* a
 
     tua_call_void3(ctx->cb, (int32_t)TUA_OK, (void*)z, (int32_t)len);
     // caller frees z via tua_free
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -427,10 +484,14 @@ tua_err_t tua_fs_readfile_alloc_async_cl(
     tua_closure_t cb
 ) {
     tua_readfile_cl_ctx_t* ctx = (tua_readfile_cl_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     tua_err_t err = tua_fs_readfile_async(loop, wq, path_utf8, tua_readfile_cl_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;
@@ -454,6 +515,7 @@ static void tua_stat_cl_cb(tua_err_t err, tua_fs_stat_t st, void* arg) {
             (int32_t)st.mode
         );
     }
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -464,10 +526,14 @@ tua_err_t tua_fs_stat_async_cl(
     tua_closure_t cb
 ) {
     tua_stat_cl_ctx_t* ctx = (tua_stat_cl_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     tua_err_t err = tua_fs_stat_async(loop, wq, path_utf8, tua_stat_cl_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;
@@ -482,6 +548,7 @@ static void tua_readdir_cl_cb(tua_err_t err, char** names, size_t count, void* a
     if (err != TUA_OK) {
         if (names) tua_fs_dirlist_free(names, count);
         tua_call_void2(ctx->cb, (int32_t)err, NULL);
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return;
     }
@@ -490,6 +557,7 @@ static void tua_readdir_cl_cb(tua_err_t err, char** names, size_t count, void* a
     if (arr == NULL) {
         tua_fs_dirlist_free(names, count);
         tua_call_void2(ctx->cb, (int32_t)TUA_E_NOMEM, NULL);
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
         return;
     }
@@ -509,6 +577,7 @@ static void tua_readdir_cl_cb(tua_err_t err, char** names, size_t count, void* a
 
     tua_fs_dirlist_free(names, count);
     tua_call_void2(ctx->cb, (int32_t)TUA_OK, (void*)arr);
+    tua_closure_release(&ctx->cb);
     tua_free(ctx);
 }
 
@@ -519,10 +588,14 @@ tua_err_t tua_fs_readdir_async_cl(
     tua_closure_t cb
 ) {
     tua_readdir_cl_ctx_t* ctx = (tua_readdir_cl_ctx_t*)tua_malloc(sizeof(*ctx));
-    if (ctx == NULL) return TUA_E_NOMEM;
+    if (ctx == NULL) {
+        return TUA_E_NOMEM;
+    }
     ctx->cb = cb;
+    tua_closure_retain(&ctx->cb);
     tua_err_t err = tua_fs_readdir_async(loop, wq, path_utf8, tua_readdir_cl_cb, ctx);
     if (err != TUA_OK) {
+        tua_closure_release(&ctx->cb);
         tua_free(ctx);
     }
     return err;

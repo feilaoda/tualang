@@ -33,6 +33,7 @@ endif
 RT_CFLAGS = -I./src -Wall $(RT_DEFS)
 RT_SRCS = \
 	src/rt/rt_alloc.c \
+	src/rt/rt_box.c \
 	src/rt/rt_cancel.c \
 	src/rt/rt_err.c \
 	src/rt/rt_strconv.c \

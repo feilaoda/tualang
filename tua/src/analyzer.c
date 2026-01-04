@@ -639,6 +639,7 @@ static int varIsMoveOnly(const VarInfo* v) {
     // Shared references are copyable; exclusive references are move-only to prevent aliasing.
     if (v->isRef) return v->refKind == 1 ? 1 : 0;
     if (v->type->kind == AT_MAP || v->type->kind == AT_ARRAY) return 1;
+    if (v->type->kind == AT_FUNC) return 1; // closure values own env; move-only
     if (v->type->kind == AT_NAMED) {
         // `ptr` is treated as a raw pointer and remains copyable for now.
         if (v->type->nameLen == 3 && memcmp(v->type->name, "ptr", 3) == 0) return 0;
@@ -651,6 +652,7 @@ static int atIsMoveOnly(AType* t, int isRef) {
     if (!t) return 0;
     if (isRef) return 0;
     if (t->kind == AT_MAP || t->kind == AT_ARRAY) return 1;
+    if (t->kind == AT_FUNC) return 1;
     if (t->kind == AT_NAMED) {
         if (t->nameLen == 3 && memcmp(t->name, "ptr", 3) == 0) return 0;
         return 1;

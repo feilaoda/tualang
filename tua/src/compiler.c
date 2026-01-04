@@ -27,6 +27,17 @@ typedef struct TailrecState {
     LLVMTypeRef* paramBoxPtrTypes; // T* when boxed, else NULL
 } TailrecState;
 
+typedef struct {
+    char* buf;
+    int len;
+    int cap;
+} StrBuf;
+
+static void sbInit(StrBuf* sb, int cap);
+static void sbAppendN(StrBuf* sb, const char* s, int n);
+static void sbAppendC(StrBuf* sb, char c);
+static void sbAppendSanitizedToken(StrBuf* sb, const Token* tok);
+
 static int tokenEqualsCString(const Token* token, const char* s) {
     if (!token || !s) return 0;
     size_t len = strlen(s);
@@ -99,10 +110,31 @@ void initCompiler(Compiler* compiler) {
     compiler->uncheckedIndex = 0;
     compiler->stackFixedArrays = 0;
     compiler->emitLoc = 1;
+    compiler->genericInstStack = listNew();
     
     // Debug information
     compiler->hadError = false;
     compiler->panicMode = false;
+}
+
+static void compilerPrintGenericInstStack(Compiler* compiler) {
+    if (!compiler || !compiler->genericInstStack || compiler->genericInstStack->length <= 0) return;
+    // Print from newest to oldest.
+    for (int i = compiler->genericInstStack->length - 1; i >= 0; i--) {
+        GenericInstFrame* f = (GenericInstFrame*)listGet(compiler->genericInstStack, i);
+        if (!f || !f->pretty) continue;
+        if (f->file && f->line > 0 && f->col > 0) {
+            fprintf(stderr, "note: while instantiating %s at %s:%d:%d\n", f->pretty, f->file, f->line, f->col);
+        } else if (f->file && f->line > 0) {
+            fprintf(stderr, "note: while instantiating %s at %s:%d\n", f->pretty, f->file, f->line);
+        } else if (f->line > 0 && f->col > 0) {
+            fprintf(stderr, "note: while instantiating %s at %d:%d\n", f->pretty, f->line, f->col);
+        } else if (f->line > 0) {
+            fprintf(stderr, "note: while instantiating %s at %d\n", f->pretty, f->line);
+        } else {
+            fprintf(stderr, "note: while instantiating %s\n", f->pretty);
+        }
+    }
 }
 
 void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...) {
@@ -126,6 +158,7 @@ void compilerErrorAt(Compiler* compiler, int line, const char* fmt, ...) {
     } else {
         fprintf(stderr, "\n");
     }
+    compilerPrintGenericInstStack(compiler);
 }
 
 void compilerErrorAtEx(Compiler* compiler, const char* file, int line, int col, const char* fmt, ...) {
@@ -151,6 +184,7 @@ void compilerErrorAtEx(Compiler* compiler, const char* file, int line, int col, 
     } else {
         fprintf(stderr, "\n");
     }
+    compilerPrintGenericInstStack(compiler);
 }
 
 void compilerErrorAtToken(Compiler* compiler, const Token* token, const char* fmt, ...) {
@@ -179,6 +213,81 @@ void compilerErrorAtToken(Compiler* compiler, const Token* token, const char* fm
     } else {
         fprintf(stderr, "\n");
     }
+    compilerPrintGenericInstStack(compiler);
+}
+
+static void sbAppendTypeDisplay(StrBuf* sb, Type* t) {
+    if (!sb) return;
+    if (!t) {
+        sbAppendN(sb, "any", 3);
+        return;
+    }
+    switch (t->kind) {
+        case TYPE_BOOL: sbAppendN(sb, "bool", 4); return;
+        case TYPE_STRING: sbAppendN(sb, "string", 6); return;
+        case TYPE_I8: sbAppendN(sb, "i8", 2); return;
+        case TYPE_I16: sbAppendN(sb, "i16", 3); return;
+        case TYPE_INT: sbAppendN(sb, "int", 3); return;
+        case TYPE_LONG: sbAppendN(sb, "long", 4); return;
+        case TYPE_ISIZE: sbAppendN(sb, "isize", 5); return;
+        case TYPE_U8: sbAppendN(sb, "u8", 2); return;
+        case TYPE_U16: sbAppendN(sb, "u16", 3); return;
+        case TYPE_U32: sbAppendN(sb, "u32", 3); return;
+        case TYPE_U64: sbAppendN(sb, "u64", 3); return;
+        case TYPE_USIZE: sbAppendN(sb, "usize", 5); return;
+        case TYPE_BYTE: sbAppendN(sb, "byte", 4); return;
+        case TYPE_F16: sbAppendN(sb, "f16", 3); return;
+        case TYPE_FLOAT: sbAppendN(sb, "f32", 3); return;
+        case TYPE_DOUBLE: sbAppendN(sb, "f64", 3); return;
+        case TYPE_PTR: sbAppendN(sb, "ptr", 3); return;
+        case TYPE_REF:
+            sbAppendN(sb, "Ref<", 4);
+            sbAppendTypeDisplay(sb, t->inner);
+            sbAppendC(sb, '>');
+            return;
+        case TYPE_ARRAY:
+            sbAppendTypeDisplay(sb, t->inner);
+            sbAppendC(sb, '[');
+            if (t->arrayLen >= 0) {
+                char tmp[32];
+                snprintf(tmp, sizeof(tmp), "%lld", (long long)t->arrayLen);
+                sbAppendN(sb, tmp, (int)strlen(tmp));
+            }
+            sbAppendC(sb, ']');
+            return;
+        case TYPE_FUNC:
+            sbAppendN(sb, "fn", 2);
+            return;
+        case TYPE_NAMED:
+            sbAppendSanitizedToken(sb, &t->name);
+            if (t->typeArgs && t->typeArgs->length > 0) {
+                sbAppendC(sb, '<');
+                for (ListNode* n = t->typeArgs->head; n != NULL; n = n->next) {
+                    if (n != t->typeArgs->head) sbAppendN(sb, ", ", 2);
+                    sbAppendTypeDisplay(sb, (Type*)n->data);
+                }
+                sbAppendC(sb, '>');
+            }
+            return;
+        default:
+            sbAppendN(sb, "any", 3);
+            return;
+    }
+}
+
+static char* formatGenericInstPretty(const char* baseName, int baseNameLen, List* canonArgs) {
+    if (!baseName || baseNameLen <= 0) return NULL;
+    StrBuf sb;
+    sbInit(&sb, baseNameLen + 64);
+    sbAppendN(&sb, baseName, baseNameLen);
+    sbAppendC(&sb, '<');
+    int ac = canonArgs ? canonArgs->length : 0;
+    for (int i = 0; i < ac; i++) {
+        if (i > 0) sbAppendN(&sb, ", ", 2);
+        sbAppendTypeDisplay(&sb, (Type*)listGet(canonArgs, i));
+    }
+    sbAppendC(&sb, '>');
+    return sb.buf;
 }
 
 StructInfo* compilerFindStruct(Compiler* compiler, const char* name, int length) {
@@ -334,7 +443,54 @@ static LLVMValueRef getOrCreateFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "free", fty);
 }
 
-static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info);
+static LLVMTypeRef tuaBoxDropFnType(Compiler* compiler) {
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    return LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+}
+
+static LLVMValueRef getOrCreateTuaBoxAlloc(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_alloc");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef dropFnTy = tuaBoxDropFnType(compiler);
+    LLVMTypeRef dropFnPtrTy = LLVMPointerType(dropFnTy, 0);
+    LLVMTypeRef params[2] = { i64, dropFnPtrTy };
+    LLVMTypeRef fty = LLVMFunctionType(i8ptr, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_alloc", fty);
+}
+
+static LLVMValueRef getOrCreateTuaBoxInc(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_inc");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_inc", fty);
+}
+
+static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_dec");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_dec", fty);
+}
+
+LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info);
+LLVMValueRef compilerGetOrCreateBoxDropFn(
+    Compiler* compiler,
+    LLVMTypeRef valueType,
+    Type* astType,
+    int isTraitObj,
+    const char* traitName,
+    int traitNameLen
+);
 
 static LLVMValueRef loadLocalVarValueForDrop(Compiler* compiler, VariableRef var, const char* name) {
     if (!compiler || !var.value || !var.type) return NULL;
@@ -362,9 +518,27 @@ static void storeLocalVarValueForDrop(Compiler* compiler, VariableRef var, LLVMV
 static void emitDropForVar(Compiler* compiler, VariableRef var) {
     if (!compiler) return;
     if (var.isArray && var.isStackArray) return; // stack-backed fixed arrays must not be freed
-    if (var.isBorrowed) return;
-    if (!var.isMap && !var.isArray && !var.isTraitObj) return;
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) return;
+
+    // Boxed locals/params (closure safety): always release the box storage if owned by this binding.
+    if (var.isBoxed && var.boxOwns) {
+        if (!var.boxPtrType) return;
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "boxp");
+        LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+        if (decFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(decFn);
+            LLVMValueRef arg0 = LLVMBuildBitCast(compiler->builder, cell, i8ptr, "boxp_i8");
+            LLVMBuildCall2(compiler->builder, fty, decFn, &arg0, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(var.boxPtrType), var.value);
+        return;
+    }
+
+    if (var.isBorrowed) return;
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+    int isClosure = (var.type == cloTy);
+    if (!var.isMap && !var.isArray && !var.isTraitObj && !isClosure) return;
 
     LLVMValueRef cur = loadLocalVarValueForDrop(compiler, var, "drop_cur");
     if (!cur) return;
@@ -386,18 +560,27 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
         LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "dropfn");
         LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
     } else {
-        LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
-        if (!fn) return;
-        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
-        LLVMValueRef args1[1] = { cur };
-        LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "");
+        if (isClosure) {
+            LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");
+            LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+            if (decFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(decFn);
+                LLVMBuildCall2(compiler->builder, fty, decFn, &env, 1, "");
+            }
+        } else {
+            LLVMValueRef fn = var.isArray ? getOrCreateTuaArrayFree(compiler) : getOrCreateTuaMapFree(compiler);
+            if (!fn) return;
+            LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+            LLVMValueRef args1[1] = { cur };
+            LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "");
+        }
     }
 
     LLVMValueRef nullv = LLVMConstNull(var.type);
     storeLocalVarValueForDrop(compiler, var, nullv);
 }
 
-static void emitDropForBlockVars(Compiler* compiler, Block* block) {
+void compilerEmitDropForBlockVars(Compiler* compiler, Block* block) {
     if (!compiler || !block || !block->variables) return;
     for (ListNode* n = block->variables->head; n != NULL; n = n->next) {
         VariableRef* vr = (VariableRef*)n->data;
@@ -406,11 +589,11 @@ static void emitDropForBlockVars(Compiler* compiler, Block* block) {
     }
 }
 
-static void emitDropForCurrentFunctionScopes(Compiler* compiler) {
+void compilerEmitDropForCurrentFunctionScopes(Compiler* compiler) {
     if (!compiler || !compiler->current || !compiler->current->func) return;
     LLVMValueRef fn = compiler->current->func;
     for (Block* b = compiler->current; b != NULL && b->func == fn; b = b->parent) {
-        emitDropForBlockVars(compiler, b);
+        compilerEmitDropForBlockVars(compiler, b);
     }
 }
 
@@ -420,12 +603,13 @@ static void moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
     VariableRef v = findVariableExpr(compiler, e);
     if (!v.value || !v.type) return;
     if (v.isArray && v.isStackArray) return;
-    if (!v.isMap && !v.isArray && !v.isTraitObj) return;
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+    if (!v.isMap && !v.isArray && !v.isTraitObj && v.type != cloTy) return;
     LLVMValueRef nullv = LLVMConstNull(v.type);
     storeLocalVarValueForDrop(compiler, v, nullv);
 }
 
-static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info) {
+LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info) {
     if (!compiler || !info || !info->name || info->nameLength <= 0 || !info->decl) return NULL;
     // Name: `<Struct>__drop`
     int dropNameLen = info->nameLength + 6; // "__drop"
@@ -492,6 +676,20 @@ static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info) 
             continue;
         }
 
+        // closure value: release env box
+        if (f->type->kind == TYPE_FUNC) {
+            LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+            LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, cloTy, fieldPtr, "ccur");
+            LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "c_env");
+            LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+            if (decFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(decFn);
+                LLVMBuildCall2(compiler->builder, fty, decFn, &env, 1, "");
+            }
+            LLVMBuildStore(compiler->builder, LLVMConstNull(cloTy), fieldPtr);
+            continue;
+        }
+
         // trait object: call vtable.drop(data)
         if (f->type->kind == TYPE_NAMED) {
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &f->type->name);
@@ -516,7 +714,7 @@ static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info) 
         if (f->type->kind == TYPE_NAMED) {
             StructInfo* inner = compilerResolveStructByToken(compiler, &f->type->name);
             if (inner) {
-                LLVMValueRef dropInner = getOrCreateStructDrop(compiler, inner);
+                LLVMValueRef dropInner = compilerGetOrCreateStructDrop(compiler, inner);
                 if (dropInner) {
                     LLVMTypeRef dropInnerTy = LLVMGlobalGetValueType(dropInner);
                     LLVMValueRef args1[1] = { fieldPtr };
@@ -534,6 +732,137 @@ static LLVMValueRef getOrCreateStructDrop(Compiler* compiler, StructInfo* info) 
     compiler->current = savedCurrent;
 
     free(dropName);
+    return fn;
+}
+
+LLVMValueRef compilerGetOrCreateBoxDropFn(
+    Compiler* compiler,
+    LLVMTypeRef valueType,
+    Type* astType,
+    int isTraitObj,
+    const char* traitName,
+    int traitNameLen
+) {
+    if (!compiler || !valueType) return NULL;
+
+    LLVMTypeRef mapTy = compilerGetMapType(compiler);
+    LLVMTypeRef arrTy = compilerGetArrayType(compiler);
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+
+    int isMap = (valueType == mapTy);
+    int isArray = (valueType == arrTy);
+    int isClosure = (valueType == cloTy);
+    StructInfo* structInfo = NULL;
+    TraitInfo* traitInfo = NULL;
+
+    if (!isMap && !isArray && !isClosure) {
+        if (isTraitObj) {
+            if (traitName && traitNameLen > 0) {
+                traitInfo = compilerFindTrait(compiler, traitName, traitNameLen);
+            }
+        } else if (astType && astType->kind == TYPE_NAMED) {
+            structInfo = compilerResolveStructByToken(compiler, &astType->name);
+        } else if (!structInfo && LLVMGetTypeKind(valueType) == LLVMStructTypeKind) {
+            const char* llvmName = LLVMGetStructName(valueType);
+            if (llvmName && llvmName[0] != '\0') {
+                structInfo = compilerFindStruct(compiler, llvmName, (int)strlen(llvmName));
+            }
+        }
+    }
+
+    if (!isMap && !isArray && !isClosure && !structInfo && !traitInfo) return NULL;
+
+    const char* base = NULL;
+    int baseLen = 0;
+    if (isMap) { base = "map"; baseLen = 3; }
+    else if (isArray) { base = "array"; baseLen = 5; }
+    else if (isClosure) { base = "closure"; baseLen = 7; }
+    else if (traitInfo) { base = traitInfo->name; baseLen = traitInfo->nameLength; }
+    else if (structInfo) { base = structInfo->name; baseLen = structInfo->nameLength; }
+
+    int fnNameLen = 11 + baseLen; // "__boxdrop__" + base
+    char* fnName = malloc((size_t)fnNameLen + 1);
+    memcpy(fnName, "__boxdrop__", 11);
+    memcpy(fnName + 11, base, (size_t)baseLen);
+    fnName[fnNameLen] = '\0';
+
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, fnName);
+    if (existing) {
+        free(fnName);
+        return existing;
+    }
+
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef fnTy = tuaBoxDropFnType(compiler);
+    LLVMValueRef fn = LLVMAddFunction(compiler->module, fnName, fnTy);
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+    free(fnName);
+
+    LLVMBasicBlockRef savedBlock = LLVMGetInsertBlock(compiler->builder);
+    Block* savedCurrent = compiler->current;
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(fn, "entry");
+    LLVMPositionBuilderAtEnd(compiler->builder, entry);
+
+    LLVMValueRef payloadI8 = LLVMGetParam(fn, 0);
+    LLVMTypeRef payloadPtrTy = LLVMPointerType(valueType, 0);
+    LLVMValueRef payloadPtr = LLVMBuildBitCast(compiler->builder, payloadI8, payloadPtrTy, "p");
+
+    if (traitInfo) {
+        LLVMTypeRef objTy = compilerGetTraitObjType(compiler, traitInfo);
+        LLVMTypeRef vtTy = compilerGetTraitVtableType(compiler, traitInfo);
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, objTy, payloadPtr, "tcur");
+        LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, cur, 0, "t_data");
+        LLVMValueRef vtp = LLVMBuildExtractValue(compiler->builder, cur, 1, "t_vt");
+        LLVMValueRef vtptr = LLVMBuildBitCast(compiler->builder, vtp, LLVMPointerType(vtTy, 0), "t_vtptr");
+        LLVMValueRef dropSlot = LLVMBuildStructGEP2(compiler->builder, vtTy, vtptr, 0, "t_drop_p");
+        LLVMValueRef dropRaw = LLVMBuildLoad2(compiler->builder, i8ptr, dropSlot, "t_drop");
+        LLVMTypeRef dropFnTy = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), &i8ptr, 1, 0);
+        LLVMValueRef dropFn = LLVMBuildBitCast(compiler->builder, dropRaw, LLVMPointerType(dropFnTy, 0), "t_dropfn");
+        LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(objTy), payloadPtr);
+    } else if (isMap) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, mapTy, payloadPtr, "mcur");
+        LLVMValueRef freeFn = getOrCreateTuaMapFree(compiler);
+        if (freeFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+            LLVMValueRef args1[1] = { cur };
+            LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(mapTy), payloadPtr);
+    } else if (isArray) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, arrTy, payloadPtr, "acur");
+        LLVMValueRef freeFn = getOrCreateTuaArrayFree(compiler);
+        if (freeFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+            LLVMValueRef args1[1] = { cur };
+            LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), payloadPtr);
+    } else if (isClosure) {
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, cloTy, payloadPtr, "ccur");
+        LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");
+        LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+        if (decFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(decFn);
+            LLVMValueRef arg0 = env;
+            LLVMBuildCall2(compiler->builder, fty, decFn, &arg0, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(cloTy), payloadPtr);
+    } else if (structInfo) {
+        LLVMValueRef dropFn = compilerGetOrCreateStructDrop(compiler, structInfo);
+        if (dropFn) {
+            LLVMTypeRef dropTy = LLVMGlobalGetValueType(dropFn);
+            LLVMValueRef args1[1] = { payloadPtr };
+            LLVMBuildCall2(compiler->builder, dropTy, dropFn, args1, 1, "");
+        }
+        LLVMBuildStore(compiler->builder, LLVMConstNull(valueType), payloadPtr);
+    }
+
+    LLVMBuildRetVoid(compiler->builder);
+
+    if (savedBlock) LLVMPositionBuilderAtEnd(compiler->builder, savedBlock);
+    compiler->current = savedCurrent;
     return fn;
 }
 
@@ -1064,12 +1393,6 @@ void compilerRecordTraitImplPair(Compiler* compiler, const char* traitName, int 
     listAppend(compiler->traitImplPairs, p);
 }
 
-typedef struct {
-    char* buf;
-    int len;
-    int cap;
-} StrBuf;
-
 static void sbInit(StrBuf* sb, int cap) {
     sb->len = 0;
     sb->cap = cap > 0 ? cap : 64;
@@ -1219,6 +1542,42 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
         return existing;
     }
 
+    char* pretty = formatGenericInstPretty(baseName, baseNameLen, canon);
+
+    // Detect recursive instantiation cycles of the same concrete instance.
+    if (compiler && compiler->genericInstStack && pretty) {
+        for (int i = 0; i < compiler->genericInstStack->length; i++) {
+            GenericInstFrame* f = (GenericInstFrame*)listGet(compiler->genericInstStack, i);
+            if (!f || !f->pretty) continue;
+            if (strcmp(f->pretty, pretty) == 0) {
+                const Token* tok = callSite ? callSite : &tmpl->decl->name;
+                compilerErrorAtToken(
+                    compiler,
+                    tok,
+                    "recursive generic instantiation detected for %s",
+                    pretty
+                );
+                free(instName);
+                free(pretty);
+                return NULL;
+            }
+        }
+    }
+
+    // Push diagnostic frame at the call site (before switching module context).
+    int pushedDiagFrame = 0;
+    if (compiler && compiler->genericInstStack && pretty) {
+        GenericInstFrame* fr = (GenericInstFrame*)calloc(1, sizeof(GenericInstFrame));
+        fr->file = compiler->currentFilePath;
+        fr->line = callSite ? callSite->line : 0;
+        fr->col = callSite ? callSite->col : 0;
+        fr->pretty = pretty;
+        listAppend(compiler->genericInstStack, fr);
+        pushedDiagFrame = 1;
+        pretty = NULL; // owned by frame
+    }
+    if (pretty) free(pretty);
+
     // Switch compiler context to the template's module for correct name resolution in the body.
     const char* savedFile = compiler->currentFilePath;
     const char* savedPrefix = compiler->currentModulePrefix;
@@ -1310,6 +1669,14 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
         compiler->currentModulePrefixLen = savedPrefixLen;
         compiler->currentAliases = savedAliases;
         free(instName);
+
+        if (pushedDiagFrame && compiler && compiler->genericInstStack) {
+            GenericInstFrame* fr = (GenericInstFrame*)listPop(compiler->genericInstStack);
+            if (fr) {
+                if (fr->pretty) free(fr->pretty);
+                free(fr);
+            }
+        }
         return NULL;
     }
 
@@ -1331,6 +1698,16 @@ LLVMValueRef compilerInstantiateGenericFunc(Compiler* compiler, const char* base
 
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, instName);
     free(instName);
+
+    // Pop diagnostic frame.
+    if (compiler && compiler->genericInstStack) {
+        GenericInstFrame* fr = (GenericInstFrame*)listPop(compiler->genericInstStack);
+        if (fr) {
+            if (fr->pretty) free(fr->pretty);
+            free(fr);
+        }
+    }
+
     return fn;
 }
 
@@ -1972,7 +2349,7 @@ void compileBlockStmt(Compiler* compiler, BlockStmt* stmt){
 
     // Drop locals on normal block exit (best-effort; early returns handled in compileReturnStmt).
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) {
-        emitDropForBlockVars(compiler, scoped);
+        compilerEmitDropForBlockVars(compiler, scoped);
     }
 
     compiler->current = saved;
@@ -1993,7 +2370,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
     }
 
     if (LLVMGetTypeKind(returnType) == LLVMVoidTypeKind) {
-        emitDropForCurrentFunctionScopes(compiler);
+        compilerEmitDropForCurrentFunctionScopes(compiler);
         LLVMBuildRetVoid(builder);
         return;
     }
@@ -2008,7 +2385,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
             Expr* only = (Expr*)stmt->values->head->data;
             LLVMValueRef mv = compileExprMulti(compiler, only);
             if (mv && LLVMTypeOf(mv) == returnType) {
-                emitDropForCurrentFunctionScopes(compiler);
+                compilerEmitDropForCurrentFunctionScopes(compiler);
                 LLVMBuildRet(builder, mv);
                 return;
             }
@@ -2035,7 +2412,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
             }
             out = LLVMBuildInsertValue(builder, out, v, i, "mvr");
         }
-        emitDropForCurrentFunctionScopes(compiler);
+        compilerEmitDropForCurrentFunctionScopes(compiler);
         LLVMBuildRet(builder, out);
         return;
     }
@@ -2142,7 +2519,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
     }
 
     returnValue = castValueToType(compiler, returnValue, returnType);
-    emitDropForCurrentFunctionScopes(compiler);
+    compilerEmitDropForCurrentFunctionScopes(compiler);
     LLVMBuildRet(builder, returnValue);
 }
 void compileExprStmt(Compiler* compiler, ExprStmt* stmt){
@@ -2650,7 +3027,7 @@ static LLVMValueRef getOrCreateTraitVtableGlobal(Compiler* compiler, TraitInfo* 
     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
 
     // Ensure struct drop exists for this concrete type.
-    LLVMValueRef dropStruct = getOrCreateStructDrop(compiler, target);
+    LLVMValueRef dropStruct = compilerGetOrCreateStructDrop(compiler, target);
     if (!dropStruct) {
         compilerErrorAt(compiler, 0, "failed to create drop for struct");
         free(gname);
@@ -3355,17 +3732,38 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         int isBoxed = compiler->boxAllLocals;
         LLVMTypeRef valueType = paramTypes[i];
         LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(valueType, 0) : NULL;
+        Type* pType = (p && p->type) ? compilerResolveGenericType(compiler, p->type) : NULL;
+        TraitInfo* paramTrait = NULL;
+        if (pType && pType->kind == TYPE_NAMED) {
+            paramTrait = compilerResolveTraitByToken(compiler, &pType->name);
+        }
+        int isBorrowedParam = (pType && pType->kind == TYPE_REF) ? 1 : ((p && p->mode != PARAM_MOVE) ? 1 : 0);
+
         if (isBoxed) {
             slot = LLVMBuildAlloca(compiler->builder, boxPtrType, paramName);
-            LLVMValueRef mallocFn = LLVMGetNamedFunction(compiler->module, "malloc");
-            if (!mallocFn) {
-                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-                LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
-                LLVMTypeRef mty = LLVMFunctionType(i8ptr, &i64, 1, 0);
-                mallocFn = LLVMAddFunction(compiler->module, "malloc", mty);
+            LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+            LLVMValueRef dropFn = NULL;
+            if (!isBorrowedParam) {
+                dropFn = compilerGetOrCreateBoxDropFn(
+                    compiler,
+                    valueType,
+                    pType,
+                    paramTrait ? 1 : 0,
+                    paramTrait ? paramTrait->name : NULL,
+                    paramTrait ? paramTrait->nameLength : 0
+                );
             }
+            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
             LLVMValueRef sizeV = LLVMSizeOf(valueType);
-            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+            LLVMValueRef size64 = sizeV;
+            if (LLVMTypeOf(sizeV) != i64) {
+                size64 = LLVMBuildZExt(compiler->builder, sizeV, i64, "bsz");
+            }
+            LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+            LLVMValueRef dropArg = dropFn ? LLVMBuildBitCast(compiler->builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+            LLVMTypeRef allocTy = LLVMGlobalGetValueType(boxAlloc);
+            LLVMValueRef args2[2] = { size64, dropArg };
+            LLVMValueRef raw = LLVMBuildCall2(compiler->builder, allocTy, boxAlloc, args2, 2, "box");
             LLVMValueRef cell = LLVMBuildBitCast(compiler->builder, raw, boxPtrType, "cell");
             LLVMBuildStore(compiler->builder, arg, cell);
             LLVMBuildStore(compiler->builder, cell, slot);
@@ -3386,7 +3784,6 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->length = p->name.length;
         variable->value = slot;
         variable->type = valueType;
-        Type* pType = (p && p->type) ? compilerResolveGenericType(compiler, p->type) : NULL;
         variable->pointeeType = (pType && pType->kind == TYPE_REF)
                                     ? (pType->inner ? typeToLLVMType(compiler, pType->inner, false)
                                                     : LLVMInt32TypeInContext(compiler->context))
@@ -3429,6 +3826,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->isBorrowed = (p && p->type && p->type->kind == TYPE_REF) ? 1 : ((p && p->mode != PARAM_MOVE) ? 1 : 0);
         variable->isGlobal = 0;
         variable->isBoxed = isBoxed;
+        variable->boxOwns = isBoxed ? 1 : 0;
         variable->boxPtrType = isBoxed ? boxPtrType : NULL;
         variable->isMap = 0;
         variable->isTypedMap = 0;
@@ -3552,7 +3950,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
 
     // Implicit return
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(compiler->builder))) {
-        emitDropForBlockVars(compiler, funcBlock);
+        compilerEmitDropForBlockVars(compiler, funcBlock);
         if (LLVMGetTypeKind(retType) == LLVMVoidTypeKind) {
             LLVMBuildRetVoid(compiler->builder);
         } else {

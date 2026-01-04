@@ -209,7 +209,8 @@
     - 立即调用：`(fn(...) -> T { ... })(args...)`
   - 实现策略（当前 LLVM-JIT 版本）：
     - 当函数体内出现匿名函数时，本函数的局部变量/参数会自动使用“heap box”存储以保证被捕获后仍然有效
-    - 目前 box/env 使用 `malloc`；尚未实现 closure drop，因此存在内存泄漏（后续按内存模型：closure 拥有 env 并在 drop 时释放；不引入 GC）
+    - box/env 使用引用计数 box（`tua_box_alloc/inc/dec`）；closure drop 时释放 env（无 GC）
+    - 对于会“保存到未来再调用”的回调（如 `afterMs/post/*_async_cl`），runtime 在注册时会 retain 一份回调 env，并在触发/取消/错误路径 release（避免回调引用外层变量时产生悬垂）
   - 当前限制（后续规划补齐）：
     - 已支持 TS 风格函数类型 `(args) -> ret`（见下）；但完整类型检查/类型推断仍在规划中
 - 内建函数（Status: Implemented）：
@@ -605,9 +606,14 @@
 
 #### 10.7 资源释放与析构（Status: Partial）
 - 作用域结束时自动 drop（RAII 风格）
-- 第一版已覆盖 `map/array` 的 drop（作用域/覆盖赋值/return 路径）；后续补齐 `struct/closure env` 与 deep drop
+- 第一版已覆盖 `map/array` 的 drop（作用域/覆盖赋值/return 路径）；并补齐 `closure env` 的 drop（闭包/回调不再泄漏）
 - `deinit`/析构的语义与调用时机需要统一（与错误路径 panic/throw 下的保证一起冻结）
-- 闭包 boxing：捕获变量 box/env 的所有权归 closure；closure drop 时释放 env（当前实现存在泄漏，需修复）
+- 闭包 boxing：捕获变量 box/env 的所有权归 closure；closure drop 时释放 env（无 GC）
+- 回调（callback）共享/托管规则（Frozen）：
+  - 变量作用域结束：`cb` 这个绑定离开作用域时 drop，`cb.env` 做一次 `rc--`
+  - 注册到异步/延迟执行：runtime 在注册时对回调做一次 retain（`rc++`），保存到 future/ctx/handle
+  - 回调触发完成后：runtime 释放保存的那份（`rc--`）
+  - 取消/错误/loopFree：只要 runtime 不会再调用该 callback，就必须在对应路径释放那份引用（`rc--`）
 
 #### 10.8 并发与数据竞争（Planned）
 - 当语言暴露线程/并发时，借用规则必须扩展到跨线程：禁止未同步的共享可变状态（数据竞争编译期阻止）
@@ -634,4 +640,7 @@
 
 #### 11.3 跨 ABI 的所有权规则（Planned，先冻结最小集）
 - `extern fn` 的参数默认是“借用”（callee 不应释放传入的 `map/array/string/ptr`），除非该函数名/文档明确标注为“接管所有权”。
+- 对于 `extern fn` 的 callback 参数：
+  - 默认视为“借用回调值”；callee 不得直接 drop 参数本身
+  - 若 callee 需要把回调保存到未来（escaping callback），必须显式 retain 一份，并在完成/取消/错误路径 release
 - 由 `extern fn` 返回的指针/缓冲区必须提供配套释放函数（例如 `tua_free`、`tua_fs_string_array_free`），并在 `std` 层封装为更安全的 API（Planned：用 `bytes/string` 的 drop 消除用户手动释放）。

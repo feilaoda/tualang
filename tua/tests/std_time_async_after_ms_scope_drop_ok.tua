@@ -1,0 +1,24 @@
+import "std/rt" as rt
+import "std/time/async" as time
+
+fn main() {
+    let loop = rt.Rt.loopCreate()
+    assert(loop != null)
+
+    let fired = 0
+    {
+        let x = 41
+        let cb = fn() {
+            fired = x + 1
+            rt.Rt.loopStop(loop)
+        }
+        let err = time.TimeAsync.afterMs(loop, 1, cb)
+        assert(err == 0)
+    }
+
+    let rc = rt.Rt.loopRun(loop)
+    assert(rc == 0)
+    assert(fired == 42)
+
+    rt.Rt.loopFree(loop)
+}

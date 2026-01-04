@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+static Expr* unwrapGroupingExpr(Expr* e);
+
 static int isOptionLLVMType(LLVMTypeRef t);
 static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef func, LLVMValueRef call);
 static LLVMValueRef getOrCreatePrintf(Compiler* compiler);
@@ -9,6 +11,51 @@ static LLVMValueRef getOrCreateTuaPrintValue(Compiler* compiler);
 static LLVMTypeRef getPrintfType(Compiler* compiler);
 static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value);
 static const char* formatForValue(LLVMValueRef value, int addNewline);
+
+static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_dec");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_box_dec", fty);
+}
+
+static int exprIsMoveArg(Expr* e) {
+    Expr* a = unwrapGroupingExpr(e);
+    if (!a) return 0;
+    if (a->type != EXPR_UNARY) return 0;
+    UnaryExpr* un = (UnaryExpr*)a;
+    return un->operator.type == TOKEN_MOVE;
+}
+
+static int exprIsVarArg(Expr* e) {
+    Expr* a = unwrapGroupingExpr(e);
+    if (!a) return 0;
+    return a->type == EXPR_VARIABLE;
+}
+
+static void dropTemporaryClosureArgs(Compiler* compiler, List* argList, LLVMValueRef* args, unsigned argsStartIndex) {
+    if (!compiler || !argList || !args) return;
+    LLVMTypeRef closureTy = compilerGetClosureType(compiler);
+    LLVMValueRef decFn = getOrCreateTuaBoxDec(compiler);
+    if (!closureTy || !decFn) return;
+    LLVMTypeRef decTy = LLVMGlobalGetValueType(decFn);
+
+    unsigned j = 0;
+    for (ListNode* n = argList->head; n != NULL; n = n->next, j++) {
+        Expr* argExpr = (Expr*)n->data;
+        if (!argExpr) continue;
+        if (exprIsVarArg(argExpr)) continue;
+        if (exprIsMoveArg(argExpr)) continue;
+        LLVMValueRef av = args[argsStartIndex + j];
+        if (!av) continue;
+        if (LLVMTypeOf(av) != closureTy) continue;
+        LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, av, 1, "tmp_env");
+        LLVMBuildCall2(compiler->builder, decTy, decFn, &env, 1, "");
+    }
+}
 
 typedef enum {
     BI_NONE = 0,
@@ -1113,6 +1160,9 @@ static LLVMValueRef emitDirectFuncCall(Compiler* compiler, LLVMValueRef func, Ca
     }
 
     LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
+    if (expr->arguments && expected > 0) {
+        dropTemporaryClosureArgs(compiler, expr->arguments, args, 0);
+    }
     if (paramTypes) free(paramTypes);
     if (args) free(args);
     return collapseMultiReturnIfNeeded(compiler, func, call);
@@ -2147,6 +2197,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, callInstNameForFnType(fnType));
+        if (expr->arguments && expected > 1) {
+            dropTemporaryClosureArgs(compiler, expr->arguments, args, 1);
+        }
         LLVMTypeRef retType = LLVMGetReturnType(fnType);
         LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -2222,6 +2275,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
 
             LLVMValueRef call = LLVMBuildCall2(compiler->builder, fnType, fnPtr, args, expected, callInstNameForFnType(fnType));
+            if (expr->arguments && expected > 1) {
+                dropTemporaryClosureArgs(compiler, expr->arguments, args, 1);
+            }
             if (paramTypes) free(paramTypes);
             if (args) free(args);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3846,6 +3902,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args3[3] = { loopV, delay, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args3, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -3877,6 +3934,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args4[4] = { loopV, interval, cb, outHandlePtr };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args4, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -3966,6 +4024,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args2[2] = { loopV, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args2, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4299,6 +4358,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args4[4] = { loopV, lst, cb, outPtr };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args4, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4360,6 +4420,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args6[6] = { loopV, wq, host, port, deadline, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args6, 6, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args6, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4401,6 +4462,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args6[6] = { loopV, wq, host, port, deadline, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args6, 6, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args6, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4439,6 +4501,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args5[5] = { loopV, sock, max, deadline, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args5, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4476,6 +4539,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args5[5] = { loopV, sock, s, deadline, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args5, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4511,6 +4575,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args4[4] = { loopV, wq, path, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args4, 4, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args4, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }
@@ -4542,6 +4607,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef args5[5] = { loopV, wq, path, data, cb };
         LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "err");
+        dropTemporaryClosureArgs(compiler, expr->arguments, args5, 0);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return out;
     }

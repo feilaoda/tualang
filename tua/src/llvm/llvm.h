@@ -28,6 +28,7 @@ typedef struct VariableRef {
     int isBorrowed; // non-owning view; must not be dropped (map/array)
     int isGlobal;
     int isBoxed;
+    int boxOwns; // when boxed, true if this binding owns the box storage (must dec/free at scope end)
     LLVMTypeRef boxPtrType; // T* for boxed variables; slot stores T*
 
     // Optional: container type tags for pointer-like runtime types (LLVM opaque pointers can't distinguish).

@@ -120,7 +120,17 @@ typedef struct Compiler{
     int uncheckedIndex;      // when true, array indexing skips null/oob checks (UB on invalid access)
     int stackFixedArrays;    // when true, eligible local T[N] use stack storage
     int emitLoc;             // when true, emit `tua_set_loc` calls for runtime error reporting
+
+    // Generic diagnostics: instantiation backtrace for monomorphization errors.
+    List* genericInstStack; // List<GenericInstFrame*>
 } Compiler;
+
+typedef struct GenericInstFrame {
+    const char* file; // may be NULL
+    int line;
+    int col;
+    char* pretty; // e.g. "foo<int, string>"
+} GenericInstFrame;
 
 typedef struct MultiReturnInfo {
     char* name;
@@ -300,12 +310,23 @@ void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt);
 void compileObjectStmt(Compiler* compiler, ObjectStmt* stmt);
 void compileEnumStmt(Compiler* compiler, EnumStmt* stmt);
 void initCompiler(Compiler* compiler);
+void compilerEmitDropForBlockVars(Compiler* compiler, Block* block);
+void compilerEmitDropForCurrentFunctionScopes(Compiler* compiler);
 
 	LLVMTypeRef compilerGetClosureType(Compiler* compiler);
 	LLVMTypeRef compilerGetMapType(Compiler* compiler);
 	LLVMTypeRef compilerGetArrayType(Compiler* compiler);
 	LLVMTypeRef compilerGetTuaValueType(Compiler* compiler);
 	LLVMTypeRef compilerGetOptionType(Compiler* compiler, LLVMTypeRef inner);
+LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info);
+LLVMValueRef compilerGetOrCreateBoxDropFn(
+    Compiler* compiler,
+    LLVMTypeRef valueType,
+    Type* astType,
+    int isTraitObj,
+    const char* traitName,
+    int traitNameLen
+);
 void compilerRegisterClosureSig(Compiler* compiler, const char* name, int nameLen, LLVMTypeRef funcType);
 LLVMTypeRef compilerFindClosureSig(Compiler* compiler, const char* name, int nameLen);
 LLVMTypeRef compilerClosureSigFromType(Compiler* compiler, Type* type);
