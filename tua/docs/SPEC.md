@@ -214,6 +214,10 @@
     - 已支持 TS 风格函数类型 `(args) -> ret`（见下）；但完整类型检查/类型推断仍在规划中
 - 内建函数（Status: Implemented）：
   - `print(x)` / `println(x)`（目前支持打印 int/long/double/bool/string 指针）
+  - 格式化打印（Status: Implemented）：
+    - `print("x {} y {}", a, b)` / `println("x {} y {}", a, b)`
+    - 使用 `{}` 作为占位符；占位符数量必须与后续参数数量一致，否则编译错误
+    - 当前限制：仅支持**字符串字面量**作为 format 参数（非字面量会编译错误）
 
 #### 6.1 函数类型（TypeScript 风格，Status: Implemented）
 - 语法形态：`(argType1, argType2, ...) -> retType`（或语法糖：`(argType1, ...) retType`）

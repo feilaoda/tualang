@@ -1,0 +1,5 @@
+let a = 1
+let fmt = "x {}"
+// multiple-arg formatted print requires a string literal format for now
+println(fmt, a)
+

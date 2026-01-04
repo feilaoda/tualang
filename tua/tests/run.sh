@@ -29,12 +29,18 @@ for f in tests/*.tua; do
   base="$(basename "$f")"
   extra=""
   case "$base" in
-    opt_unchecked_*|fail_opt_unchecked_*) extra="--unchecked-index" ;;
-    opt_stack_*|fail_opt_stack_*) extra="--stack-fixed-arrays" ;;
-    opt_perf_*|fail_opt_perf_*) extra="--perf" ;;
-    check_extern_*|fail_check_extern_*) extra="--check-extern" ;;
+    *opt_unchecked_*) extra="--unchecked-index" ;;
+    *opt_stack_*) extra="--stack-fixed-arrays" ;;
+    *opt_perf_*) extra="--perf" ;;
+    *check_extern_*) extra="--check-extern" ;;
   esac
-  if [[ "$base" == aot_* ]]; then
+
+  wants_aot=0
+  expects_fail=0
+  if [[ "$base" == aot_* || "$base" == *_aot_* ]]; then wants_aot=1; fi
+  if [[ "$base" == fail_* || "$base" == *_fail_* ]]; then expects_fail=1; fi
+
+  if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 0 ]]; then
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
     if ./bin/tuac $extra --output "$out" "$f" >/dev/null 2>&1 && "$out" >/dev/null 2>&1; then
@@ -46,7 +52,8 @@ for f in tests/*.tua; do
     rm -rf "$tmpd"
     continue
   fi
-  if [[ "$base" == fail_aot_* ]]; then
+
+  if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 1 ]]; then
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
     tmp="$(mktemp)"
@@ -65,7 +72,8 @@ for f in tests/*.tua; do
     rm -rf "$tmpd"
     continue
   fi
-  if [[ "$base" == fail_* ]]; then
+
+  if [[ "$expects_fail" -eq 1 ]]; then
     tmp="$(mktemp)"
     if ./bin/tuac $extra "$f" >/dev/null 2>"$tmp"; then
       echo "[FAIL] $base (expected failure, got success)"

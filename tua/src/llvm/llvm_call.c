@@ -4,6 +4,11 @@
 
 static int isOptionLLVMType(LLVMTypeRef t);
 static LLVMValueRef collapseMultiReturnIfNeeded(Compiler* compiler, LLVMValueRef func, LLVMValueRef call);
+static LLVMValueRef getOrCreatePrintf(Compiler* compiler);
+static LLVMValueRef getOrCreateTuaPrintValue(Compiler* compiler);
+static LLVMTypeRef getPrintfType(Compiler* compiler);
+static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value);
+static const char* formatForValue(LLVMValueRef value, int addNewline);
 
 typedef enum {
     BI_NONE = 0,
@@ -95,11 +100,58 @@ static char* tokenToCString(const Token* token) {
     return s;
 }
 
+static char* dupStringLiteralToken(Token token) {
+    if (!token.start || token.length < 2) return tokenToCString(&token);
+    // Best-effort: strip surrounding quotes without unescaping (consistent with llvm_expr.c).
+    int innerLen = token.length - 2;
+    if (innerLen < 0) innerLen = 0;
+    char* s = malloc((size_t)innerLen + 1);
+    memcpy(s, token.start + 1, (size_t)innerLen);
+    s[innerLen] = '\0';
+    return s;
+}
+
 static const char* callInstNameForFnType(LLVMTypeRef fnType) {
     if (!fnType) return "call";
     LLVMTypeRef ret = LLVMGetReturnType(fnType);
     if (ret && LLVMGetTypeKind(ret) == LLVMVoidTypeKind) return "";
     return "call";
+}
+
+static LLVMValueRef emitPrintValue(Compiler* compiler, LLVMValueRef argValue, int newline) {
+    if (!compiler || !argValue) return NULL;
+    LLVMContextRef context = compiler->context;
+    LLVMValueRef printfFunc = getOrCreatePrintf(compiler);
+    LLVMTypeRef printfType = getPrintfType(compiler);
+
+    if (LLVMTypeOf(argValue) == compilerGetTuaValueType(compiler)) {
+        LLVMValueRef fn = getOrCreateTuaPrintValue(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef nl = LLVMConstInt(LLVMInt32TypeInContext(context), newline ? 1 : 0, 0);
+        LLVMValueRef args2[2] = { argValue, nl };
+        LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "");
+        return LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+    }
+
+    const char* fmt = formatForValue(argValue, newline ? 1 : 0);
+    if (!fmt) return NULL;
+    argValue = castForPrintf(compiler, argValue);
+
+    LLVMValueRef formatStr = LLVMBuildGlobalStringPtr(compiler->builder, fmt, "fmt");
+    LLVMValueRef args[] = { formatStr, argValue };
+    return LLVMBuildCall2(compiler->builder, printfType, printfFunc, args, 2, "");
+}
+
+static int countBracePlaceholders(const char* s) {
+    if (!s) return 0;
+    int n = 0;
+    for (const char* p = s; p[0] != '\0'; p++) {
+        if (p[0] == '{' && p[1] == '}') {
+            n++;
+            p++;
+        }
+    }
+    return n;
 }
 
 static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
@@ -4874,38 +4926,123 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         return out;
     }
 
-    if (!expr->arguments || expr->arguments->length != 1) {
-        compilerErrorAtToken(compiler, &callee->name, "%.*s expects exactly 1 argument", callee->name.length, callee->name.start);
+    if (!expr->arguments || expr->arguments->length <= 0) {
+        compilerErrorAtToken(compiler, &callee->name, "%.*s expects at least 1 argument", callee->name.length, callee->name.start);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
 
-    LLVMValueRef printfFunc = getOrCreatePrintf(compiler);
-    LLVMTypeRef printfType = getPrintfType(compiler);
-
-    LLVMValueRef argValue = compileExpr(compiler, (Expr*)expr->arguments->head->data);
-    if (argValue && LLVMTypeOf(argValue) == compilerGetTuaValueType(compiler)) {
-        LLVMValueRef fn = getOrCreateTuaPrintValue(compiler);
-        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-        LLVMValueRef nl = LLVMConstInt(LLVMInt32TypeInContext(compiler->context), isPrintln ? 1 : 0, 0);
-        LLVMValueRef args2[2] = { argValue, nl };
-        LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "");
+    // Default: `print(x)` / `println(x)`
+    if (expr->arguments->length == 1) {
+        LLVMValueRef argValue = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+        if (!argValue) {
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef out = emitPrintValue(compiler, argValue, isPrintln ? 1 : 0);
+        if (!out) {
+            emitDebug("Unsupported print argument type\n");
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-        return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+        return out;
     }
-    const char* fmt = formatForValue(argValue, isPrintln);
-    if (!fmt) {
-        emitDebug("Unsupported print argument type\n");
+
+    // Formatted printing: `println("x {} y {}", a, b)` using `{}` placeholders.
+    // - Only supported when the first argument is a string literal.
+    // - Placeholder count must match the remaining argument count.
+    Expr* fmtAst = (Expr*)expr->arguments->head->data;
+    fmtAst = unwrapGroupingExpr(fmtAst);
+    if (!fmtAst || fmtAst->type != EXPR_LITERAL) {
+        compilerErrorAtToken(compiler, &callee->name, "%.*s with multiple arguments requires a string literal format", callee->name.length, callee->name.start);
         if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
         return NULL;
     }
-    argValue = castForPrintf(compiler, argValue);
+    LiteralExpr* lit = (LiteralExpr*)fmtAst;
+    if (lit->value.type != TOKEN_STRING_LITERAL) {
+        compilerErrorAtToken(compiler, &callee->name, "%.*s with multiple arguments requires a string literal format", callee->name.length, callee->name.start);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return NULL;
+    }
 
-    LLVMValueRef formatStr = LLVMBuildGlobalStringPtr(compiler->builder, fmt, "fmt");
-    LLVMValueRef args[] = { formatStr, argValue };
-    LLVMValueRef out = LLVMBuildCall2(compiler->builder, printfType, printfFunc, args, 2, "");
+    char* fmt = dupStringLiteralToken(lit->value);
+    int placeholders = countBracePlaceholders(fmt);
+    int got = expr->arguments->length;
+    int expectedArgs = 1 + placeholders;
+    if (got != expectedArgs) {
+        compilerErrorAtToken(
+            compiler,
+            &callee->name,
+            "format placeholder count mismatch for '%.*s': expected %d args, got %d",
+            callee->name.length,
+            callee->name.start,
+            expectedArgs,
+            got
+        );
+        free(fmt);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        return NULL;
+    }
+
+    // Emit: segments and values (no newline), then optional trailing newline.
+    ListNode* argNode = expr->arguments->head ? expr->arguments->head->next : NULL; // start from 2nd arg
+    const char* p = fmt;
+    while (p && *p) {
+        const char* m = strstr(p, "{}");
+        if (!m) break;
+        if (m > p) {
+            int segLen = (int)(m - p);
+            char* seg = malloc((size_t)segLen + 1);
+            memcpy(seg, p, (size_t)segLen);
+            seg[segLen] = '\0';
+            LLVMValueRef segV = LLVMBuildGlobalStringPtr(compiler->builder, seg, "fseg");
+            free(seg);
+            if (!emitPrintValue(compiler, segV, 0)) {
+                free(fmt);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+        }
+        if (!argNode) {
+            free(fmt);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        LLVMValueRef av = compileExpr(compiler, (Expr*)argNode->data);
+        if (!av) {
+            free(fmt);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        if (!emitPrintValue(compiler, av, 0)) {
+            emitDebug("Unsupported print argument type\n");
+            free(fmt);
+            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+            return NULL;
+        }
+        argNode = argNode->next;
+        p = m + 2;
+    }
+    if (p && *p) {
+        int segLen = (int)strlen(p);
+        if (segLen > 0) {
+            LLVMValueRef tailV = LLVMBuildGlobalStringPtr(compiler->builder, p, "fseg");
+            if (!emitPrintValue(compiler, tailV, 0)) {
+                free(fmt);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+        }
+    }
+    free(fmt);
+
+    if (isPrintln) {
+        LLVMValueRef nlV = LLVMBuildGlobalStringPtr(compiler->builder, "\n", "nl");
+        (void)emitPrintValue(compiler, nlV, 0);
+    }
     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-    return out;
+    return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
     // LLVMBuilderRef builder = compiler->builder;
     // Block* block = compiler->current;
 
