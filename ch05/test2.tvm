@@ -1,9 +1,0 @@
-OP_MOV Ra 1        ; a = 1
-OP_MOV Ri $ARGV0   ; i = n (input argument)
-OP_LABEL L1
-OP_JZ Ri L2  ; if (i == 0) jump to END_LOOP
-OP_ADD Ra Ra Ri    ; a = a + i
-OP_SUB Ri Ri 1     ; i = i - 1
-OP_JMP L1  ; jump to LOOP_START
-OP_LABEL L2
-OP_RET Ra          ; return a

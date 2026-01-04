@@ -1,4 +1,0 @@
-OP_MOV Rb $ARGV0
-OP_MOV Rc $ARGV1
-OP_SUB Ra Rb Rc
-OP_RET Ra
