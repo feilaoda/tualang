@@ -1,3 +1,3 @@
-Tuajit is a compiler for Tua language.
-Tua is a compute language like TypeScript and Lua.
-# how to develop a lua compiler?
+
+Tua 一个实验性的语言 [README.md](tua/README.md)
+
