@@ -1,0 +1,182 @@
+import "std/bytes" as bstd
+
+private fn _imod(a: int, b: int) -> int {
+    return a - (a / b) * b
+}
+
+// UTF-8 utilities (v0): validation, decode, boundary helpers, and basic encoding.
+// Note: Slice<T> is not yet supported as a function parameter ABI, so this module operates on `bytes`.
+object Utf8 {
+    // Decode one UTF-8 codepoint starting at `off`.
+    // Returns `(err, codepoint, sizeBytes)`.
+    fn decode1(b: bytes, off: long) -> int, int, long {
+        if b == null { return 1, 0, 0L }
+        let n = bstd.Bytes.len(b)
+        if off < 0L { return 1, 0, 0L }
+        if off >= n { return 1, 0, 0L }
+
+        let e0, b0 = bstd.Bytes.getU8(b, off)
+        if e0 != 0 { return 1, 0, 0L }
+        if b0 < 128 { return 0, b0, 1L }
+
+        // 2-byte: 110xxxxx 10xxxxxx (0xC2..0xDF)
+        if b0 >= 194 && b0 <= 223 {
+            if off + 1L >= n { return 1, 0, 0L }
+            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            if e1 != 0 { return 1, 0, 0L }
+            if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
+            let cp: int = (b0 - 192) * 64 + (b1 - 128)
+            return 0, cp, 2L
+        }
+
+        // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx (0xE0..0xEF)
+        if b0 >= 224 && b0 <= 239 {
+            if off + 2L >= n { return 1, 0, 0L }
+            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            if e1 != 0 { return 1, 0, 0L }
+            let e2, b2 = bstd.Bytes.getU8(b, off + 2L)
+            if e2 != 0 { return 1, 0, 0L }
+            if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
+            if b2 < 128 || b2 >= 192 { return 1, 0, 0L }
+
+            // Reject overlong (E0 80..9F ..) and surrogate (ED A0..BF ..).
+            if b0 == 224 && b1 < 160 { return 1, 0, 0L }
+            if b0 == 237 && b1 >= 160 { return 1, 0, 0L }
+
+            let cp: int = (b0 - 224) * 4096 + (b1 - 128) * 64 + (b2 - 128)
+            if cp < 2048 { return 1, 0, 0L }
+            if cp >= 55296 && cp <= 57343 { return 1, 0, 0L } // surrogate range
+            return 0, cp, 3L
+        }
+
+        // 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx (0xF0..0xF4)
+        if b0 >= 240 && b0 <= 244 {
+            if off + 3L >= n { return 1, 0, 0L }
+            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            if e1 != 0 { return 1, 0, 0L }
+            let e2, b2 = bstd.Bytes.getU8(b, off + 2L)
+            if e2 != 0 { return 1, 0, 0L }
+            let e3, b3 = bstd.Bytes.getU8(b, off + 3L)
+            if e3 != 0 { return 1, 0, 0L }
+            if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
+            if b2 < 128 || b2 >= 192 { return 1, 0, 0L }
+            if b3 < 128 || b3 >= 192 { return 1, 0, 0L }
+
+            // Reject overlong (F0 80..8F ..) and out-of-range (F4 90..BF ..).
+            if b0 == 240 && b1 < 144 { return 1, 0, 0L }
+            if b0 == 244 && b1 >= 144 { return 1, 0, 0L }
+
+            let cp: int = (b0 - 240) * 262144 + (b1 - 128) * 4096 + (b2 - 128) * 64 + (b3 - 128)
+            if cp < 65536 { return 1, 0, 0L }
+            if cp > 1114111 { return 1, 0, 0L }
+            return 0, cp, 4L
+        }
+
+        return 1, 0, 0L
+    }
+
+    fn isValid(b: bytes) -> bool {
+        if b == null { return false }
+        let i: long = 0L
+        let n = bstd.Bytes.len(b)
+        while i < n {
+            let e, cp, sz = Utf8.decode1(b, i)
+            if e != 0 { return false }
+            if sz <= 0L { return false }
+            i = i + sz
+        }
+        return true
+    }
+
+    // UTF-8 boundary at `off` (0..len). True for 0/len or if byte at off is not a continuation byte.
+    fn isBoundary(b: bytes, off: long) -> bool {
+        if b == null { return false }
+        if off < 0L { return false }
+        let n = bstd.Bytes.len(b)
+        if off == 0L { return true }
+        if off == n { return true }
+        if off > n { return false }
+        let e, v = bstd.Bytes.getU8(b, off)
+        if e != 0 { return false }
+        if v >= 128 && v < 192 { return false }
+        return true
+    }
+
+    // Clamp `off` to the nearest boundary at-or-before it.
+    fn clampBoundaryBefore(b: bytes, off: long) -> long {
+        if b == null { return 0L }
+        let n = bstd.Bytes.len(b)
+        if off <= 0L { return 0L }
+        if off >= n { return n }
+        let i = off
+        while i > 0L && !Utf8.isBoundary(b, i) {
+            i = i - 1L
+        }
+        return i
+    }
+
+    // Clamp `off` to the nearest boundary at-or-after it.
+    fn clampBoundaryAfter(b: bytes, off: long) -> long {
+        if b == null { return 0L }
+        let n = bstd.Bytes.len(b)
+        if off <= 0L { return 0L }
+        if off >= n { return n }
+        let i = off
+        while i < n && !Utf8.isBoundary(b, i) {
+            i = i + 1L
+        }
+        return i
+    }
+
+    fn encodedLen(cp: int) -> long {
+        if cp < 0 { return 0L }
+        if cp < 128 { return 1L }
+        if cp < 2048 { return 2L }
+        if cp < 65536 { return 3L }
+        if cp <= 1114111 { return 4L }
+        return 0L
+    }
+
+    // Encode one codepoint at `dst[off..]`. Returns `(err, sizeBytes)`.
+    fn encode1(cp: int, dst: bytes, off: long) -> int, long {
+        if dst == null { return 1, 0L }
+        if off < 0L { return 1, 0L }
+        let cap = bstd.Bytes.len(dst)
+        let need = Utf8.encodedLen(cp)
+        if need <= 0L { return 1, 0L }
+        if off + need > cap { return 1, 0L }
+        if cp >= 55296 && cp <= 57343 { return 1, 0L } // surrogate
+
+        if need == 1L {
+            bstd.Bytes.setU8(dst, off, cp)
+            return 0, 1L
+        }
+        if need == 2L {
+            let b0: int = 192 + (cp / 64)
+            let b1: int = 128 + _imod(cp, 64)
+            bstd.Bytes.setU8(dst, off, b0)
+            bstd.Bytes.setU8(dst, off + 1L, b1)
+            return 0, 2L
+        }
+        if need == 3L {
+            let b0: int = 224 + (cp / 4096)
+            let b1: int = 128 + _imod(cp / 64, 64)
+            let b2: int = 128 + _imod(cp, 64)
+            bstd.Bytes.setU8(dst, off, b0)
+            bstd.Bytes.setU8(dst, off + 1L, b1)
+            bstd.Bytes.setU8(dst, off + 2L, b2)
+            return 0, 3L
+        }
+        // need == 4
+        let b0: int = 240 + (cp / 262144)
+        let b1: int = 128 + _imod(cp / 4096, 64)
+        let b2: int = 128 + _imod(cp / 64, 64)
+        let b3: int = 128 + _imod(cp, 64)
+        bstd.Bytes.setU8(dst, off, b0)
+        bstd.Bytes.setU8(dst, off + 1L, b1)
+        bstd.Bytes.setU8(dst, off + 2L, b2)
+        bstd.Bytes.setU8(dst, off + 3L, b3)
+        return 0, 4L
+    }
+}
+

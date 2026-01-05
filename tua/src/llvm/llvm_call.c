@@ -354,6 +354,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
     Type* subst = compilerResolveGenericType(compiler, type);
     if (subst && subst != type) return typeToLLVMType(compiler, subst);
     switch (type->kind) {
+        case TYPE_ANY:
+            return compilerGetTuaValueType(compiler);
         case TYPE_I8:
         case TYPE_U8:
         case TYPE_BYTE:
@@ -386,6 +388,9 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_NAMED: {
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
             if (ti) return compilerGetTraitObjType(compiler, ti);
+            if (type->name.length == 3 && memcmp(type->name.start, "any", 3) == 0) {
+                return compilerGetTuaValueType(compiler);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }

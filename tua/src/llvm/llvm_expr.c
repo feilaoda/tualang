@@ -342,6 +342,8 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
     }
 
     switch (type->kind) {
+        case TYPE_ANY:
+            return compilerGetTuaValueType(compiler);
         case TYPE_I8:
         case TYPE_U8:
         case TYPE_BYTE:
@@ -379,6 +381,9 @@ static LLVMTypeRef lambdaTypeToLLVMType(Compiler* compiler, Type* type, bool def
         case TYPE_NAMED: {
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
             if (ti) return compilerGetTraitObjType(compiler, ti);
+            if (type->name.length == 3 && memcmp(type->name.start, "any", 3) == 0) {
+                return compilerGetTuaValueType(compiler);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "map", 3) == 0) {
                 return compilerGetMapType(compiler);
             }
@@ -423,6 +428,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (!t) return 0;
     t = compilerResolveGenericType(compiler, t);
     if (!t || t->kind != TYPE_NAMED) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "any", 3) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
@@ -516,6 +522,8 @@ static LLVMValueRef tuaValueFromValue(Compiler* compiler, LLVMValueRef value) {
     LLVMContextRef context = compiler->context;
     LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
     LLVMTypeRef t = LLVMTypeOf(value);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (t == vt) return value;
     LLVMTypeKind k = LLVMGetTypeKind(t);
 
     if (k == LLVMIntegerTypeKind) {
@@ -731,6 +739,11 @@ static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLV
             LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
             return LLVMBuildCall2(builder, fnType, fn, &value, 1, "s");
         }
+        // `any`/`tua_value` -> non-string handle/pointer (map/array/bytes/ptr/...):
+        // extract payload (u64 bits) and treat it as an address.
+        LLVMValueRef payload = LLVMBuildExtractValue(builder, value, 1, "tv_payload");
+        LLVMValueRef p_i8 = LLVMBuildIntToPtr(builder, payload, i8ptr, "tv_p_i8");
+        return LLVMBuildBitCast(builder, p_i8, targetType, "tv_p");
     }
 
     return value;
@@ -3490,6 +3503,12 @@ static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeR
     LLVMTypeRef srcType = LLVMTypeOf(value);
     if (srcType == targetType) return value;
 
+    // Box into `tua_value` (`any`) when needed.
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (targetType == vt && srcType != vt) {
+        return tuaValueFromValue(compiler, value);
+    }
+
     value = castFromTuaValue(compiler, value, targetType);
     if (!value) return NULL;
     srcType = LLVMTypeOf(value);
@@ -3804,6 +3823,8 @@ static LLVMValueRef checkedCastToOption(Compiler* compiler, LLVMValueRef value, 
 static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type) {
     if (!compiler || !type) return LLVMInt32TypeInContext(compiler->context);
     switch (type->kind) {
+        case TYPE_ANY:
+            return compilerGetTuaValueType(compiler);
         case TYPE_I8:
         case TYPE_U8:
         case TYPE_BYTE:
@@ -3831,6 +3852,9 @@ static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type) {
         case TYPE_PTR:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED:
+            if (type->name.length == 3 && memcmp(type->name.start, "any", 3) == 0) {
+                return compilerGetTuaValueType(compiler);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
@@ -4156,6 +4180,28 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
     LLVMValueRef rhs = compileExpr(compiler, expr->value);
     rhs = castToType(compiler, rhs, fType);
     LLVMBuildStore(compiler->builder, rhs, fieldPtr);
+
+    // Move semantics for container handles assigned into struct fields:
+    // after `obj.field = var`, the RHS `var` is invalidated (set to null) so it won't be dropped
+    // at scope exit, preventing use-after-free of the stored handle.
+    if (expr->value && expr->value->type == EXPR_VARIABLE) {
+        VariableExpr* rv = (VariableExpr*)expr->value;
+        VariableRef rhsVar = findVariableExpr(compiler, (Expr*)rv);
+        LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+        if (rhsVar.value &&
+            (rhsVar.isMap || rhsVar.isArray || rhsVar.isBytes || rhsVar.isTraitObj || rhsVar.type == cloTy) &&
+            !(rhsVar.isArray && rhsVar.isStackArray)) {
+            LLVMValueRef nullv = LLVMConstNull(rhsVar.type);
+            if (rhsVar.isBoxed) {
+                if (rhsVar.boxPtrType) {
+                    LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, rhsVar.boxPtrType, rhsVar.value, "mv_boxptr");
+                    LLVMBuildStore(compiler->builder, nullv, ptr);
+                }
+            } else {
+                LLVMBuildStore(compiler->builder, nullv, rhsVar.value);
+            }
+        }
+    }
     return rhs;
 }
 

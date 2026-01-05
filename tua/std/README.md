@@ -14,6 +14,8 @@
 - `std/bytes`：二进制 bytes（mmap + 读写 + LE 读取工具）
 - `std/io`：Reader/Cursor/BufReader/MmapFileReader（基于 `bytes`）
 - `std/strconv`：字符串与数字转换（`Int.parse`）
+- `std/utf8`：UTF-8 校验/解码/边界工具（tokenizer/文本切片）
+- `std/json`：最小 JSON 解析（config/metadata）
 - `std/rt`：运行时绑定（loop/workqueue/deadline/free）
 - `std/time`：时间与 sleep
 - `std/time/async`：基于 loop 的定时回调（第一版）

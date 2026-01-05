@@ -48,6 +48,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (!t) return 0;
     t = compilerResolveGenericType(compiler, t);
     if (!t || t->kind != TYPE_NAMED) return 0;
+    if (t->name.length == 3 && memcmp(t->name.start, "any", 3) == 0) return 0;
     // Exclude built-in named types that are pointer-like or special-cased.
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
@@ -1318,6 +1319,8 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
     }
 
     switch (type->kind) {
+        case TYPE_ANY:
+            return compilerGetTuaValueType(compiler);
         case TYPE_I8:
         case TYPE_U8:
         case TYPE_BYTE:
@@ -1353,6 +1356,9 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultTo
         case TYPE_PTR:
             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
         case TYPE_NAMED: {
+            if (type->name.length == 3 && memcmp(type->name.start, "any", 3) == 0) {
+                return compilerGetTuaValueType(compiler);
+            }
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
             if (ti) {
                 return compilerGetTraitObjType(compiler, ti);
@@ -1935,6 +1941,69 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
     }
 
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    // Box raw values into `any`/`tua_value`.
+    if (targetType == vt && srcType != vt) {
+        LLVMContextRef context = compiler->context;
+        LLVMBuilderRef builder = compiler->builder;
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+        // Keep tag values consistent with `src/tua_map.c` and `src/llvm/llvm_expr.c`.
+        enum {
+            TUA_VAL_NIL = 0,
+            TUA_VAL_INT = 1,
+            TUA_VAL_LONG = 2,
+            TUA_VAL_DOUBLE = 3,
+            TUA_VAL_BOOL = 4,
+            TUA_VAL_STRING = 5,
+            TUA_VAL_PTR = 6
+        };
+
+        LLVMTypeKind sk = LLVMGetTypeKind(srcType);
+        LLVMValueRef payload = LLVMConstInt(i64, 0, 0);
+        int tag = TUA_VAL_NIL;
+
+        if (sk == LLVMIntegerTypeKind) {
+            unsigned bits = LLVMGetIntTypeWidth(srcType);
+            if (bits == 1) {
+                tag = TUA_VAL_BOOL;
+                payload = LLVMBuildZExt(builder, value, i64, "b64");
+            } else if (bits == 32) {
+                tag = TUA_VAL_INT;
+                payload = LLVMBuildSExt(builder, value, i64, "i64");
+            } else if (bits == 64) {
+                tag = TUA_VAL_LONG;
+                payload = value;
+            } else {
+                tag = TUA_VAL_LONG;
+                payload = LLVMBuildSExt(builder, value, i64, "i64x");
+            }
+        } else if (sk == LLVMDoubleTypeKind) {
+            tag = TUA_VAL_DOUBLE;
+            payload = LLVMBuildBitCast(builder, value, i64, "dblbits");
+        } else if (sk == LLVMFloatTypeKind) {
+            tag = TUA_VAL_DOUBLE;
+            LLVMValueRef d = LLVMBuildFPExt(builder, value, LLVMDoubleTypeInContext(context), "f64");
+            payload = LLVMBuildBitCast(builder, d, i64, "dblbits");
+        } else if (sk == LLVMPointerTypeKind) {
+            LLVMValueRef p = value;
+            tag = TUA_VAL_PTR;
+            if (srcType == i8ptr) {
+                tag = TUA_VAL_STRING;
+            } else {
+                p = LLVMBuildBitCast(builder, value, i8ptr, "p_i8p");
+            }
+            payload = LLVMBuildPtrToInt(builder, p, i64, "p64");
+        }
+
+        LLVMValueRef out = LLVMGetUndef(vt);
+        LLVMValueRef tagV = LLVMConstInt(i32, (unsigned)tag, 0);
+        out = LLVMBuildInsertValue(builder, out, tagV, 0, "t_tag");
+        out = LLVMBuildInsertValue(builder, out, payload, 1, "t_payload");
+        return out;
+    }
+
     if (srcType == vt) {
         LLVMValueRef fn = NULL;
         LLVMTypeRef fnType = NULL;
@@ -2011,6 +2080,10 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
                 fnType = LLVMGlobalGetValueType(fn);
                 return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "s");
             }
+            // Other pointer/handle types: interpret payload as an address.
+            LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "vp64");
+            LLVMValueRef p = LLVMBuildIntToPtr(compiler->builder, payload, i8ptr, "vp");
+            return LLVMBuildBitCast(compiler->builder, p, targetType, "vptr");
         }
     }
 
@@ -3010,6 +3083,7 @@ static int tokenEqualsTokenRaw(const Token* a, const Token* b) {
 
 static int astTypeIsBuiltinNamed(const Token* name) {
     if (!name) return 0;
+    if (name->length == 3 && memcmp(name->start, "any", 3) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
     if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
     if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
@@ -3817,17 +3891,44 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             variable->isTypedMap = 0;
             variable->mapKeyType = NULL;
             variable->mapValueType = NULL;
-            variable->isArray = (targetType == compilerGetArrayType(compiler));
+            // Under LLVM opaque pointers, all pointer types compare equal, so we cannot infer
+            // map/array/bytes handles from LLVM type equality here. Only trust explicit AST types.
+            variable->isArray = 0;
             variable->arrayElemType = NULL;
             variable->arrayFixedLen = -1;
             variable->isStackArray = 0;
             variable->stackArrayData = NULL;
-            variable->isMap = (targetType == compilerGetMapType(compiler));
-            // Do NOT infer `bytes` from LLVM pointer equality under opaque pointers; use AST type names only.
+            variable->isMap = 0;
             variable->isBytes = 0;
             variable->isSlice = 0;
             variable->sliceElemType = NULL;
             variable->sliceElemKind = TYPE_ANY;
+
+            if (declaredType) {
+                if (declaredType->kind == TYPE_ARRAY) {
+                    variable->isArray = 1;
+                    variable->arrayFixedLen = declaredType->arrayLen;
+                    if (declaredType->inner) {
+                        variable->arrayElemType = typeToLLVMType(compiler, declaredType->inner, false);
+                    }
+                } else if (declaredType->kind == TYPE_NAMED) {
+                    if (declaredType->name.length == 3 && memcmp(declaredType->name.start, "map", 3) == 0) {
+                        variable->isMap = 1;
+                    } else if (declaredType->name.length == 5 && memcmp(declaredType->name.start, "bytes", 5) == 0) {
+                        variable->isBytes = 1;
+                    } else if (declaredType->name.length == 5 && memcmp(declaredType->name.start, "Slice", 5) == 0) {
+                        variable->isSlice = 1;
+                        if (declaredType->typeArgs && declaredType->typeArgs->length == 1) {
+                            Type* inner = (Type*)declaredType->typeArgs->head->data;
+                            variable->sliceElemType = inner ? typeToLLVMType(compiler, inner, false) : LLVMInt8TypeInContext(compiler->context);
+                            variable->sliceElemKind = inner ? inner->kind : TYPE_BYTE;
+                        } else {
+                            variable->sliceElemType = LLVMInt8TypeInContext(compiler->context);
+                            variable->sliceElemKind = TYPE_BYTE;
+                        }
+                    }
+                }
+            }
             listAppend(compiler->current->variables, variable);
         }
     } else {

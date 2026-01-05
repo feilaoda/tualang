@@ -829,6 +829,9 @@ static AType* atFromAstType(Type* t) {
             return atArray(atFromAstType(t->inner), t->arrayLen);
         }
         case TYPE_NAMED: {
+            if (t->name.length == 3 && memcmp(t->name.start, "any", 3) == 0) {
+                return atNew(AT_ANY);
+            }
             if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) {
                 Type* inner = NULL;
                 if (t->typeArgs && t->typeArgs->length == 1) inner = (Type*)t->typeArgs->head->data;

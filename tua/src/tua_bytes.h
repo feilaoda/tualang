@@ -33,6 +33,14 @@ tua_err_t tua_bytes_set_u8(tua_bytes* b, int64_t idx, int32_t v);
 // Returns TUA_E_ACCESS if `dst` is readonly; TUA_E_INVALID on bounds/NULL.
 tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_t src_off, int64_t n);
 
+// Allocates a NUL-terminated string by copying `b[off..off+len)`.
+// Note: if the byte range contains '\0', the resulting C-string will be truncated when used as `string`.
+char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len);
+
+// Bit-cast helpers for binary formats.
+double tua_f32_from_u32_bits(uint32_t bits);
+double tua_f64_from_u64_bits(uint64_t bits);
+
 void tua_bytes_free(tua_bytes* b);
 
 #endif

@@ -533,7 +533,9 @@
   - drop（RAII）：作用域结束/覆盖赋值/`return` 路径自动释放（free 或 munmap）
   - API（v0，先在 `std` 侧落地；后续可加 `b.len()/b.get()` 语法糖）：
     - `std/bytes.tua`：`Bytes.mmapFile/len/isReadonly/getU8/setU8/copy/fromString/new` + `readU16LE/readU32LE/readU64LE/readI16LE/readI32LE/readI64LE`
-    - `tua_bytes_mmap_file/tua_bytes_len/tua_bytes_get_u8/tua_bytes_set_u8/tua_bytes_free`
+    - `tua_bytes_mmap_file/tua_bytes_len/tua_bytes_get_u8/tua_bytes_set_u8/tua_bytes_copy/tua_bytes_free`
+    - 便捷（FFI，Implemented）：`tua_str_from_bytes_copy(b, off, len) string`（拷贝字节区间生成 NUL 结尾 string；用于 JSON/GGUF 等解析）
+    - bit-cast（FFI，Implemented）：`tua_f32_from_u32_bits(bits) double` / `tua_f64_from_u64_bits(bits) double`（用于 GGUF 等二进制格式）
 - `std/io.tua`（基于 `bytes` 的最小 Reader 抽象，Status: Implemented v0）：
   - `trait Reader { fn read(dst: bytes, off: long, n: long) -> int, long }`（`n==0 && err==0` 表示 EOF）
   - `Cursor`：内存 buffer reader（拥有 `bytes` 所有权，读取会前进 position）
@@ -552,6 +554,24 @@
     - `bytes.slice(off, n) -> Slice<byte>`（只读视图，越界触发运行时错误）
     - `Slice<T>.len()` / `Slice<T>.get(i)` 已实现（只读）
     - `Slice<T>` 当前按 **move-only** 处理（避免隐式 copy 导致 borrow 生命周期变长且难以静态追踪）
+
+#### 9.2.4 `std/utf8` 与 `std/json`（Status: Implemented v0）
+- `std/utf8`：
+  - `Utf8.isValid(b: bytes) -> bool`
+  - `Utf8.decode1(b: bytes, off: long) -> int, int, long`（err, codepoint, sizeBytes）
+  - `Utf8.isBoundary/clampBoundaryBefore/clampBoundaryAfter`（文本切片安全边界）
+- `std/json`：
+  - `Json.parse(s: string) -> int, any`
+  - `Json.parseBytes(b: bytes) -> int, any`
+  - 产出：`map` / `any[]` / `string` / `long` / `double` / `bool` / `null`
+
+#### 9.2.5 `packages/llm/gguf`（Status: Implemented v0）
+- 归属：`llm` 层（应用包），不引入编译器/运行时特判
+- API（v0）：
+  - `GGUF.parseBytes(move b: bytes) -> int, GgufFile`
+  - `GGUF.parseMmap(path: string) -> int, GgufFile`
+- 解析范围（v0）：magic/version/n_tensors/n_kv + KV metadata（值类型：u8/i8/u16/i16/u32/i32/u64/i64/f32/f64/bool/string/array）
+- 暂不做：tensor infos + tensor data layout（见 ROADMAP 的 GGUF v1）
 
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景

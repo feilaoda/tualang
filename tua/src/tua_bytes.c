@@ -4,7 +4,11 @@
 #include "rt/rt_fs.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
+
+// Provided by `src/tua_map.c`.
+void tua_panic(const char* msg);
 
 typedef void (*tua_bytes_drop_fn)(void* ctx, uint8_t* data, int64_t len);
 
@@ -152,6 +156,37 @@ tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_
     if (src_off + n > src->len) return TUA_E_INVALID;
     memmove(dst->data + dst_off, src->data + src_off, (size_t)n);
     return TUA_OK;
+}
+
+char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len) {
+    if (len < 0) return NULL;
+    if (len == 0) {
+        char* out = (char*)malloc(1);
+        if (!out) tua_panic("out of memory");
+        out[0] = '\0';
+        return out;
+    }
+    if (!b || !b->data) return NULL;
+    if (off < 0 || off > b->len) return NULL;
+    if (off + len > b->len) return NULL;
+    if ((uint64_t)len > (uint64_t)SIZE_MAX - 1) return NULL;
+    char* out = (char*)malloc((size_t)len + 1);
+    if (!out) tua_panic("out of memory");
+    memcpy(out, b->data + off, (size_t)len);
+    out[(size_t)len] = '\0';
+    return out;
+}
+
+double tua_f32_from_u32_bits(uint32_t bits) {
+    float f = 0.0f;
+    memcpy(&f, &bits, sizeof(float));
+    return (double)f;
+}
+
+double tua_f64_from_u64_bits(uint64_t bits) {
+    double d = 0.0;
+    memcpy(&d, &bits, sizeof(double));
+    return d;
 }
 
 void tua_bytes_free(tua_bytes* b) {

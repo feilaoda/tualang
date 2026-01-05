@@ -236,13 +236,15 @@
 - [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
 - [x] `std.bytes` / `std.io`（v0）：`bytes` v0 + LE 读取工具 + `Reader/Cursor/BufReader`（std 版拷贝实现）
 - [x] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化（`Bytes.copy`）+ mmap-backed file reader（避免逐字节 set/get）
-- [ ] `std.utf8`：UTF-8 边界工具（用于 tokenizer、文本切片）
-- [ ] `std.json`（轻量实现即可）：模型配置/metadata/推理参数解析
+- [x] `std.utf8`（v0）：UTF-8 校验 + codepoint 解码 + 边界切分（用于 tokenizer、文本切片）
+- [x] `std.json`（v0）：最小 JSON 解析（用于模型配置/metadata/推理参数）
 - [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
 说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。
-- [ ] 模型格式：先支持一种主流格式（建议 GGUF），能解析 metadata 与 tensor
+- [ ] 模型格式：先支持一种主流格式（建议 GGUF）
+  - [x] GGUF（v0）：解析 header + KV metadata（先不做 tensor）
+  - [ ] GGUF（v1）：解析 tensor infos + tensor data layout
 - [ ] 数学内核：f32 baseline matmul/dot（可先朴素），再逐步并行化/向量化
 - [ ] KV cache：数据结构与更新（注意内存占用与布局）
 - [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）

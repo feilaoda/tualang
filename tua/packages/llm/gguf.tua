@@ -1,0 +1,179 @@
+import "std/bytes" as bstd
+import Cursor, Io from "std/io"
+
+extern fn tua_map_new() -> map
+extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
+extern fn tua_f32_from_u32_bits(bits: u32) double
+extern fn tua_f64_from_u64_bits(bits: u64) double
+
+// GGUF types (llama.cpp).
+enum GgufType {
+    uint8 = 0,
+    int8 = 1,
+    uint16 = 2,
+    int16 = 3,
+    uint32 = 4,
+    int32 = 5,
+    float32 = 6,
+    boolv = 7,
+    str = 8,
+    array = 9,
+    uint64 = 10,
+    int64 = 11,
+    float64 = 12,
+}
+
+struct GgufFile {
+    version: u32
+    tensorCount: long
+    kv: map
+}
+
+private fn _readString(cur: Cursor) -> int, string {
+    let e0, ln = cur.readU64LE()
+    if e0 != 0 { return 1, null }
+    let n: long = (long)ln
+    let e1, bb = cur.readBytes(n)
+    if e1 != 0 { return 1, null }
+    let s = tua_str_from_bytes_copy(bb, 0L, n)
+    return 0, s
+}
+
+private fn _readValue(cur: Cursor, typ: int) -> int, any {
+    if typ == GgufType.uint8 {
+        let e, v = cur.readU8()
+        if e != 0 { return 1, null }
+        return 0, v
+    }
+    if typ == GgufType.int8 {
+        let e, v = cur.readU8()
+        if e != 0 { return 1, null }
+        let out: int = v
+        if out >= 128 { out = out - 256 }
+        return 0, out
+    }
+    if typ == GgufType.uint16 {
+        let e, v = cur.readU16LE()
+        if e != 0 { return 1, null }
+        return 0, (int)v
+    }
+    if typ == GgufType.int16 {
+        let e, v = cur.readI16LE()
+        if e != 0 { return 1, null }
+        return 0, (int)v
+    }
+    if typ == GgufType.uint32 {
+        let e, v = cur.readU32LE()
+        if e != 0 { return 1, null }
+        return 0, (long)v
+    }
+    if typ == GgufType.int32 {
+        let e, v = cur.readI32LE()
+        if e != 0 { return 1, null }
+        return 0, v
+    }
+    if typ == GgufType.uint64 {
+        let e, v = cur.readU64LE()
+        if e != 0 { return 1, null }
+        return 0, (long)v
+    }
+    if typ == GgufType.int64 {
+        let e, v = cur.readI64LE()
+        if e != 0 { return 1, null }
+        return 0, v
+    }
+    if typ == GgufType.float32 {
+        let e, v = cur.readU32LE()
+        if e != 0 { return 1, null }
+        let d = tua_f32_from_u32_bits(v)
+        return 0, d
+    }
+    if typ == GgufType.float64 {
+        let e, v = cur.readU64LE()
+        if e != 0 { return 1, null }
+        let d = tua_f64_from_u64_bits(v)
+        return 0, d
+    }
+    if typ == GgufType.boolv {
+        let e, v = cur.readU8()
+        if e != 0 { return 1, null }
+        return 0, v != 0
+    }
+    if typ == GgufType.str {
+        let e, s = _readString(cur)
+        if e != 0 { return 1, null }
+        return 0, s
+    }
+    if typ == GgufType.array {
+        let et, elemType = cur.readU32LE()
+        if et != 0 { return 1, null }
+        let en, count = cur.readU64LE()
+        if en != 0 { return 1, null }
+        let n: long = (long)count
+        let out: any[] = {}
+        let i: long = 0L
+        while i < n {
+            let ve, v = _readValue(cur, (int)elemType)
+            if ve != 0 { return 1, null }
+            out.push(v)
+            i = i + 1L
+        }
+        return 0, out
+    }
+    return 1, null
+}
+
+object GGUF {
+    // Parse GGUF header + KV metadata (v0). Tensors are intentionally skipped for now.
+    fn parseBytes(move b: bytes) -> int, GgufFile {
+        let out = GgufFile{ version: (u32)0, tensorCount: 0L, kv: null }
+        if b == null { return 1, out }
+
+        let cur = Cursor{ data: b, pos: 0L }
+
+        let e0, m0 = cur.readU8()
+        if e0 != 0 { return 1, out }
+        let e1, m1 = cur.readU8()
+        if e1 != 0 { return 1, out }
+        let e2, m2 = cur.readU8()
+        if e2 != 0 { return 1, out }
+        let e3, m3 = cur.readU8()
+        if e3 != 0 { return 1, out }
+        if m0 != 71 || m1 != 71 || m2 != 85 || m3 != 70 { return 1, out } // "GGUF"
+
+        let ev, ver = cur.readU32LE()
+        if ev != 0 { return 1, out }
+        let et, nt = cur.readU64LE()
+        if et != 0 { return 1, out }
+        let ek, nk = cur.readU64LE()
+        if ek != 0 { return 1, out }
+
+        let kv: map = tua_map_new()
+        let i: long = 0L
+        let n: long = (long)nk
+        while i < n {
+            let ke, key = _readString(cur)
+            if ke != 0 { return 1, out }
+            let te, typ = cur.readU32LE()
+            if te != 0 { return 1, out }
+            let ve, val = _readValue(cur, (int)typ)
+            if ve != 0 { return 1, out }
+            kv[key] = val
+            i = i + 1L
+        }
+
+        out.version = ver
+        out.tensorCount = (long)nt
+        out.kv = kv
+        return 0, out
+    }
+
+    fn parseMmap(path: string) -> int, GgufFile {
+        let out = GgufFile{ version: (u32)0, tensorCount: 0L, kv: null }
+        let e, r = Io.mmapFileReader(path)
+        if e != 0 { return e, out }
+        if r.data == null { return 1, out }
+        let data = r.data
+        return GGUF.parseBytes(move data)
+    }
+}

@@ -265,6 +265,8 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
     if (subst && subst != type) return toLLVMType(compiler, subst);
 
     switch (type->kind) {
+        case TYPE_ANY:
+            return compilerGetTuaValueType(compiler);
         case TYPE_I8:
         case TYPE_U8:
         case TYPE_BYTE:
@@ -300,6 +302,9 @@ static LLVMTypeRef toLLVMType(Compiler* compiler, Type* type) {
         case TYPE_NAMED: {
             TraitInfo* ti = compilerResolveTraitByToken(compiler, &type->name);
             if (ti) return compilerGetTraitObjType(compiler, ti);
+            if (type->name.length == 3 && memcmp(type->name.start, "any", 3) == 0) {
+                return compilerGetTuaValueType(compiler);
+            }
             if (type->name.length == 3 && memcmp(type->name.start, "ptr", 3) == 0) {
                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             }
@@ -939,6 +944,78 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
     }
 
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+
+    // Box raw values into `any`/`tua_value`.
+    if (targetType == vt && srcType != vt) {
+        LLVMContextRef context = compiler->context;
+        LLVMBuilderRef builder = compiler->builder;
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+        enum {
+            TUA_VAL_NIL = 0,
+            TUA_VAL_INT = 1,
+            TUA_VAL_LONG = 2,
+            TUA_VAL_DOUBLE = 3,
+            TUA_VAL_BOOL = 4,
+            TUA_VAL_STRING = 5,
+            TUA_VAL_PTR = 6
+        };
+
+        LLVMTypeKind sk = LLVMGetTypeKind(srcType);
+        LLVMValueRef payload = LLVMConstInt(i64, 0, 0);
+        int tag = TUA_VAL_NIL;
+
+        if (sk == LLVMIntegerTypeKind) {
+            unsigned bits = LLVMGetIntTypeWidth(srcType);
+            if (bits == 1) {
+                tag = TUA_VAL_BOOL;
+                payload = LLVMBuildZExt(builder, value, i64, "b64");
+            } else if (bits == 32) {
+                tag = TUA_VAL_INT;
+                payload = LLVMBuildSExt(builder, value, i64, "i64");
+            } else if (bits == 64) {
+                tag = TUA_VAL_LONG;
+                payload = value;
+            } else {
+                tag = TUA_VAL_LONG;
+                payload = LLVMBuildSExt(builder, value, i64, "i64x");
+            }
+        } else if (sk == LLVMDoubleTypeKind) {
+            tag = TUA_VAL_DOUBLE;
+            payload = LLVMBuildBitCast(builder, value, i64, "dblbits");
+        } else if (sk == LLVMFloatTypeKind) {
+            tag = TUA_VAL_DOUBLE;
+            LLVMValueRef d = LLVMBuildFPExt(builder, value, LLVMDoubleTypeInContext(context), "f64");
+            payload = LLVMBuildBitCast(builder, d, i64, "dblbits");
+        } else if (sk == LLVMPointerTypeKind) {
+            LLVMValueRef p = value;
+            tag = TUA_VAL_PTR;
+            if (srcType == i8ptr) {
+                tag = TUA_VAL_STRING;
+            } else {
+                p = LLVMBuildBitCast(builder, value, i8ptr, "p_i8p");
+            }
+            payload = LLVMBuildPtrToInt(builder, p, i64, "p64");
+        } else if (sk == LLVMStructTypeKind) {
+            LLVMValueRef mallocFn = getOrCreateMalloc(compiler);
+            LLVMValueRef sizeV = LLVMSizeOf(srcType);
+            LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(mallocFn), mallocFn, &sizeV, 1, "malloc");
+            LLVMValueRef cell = LLVMBuildBitCast(builder, raw, LLVMPointerType(srcType, 0), "cell");
+            LLVMBuildStore(builder, value, cell);
+            LLVMValueRef p = LLVMBuildBitCast(builder, cell, i8ptr, "cell_i8");
+            payload = LLVMBuildPtrToInt(builder, p, i64, "cell64");
+            tag = TUA_VAL_PTR;
+        }
+
+        LLVMValueRef out = LLVMGetUndef(vt);
+        LLVMValueRef tagV = LLVMConstInt(i32, (unsigned)tag, 0);
+        out = LLVMBuildInsertValue(builder, out, tagV, 0, "t_tag");
+        out = LLVMBuildInsertValue(builder, out, payload, 1, "t_payload");
+        return out;
+    }
+
     if (srcType == vt) {
         LLVMValueRef fn = NULL;
         LLVMTypeRef fnType = NULL;
@@ -1013,6 +1090,11 @@ static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTyp
                 fnType = LLVMGlobalGetValueType(fn);
                 return LLVMBuildCall2(compiler->builder, fnType, fn, &value, 1, "s");
             }
+            // `any`/`tua_value` -> non-string handle/pointer (map/array/bytes/ptr/...):
+            // extract payload (u64 bits) and treat it as an address.
+            LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, value, 1, "tv_payload");
+            LLVMValueRef p_i8 = LLVMBuildIntToPtr(compiler->builder, payload, i8ptr, "tv_p_i8");
+            return LLVMBuildBitCast(compiler->builder, p_i8, targetType, "tv_p");
         }
     }
 
