@@ -263,6 +263,16 @@ static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch) {
     return (Stmt*)stmt;
 }
 
+static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch) {
+    IfLetStmt* stmt = malloc(sizeof(IfLetStmt));
+    stmt->base.type = STMT_IF_LET;
+    stmt->name = name;
+    stmt->value = value;
+    stmt->thenBranch = thenBranch;
+    stmt->elseBranch = elseBranch;
+    return (Stmt*)stmt;
+}
+
 static Expr* newPostfixExpr(Expr* operand, Token operator) {
     PostfixExpr* expr = malloc(sizeof(PostfixExpr));
     expr->base.type = EXPR_POSTFIX;
@@ -1207,6 +1217,32 @@ static Stmt* parseIfStatement(Parser* parser) {
     if (match(parser, TOKEN_LPAREN)) {
         hasParen = true;
     }
+    // if-let: `if let Some(x) = expr ...`
+    if (match(parser, TOKEN_VAR)) {
+        Token someTok = consume(parser, TOKEN_IDENTIFIER, "Expect 'Some' in if-let pattern");
+        if (!(someTok.length == 4 && memcmp(someTok.start, "Some", 4) == 0)) {
+            errorAtCurrent(parser, "Only `if let Some(x) = <Option>` is supported");
+        }
+        consume(parser, TOKEN_LPAREN, "Expect '(' after Some");
+        Token name = consume(parser, TOKEN_IDENTIFIER, "Expect identifier name in Some(name)");
+        consume(parser, TOKEN_RPAREN, "Expect ')' after Some(name)");
+        consume(parser, TOKEN_ASSIGN, "Expect '=' after if-let pattern");
+        Expr* value = parseExpression(parser);
+        if (hasParen) {
+            consume(parser, TOKEN_RPAREN, "Expect ')' after condition");
+        }
+
+        Stmt* thenBranch = parseStatement(parser);
+        Stmt* elseBranch = NULL;
+        while (match(parser, TOKEN_SEMICOLON)) {
+            // allow newline(s) before else / else-if
+        }
+        if (match(parser, TOKEN_ELSE)) {
+            elseBranch = parseStatement(parser);
+        }
+        return newIfLetStmt(name, value, thenBranch, elseBranch);
+    }
+
     Expr* condition = parseExpression(parser);
     if (hasParen) {
         consume(parser, TOKEN_RPAREN, "Expect ')' after condition");

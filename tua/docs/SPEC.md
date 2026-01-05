@@ -436,6 +436,10 @@
   - `opt.isNone() -> bool`
   - `opt.unwrap() -> T`（若为 `None`，运行时错误）
   - `opt.unwrapOr(default:T) -> T`
+- `if let`（Status: Implemented）：
+  - 语法：`if let Some(x) = opt { ... } else { ... }`
+  - 目前仅支持 `Some(<identifier>)` 模式；`x` 仅在 then 分支可见
+  - 等价于：先求值 `opt`，若 `isSome()` 则在 then 分支内绑定 `x = opt.unwrap()` 并执行；否则走 else（若存在）
 - 运算：
   - `opt ?? default`：当 `opt` 为 `Some(v)` 时返回 `v`，否则返回 `default`
     - 左操作数必须是 `Option<T>`；`1 ?? 0` 这类写法会编译期报错

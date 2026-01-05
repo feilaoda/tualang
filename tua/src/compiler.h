@@ -304,6 +304,7 @@ void compilerErrorAtToken(Compiler* compiler, const Token* token, const char* fm
 // Function to compile statements
 void compileStmt(Compiler* compiler, Stmt* stmt);
 void compileIfStmt(Compiler* compiler, IfStmt* stmt);
+void compileIfLetStmt(Compiler* compiler, IfLetStmt* stmt);
 void compileForStmt(Compiler* compiler, ForStmt* stmt);
 void compileForInStmt(Compiler* compiler, ForInStmt* stmt);
 void compileWhileStmt(Compiler* compiler, WhileStmt* stmt);

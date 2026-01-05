@@ -6,6 +6,7 @@ static const char* StmtTypeNames[] = {
     "EXPR",
     "VAR",
     "IF",
+    "IF_LET",
     "FOR",
     "FOR_IN",
     "WHILE",
@@ -154,6 +155,22 @@ void printStmt(Stmt* stmt, int indent) {
         case STMT_IF:
             printIfStmt((IfStmt*)stmt, indent);
             break;
+        case STMT_IF_LET: {
+            IfLetStmt* s = (IfLetStmt*)stmt;
+            printIndent(indent);
+            printf("if let Some(%.*s) = ", s->name.length, s->name.start);
+            printExpr(s->value);
+            printf(" {\n");
+            printStmt(s->thenBranch, indent + 2);
+            if (s->elseBranch) {
+                printIndent(indent);
+                printf("} else {\n");
+                printStmt(s->elseBranch, indent + 2);
+            }
+            printIndent(indent);
+            printf("}\n");
+            break;
+        }
         case STMT_FOR:
             printForStmt((ForStmt*)stmt, indent);
             break;

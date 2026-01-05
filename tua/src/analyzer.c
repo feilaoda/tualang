@@ -358,6 +358,16 @@ static void collectLastUsesStmt(Stmt* stmt, List* lastUses, int stmtIndex) {
             if (i->elseBranch) collectLastUsesStmt(i->elseBranch, lastUses, stmtIndex);
             return;
         }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            // The binding name is only in-scope in the then-branch, but treat it as a "definition use"
+            // so NLL tables remain conservative.
+            lastUseMark(lastUses, &i->name, stmtIndex);
+            collectLastUsesExpr(i->value, lastUses, stmtIndex);
+            collectLastUsesStmt(i->thenBranch, lastUses, stmtIndex);
+            if (i->elseBranch) collectLastUsesStmt(i->elseBranch, lastUses, stmtIndex);
+            return;
+        }
         case STMT_FOR: {
             ForStmt* f = (ForStmt*)stmt;
             collectLastUsesStmt(f->initializer, lastUses, stmtIndex);
@@ -2284,6 +2294,11 @@ static int stmtAlwaysReturns(Stmt* stmt) {
             if (!i->elseBranch) return 0;
             return stmtAlwaysReturns(i->thenBranch) && stmtAlwaysReturns(i->elseBranch);
         }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            if (!i->elseBranch) return 0;
+            return stmtAlwaysReturns(i->thenBranch) && stmtAlwaysReturns(i->elseBranch);
+        }
         default:
             return 0;
     }
@@ -2622,6 +2637,35 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             if (i->elseBranch) analyzeStmt(compiler, scope, i->elseBranch, modulePath, expectedReturns);
             break;
         }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            AType* optTy = inferExpr(compiler, scope, i->value, modulePath);
+            if (!atIsOption(optTy)) {
+                analyzeErrorAt(compiler, modulePath, i->name.line, "if-let expects an Option<T> on the right-hand side");
+            }
+
+            // Binding is only visible in the then-branch.
+            Scope* thenScope = scopePush(scope);
+            AType* inner = (optTy && optTy->inner) ? optTy->inner : atNew(AT_ANY);
+
+            int wantMut = 0;
+            const Token* mapName = mapGetRefOwnerName(i->value, &wantMut);
+            int isRef = mapName ? 1 : 0;
+            int refKind = mapName ? (wantMut ? 1 : 0) : -1;
+            int isBorrowed = mapName ? 1 : 0;
+            scopeDefine(thenScope, &i->name, inner, 0, isRef, refKind, 0, isBorrowed);
+
+            // If this is a map element reference, borrow the map for the duration of the then-branch scope.
+            if (mapName) {
+                borrowCheckAndRecord(compiler, thenScope, mapName, wantMut ? 1 : 0, INT_MAX, modulePath, i->name.line);
+                VarInfo* vi = scopeFind(thenScope, &i->name);
+                if (vi) varInfoSetBorrowedFrom(vi, mapName, wantMut ? 1 : 0);
+            }
+
+            analyzeStmt(compiler, thenScope, i->thenBranch, modulePath, expectedReturns);
+            if (i->elseBranch) analyzeStmt(compiler, scope, i->elseBranch, modulePath, expectedReturns);
+            break;
+        }
         case STMT_FOR: {
             ForStmt* f = (ForStmt*)stmt;
             if (f->initializer) analyzeStmt(compiler, scope, f->initializer, modulePath, expectedReturns);
@@ -2906,6 +2950,13 @@ static void scanReturnRefKindInStmt(FuncStmt* fn, Stmt* stmt, int* ioKind, int* 
         }
         case STMT_IF: {
             IfStmt* i = (IfStmt*)stmt;
+            if (i && i->thenBranch) scanReturnRefKindInStmt(fn, i->thenBranch, ioKind, ioSeen, ioUnknown);
+            if (*ioUnknown) return;
+            if (i && i->elseBranch) scanReturnRefKindInStmt(fn, i->elseBranch, ioKind, ioSeen, ioUnknown);
+            return;
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
             if (i && i->thenBranch) scanReturnRefKindInStmt(fn, i->thenBranch, ioKind, ioSeen, ioUnknown);
             if (*ioUnknown) return;
             if (i && i->elseBranch) scanReturnRefKindInStmt(fn, i->elseBranch, ioKind, ioSeen, ioUnknown);

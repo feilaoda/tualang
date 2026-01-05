@@ -10,6 +10,7 @@
 - 语法：
   - 变量声明：`let a:int = 10;`、`a:int = 10;`、`let a = 10;`、`const s = "hi";`
   - 条件：`if cond { ... } else if cond { ... } else { ... }`（可选括号：`if (cond) {}`)
+  - Option 条件绑定：`if let Some(x) = opt { ... } else { ... }`（x 仅在 then 分支可见）
   - 循环：`for i=0; i<n; i++ { ... }`（可选括号）
   - 函数：`fn demo(a:int, b:string) -> int { ... }`（可选 `->` 语法糖：`fn demo(...) int {}`)
   - 函数类型（TS 风格）：`(int, int) -> int`、`(int) -> (int, string)`

@@ -2618,6 +2618,9 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
         case STMT_IF:
             compileIfStmt(compiler, (IfStmt*)stmt);
             break;
+        case STMT_IF_LET:
+            compileIfLetStmt(compiler, (IfLetStmt*)stmt);
+            break;
         case STMT_FOR:
             compileForStmt(compiler, (ForStmt*)stmt);
             break;
@@ -2690,6 +2693,10 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
 
 void compileIfStmt(Compiler* compiler, IfStmt* stmt) {
     emitIfStmt(compiler, stmt);
+}
+
+void compileIfLetStmt(Compiler* compiler, IfLetStmt* stmt) {
+    emitIfLetStmt(compiler, stmt);
 }
 
 void compileForStmt(Compiler* compiler, ForStmt* stmt) {

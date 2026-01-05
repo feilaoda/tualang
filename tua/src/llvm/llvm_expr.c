@@ -1022,6 +1022,14 @@ static void collectLambdaLocalsStmt(List* locals, Stmt* stmt) {
             collectLambdaLocalsStmt(locals, i->elseBranch);
             break;
         }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            nameSetAdd(locals, i->name.start, i->name.length);
+            collectLambdaLocalsExpr(locals, i->value);
+            collectLambdaLocalsStmt(locals, i->thenBranch);
+            collectLambdaLocalsStmt(locals, i->elseBranch);
+            break;
+        }
         case STMT_FOR: {
             ForStmt* f = (ForStmt*)stmt;
             collectLambdaLocalsStmt(locals, f->initializer);

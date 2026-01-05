@@ -239,7 +239,11 @@ block
   ;
 
 ifStmt
-  : KW_IF (LPAREN expression RPAREN | expression) statement (sep* KW_ELSE (ifStmt | statement))?
+  : KW_IF (
+      KW_LET Identifier LPAREN Identifier RPAREN ASSIGN expression
+      | LPAREN expression RPAREN
+      | expression
+    ) statement (sep* KW_ELSE (ifStmt | statement))?
   ;
 
 forStmt

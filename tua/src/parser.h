@@ -45,6 +45,7 @@ typedef enum {
     STMT_EXPR,
     STMT_VAR,
     STMT_IF,
+    STMT_IF_LET,
     STMT_FOR,
     STMT_FOR_IN,
     STMT_WHILE,
@@ -310,6 +311,17 @@ typedef struct {
     Stmt* elseBranch;
 } IfStmt;
 
+// if-let statement (Option pattern match):
+// `if let Some(x) = <expr> <then> else <else>`
+// Currently only supports `Some(<identifier>)` pattern.
+typedef struct {
+    Stmt base;
+    Token name;      // binding identifier in `Some(name)`
+    Expr* value;     // the Option expression
+    Stmt* thenBranch;
+    Stmt* elseBranch;
+} IfLetStmt;
+
 // For statement structure
 typedef struct {
     Stmt base;
@@ -536,6 +548,7 @@ static Stmt* newExpressionStmt(Expr* expression);
 static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
 static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
 static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
 static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
 static Stmt* newBlockStmt(List* statements);
 static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
