@@ -3,13 +3,11 @@ let m: map = { "a": 1, 2: 3 }
 assert(m.hasKey("a"))
 assert(!m.hasKey("missing"))
 
-let v:int, ok:bool = m.get("a")
-assert(ok)
-assert(v == 1)
+let v:any = m["a"].unwrap()
+assert((long)v == 1L)
 
-let v2:string, ok2:bool = m.get("missing")
-assert(!ok2)
-assert(v2 == null)
+let o2 = m["missing"]
+assert(o2.isNone())
 
 assert(len(m) == 2)
 assert(m.len() == 2)

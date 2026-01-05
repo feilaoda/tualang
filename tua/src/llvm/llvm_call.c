@@ -3468,7 +3468,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        // Map built-in methods: `m.hasKey(k)`, `m.get(k)`, `m.len()`
+        // Map built-in methods: `m.hasKey(k)`, `m.len()`
         if (recvVar.value && recvVar.isMap) {
             LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef mapPtr = NULL;
@@ -3674,75 +3674,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
 
             if (tokenEquals(&get->name, "get")) {
-                if (got != 1) {
-                    emitDebug("map.get expects 1 argument\n");
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
-                Expr* keyAst = (Expr*)expr->arguments->head->data;
-                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
-                if (recvVar.isTypedMap && recvVar.mapKeyType) {
-                    if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
-                        compilerErrorAt(compiler, keyAst ? keyAst->token.line : get->name.line, "typed map key type mismatch");
-                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                        return NULL;
-                    }
-                }
-                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
-                if (!key) {
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
-
-                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-                LLVMTypeRef innerType = recvVar.isTypedMap && recvVar.mapValueType ? recvVar.mapValueType : vt;
-                if (recvVar.isTypedMap && recvVar.mapValueType && !typedMapValueIsScalarMeta(&recvVar)) {
-                    compilerErrorAt(compiler, get->name.line, "map.get is not supported for non-scalar typed map values; use getRef/getRefWrite");
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
-
-                LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
-                LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);
-                LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
-                LLVMValueRef args3[3] = { mapPtr, key, okPtr };
-                LLVMValueRef tv = LLVMBuildCall2(compiler->builder, gtype, gfn, args3, 3, "mget");
-                LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, LLVMInt32TypeInContext(compiler->context), okPtr, "mok32");
-                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
-
-                LLVMValueRef payload = NULL;
-                if (innerType == vt) {
-                    payload = tv;
-                } else {
-                    LLVMValueRef fn = compiler->current->func;
-                    LLVMBasicBlockRef someBB = LLVMAppendBasicBlock(fn, "opt.some");
-                    LLVMBasicBlockRef noneBB = LLVMAppendBasicBlock(fn, "opt.none");
-                    LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "opt.cont");
-                    LLVMBuildCondBr(compiler->builder, ok, someBB, noneBB);
-
-                    LLVMPositionBuilderAtEnd(compiler->builder, someBB);
-                    LLVMValueRef someV = castValueToType(compiler, tv, innerType);
-                    LLVMBuildBr(compiler->builder, contBB);
-                    LLVMBasicBlockRef someEnd = LLVMGetInsertBlock(compiler->builder);
-
-                    LLVMPositionBuilderAtEnd(compiler->builder, noneBB);
-                    LLVMValueRef noneV = LLVMConstNull(innerType);
-                    LLVMBuildBr(compiler->builder, contBB);
-                    LLVMBasicBlockRef noneEnd = LLVMGetInsertBlock(compiler->builder);
-
-                    LLVMPositionBuilderAtEnd(compiler->builder, contBB);
-                    LLVMValueRef phi = LLVMBuildPhi(compiler->builder, innerType, "optv");
-                    LLVMAddIncoming(phi, &someV, &someEnd, 1);
-                    LLVMAddIncoming(phi, &noneV, &noneEnd, 1);
-                    payload = phi;
-                }
-
-                LLVMTypeRef optType = compilerGetOptionType(compiler, innerType);
-                LLVMValueRef opt = LLVMGetUndef(optType);
-                opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
-                opt = LLVMBuildInsertValue(compiler->builder, opt, payload, 1, "o1");
+                compilerErrorAt(compiler, get->name.line, "map.get is removed; use m[k]");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return opt;
+                return NULL;
             }
         }
 

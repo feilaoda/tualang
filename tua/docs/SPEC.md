@@ -465,10 +465,11 @@
 - 读取（Status: Implemented）：
   - 对 `map`（无类型参数）：`m[k] -> Option<any>`（即 `Option<tua_value>`）
   - 对 `map<K,V>`：
-    - 当 `V` 为标量（Copy：`int/long/double/bool/string`）：`m[k] -> Option<V>`，`m.get(k) -> Option<V>`
-    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` / `m.get(k)` **不提供按值读取**；编译期报错并提示使用 `getRef/getRefWrite`（避免隐式产生第二个 owner 导致 double-free/UAF）
+    - 当 `V` 为标量（Copy：`int/long/double/bool/string`）：`m[k] -> Option<V>`
+    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `getRef/getRefWrite`（避免隐式产生第二个 owner 导致 double-free/UAF）
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
+  - Removed: `m.get(k)`（请使用 `m[k]`）
 - 写入（Status: Implemented）：
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
@@ -477,7 +478,6 @@
 - 内建方法（Status: Implemented）：
   - `m.len() -> int`
   - `m.hasKey(k) -> bool`
-  - `m.get(k) -> Option<V>`
   - `m.delete(k) -> bool`
   - `m.clear() -> void`
 - 借用读取（Status: Partial，配合 `Ref<T>`）：

@@ -1281,12 +1281,12 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 return atOption(atNew(AT_ANY));
             }
             if (tokenTextEquals(&get->name, "get")) {
-                Expr* key0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
-                AType* keyTy = inferExpr(compiler, scope, key0, modulePath);
-                if (!typedMapKeyAllows(recvTy->key, keyTy)) {
-                    analyzeErrorAt(compiler, modulePath, get->name.line, "typed map key type mismatch");
+                analyzeErrorAt(compiler, modulePath, get->name.line, "map.get is removed; use m[k]");
+                // Still analyze args for nested errors.
+                for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
+                    inferExpr(compiler, scope, (Expr*)n->data, modulePath);
                 }
-                return atOption(recvTy->value ? recvTy->value : atNew(AT_ANY));
+                return atNew(AT_ANY);
             }
             if (tokenTextEquals(&get->name, "len")) return atNew(AT_INT);
             if (tokenTextEquals(&get->name, "hasKey")) return atNew(AT_BOOL);

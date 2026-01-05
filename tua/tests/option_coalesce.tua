@@ -23,7 +23,6 @@ assert(s2.isSome())
 assert(s2.unwrap() == "hi")
 assert(s2 == Some("hi"))
 
-let s3:int = m.get("a") ?? 0
+let s3:int = m["a"] ?? 0
 assert(s3 == 1)
-assert(m.get("a").isSome())
-
+assert(m["a"].isSome())

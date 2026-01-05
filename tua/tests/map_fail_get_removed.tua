@@ -1,0 +1,5 @@
+let m: map<string, int> = { "a": 1 }
+
+// map.get is removed; use m[k].
+let v = m.get("a")
+println(v.unwrap())
