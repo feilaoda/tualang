@@ -41,15 +41,18 @@
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
 - [x] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
-- [ ] 泛型 + 单态化（高优先级）：通用类型参数（函数/struct/trait）+ 编译期实例化（monomorphization）
+- [ ] 泛型 + 单态化（高优先级）：通用类型参数（函数/struct/trait）+ 编译期实例化（monomorphization）（当前：函数泛型已完成；`struct/trait` 泛型待做）
   - [x] v0 语法与 AST：`fn f<T>(...)` + 调用处显式 `f<int>(1)`（先不做推断）
   - [x] v0 单态化与缓存：同一组类型实参只生成一次实例；支持跨模块导入后的实例化
   - [x] v1 约束（bounds）：支持 `T: Trait`（基于 `impl Trait for Struct` 记录 + 实例化时检查）
   - [x] v0.5 类型实参推断（语法糖）：允许 `id(10)` 在可唯一推断时等价 `id<int>(10)`；否则报错要求显式 `id<T>(...)`
-  - [ ] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
+  - [x] 诊断：缺失类型实参/无法推断/约束不满足/递归实例化循环等
     - [x] 推断失败原因（missing/conflict/trait object）提示（第一版）
+    - [x] 推断限制提示：当 `T` 仅出现在 `Option<T>`/`map<K,T>` 等嵌套位置时无法推断（第一版）
     - [x] 实例化回溯（generic instantiation stack，第一版）
     - [x] 实例化深度上限（防止 runaway monomorphization 崩溃/爆符号）
+  - [ ] 泛型 `struct`（Planned）：`struct Box<T> { ... }`
+  - [ ] 泛型 `trait`（Planned）：`trait Iter<T> { ... }` / associated types
 - [ ] 冻结内存模型/spec（高优先级，无 GC/无手动 free）：见 `docs/SPEC.md` 的“内存模型”
   - [x] 所有权（第一版）：默认唯一、move-only（`struct/map/array`）；移动后不可用（move checker）
   - [x] 借用（第一版）：`const r = &x` 共享、`let r = &x` 独占；禁止冲突借用/被借用时写或 move
@@ -64,6 +67,7 @@
     - [ ] v1：可写 slice（`set`）、更完整的 copy/借用语义、以及 array->slice 等扩展
 - [x] 引用读取（第一版）：`r.get()`（替代 `*r`；不提供 `*r = v` 形式写回）
 - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
+- [x] move 规则补齐（第一版）：`struct` 字面量/字段赋值、`m[k]=v`、`{k:v}`/`[v]` 会移动 move-only 值并在 codegen 置空源 slot（避免 UAF/double-free）
 - [x] 逃逸分析（第一版）：闭包仅 boxing 被捕获的局部/参数；栈默认、堆按需（后续可继续细化临时对象内联/寄存器化）
   - [ ] 并发：数据竞争编译期阻止（后续结合线程能力定义规则边界）
 - [x] 函数类型（TS 风格）：`(args) -> ret`（用于闭包变量/参数类型标注）

@@ -1,0 +1,15 @@
+struct Foo {
+  x: int
+}
+
+let g: &Foo
+
+fn bad() {
+  let a: Foo = Foo()
+  a.x = 1
+  let r = &a
+  g = r
+}
+
+bad()
+

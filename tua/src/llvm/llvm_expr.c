@@ -583,6 +583,24 @@ static LLVMValueRef tuaValueFromValue(Compiler* compiler, LLVMValueRef value) {
     return NULL;
 }
 
+static void moveOutOnIndexOrLiteralIfNeeded(Compiler* compiler, Expr* srcExpr) {
+    if (!compiler || !srcExpr) return;
+    if (srcExpr->type != EXPR_VARIABLE) return;
+    VariableRef v = findVariableExpr(compiler, srcExpr);
+    if (!v.value || !v.type) return;
+    if (v.isArray && v.isStackArray) return;
+    LLVMTypeRef cloTy = compilerGetClosureType(compiler);
+    if (!v.isMap && !v.isArray && !v.isBytes && !v.isTraitObj && v.type != cloTy) return;
+    LLVMValueRef nullv = LLVMConstNull(v.type);
+    if (v.isBoxed) {
+        if (!v.boxPtrType) return;
+        LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, v.boxPtrType, v.value, "mv_cell");
+        LLVMBuildStore(compiler->builder, nullv, cell);
+    } else {
+        LLVMBuildStore(compiler->builder, nullv, v.value);
+    }
+}
+
 static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_new");
     if (existing) return existing;
@@ -2275,6 +2293,10 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
 
         LLVMValueRef args[3] = { mapVal, key, v };
         LLVMBuildCall2(builder, setType, setFn, args, 3, "");
+
+        // Move semantics for container handles stored in map literals:
+        // after `{ k: var }`, `var` is invalidated (set to null) to avoid later drops/UAF.
+        moveOutOnIndexOrLiteralIfNeeded(compiler, e->value);
     }
 
     return mapVal;
@@ -2387,6 +2409,9 @@ LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr) {
         LLVMValueRef iV = LLVMConstInt(i64, (uint64_t)idx, 0);
         LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, elemTy, data, &iV, 1, "ep");
         LLVMBuildStore(builder, vv, ep);
+
+        // Move semantics for container handles stored in arrays: after `[var]`, `var` is invalidated.
+        moveOutOnIndexOrLiteralIfNeeded(compiler, ev);
     }
 
     (void)i32;
@@ -2849,6 +2874,8 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
             }
             LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, targetVar.stackArrayData, &idxV, 1, "ep");
             LLVMBuildStore(builder, valV, ep);
+            // For handle-like values assigned into arrays, move ownership into the container.
+            moveOutOnIndexOrLiteralIfNeeded(compiler, expr->value);
             return valV;
         }
 
@@ -2861,6 +2888,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
             LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(expectedElemTy, 0), "adata");
             LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, data, &idxV, 1, "ep");
             LLVMBuildStore(builder, valV, ep);
+            moveOutOnIndexOrLiteralIfNeeded(compiler, expr->value);
             return valV;
         }
 
@@ -2896,6 +2924,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
         LLVMValueRef data = LLVMBuildBitCast(builder, dataI8, LLVMPointerType(expectedElemTy, 0), "adata");
         LLVMValueRef ep = LLVMBuildInBoundsGEP2(builder, expectedElemTy, data, &idxV, 1, "ep");
         LLVMBuildStore(builder, valV, ep);
+        moveOutOnIndexOrLiteralIfNeeded(compiler, expr->value);
         return valV;
     }
 
@@ -2975,6 +3004,9 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
     LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);
     LLVMValueRef args[3] = { objVal, key, v };
     LLVMBuildCall2(builder, setType, setFn, args, 3, "");
+
+    // Move ownership for container handles assigned into map elements.
+    moveOutOnIndexOrLiteralIfNeeded(compiler, expr->value);
 
     // Return assigned value as tua_value for potential chaining.
     return v;

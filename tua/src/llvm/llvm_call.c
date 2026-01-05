@@ -607,7 +607,8 @@ typedef enum {
     GEN_INFER_ARGC_MISMATCH,
     GEN_INFER_MISSING_TP,
     GEN_INFER_CONFLICT,
-    GEN_INFER_TRAIT_OBJECT_ARG
+    GEN_INFER_TRAIT_OBJECT_ARG,
+    GEN_INFER_UNSUPPORTED_SHAPE
 } GenericInferStatus;
 
 typedef struct {
@@ -654,6 +655,39 @@ static void freeTypeTreeDeep(Type* t) {
     free(t);
 }
 
+static int astTypeContainsTypeParamDeep(Type* t, const Token* tpName) {
+    if (!t || !tpName || !tpName->start || tpName->length <= 0) return 0;
+    switch (t->kind) {
+        case TYPE_NAMED: {
+            if (t->name.length == tpName->length &&
+                memcmp(t->name.start, tpName->start, (size_t)tpName->length) == 0) {
+                // If this is `T` itself, it counts; if it's `Option<T>`, we still recurse below.
+                if (!t->typeArgs || t->typeArgs->length == 0) return 1;
+            }
+            for (ListNode* n = t->typeArgs ? t->typeArgs->head : NULL; n != NULL; n = n->next) {
+                if (astTypeContainsTypeParamDeep((Type*)n->data, tpName)) return 1;
+            }
+            return 0;
+        }
+        case TYPE_REF:
+            return astTypeContainsTypeParamDeep(t->inner, tpName);
+        case TYPE_ARRAY:
+            return astTypeContainsTypeParamDeep(t->inner, tpName);
+        case TYPE_FUNC: {
+            for (ListNode* n = t->paramTypes ? t->paramTypes->head : NULL; n != NULL; n = n->next) {
+                if (astTypeContainsTypeParamDeep((Type*)n->data, tpName)) return 1;
+            }
+            for (ListNode* n = t->returnTypes ? t->returnTypes->head : NULL; n != NULL; n = n->next) {
+                if (astTypeContainsTypeParamDeep((Type*)n->data, tpName)) return 1;
+            }
+            if (t->inner && astTypeContainsTypeParamDeep(t->inner, tpName)) return 1;
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
 static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate* tmpl, CallExpr* call, GenericInferDiag* diag) {
     initGenericInferDiag(diag);
     if (!compiler || !tmpl || !tmpl->decl || !call) return NULL;
@@ -677,8 +711,12 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
 
     Type** inferred = malloc(sizeof(Type*) * (size_t)expected);
     int* inferredFromArg = malloc(sizeof(int) * (size_t)expected);
+    int* nestedSeen = malloc(sizeof(int) * (size_t)expected);
+    int* nestedFromArg = malloc(sizeof(int) * (size_t)expected);
     for (int i = 0; i < expected; i++) inferred[i] = NULL;
     for (int i = 0; i < expected; i++) inferredFromArg[i] = -1;
+    for (int i = 0; i < expected; i++) nestedSeen[i] = 0;
+    for (int i = 0; i < expected; i++) nestedFromArg[i] = -1;
 
     for (int i = 0; i < pc; i++) {
         Parameter* p = (Parameter*)listGet(tmpl->decl->params, i);
@@ -695,6 +733,21 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
         } else if (pt && pt->kind == TYPE_REF && pt->inner && pt->inner->kind == TYPE_NAMED) {
             tpName = pt->inner->name.start;
             tpLen = pt->inner->name.length;
+        }
+        // Record nested occurrences of type params so we can produce a better error when inference fails.
+        // We do this for all non-trivial parameter types, not just ones with no top-level name.
+        for (int j = 0; j < expected; j++) {
+            TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, j);
+            if (!td) continue;
+            // Skip the supported top-level shapes `T` / `&T`; those are handled below.
+            int isTopLevel = 0;
+            if (tpName && tpLen > 0 && td->name.length == tpLen && memcmp(td->name.start, tpName, (size_t)tpLen) == 0) {
+                isTopLevel = 1;
+            }
+            if (!isTopLevel && astTypeContainsTypeParamDeep(pt, &td->name)) {
+                nestedSeen[j] = 1;
+                if (nestedFromArg[j] < 0) nestedFromArg[j] = i;
+            }
         }
         if (!tpName || tpLen <= 0) continue;
 
@@ -724,6 +777,8 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
             freeTypeTreeDeep(it);
             free(inferredFromArg);
             free(inferred);
+            free(nestedSeen);
+            free(nestedFromArg);
             if (diag) {
                 diag->status = GEN_INFER_TRAIT_OBJECT_ARG;
                 diag->tpIndex = tpIndex;
@@ -743,6 +798,8 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
                 freeTypeTreeDeep(it);
                 free(inferredFromArg);
                 free(inferred);
+                free(nestedSeen);
+                free(nestedFromArg);
                 if (diag) {
                     diag->status = GEN_INFER_CONFLICT;
                     diag->tpIndex = tpIndex;
@@ -764,12 +821,22 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
             }
             free(inferredFromArg);
             free(inferred);
-            if (diag) {
+            if (nestedSeen[i]) {
+                if (diag) {
+                    diag->status = GEN_INFER_UNSUPPORTED_SHAPE;
+                    diag->tpIndex = i;
+                    TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, i);
+                    if (td) diag->tpName = td->name;
+                    diag->secondArgIndex = nestedFromArg[i] + 1;
+                }
+            } else if (diag) {
                 diag->status = GEN_INFER_MISSING_TP;
                 diag->tpIndex = i;
                 TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, i);
                 if (td) diag->tpName = td->name;
             }
+            free(nestedSeen);
+            free(nestedFromArg);
             return NULL;
         }
         listAppend(out, inferred[i]);
@@ -777,6 +844,8 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
     if (diag) diag->status = GEN_INFER_OK;
     free(inferredFromArg);
     free(inferred);
+    free(nestedSeen);
+    free(nestedFromArg);
     return out;
 }
 
@@ -5391,6 +5460,34 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                         callee->name.length,
                         callee->name.start
                     );
+                    break;
+                case GEN_INFER_UNSUPPORTED_SHAPE:
+                    if (inferDiag.tpName.start && inferDiag.tpName.length > 0) {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s': type parameter '%.*s' appears in a nested position (e.g. Option<%.*s>) at argument %d; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            inferDiag.tpName.length,
+                            inferDiag.tpName.start,
+                            inferDiag.tpName.length,
+                            inferDiag.tpName.start,
+                            inferDiag.secondArgIndex,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    } else {
+                        compilerErrorAtToken(
+                            compiler,
+                            &callee->name,
+                            "cannot infer generic type arguments for '%.*s': unsupported parameter type shape for inference; write '%.*s<...>(...)'",
+                            callee->name.length,
+                            callee->name.start,
+                            callee->name.length,
+                            callee->name.start
+                        );
+                    }
                     break;
                 default:
                     if (expectedTypeParams > 0) {

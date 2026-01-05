@@ -1,0 +1,9 @@
+struct Box {
+  m: map
+}
+
+let m: map = {"a": 1}
+let b: Box = Box{ m: m }
+
+println(m.len())
+

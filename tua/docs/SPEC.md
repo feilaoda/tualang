@@ -252,7 +252,11 @@
   - 未知字段名或重复字段名会报错
 - move / 引用语义（Frozen）：
   - `let b = a`：移动 `a -> b`（所有权转移），`a` 之后不可再用（编译期错误）
-  - 在 **struct 构造/字面量** 中使用 move-only 变量同样会发生移动（例如 `T{ f: x }` 会移动 `x` 到字段 `f`，并把 `x` 置为 moved-from 状态）
+  - 在以下位置使用 move-only 变量同样会发生移动（并把源变量置为 moved-from）：
+    - **struct 构造/字面量**：`T{ f: x }`
+    - **字段赋值**：`obj.f = x`
+    - **下标赋值**：`m[k] = x` / `a[i] = x`
+    - **map/array 字面量**：`{ "k": x }` / `[x]`
   - 需要复制时必须显式：`a.clone()`（Planned：默认深拷贝字段；并对资源字段做正确的所有权处理）
   - `let r = &a` / `const r = &a`：取 `a` 的引用（类型层面是 `Ref<T>`；过渡期可写 `&T`；LLVM 层面是 `T*`）
 - 引用读取（Status: Implemented）：
@@ -404,6 +408,7 @@
   - 仅支持 **函数泛型**：`fn f<T>(...) ...`
   - 调用处支持 **显式类型实参**：`f<int>(1)`
   - v0.5 语法糖：支持 `f(1)` 的类型实参推断（当可唯一推断时）；否则要求写出显式 `f<T>(...)`
+    - 当前推断限制（Implemented）：仅对形如 `x: T` 或 `x: Ref<T>`（过渡期 `&T`）的参数做推断；当 `T` 仅出现在 `Option<T>`/`map<K,T>` 等嵌套位置时需要显式写出 `f<T>(...)`
   - 实现方式：每组类型实参生成一个单态化实例函数（`__G__...` 形式的内部符号名），并缓存复用
 - v1 约束（Status: Implemented）：
   - 语法：`fn g<T: Trait>(x: T) -> ...`
@@ -454,6 +459,7 @@
   - `key` 仅允许常量字面量：`int/long/string`
   - 重复 key：后者覆盖前者
   - 允许尾逗号：`{ "a": 1, }`
+  - `value` 为 move-only 变量时会发生移动（`{ "k": x }` 会移动 `x`）；Copy type 则按值复制
   - 当 `V` 为 trait object（`map<K, TraitName>`）时：
     - 允许写入具体 `struct` 值（例如 `Girl{...}`），前提是存在 `impl TraitName for Girl {}`；编译期会把 `Girl` box 成 owning trait object 再存入 map
 - 读取（Status: Implemented）：
@@ -596,9 +602,9 @@
   - move-only（`struct/map/array`）：`let b = a` / `a = b` 会转移所有权；move 后再使用为编译错误
   - `const` 不可修改：禁止重绑定、字段写、下标写、`++/--`
   - 借用检查（第一版）：`let r = &x` 独占可写借用；`const r = &x` 共享只读借用；禁止冲突借用；被借用期间禁止 move/写
-  - 引用逃逸检查（第一版）：禁止 `return &local`；禁止把 `&local` 赋给外层变量（跨作用域逃逸）
+  - 引用/借用值逃逸检查（第一版）：禁止 `return &local`；禁止把 `&local` 或借用值（如 `Ref/Slice`）赋给外层变量（包括经由中间变量转手）
 - 已实现（运行时/编译器插桩，第一版）：
-  - `map/array` 自动释放：作用域结束、覆盖赋值、`return` 路径会 drop 容器；move 会把源 slot 置 `null`（避免 double-free）
+  - `map/array/bytes/trait object/closure` 自动释放：作用域结束、覆盖赋值、`return` 路径会 drop；move 会把源 slot 置 `null`（避免 UAF/double-free）
 - 未实现（Planned）：
   - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；跨线程数据竞争规则
 

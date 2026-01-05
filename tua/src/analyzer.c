@@ -665,6 +665,91 @@ static int varIsMoveOnly(const VarInfo* v) {
     return 0;
 }
 
+static void varInfoSetBorrowedFrom(VarInfo* v, const Token* owner, int ownerMut) {
+    if (!v) return;
+    if (v->borrowedFrom) {
+        free(v->borrowedFrom);
+        v->borrowedFrom = NULL;
+    }
+    v->borrowedFromLen = 0;
+    v->borrowedFromMut = 0;
+    if (!owner || !owner->start || owner->length <= 0) return;
+    v->borrowedFrom = (char*)malloc((size_t)owner->length + 1);
+    memcpy(v->borrowedFrom, owner->start, (size_t)owner->length);
+    v->borrowedFrom[owner->length] = '\0';
+    v->borrowedFromLen = owner->length;
+    v->borrowedFromMut = ownerMut ? 1 : 0;
+}
+
+static void maybeMoveVar(Compiler* compiler, Scope* scope, const Token* name, const char* modulePath) {
+    if (!scope || !name) return;
+    VarInfo* src = scopeFind(scope, name);
+    if (!varIsMoveOnly(src)) return;
+    if (borrowHasAny(scope, name)) {
+        analyzeErrorAt(
+            compiler,
+            modulePath,
+            name->line,
+            "cannot move '%.*s' because it is borrowed",
+            name->length,
+            name->start
+        );
+        return;
+    }
+    if (src && src->isBorrowed && !src->isRef) {
+        analyzeErrorAt(
+            compiler,
+            modulePath,
+            name->line,
+            "cannot move out of borrowed binding '%.*s'",
+            name->length,
+            name->start
+        );
+        return;
+    }
+    if (src && src->isConst) {
+        analyzeErrorAt(
+            compiler,
+            modulePath,
+            name->line,
+            "cannot move out of const binding '%.*s'",
+            name->length,
+            name->start
+        );
+        return;
+    }
+    if (src) src->isMoved = 1;
+}
+
+static void escapeCheckBorrowedValueAssign(
+    Compiler* compiler,
+    Scope* scope,
+    VarInfo* dst,
+    VarInfo* src,
+    const Token* dstName,
+    const Token* srcName,
+    const char* modulePath
+) {
+    if (!compiler || !scope || !dst || !src || !dstName || !srcName) return;
+    if (!src->borrowedFrom || src->borrowedFromLen <= 0) return;
+    Token ownerTok = (Token){0};
+    ownerTok.start = src->borrowedFrom;
+    ownerTok.length = src->borrowedFromLen;
+    ownerTok.line = srcName->line;
+    VarInfo* owner = scopeFind(scope, &ownerTok);
+    if (!owner || !owner->owner || !dst->owner) return;
+    if (!scopeIsAncestor(owner->owner, dst->owner)) {
+        analyzeErrorAt(
+            compiler,
+            modulePath,
+            dstName->line,
+            "cannot let borrowed value escape to outer scope via '%.*s'",
+            dstName->length,
+            dstName->start
+        );
+    }
+}
+
 static int atIsMoveOnly(AType* t, int isRef) {
     if (!t) return 0;
     if (isRef) return 0;
@@ -1054,13 +1139,22 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
         expectedLen = expectedArray->arrayLen;
     }
 
+    int fillSugar = (expectedLen >= 0 && al->elements && al->elements->length == 1) ? 1 : 0;
     int count = 0;
     AType* inferred = atNew(AT_ANY);
     for (ListNode* n = al->elements ? al->elements->head : NULL; n != NULL; n = n->next) {
         count++;
-        AType* et = inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+        Expr* elem = (Expr*)n->data;
+        AType* et = inferExpr(compiler, scope, elem, modulePath);
         if (expectedInner && !atIsAny(expectedInner) && !atAssignable(compiler, expectedInner, et)) {
             analyzeErrorAt(compiler, modulePath, al->base.token.line, "array element type mismatch");
+        }
+
+        // Array literal moves move-only vars into elements.
+        // (Except for fixed-length fill sugar `T[N] = [x]`, which duplicates `x` and is validated separately.)
+        if (!fillSugar && elem && elem->type == EXPR_VARIABLE) {
+            VariableExpr* rv = (VariableExpr*)elem;
+            maybeMoveVar(compiler, scope, &rv->name, modulePath);
         }
 
         if (atIsAny(inferred)) {
@@ -1079,6 +1173,18 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
 
     if (expectedLen >= 0 && count > expectedLen) {
         analyzeErrorAt(compiler, modulePath, al->base.token.line, "too many elements for fixed-length array");
+    }
+
+    // Fixed-length fill sugar `T[N] = [x]` duplicates `x` at runtime; forbid move-only sources.
+    if (fillSugar) {
+        Expr* elem0 = al->elements && al->elements->head ? (Expr*)al->elements->head->data : NULL;
+        if (elem0 && elem0->type == EXPR_VARIABLE) {
+            VariableExpr* rv = (VariableExpr*)elem0;
+            VarInfo* src = scopeFind(scope, &rv->name);
+            if (varIsMoveOnly(src)) {
+                analyzeErrorAt(compiler, modulePath, rv->name.line, "fixed-length array fill requires a copyable value");
+            }
+        }
     }
 
     AType* inner = (expectedInner && !atIsAny(expectedInner)) ? expectedInner : inferred;
@@ -1554,39 +1660,34 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             if (a->value && a->value->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)a->value;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                if (varIsMoveOnly(src)) {
-                    if (borrowHasAny(scope, &rv->name)) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move '%.*s' because it is borrowed",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else
-                    if (src->isBorrowed && !src->isRef) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move out of borrowed binding '%.*s'",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else
-                    if (src->isConst) {
-                        analyzeErrorAt(
-                            compiler,
-                            modulePath,
-                            rv->name.line,
-                            "cannot move out of const binding '%.*s'",
-                            rv->name.length,
-                            rv->name.start
-                        );
-                    } else {
-                        src->isMoved = 1;
-                    }
+                maybeMoveVar(compiler, scope, &rv->name, modulePath);
+
+                // Escape check: forbid assigning a borrowed value to an outer-scope binding.
+                if (vi && src) {
+                    escapeCheckBorrowedValueAssign(compiler, scope, vi, src, &a->name, &rv->name, modulePath);
+                }
+
+                // Propagate borrow-source metadata (e.g. slice/ref/map element refs) across assignment.
+                if (vi && src && src->borrowedFrom && src->borrowedFromLen > 0) {
+                    Token ownerTok = (Token){0};
+                    ownerTok.start = src->borrowedFrom;
+                    ownerTok.length = src->borrowedFromLen;
+                    ownerTok.line = rv->name.line;
+
+                    // Record the borrow in the destination's owning scope so NLL is computed at the right level.
+                    Scope* dstScope = vi->owner ? vi->owner : scope;
+                    int endIndex = (dstScope && dstScope->lastUses) ? lastUseIndexOf(dstScope, &a->name) : INT_MAX;
+                    borrowCheckAndRecord(
+                        compiler,
+                        dstScope,
+                        &ownerTok,
+                        src->borrowedFromMut ? 1 : 0,
+                        endIndex,
+                        modulePath,
+                        a->name.line
+                    );
+
+                    varInfoSetBorrowedFrom(vi, &ownerTok, src->borrowedFromMut ? 1 : 0);
                 }
             }
             return inferReturn(expr, vi && vi->type ? vi->type : atNew(AT_ANY));
@@ -1783,6 +1884,11 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 StructFieldInit* f = (StructFieldInit*)n->data;
                 if (!f) continue;
                 inferExpr(compiler, scope, f->value, modulePath);
+                // Struct literal moves move-only vars into fields.
+                if (f->value && f->value->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)f->value;
+                    maybeMoveVar(compiler, scope, &rv->name, modulePath);
+                }
             }
             // Best-effort: infer struct type from the callee token.
             AType* out = atNew(AT_ANY);
@@ -1876,6 +1982,46 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             }
             inferExpr(compiler, scope, s->object, modulePath);
             inferExpr(compiler, scope, s->value, modulePath);
+
+            // Escape check: forbid storing `&local` into an outer-scope receiver binding.
+            if (s->value && s->value->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)s->value;
+                if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)un->right;
+                    VarInfo* src = scopeFind(scope, &rv->name);
+                    const Token* dstTok = getOwner;
+                    if (!dstTok && s->object && s->object->type == EXPR_VARIABLE) dstTok = &((VariableExpr*)s->object)->name;
+                    VarInfo* dst = dstTok ? scopeFind(scope, dstTok) : NULL;
+                    if (dst && dst->isRef && dst->borrowedFrom && dst->borrowedFromLen > 0) {
+                        Token baseTok = (Token){0};
+                        baseTok.start = dst->borrowedFrom;
+                        baseTok.length = dst->borrowedFromLen;
+                        baseTok.line = dstTok ? dstTok->line : s->base.token.line;
+                        VarInfo* baseVar = scopeFind(scope, &baseTok);
+                        if (baseVar) dst = baseVar;
+                    }
+                    if (dst && dst->owner && src && src->owner) {
+                        if (!scopeIsAncestor(src->owner, dst->owner)) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                s->base.token.line,
+                                "cannot let reference to '%.*s' escape to outer scope via '%.*s'",
+                                rv->name.length,
+                                rv->name.start,
+                                dstTok ? dstTok->length : 0,
+                                dstTok ? dstTok->start : ""
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Member assignment moves move-only vars into the receiver.
+            if (s->value && s->value->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)s->value;
+                maybeMoveVar(compiler, scope, &rv->name, modulePath);
+            }
             return inferReturn(expr, atNew(AT_VOID));
         }
         case EXPR_INDEX:
@@ -1968,6 +2114,46 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                     analyzeErrorAt(compiler, modulePath, is->base.token.line, "array element type mismatch");
                 }
             }
+
+            // Escape check: forbid storing `&local` into an outer-scope container binding.
+            if (is->value && is->value->type == EXPR_UNARY) {
+                UnaryExpr* un = (UnaryExpr*)is->value;
+                if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
+                    VariableExpr* rv = (VariableExpr*)un->right;
+                    VarInfo* src = scopeFind(scope, &rv->name);
+                    const Token* dstTok = getOwner;
+                    if (!dstTok && is->object && is->object->type == EXPR_VARIABLE) dstTok = &((VariableExpr*)is->object)->name;
+                    VarInfo* dst = dstTok ? scopeFind(scope, dstTok) : NULL;
+                    if (dst && dst->isRef && dst->borrowedFrom && dst->borrowedFromLen > 0) {
+                        Token baseTok = (Token){0};
+                        baseTok.start = dst->borrowedFrom;
+                        baseTok.length = dst->borrowedFromLen;
+                        baseTok.line = dstTok ? dstTok->line : is->base.token.line;
+                        VarInfo* baseVar = scopeFind(scope, &baseTok);
+                        if (baseVar) dst = baseVar;
+                    }
+                    if (dst && dst->owner && src && src->owner) {
+                        if (!scopeIsAncestor(src->owner, dst->owner)) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                is->base.token.line,
+                                "cannot let reference to '%.*s' escape to outer scope via '%.*s'",
+                                rv->name.length,
+                                rv->name.start,
+                                dstTok ? dstTok->length : 0,
+                                dstTok ? dstTok->start : ""
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Index assignment moves move-only vars into the container.
+            if (is->value && is->value->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)is->value;
+                maybeMoveVar(compiler, scope, &rv->name, modulePath);
+            }
             return inferReturn(expr, atNew(AT_VOID));
         }
         default:
@@ -1997,6 +2183,11 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
             if (isValueLiteralNull(e->value) && !(valTy->kind == AT_STRING)) {
                 analyzeErrorAt(compiler, modulePath, e->key.line, "typed map value cannot be null");
             }
+            // Map literal moves move-only vars into entries.
+            if (e->value && e->value->type == EXPR_VARIABLE) {
+                VariableExpr* rv = (VariableExpr*)e->value;
+                maybeMoveVar(compiler, scope, &rv->name, modulePath);
+            }
         }
         return expectedMap;
     }
@@ -2020,6 +2211,12 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
         else if (inferredKey != k) { ok = 0; break; }
 
         AType* vTy = inferExpr(compiler, scope, e->value, modulePath);
+
+        // Map literal moves move-only vars into entries (untyped map too), even if type inference fails.
+        if (e->value && e->value->type == EXPR_VARIABLE) {
+            VariableExpr* rv = (VariableExpr*)e->value;
+            maybeMoveVar(compiler, scope, &rv->name, modulePath);
+        }
         if (vTy->kind == AT_NULL) { ok = 0; break; }
         if (!(atIsNumeric(vTy) || vTy->kind == AT_BOOL || vTy->kind == AT_STRING)) {
             ok = 0;
@@ -2039,6 +2236,7 @@ static AType* inferMapLiteral(Compiler* compiler, Scope* scope, MapLiteralExpr* 
                 break;
             }
         }
+
     }
 
     if (ok && inferredKey != AT_ANY && inferredVal != AT_ANY) {
@@ -2177,6 +2375,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
 
             // Map.getRef()/getRefWrite() borrow the map for as long as the result value lives in this scope
             // (even if it is wrapped by Option and later unwrapped).
+            const Token* mapRefOwner = NULL;
+            int mapRefOwnerMut = 0;
             {
                 int wantMut = 0;
                 const Token* mapName = mapGetRefOwnerName(v->initializer, &wantMut);
@@ -2193,6 +2393,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         );
                     } else {
                         borrowCheckAndRecord(compiler, scope, mapName, wantMut, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                        mapRefOwner = mapName;
+                        mapRefOwnerMut = wantMut ? 1 : 0;
                     }
                 }
             }
@@ -2268,8 +2470,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                             );
                         } else {
                             src->isMoved = 1;
-                            // Propagate Slice<T> borrow across moves (`let s2 = s1`).
-                            if (src->type && src->type->kind == AT_SLICE && src->borrowedFrom && src->borrowedFromLen > 0) {
+                            // Propagate borrows across moves (`let y = x`) for borrowed values (Slice/Ref/map element refs).
+                            if (src->borrowedFrom && src->borrowedFromLen > 0) {
                                 Token ownerTok = (Token){0};
                                 ownerTok.start = src->borrowedFrom;
                                 ownerTok.length = src->borrowedFromLen;
@@ -2290,6 +2492,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             }
 
             // Borrow rules (first pass): `let r=&x` is mutable/exclusive, `const r=&x` is shared.
+            const Token* refBaseOwner = NULL;
+            int refBaseOwnerMut = 0;
             if (isRefBinding && v->initializer && v->initializer->type == EXPR_UNARY) {
                 UnaryExpr* un = (UnaryExpr*)v->initializer;
                 if (un->operator.type == TOKEN_AMP && un->right && un->right->type == EXPR_VARIABLE) {
@@ -2307,6 +2511,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         );
                     } else {
                         borrowCheckAndRecord(compiler, scope, &base->name, wantMutable, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                        refBaseOwner = &base->name;
+                        refBaseOwnerMut = wantMutable ? 1 : 0;
                     }
                 }
             }
@@ -2368,26 +2574,23 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 (isRefBinding || isConstView) ? 1 : 0
             );
 
-            // Attach borrow-source metadata for Slice<T> so moves can propagate borrows.
-            if (bytesSliceOwner) {
-                VarInfo* dst = scopeFind(scope, &v->name);
-                if (dst) {
-                    dst->borrowedFrom = (char*)malloc((size_t)bytesSliceOwner->length + 1);
-                    memcpy(dst->borrowedFrom, bytesSliceOwner->start, (size_t)bytesSliceOwner->length);
-                    dst->borrowedFrom[bytesSliceOwner->length] = '\0';
-                    dst->borrowedFromLen = bytesSliceOwner->length;
-                    dst->borrowedFromMut = 0;
-                }
+            // Attach borrow-source metadata so borrows can propagate across moves/assignments.
+            VarInfo* dst = scopeFind(scope, &v->name);
+            if (dst && bytesSliceOwner) {
+                varInfoSetBorrowedFrom(dst, bytesSliceOwner, 0);
+            } else if (dst && mapRefOwner) {
+                varInfoSetBorrowedFrom(dst, mapRefOwner, mapRefOwnerMut);
+            } else if (dst && refBaseOwner) {
+                varInfoSetBorrowedFrom(dst, refBaseOwner, refBaseOwnerMut);
             } else if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                VarInfo* dst = scopeFind(scope, &v->name);
-                if (src && dst && src->type && src->type->kind == AT_SLICE && src->borrowedFrom && src->borrowedFromLen > 0) {
-                    dst->borrowedFrom = (char*)malloc((size_t)src->borrowedFromLen + 1);
-                    memcpy(dst->borrowedFrom, src->borrowedFrom, (size_t)src->borrowedFromLen);
-                    dst->borrowedFrom[src->borrowedFromLen] = '\0';
-                    dst->borrowedFromLen = src->borrowedFromLen;
-                    dst->borrowedFromMut = src->borrowedFromMut;
+                if (src && dst && src->borrowedFrom && src->borrowedFromLen > 0) {
+                    Token ownerTok = (Token){0};
+                    ownerTok.start = src->borrowedFrom;
+                    ownerTok.length = src->borrowedFromLen;
+                    ownerTok.line = rv->name.line;
+                    varInfoSetBorrowedFrom(dst, &ownerTok, src->borrowedFromMut ? 1 : 0);
                 }
             }
             break;
