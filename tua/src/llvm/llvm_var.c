@@ -627,11 +627,6 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 return rv.arrayElemType;
             }
             if (rv.value && rv.isTypedMap && rv.mapValueType) {
-                // Special-case: typed map values that are runtime handles (map/array) are returned by value (nullable).
-                // This avoids forcing `Option<map>` and matches existing tests that use `m["k"].len()` on map values.
-                if (rv.mapValueIsMap || rv.mapValueKind == TYPE_ARRAY) {
-                    return rv.mapValueType;
-                }
                 return compilerGetOptionType(compiler, rv.mapValueType);
             }
             if (rv.value && rv.isMap) {
@@ -1982,18 +1977,8 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
 
     // Note: do NOT infer `bytes` from LLVM type equality under opaque pointers; use AST type names.
 
-    // Propagate container kind for typed-map index reads that return handles by value:
-    // `let v = m["k"]` where `m: map<..., map<...>>` => `v` is a map handle.
-    if (stmt->initializer && stmt->initializer->type == EXPR_INDEX) {
-        IndexExpr* ix = (IndexExpr*)stmt->initializer;
-        if (ix->object && ix->object->type == EXPR_VARIABLE) {
-            VariableRef base = findVariableExpr(compiler, ix->object);
-            if (base.value && base.isTypedMap) {
-                if (base.mapValueIsMap) variable->isMap = 1;
-                if (base.mapValueKind == TYPE_ARRAY) variable->isArray = 1;
-            }
-        }
-    }
+    // Note: typed map index reads for non-scalar values are not supported (use getRef/getRefWrite),
+    // so do not propagate container metadata from `m["k"]` here.
 
     if (hasAnnotatedArray && annotatedElemTy) {
         variable->isArray = 1;

@@ -5,5 +5,4 @@ m["a"] = { "k": 1 }
 
 let r = m.getRef("a").unwrap()
 assert(r.len() == 1)
-let v = m["a"]
-println(v.len())
+println(r.len())

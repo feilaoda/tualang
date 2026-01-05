@@ -2604,7 +2604,6 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
 
     // Determine V for typed maps when receiver is a simple variable.
     LLVMTypeRef innerType = compilerGetTuaValueType(compiler);
-    int typedHandleByValue = 0;
     if (expr->object && expr->object->type == EXPR_VARIABLE) {
         if (recvVar.value && recvVar.isTypedMap && recvVar.mapValueType) {
             innerType = recvVar.mapValueType;
@@ -2627,18 +2626,12 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
                 recvVar.mapValueKind == TYPE_BYTE;
 
             if (!scalarKind) {
-                // Runtime handles (map/array) are cheap to copy and can be treated as nullable values.
-                // Structs and other aggregates must use getRef/getRefWrite to avoid copies.
-                if (recvVar.mapValueIsMap || recvVar.mapValueKind == TYPE_ARRAY) {
-                    typedHandleByValue = 1;
-                } else {
-                    compilerErrorAt(
-                        compiler,
-                        expr->base.token.line,
-                        "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
-                    );
-                    return NULL;
-                }
+                compilerErrorAt(
+                    compiler,
+                    expr->base.token.line,
+                    "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
+                );
+                return NULL;
             }
         }
     }
@@ -2683,10 +2676,6 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     LLVMValueRef opt = LLVMGetUndef(optType);
     opt = LLVMBuildInsertValue(builder, opt, ok, 0, "o0");
     opt = LLVMBuildInsertValue(builder, opt, payload, 1, "o1");
-    if (typedHandleByValue) {
-        // For map/array handles, return the (nullable) handle directly.
-        return payload;
-    }
     return opt;
 }
 
