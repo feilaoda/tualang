@@ -2,7 +2,7 @@ let m: map = {}
 m["a"] = 1
 
 {
-  let p = m.getRefWrite("a").unwrap()
+  let p = m.getMut("a").unwrap()
   let v = p.get()
   assert(v == 1)
 }

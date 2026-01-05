@@ -2236,7 +2236,7 @@ static int typeKindIsScalarValueKind(TypeKind k) {
 static int typedMapValueIsScalarMeta(const VariableRef* recvVar) {
     if (!recvVar || !recvVar->isTypedMap) return 0;
     if (typeKindIsScalarValueKind(recvVar->mapValueKind)) return 1;
-    // Arrays, maps, and structs are all non-scalar for get/getRef dispatch.
+    // Arrays, maps, and structs are all non-scalar for map.get()/getMut() element refs.
     return 0;
 }
 
@@ -3558,9 +3558,16 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return ok;
             }
 
-            if (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite")) {
+            int isGet = tokenEquals(&get->name, "get");
+            int isGetMut = tokenEquals(&get->name, "getMut");
+            if (isGet || isGetMut) {
                 if (got != 1) {
-                    emitDebug("map.getRef/getRefWrite expects 1 argument\n");
+                    emitDebug("map.get/getMut expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (isGetMut && recvVar.isConst) {
+                    compilerErrorAt(compiler, get->name.line, "cannot take mutable element reference from const map");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
@@ -3602,11 +3609,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return opt;
                 }
 
-                // Typed map: only support getRef/getRefWrite when V is non-scalar (struct/map/array),
+                // Typed map: only support element references when V is non-scalar (struct/map/array),
                 // and return Option<Ref<V>> (lowered as pointer to V).
                 LLVMTypeRef innerTy = recvVar.mapValueType;
                 if (typedMapValueIsScalarMeta(&recvVar)) {
-                    compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is not supported for scalar typed map values; use get()");
+                    compilerErrorAt(compiler, get->name.line, "typed map scalar values do not support element references; use m[k]");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
@@ -3659,6 +3666,12 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return opt;
             }
 
+            if (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite")) {
+                compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is removed; use get/getMut");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return NULL;
+            }
+
             if (tokenEquals(&get->name, "clear")) {
                 if (got != 0) {
                     emitDebug("map.clear expects 0 arguments\n");
@@ -3673,11 +3686,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
             }
 
-            if (tokenEquals(&get->name, "get")) {
-                compilerErrorAt(compiler, get->name.line, "map.get is removed; use m[k]");
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return NULL;
-            }
+            // Note: value reads use `m[k]`.
         }
 
         // Option built-in methods (variable receiver): `o.isSome()`, `o.unwrap()`, ...

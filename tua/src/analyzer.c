@@ -790,7 +790,7 @@ static const Token* argBaseVarName(Expr* arg) {
 
 static int tokenTextEquals(const Token* tok, const char* s);
 
-// Detect `m.getRef(k)` / `m.getRefWrite(k)` (optionally wrapped by `.unwrap()`) and
+// Detect `m.get(k)` / `m.getMut(k)` (optionally wrapped by `.unwrap()`) and
 // return the map variable name and the borrow mutability (1 => exclusive, 0 => shared).
 static const Token* mapGetRefOwnerName(Expr* expr, int* outMutable) {
     expr = unwrapGrouping(expr);
@@ -808,12 +808,15 @@ static const Token* mapGetRefOwnerName(Expr* expr, int* outMutable) {
         }
     }
 
-    // Map.getRef / Map.getRefWrite
+    // Map.get/getMut
     if (call->callee->type != EXPR_GET) return NULL;
     GetExpr* get = (GetExpr*)call->callee;
-    if (!(tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite"))) return NULL;
+    if (!(
+        tokenTextEquals(&get->name, "get") ||
+        tokenTextEquals(&get->name, "getMut")
+    )) return NULL;
     if (!get->object || get->object->type != EXPR_VARIABLE) return NULL;
-    if (outMutable) *outMutable = tokenTextEquals(&get->name, "getRefWrite") ? 1 : 0;
+    if (outMutable) *outMutable = tokenTextEquals(&get->name, "getMut") ? 1 : 0;
     return &((VariableExpr*)get->object)->name;
 }
 
@@ -1256,12 +1259,16 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             }
         }
         if (atIsMap(recvTy)) {
-            // Borrowing reads: m.getRef(k) / m.getRefWrite(k)
-            if (tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite")) {
+            // Borrowing reads: m.get(k) / m.getMut(k)
+            if (
+                tokenTextEquals(&get->name, "get") ||
+                tokenTextEquals(&get->name, "getMut")
+            ) {
+                int wantMut = tokenTextEquals(&get->name, "getMut");
                 if (get->object && get->object->type == EXPR_VARIABLE) {
                     VariableExpr* recv = (VariableExpr*)get->object;
                     VarInfo* vi = scopeFind(scope, &recv->name);
-                    if (tokenTextEquals(&get->name, "getRefWrite") && vi && vi->isConst) {
+                    if (wantMut && vi && vi->isConst) {
                         analyzeErrorAt(
                             compiler,
                             modulePath,
@@ -1277,12 +1284,15 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 if (!typedMapKeyAllows(recvTy->key, keyTy)) {
                     analyzeErrorAt(compiler, modulePath, get->name.line, "typed map key type mismatch");
                 }
+                // Scalar typed map values do not support element references in v0; use `m[k]`.
+                if (recvTy->value && (atIsNumeric(recvTy->value) || recvTy->value->kind == AT_BOOL || recvTy->value->kind == AT_STRING)) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "typed map scalar values do not support element references; use m[k]");
+                }
                 // Return type is `Option<Ref<V>>` but we keep it permissive in the analyzer for now.
                 return atOption(atNew(AT_ANY));
             }
-            if (tokenTextEquals(&get->name, "get")) {
-                analyzeErrorAt(compiler, modulePath, get->name.line, "map.get is removed; use m[k]");
-                // Still analyze args for nested errors.
+            if (tokenTextEquals(&get->name, "getRef") || tokenTextEquals(&get->name, "getRefWrite")) {
+                analyzeErrorAt(compiler, modulePath, get->name.line, "map.getRef/getRefWrite is removed; use get/getMut");
                 for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
                     inferExpr(compiler, scope, (Expr*)n->data, modulePath);
                 }
@@ -2358,7 +2368,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     VarInfo* src = scopeFind(scope, &rv->name);
                     if (src && src->isRef) isRefBinding = 1;
                 } else if (init && init->type == EXPR_CALL) {
-                    // Infer `Ref<T>` from known ref-returning calls, including `m.getRef*().unwrap()`.
+                    // Infer `Ref<T>` from known ref-returning calls, including `m.get/getMut(...).unwrap()`.
                     int wantMut = 0;
                     if (mapGetRefOwnerName(init, &wantMut)) {
                         isRefBinding = 1;
@@ -2373,7 +2383,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 }
             }
 
-            // Map.getRef()/getRefWrite() borrow the map for as long as the result value lives in this scope
+            // Map.get()/getMut() borrow the map for as long as the result value lives in this scope
             // (even if it is wrapped by Option and later unwrapped).
             const Token* mapRefOwner = NULL;
             int mapRefOwnerMut = 0;

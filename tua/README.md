@@ -187,7 +187,7 @@ println(m["a"] ?? 0)
 struct S { a: int, b: int }
 let m2: map<string, S> = { "x": S{a: 1, b: 2} }
 
-let r = m2.getRefWrite("x").unwrap()
+let r = m2.getMut("x").unwrap()
 r.b = r.b + 1
 ```
 

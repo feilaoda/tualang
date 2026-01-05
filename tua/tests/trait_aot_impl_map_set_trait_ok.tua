@@ -9,6 +9,5 @@ impl HasId for Girl {}
 let users:map<string, HasId> = {}
 users["girl"] = Girl{ base: Base{ id: 1 } }
 
-let g = users.getRef("girl").unwrap()
+let g = users.get("girl").unwrap()
 assert(g.id() == 1)
-

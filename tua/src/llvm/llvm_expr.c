@@ -2629,7 +2629,7 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
                 compilerErrorAt(
                     compiler,
                     expr->base.token.line,
-                    "typed map index read is not supported for non-scalar values; use getRef/getRefWrite"
+                    "typed map index read is not supported for non-scalar values; use get/getMut"
                 );
                 return NULL;
             }

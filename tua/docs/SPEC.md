@@ -338,7 +338,7 @@
 - 自动“静态优先 / 动态降级”（Implemented，第一版）：
   - 若存在 `fn f(x: TraitName) { ... }`，编译器会额外注册一个等价的合成泛型模板 `fn f<T0: TraitName>(x: T0) { ... }`
   - 调用 `f(S{...})` 时若可推断出具体类型，则优先走静态单态化；当参数实参本身是 trait object（或无法推断）时回退到动态版本
-  - `Ref<TraitName>`（例如来自 `map.getRef()`）支持直接调用 trait 方法：`r.m()` 等价于对 `r.get()` 得到的 `{data,vtable}` 做一次 vtable 分发（实现上为编译期重写）
+- `Ref<TraitName>`（例如来自 `map.get()`）支持直接调用 trait 方法：`r.m()` 等价于对 `r.get()` 得到的 `{data,vtable}` 做一次 vtable 分发（实现上为编译期重写）
 - 当前限制（Planned）：
   - trait 泛型（`trait Trait<T>`）、多重 bound、默认方法、`dyn` 显式关键字与 object-safety 规则仍待完善
 
@@ -466,10 +466,9 @@
   - 对 `map`（无类型参数）：`m[k] -> Option<any>`（即 `Option<tua_value>`）
   - 对 `map<K,V>`：
     - 当 `V` 为标量（Copy：`int/long/double/bool/string`）：`m[k] -> Option<V>`
-    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `getRef/getRefWrite`（避免隐式产生第二个 owner 导致 double-free/UAF）
+    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `get/getMut`（避免隐式产生第二个 owner 导致 double-free/UAF）
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
-  - Removed: `m.get(k)`（请使用 `m[k]`）
 - 写入（Status: Implemented）：
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
@@ -482,17 +481,18 @@
   - `m.clear() -> void`
 - 借用读取（Status: Partial，配合 `Ref<T>`）：
   - 目标：支持“零拷贝读取/原地修改”，并为 `bytes/slice`、模型权重 mmap 等场景铺路
-  - `m.getRef(k) -> Option<Ref<V>>`：返回 value 的共享只读引用（shared borrow）
-  - `m.getRefWrite(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
+  - `m.get(k) -> Option<Ref<V>>`：返回 value 的共享只读引用（shared borrow）
+  - `m.getMut(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
+  - 兼容性：旧方法名 `getRef/getRefWrite` 已移除（编译期报错并提示改为 `get/getMut`）
   - 约束（Frozen）：当 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
   - 当前实现（Status: Implemented）：
     - 对 `map`（无类型参数）：返回 `Option<Ref<any>>`（即指向 runtime `tua_value` 的引用）
     - 对 `map<K,V>`：
       - 当 `V` 为 move-only（`struct/map/array`）时：返回 `Option<Ref<V>>`（可用于字段写/调用容器方法）
       - 当 `V` 为 trait object（`TraitName`）时：返回 `Option<Ref<TraitName>>`，允许在 `Ref` 上直接调用 trait 方法（零拷贝分发）
-      - 当 `V` 为标量（Copy）时：`getRef/getRefWrite` 暂不支持（第一版），请用 `get(k)` / `m[k]`
+      - 当 `V` 为标量（Copy）时：`get/getMut` 暂不支持（第一版），请用 `m[k]`
   - 用法（Status: Implemented）：
-    - `let p = m.getRef("k").unwrap(); let v = p.get()`（读 `tua_value`）
+    - `let p = m.get("k").unwrap(); let v = p.get()`（读 `tua_value`）
     - 不提供 `*p = v` / `p.set(v)` 原地写回（第一版）；需要写回时用 `m[k] = v`（且要求没有存活的 element ref）
 - 遍历（Status: Implemented）：
   - `for v in m { ... }` / `for k,v in m { ... }`：见 5（`for-in`）

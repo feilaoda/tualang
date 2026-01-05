@@ -1,7 +1,7 @@
 let m: map = {}
 m["a"] = 1
 
-let o = m.getRefWrite("a")
+let o = m.getMut("a")
 
 // m is mutably borrowed by `o`
 m.delete("a")

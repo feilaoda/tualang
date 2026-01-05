@@ -1,0 +1,13 @@
+struct S {
+  a: int
+  b: int
+}
+
+let m: map<string, S> = { "x": S{ a: 1, b: 2 } }
+let r = m.getMut("x").unwrap()
+r.a = 10
+
+let r1 = m.get("x").unwrap() // error: r is still used later, so the write-borrow is still active
+assert(r1.a == 10)
+
+r.b = 20

@@ -50,7 +50,7 @@ typedef struct VariableRef {
     // When V is a named type, record whether it is the builtin `map` to disambiguate
     // from struct names under LLVM opaque pointers.
     int mapValueIsMap;
-    // Optional: when V is a struct type, keep its name for field/method resolution on refs from getRef().
+    // Optional: when V is a struct type, keep its name for field/method resolution on refs from map.get()/getMut().
     const char* mapValueTypeName;
     int mapValueTypeNameLength;
 

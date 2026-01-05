@@ -1,7 +1,7 @@
 let m: map = {}
 m["a"] = 1
 
-let o = m.getRef("a")
+let o = m.get("a")
 
 // m is borrowed by `o` (Option<Ref<...>>)
 m["b"] = 2

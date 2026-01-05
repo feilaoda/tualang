@@ -1,4 +1,3 @@
 let m: map<string, int> = {"a": 1}
-let o = m.getRef("a")
+let o = m.get("a")
 println(o.isSome())
-

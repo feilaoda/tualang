@@ -1,0 +1,9 @@
+struct S {
+  a: int
+}
+
+let m: map<string, S> = { "x": S{ a: 1 } }
+
+// map.get is a shared (read-only) element reference.
+let r = m.get("x").unwrap()
+r.a = 2

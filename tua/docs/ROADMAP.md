@@ -102,10 +102,11 @@
 - [x] 数据结构：优先实现 `map`（键值容器），后续再补数组
   - [x] 字面量：`{ key: value, ... }`（key 仅常量；重复 key 后者覆盖；允许尾逗号）
   - [x] 类型：`map` 与 `map<K,V>`（K: `string/int/long`；V: 标量 + `struct/map/array`，第一版）
-  - [x] 读取：`m[k] -> Option<V>`（仅限 `V` 为标量 Copy；`V` 为 move-only 时必须 `getRef/getRefWrite`）
+  - [x] 读取：`m[k] -> Option<V>`（仅限 `V` 为标量 Copy；`V` 为 move-only 时必须 `get/getMut`）
   - [x] 写入：`m[k] = v`（当 `m` 为变量且为 `null` 时自动初始化）
-  - [x] 内建方法：`len()/hasKey()/delete()/clear()`（Removed：`get(k)`，统一用 `m[k]`）
-  - [x] 借用读取（`language/spec` + `tua_rt`）：`getRef()/getRefWrite()`（`map<K,V>` 的 move-only value：`struct/map/array/bytes/trait object/...`；标量 value 仍按 `get/m[k]`）
+  - [x] 内建方法：`len()/hasKey()/delete()/clear()`（读取统一用 `m[k]`；move-only 值读取用 `get/getMut`）
+  - [x] 借用读取（`language/spec` + `tua_rt`）：`get()/getMut()`（`map<K,V>` 的 move-only value：`struct/map/array/bytes/trait object/...`；标量 value 仍按 `m[k]`）
+  - [x] API 清理：移除旧名 `getRef/getRefWrite`（统一 `get/getMut`）
   - [x] 遍历（map）：`for v in m { ... }` / `for k,v in m { ... }`
   - [x] 遍历（array）：`for v in a { ... }` / `for v,i in a { ... }`
   - [x] 完整强类型（第一版）：对 `map<K,V>` 写入/字面量做静态检查（禁止写入 `null`/错误类型）

@@ -658,16 +658,14 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
                 if (rv.value && rv.pointeeType && tokenEquals(&get->name, "get")) {
                     return rv.pointeeType;
                 }
-                if (rv.value && rv.isMap && tokenEquals(&get->name, "get")) {
-                    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-                    LLVMTypeRef inner = (rv.isTypedMap && rv.mapValueType) ? rv.mapValueType : vt;
-                    return compilerGetOptionType(compiler, inner);
-                }
-                if (rv.value && rv.isMap && (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite"))) {
+                if (rv.value && rv.isMap && (
+                    tokenEquals(&get->name, "get") ||
+                    tokenEquals(&get->name, "getMut")
+                )) {
                     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                     if (rv.isTypedMap && rv.mapValueType && rv.mapValueType != vt) {
                         LLVMTypeRef innerTy = rv.mapValueType;
-                        // Scalar typed map values do not support getRef/getRefWrite (see codegen); keep untyped fallback.
+                        // Scalar typed map values do not support element refs (see codegen); keep untyped fallback.
                         LLVMTypeKind k = LLVMGetTypeKind(innerTy);
                         int scalar = 0;
                         if (k == LLVMIntegerTypeKind) scalar = LLVMGetIntTypeWidth(innerTy) == 1 || LLVMGetIntTypeWidth(innerTy) >= 8;
@@ -1785,7 +1783,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         variable->pointeeType = stmt->type->inner ? toLLVMType(compiler, stmt->type->inner) : NULL;
     }
 
-    // `m.getRef(...).unwrap()` / `m.getRefWrite(...).unwrap()` returns:
+    // `m.get(...).unwrap()` / `m.getMut(...).unwrap()` returns:
     // - `tua_value*` for untyped map
     // - `V*` (as `Ref<V>`) for typed map when V is non-scalar (struct/map/array)
     if (!variable->pointeeType && stmt->initializer && stmt->initializer->type == EXPR_CALL) {
@@ -1796,14 +1794,14 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 CallExpr* c0 = (CallExpr*)g1->object;
                 if (c0->callee && c0->callee->type == EXPR_GET) {
                     GetExpr* g0 = (GetExpr*)c0->callee;
-                    if (tokenEquals(&g0->name, "getRef") || tokenEquals(&g0->name, "getRefWrite")) {
+                    if (tokenEquals(&g0->name, "get") || tokenEquals(&g0->name, "getMut")) {
                         LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                         variable->pointeeType = vt;
                         if (g0->object && g0->object->type == EXPR_VARIABLE) {
                             VariableRef mv = findVariableExpr(compiler, g0->object);
                             if (mv.value && mv.isTypedMap && mv.mapValueType && mv.mapValueType != vt) {
                                 // Best-effort: treat non-scalar typed map values as `Ref<V>`.
-                                // Scalar typed map getRef is rejected in codegen.
+                                // Scalar typed map element refs are rejected in codegen.
                                 variable->pointeeType = mv.mapValueType;
                                 if (!variable->typeName && mv.mapValueTypeName) {
                                     variable->typeName = mv.mapValueTypeName;
@@ -1814,6 +1812,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                     }
                 }
             }
+
         }
     }
     variable->isConst = stmt->isConst ? 1 : 0;
@@ -1937,7 +1936,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                                        vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)
                                           ? 1
                                           : 0;
-            // Preserve struct type name for `map<K, S>` so refs from getRef can resolve fields.
+            // Preserve struct type name for `map<K, S>` so element refs can resolve fields.
             if (vAst && vAst->kind == TYPE_NAMED && !(vAst->name.length == 3 && memcmp(vAst->name.start, "map", 3) == 0)) {
                 StructInfo* info = compilerResolveStructByToken(compiler, &vAst->name);
                 if (info) {
@@ -1977,7 +1976,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
 
     // Note: do NOT infer `bytes` from LLVM type equality under opaque pointers; use AST type names.
 
-    // Note: typed map index reads for non-scalar values are not supported (use getRef/getRefWrite),
+    // Note: typed map index reads for non-scalar values are not supported (use get/getMut),
     // so do not propagate container metadata from `m["k"]` here.
 
     if (hasAnnotatedArray && annotatedElemTy) {

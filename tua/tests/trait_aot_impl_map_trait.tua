@@ -15,14 +15,14 @@ let users:map<string, HasId> = {
     "boy": Boy{ base: Base{ id: 6 }, extra3: 3 }
   }
 
-let g = users.getRef("girl").unwrap()
+let g = users.get("girl").unwrap()
 println(g.id())
-let b = users.getRef("boy").unwrap()
+let b = users.get("boy").unwrap()
 assert(g.id() == 5)
 assert(b.id() == 6)
 
 
-let a = users.getRef("girl1")
+let a = users.get("girl1")
 println(a.isSome())
 
   

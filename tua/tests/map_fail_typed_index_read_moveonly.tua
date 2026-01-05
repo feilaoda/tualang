@@ -2,6 +2,6 @@ let m: map<string, map<string, int>> = {}
 
 m["a"] = { "k": 1 }
 
-// Typed map index read for move-only values is forbidden (must use getRef/getRefWrite).
+// Typed map index read for move-only values is forbidden (must use get/getMut).
 let v = m["a"].unwrap()
 println(v.len())
