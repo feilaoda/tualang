@@ -5962,3 +5962,53 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
     // return call;
 }
+
+LLVMValueRef emitGuardExpr(Compiler* compiler, GuardExpr* expr) {
+    if (!compiler || !expr || !expr->call || !expr->onErr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    if (!builder || !compiler->current || !compiler->current->func) return NULL;
+
+    // Evaluate the call once and keep all return values (multi-return struct).
+    LLVMValueRef callValue = compileExprMulti(compiler, expr->call);
+    if (!callValue) return NULL;
+
+    LLVMTypeRef retTy = LLVMTypeOf(callValue);
+    if (LLVMGetTypeKind(retTy) != LLVMStructTypeKind) {
+        compilerErrorAtToken(compiler, &expr->qmark, "`? { ... }` requires a multi-return call (>=2 values) with last `int` error code");
+        return NULL;
+    }
+
+    unsigned n = LLVMCountStructElementTypes(retTy);
+    if (n < 2) {
+        compilerErrorAtToken(compiler, &expr->qmark, "`? { ... }` requires a call returning at least 2 values (value, err)");
+        return NULL;
+    }
+
+    unsigned errIndex = n - 1;
+    LLVMTypeRef errTy = LLVMStructGetTypeAtIndex(retTy, errIndex);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    if (errTy != i32) {
+        compilerErrorAtToken(compiler, &expr->qmark, "`? { ... }` requires the last return value to be `int` (error code)");
+        return NULL;
+    }
+
+    LLVMValueRef errVal = LLVMBuildExtractValue(builder, callValue, errIndex, "guard.err");
+    LLVMValueRef isErr = LLVMBuildICmp(builder, LLVMIntNE, errVal, LLVMConstInt(i32, 0, 1), "guard.is_err");
+
+    LLVMValueRef func = compiler->current->func;
+    LLVMBasicBlockRef errBB = LLVMAppendBasicBlockInContext(compiler->context, func, "guard.err.bb");
+    LLVMBasicBlockRef okBB = LLVMAppendBasicBlockInContext(compiler->context, func, "guard.ok.bb");
+    LLVMBuildCondBr(builder, isErr, errBB, okBB);
+
+    // Error path: run the guard block (must not fall through).
+    LLVMPositionBuilderAtEnd(builder, errBB);
+    compileBlockStmt(compiler, expr->onErr);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        // Parser validates "must interrupt"; keep IR valid even if it slips through.
+        LLVMBuildUnreachable(builder);
+    }
+
+    // Success path: yield the first return value.
+    LLVMPositionBuilderAtEnd(builder, okBB);
+    return LLVMBuildExtractValue(builder, callValue, 0, "guard.ok");
+}

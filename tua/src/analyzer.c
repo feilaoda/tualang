@@ -467,6 +467,11 @@ static void collectLastUsesExpr(Expr* expr, List* lastUses, int stmtIndex) {
             }
             return;
         }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)expr;
+            collectLastUsesExpr(g->call, lastUses, stmtIndex);
+            return;
+        }
         case EXPR_BINARY: {
             BinaryExpr* b = (BinaryExpr*)expr;
             collectLastUsesExpr(b->left, lastUses, stmtIndex);
@@ -2202,6 +2207,11 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
 	        }
         case EXPR_CALL:
             return inferReturn(expr, inferCall(compiler, scope, (CallExpr*)expr, modulePath));
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)expr;
+            // v1: guard expression yields the call's first return value; guard block is validated by the parser.
+            return inferReturn(expr, inferExpr(compiler, scope, g->call, modulePath));
+        }
         case EXPR_ARRAY_LITERAL: {
             return inferReturn(expr, inferArrayLiteral(compiler, scope, (ArrayLiteralExpr*)expr, NULL, modulePath));
         }

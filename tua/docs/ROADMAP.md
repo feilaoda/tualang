@@ -128,6 +128,7 @@
 ### 9. 错误与入口（建议）
 - [x] 诊断统一（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时一致）
 - [ ] 诊断增强：源码片段 + 指示箭头（词法/语法/语义/运行时一致）
+- [x] 错误码 Guard Block（第一版）：`let v = call(...) ? { ... }`（call 至少 2 个返回值且最后一个为 `int` 错误码；guard 块必须 `return/break/continue`）
 - [x] 运行时错误：输出行号（best-effort，先解决“哪一行炸了”）
 - [ ] 运行时错误：`panic/throw` 语义 + 栈回溯（至少函数名 + 行号）
 - [ ] CLI 入口：`tuac run <entry.tua>`（支持 `--module-path`/`--dump-ir`/`--debug`）

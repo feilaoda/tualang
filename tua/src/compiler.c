@@ -2180,6 +2180,9 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
         case EXPR_CALL:
             return emitCallExpr(compiler, (CallExpr*)expr);
             break;
+        case EXPR_GUARD:
+            return emitGuardExpr(compiler, (GuardExpr*)expr);
+            break;
         case EXPR_CAST:
             return emitCastExpr(compiler, (CastExpr*)expr);
             break;
@@ -2265,6 +2268,10 @@ static int exprHasLambdaLiteral(Expr* e) {
                 if (exprHasLambdaLiteral((Expr*)n->data)) return 1;
             }
             return 0;
+        }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)e;
+            return exprHasLambdaLiteral(g->call);
         }
         case EXPR_ASSIGN:
             return exprHasLambdaLiteral(((AssignExpr*)e)->value);
@@ -2459,6 +2466,11 @@ static void collectTopLevelLambdasExpr(List* lambdas, Expr* e) {
             for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
                 collectTopLevelLambdasExpr(lambdas, (Expr*)n->data);
             }
+            break;
+        }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)e;
+            collectTopLevelLambdasExpr(lambdas, g->call);
             break;
         }
         case EXPR_ASSIGN:

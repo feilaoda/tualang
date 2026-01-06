@@ -57,6 +57,8 @@ static void printIndent(int indent) {
     for (int i = 0; i < indent; i++) printf(" ");
 }
 
+static void printGuardExpr(GuardExpr* expr);
+
 void printExpr(Expr* expr) {
     if (!expr) return;
     printf("exprType-%d{", expr->type);
@@ -78,6 +80,9 @@ void printExpr(Expr* expr) {
             break;
         case EXPR_CALL:
             printCallExpr((CallExpr*)expr);
+            break;
+        case EXPR_GUARD:
+            printGuardExpr((GuardExpr*)expr);
             break;
         case EXPR_POSTFIX:
             printPostfixExpr((PostfixExpr*)expr);
@@ -140,6 +145,11 @@ static void printCallExpr(CallExpr* expr) {
         arg = arg->next;
     }
     printf(")");
+}
+
+static void printGuardExpr(GuardExpr* expr) {
+    printExpr(expr->call);
+    printf(" ? { ... }");
 }
 
 void printStmt(Stmt* stmt, int indent) {

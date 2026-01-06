@@ -101,6 +101,7 @@ void emitIfLetStmt(Compiler* compiler, IfLetStmt* stmt);
 void emitForInStmt(Compiler* compiler, ForInStmt* stmt);
 // LLVMValueRef emitExpr(Compiler* compiler, Expr* expr);
 LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr);
+LLVMValueRef emitGuardExpr(Compiler* compiler, GuardExpr* expr);
 LLVMValueRef emitLiteralExpr(Compiler* compiler, LiteralExpr* expr);
 LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr);
 LLVMValueRef emitUnaryExpr(Compiler* compiler, UnaryExpr* expr);

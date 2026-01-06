@@ -1,0 +1,9 @@
+fn foo() -> int,long {
+    return 1, 0;
+}
+
+fn main() -> int {
+    let a = foo() ? { return 0; }
+    return a;
+}
+

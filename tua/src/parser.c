@@ -29,6 +29,7 @@ const char* exprTypeToString(ExprType type) {
         case EXPR_VARIABLE: return "Variable";
         case EXPR_GROUPING: return "Grouping";
         case EXPR_CALL: return "Call";
+        case EXPR_GUARD: return "Guard";
         case EXPR_CAST: return "Cast";
         case EXPR_POSTFIX: return "Postfix";
         case EXPR_PREFIX: return "Prefix";
@@ -67,6 +68,7 @@ static Stmt* declaration(Parser* parser);
 static int looksLikeGenericCall(Parser* parser);
 static List* parseCallTypeArgs(Parser* parser);
 static Expr* finishCallWithTypeArgs(Parser* parser, Expr* callee, List* typeArgs);
+static Stmt* parseBlockStatement(Parser* parser);
 
 // Error handling
 void errorAtCurrent(Parser* parser, const char* message) {
@@ -505,6 +507,17 @@ static Expr* newStructInitExpr(Token lbrace, Expr* callee, List* fields) {
     return (Expr*)expr;
 }
 
+static Expr* newGuardExpr(Token qmark, Expr* call, BlockStmt* onErr) {
+    GuardExpr* expr = malloc(sizeof(GuardExpr));
+    expr->base.type = EXPR_GUARD;
+    expr->base.token = qmark;
+    expr->base.inferredType = TYPE_ANY;
+    expr->call = call;
+    expr->onErr = onErr;
+    expr->qmark = qmark;
+    return (Expr*)expr;
+}
+
 static Expr* newMapLiteralExpr(Token lbrace, List* entries) {
     MapLiteralExpr* expr = malloc(sizeof(MapLiteralExpr));
     expr->base.type = EXPR_MAP_LITERAL;
@@ -655,6 +668,45 @@ static Expr* finishStructInit(Parser* parser, Expr* callee) {
     return newStructInitExpr(lbrace, callee, fields);
 }
 
+static Expr* unwrapGroupingExpr(Expr* e) {
+    while (e && e->type == EXPR_GROUPING) {
+        e = ((GroupingExpr*)e)->expression;
+    }
+    return e;
+}
+
+static int stmtAlwaysInterrupt(Stmt* stmt) {
+    if (!stmt) return 0;
+    if (stmt->type == STMT_PRIVATE) {
+        return stmtAlwaysInterrupt(((PrivateStmt*)stmt)->inner);
+    }
+    switch (stmt->type) {
+        case STMT_RETURN:
+        case STMT_BREAK:
+        case STMT_CONTINUE:
+            return 1;
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                if (stmtAlwaysInterrupt((Stmt*)n->data)) return 1;
+            }
+            return 0;
+        }
+        case STMT_IF: {
+            IfStmt* i = (IfStmt*)stmt;
+            if (!i->elseBranch) return 0;
+            return stmtAlwaysInterrupt(i->thenBranch) && stmtAlwaysInterrupt(i->elseBranch);
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            if (!i->elseBranch) return 0;
+            return stmtAlwaysInterrupt(i->thenBranch) && stmtAlwaysInterrupt(i->elseBranch);
+        }
+        default:
+            return 0;
+    }
+}
+
 static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
     parserDebugStart("parseBinaryExpr start");
     Expr* left = parseUnaryExpr(parser);
@@ -698,6 +750,24 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
             Expr* index = parseExpression(parser);
             consume(parser, TOKEN_RBRACKET, "Expect ']' after index expression");
             left = newIndexExpr(left, index);
+            continue;
+        }
+        // Guard block: `callExpr ? { ... }`
+        if (match(parser, TOKEN_QMARK)) {
+            Token qmark = parser->previous;
+            Expr* call = unwrapGroupingExpr(left);
+            if (!call || call->type != EXPR_CALL) {
+                errorAtCurrent(parser, "`? { ... }` must follow a call expression");
+                return NULL;
+            }
+            consume(parser, TOKEN_LBRACE, "Expect '{' after '?'");
+            Stmt* blockStmt = parseBlockStatement(parser); // `{` already consumed
+            if (!blockStmt || blockStmt->type != STMT_BLOCK) return NULL;
+            if (!stmtAlwaysInterrupt(blockStmt)) {
+                errorAtCurrent(parser, "Guard block must interrupt control flow (return/break/continue)");
+                return NULL;
+            }
+            left = newGuardExpr(qmark, call, (BlockStmt*)blockStmt);
             continue;
         }
         TokenType op = parser->current.type;

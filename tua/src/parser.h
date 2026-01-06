@@ -26,6 +26,11 @@ typedef enum {
     EXPR_VARIABLE,
     EXPR_GROUPING,
     EXPR_CALL,
+    // Postfix guard block: `callExpr ? { ... }`
+    // Semantics (v1): call must return >=2 values and the last one must be `int` (error code).
+    // If err != 0, the guard block runs and must interrupt control flow (return/break/continue).
+    // Otherwise the expression yields the first return value.
+    EXPR_GUARD,
     EXPR_CAST,
     EXPR_POSTFIX,
     EXPR_PREFIX,
@@ -127,6 +132,9 @@ typedef struct Stmt {
     StmtType type;
 } Stmt;
 
+// Forward declaration for expressions that reference blocks.
+typedef struct BlockStmt BlockStmt;
+
 // Expression base structure
 typedef struct Expr {
     ExprType type;
@@ -203,6 +211,13 @@ typedef struct {
     // Element type: Type*
     List* typeArgs;
 } CallExpr;
+
+typedef struct {
+    Expr base;
+    Expr* call;       // must be EXPR_CALL (grouping unwrapped)
+    BlockStmt* onErr; // guard block
+    Token qmark;
+} GuardExpr;
 
 typedef struct {
     Expr base;
@@ -358,7 +373,7 @@ typedef struct {
     bool isConst;
     bool isDeclaration;
 } DestructureStmt;
-typedef struct {
+typedef struct BlockStmt {
     Stmt base;
     List* statements;
 } BlockStmt;
