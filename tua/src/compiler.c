@@ -3046,19 +3046,16 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
         List* params = listNew();
         Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
 
-        Type* thisInner = malloc(sizeof(Type));
+        Type* thisInner = (Type*)calloc(1, sizeof(Type));
         thisInner->kind = TYPE_NAMED;
         thisInner->name = structTok;
-        thisInner->inner = NULL;
-        thisInner->paramTypes = NULL;
-        thisInner->returnTypes = NULL;
+        thisInner->arrayLen = -1;
 
-        Type* thisType = malloc(sizeof(Type));
+        Type* thisType = (Type*)calloc(1, sizeof(Type));
         thisType->kind = TYPE_REF;
         thisType->name = (Token){0};
         thisType->inner = thisInner;
-        thisType->paramTypes = NULL;
-        thisType->returnTypes = NULL;
+        thisType->arrayLen = -1;
 
         Parameter* thisParam = malloc(sizeof(Parameter));
         thisParam->name = thisNameTok;
@@ -3711,21 +3708,18 @@ void compileTraitImplStmt(Compiler* compiler, TraitImplStmt* stmt) {
             List* params = listNew();
             Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
 
-            Type* thisInner = malloc(sizeof(Type));
+            Type* thisInner = (Type*)calloc(1, sizeof(Type));
             thisInner->kind = TYPE_NAMED;
             thisInner->name = structTok;
-            thisInner->inner = NULL;
-            thisInner->paramTypes = NULL;
-            thisInner->returnTypes = NULL;
             thisInner->typeArgs = NULL;
+            thisInner->arrayLen = -1;
 
-            Type* thisType = malloc(sizeof(Type));
+            Type* thisType = (Type*)calloc(1, sizeof(Type));
             thisType->kind = TYPE_REF;
             thisType->name = (Token){0};
             thisType->inner = thisInner;
-            thisType->paramTypes = NULL;
-            thisType->returnTypes = NULL;
             thisType->typeArgs = NULL;
+            thisType->arrayLen = -1;
 
             Parameter* thisParam = malloc(sizeof(Parameter));
             thisParam->name = thisNameTok;
@@ -4527,19 +4521,16 @@ void compileStructStmt(Compiler* compiler, StructStmt* stmt) {
             // Build params: this + original params
             List* params = listNew();
             Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
-            Type* thisInner = malloc(sizeof(Type));
+            Type* thisInner = (Type*)calloc(1, sizeof(Type));
             thisInner->kind = TYPE_NAMED;
             thisInner->name = stmt->name;
-            thisInner->inner = NULL;
-            thisInner->paramTypes = NULL;
-            thisInner->returnTypes = NULL;
+            thisInner->arrayLen = -1;
 
-            Type* thisType = malloc(sizeof(Type));
+            Type* thisType = (Type*)calloc(1, sizeof(Type));
             thisType->kind = TYPE_REF;
             thisType->name = (Token){0};
             thisType->inner = thisInner;
-            thisType->paramTypes = NULL;
-            thisType->returnTypes = NULL;
+            thisType->arrayLen = -1;
             Parameter* thisParam = malloc(sizeof(Parameter));
             thisParam->name = thisNameTok;
             thisParam->type = thisType;

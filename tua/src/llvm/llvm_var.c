@@ -2170,6 +2170,13 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             }
         }
     }
+
+    // `map` / `bytes` / dynamic arrays are runtime heap objects without refcounting today and can be aliased
+    // freely (assigned into structs/maps, copied to other locals). Until the compiler's move analysis is
+    // complete, auto-dropping them at scope end is unsafe (UAF/double-free). Treat them as borrowed.
+    if (variable->isMap || variable->isBytes || variable->isArray) {
+        variable->isBorrowed = 1;
+    }
     listAppend(block->variables, variable);
 
     LLVMTypeRef finalSig = compiledLambdaSig ? compiledLambdaSig : declaredSig;

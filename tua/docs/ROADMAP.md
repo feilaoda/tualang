@@ -269,11 +269,11 @@
 - [ ] 模型格式：先支持一种主流格式（建议 GGUF）；也允许直接加载 HF 原生格式（如 safetensors）
   - [x] GGUF（v0）：解析 header + KV metadata（先不做 tensor）
   - [ ] GGUF（v1）：解析 tensor infos + tensor data layout
-- [ ] SafeTensors（v0）：mmap + header 解析 + tensor 视图（零拷贝元数据；数据区按需转换/缓存）
+- [x] SafeTensors（v0）：mmap + header 解析 + tensor 视图（零拷贝元数据；数据区按需转换/缓存）
 - [ ] 数学内核：优先“可用速度”，先接入系统 BLAS（macOS Accelerate），并保留可替换后端接口
 - [ ] KV cache：抽象接口 + 至少一种实现（layout/精度/内存上限可配置；为未来更多 KV 实现预留）
 - [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
-- [ ] Runner：提供 `examples/llm/run.tua`（或独立 CLI 工具），通过 `tuac run ...` 运行
+- [x] Runner：提供 `examples/llm_run_qwen3.tua`（最小 CLI：加载 tokenizer+模型、prefill+decode1 冒烟）
 
 #### 11.5 R-llm-1：性能与量化
 - [ ] 量化：q4/q8（至少一种）+ 对应 dot kernel

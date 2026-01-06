@@ -1,6 +1,7 @@
 import "std/rt" as rt
 
 extern fn tua_bytes_new(len: long) -> bytes
+extern fn tua_bytes_new_uninit(len: long) -> bytes
 extern fn tua_bytes_from_string_copy(s: string) -> bytes
 extern fn tua_bytes_mmap_file(path: string, outBytes: &bytes) int
 extern fn tua_bytes_len(b: bytes) long
@@ -17,6 +18,10 @@ object Bytes {
 
     fn newLong(len: long) -> bytes {
         return tua_bytes_new(len)
+    }
+
+    fn newLongUninit(len: long) -> bytes {
+        return tua_bytes_new_uninit(len)
     }
 
     fn fromString(s: string) -> bytes {

@@ -12,7 +12,7 @@ object LlmArgs {
     }
 
     fn parseArgv(argv: string[]) -> int, LlmOptions {
-        let out = LlmArgs.defaults()
+        let out: LlmOptions = LlmArgs.defaults()
         if argv == null { return 0, out }
         let n = argv.len()
 

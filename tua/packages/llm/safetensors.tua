@@ -465,6 +465,8 @@ object SafeTensors {
                 rec["d2"] = d2
                 rec["d3"] = d3
                 tensors[key] = rec
+                // `map` does not refcount; avoid dropping `rec` after storing it into `tensors`.
+                rec = null
                 p = q
             }
 
@@ -478,11 +480,11 @@ object SafeTensors {
             return 1, out
         }
 
-        out.data = b
-        out.headerLen = headerLen
-        out.tensors = tensors
-        out.metadata = null
-        return 0, out
+        // `map` / `bytes` are non-refcounted runtime objects; avoid dropping locals after attaching them to the output.
+        let out2 = SafeTensorsFile{ data: b, headerLen: headerLen, tensors: tensors, metadata: null }
+        b = null
+        tensors = null
+        return 0, out2
     }
 
     fn parseMmap(path: string) -> int, SafeTensorsFile {

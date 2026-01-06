@@ -11,6 +11,9 @@ typedef struct tua_bytes tua_bytes;
 // Allocates a new zero-initialized buffer of length `len`.
 tua_bytes* tua_bytes_new(int64_t len);
 
+// Allocates a new uninitialized buffer of length `len` (contents are unspecified).
+tua_bytes* tua_bytes_new_uninit(int64_t len);
+
 // Allocates a new buffer and copies `len` bytes from `data`.
 tua_bytes* tua_bytes_from_copy(const void* data, int64_t len);
 

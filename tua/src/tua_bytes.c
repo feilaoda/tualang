@@ -60,6 +60,32 @@ tua_bytes* tua_bytes_new(int64_t len) {
     return b;
 }
 
+tua_bytes* tua_bytes_new_uninit(int64_t len) {
+    if (len < 0) return NULL;
+    tua_bytes* b = (tua_bytes*)tua_malloc(sizeof(tua_bytes));
+    if (!b) return NULL;
+    memset(b, 0, sizeof(*b));
+    b->len = len;
+    b->cap = len;
+    b->readonly = 0;
+    b->drop_ctx = NULL;
+    b->drop_fn = tua_bytes_drop_free;
+    if (len == 0) {
+        b->data = NULL;
+        return b;
+    }
+    if ((uint64_t)len > (uint64_t)SIZE_MAX) {
+        tua_free(b);
+        return NULL;
+    }
+    b->data = (uint8_t*)tua_malloc((size_t)len);
+    if (!b->data) {
+        tua_free(b);
+        return NULL;
+    }
+    return b;
+}
+
 tua_bytes* tua_bytes_from_copy(const void* data, int64_t len) {
     if (len < 0) return NULL;
     if (len == 0) return tua_bytes_new(0);
