@@ -2380,12 +2380,13 @@ src/analyzer.c:244:12: warning: unused function 'atFloatBits' [-Wunused-function
 [PASS] io_fail_print_format_non_literal.tua (expected failure)
 [PASS] io_print_format_ok.tua
 [PASS] io_print_newline_sep.tua
-[PASS] json_aot_parse_min_ok.tua
-[PASS] json_aot_parse_ok.tua
+[FAIL] json_aot_parse_min_ok.tua
+[FAIL] json_aot_parse_ok.tua
+[FAIL] json_scan_top_level_string_ok.tua
 [PASS] let_fail_infer_fn_return_struct_use_after_move.tua (expected failure)
 [PASS] let_infer_fn_return_struct_move_ok.tua
 [PASS] llm_aot_gguf_header_kv_ok.tua
-[FAIL] llm_options_parse_ok.tua
+[PASS] llm_options_parse_ok.tua
 [PASS] llm_safetensors_parse_ok.tua
 [PASS] map_aot_get_alias_ref_ok.tua
 [PASS] map_aot_get_get_read.tua
