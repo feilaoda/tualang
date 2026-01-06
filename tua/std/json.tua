@@ -9,6 +9,8 @@ extern fn tua_json_scan_top_level_bool(b: bytes, key: string, out: &int) int
 extern fn tua_json_scan_key_path_string(b: bytes, path: string, out: &string) int
 extern fn tua_json_scan_key_path_long(b: bytes, path: string, out: &long) int
 extern fn tua_json_scan_key_path_bool(b: bytes, path: string, out: &int) int
+extern fn tua_json_parse_key_path_string_long_map(b: bytes, path: string, out: &map) int
+extern fn tua_json_parse_key_path_string_array(b: bytes, path: string, outErr: &int) -> string[]
 
 private fn _isWs(c: int) -> bool {
     return c == 32 || c == 10 || c == 13 || c == 9
@@ -918,5 +920,27 @@ object Json {
         if ce == 0 { return 0, outI != 0 }
         if ce == 2 { return 2, false }
         return 1, false
+    }
+
+    // Parse a nested JSON object by dotted key path (e.g. "a.b.c") into a `map<string,long>`.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn parseKeyPathStringLongMap(b: bytes, path: string) -> int, map {
+        if b == null || path == null { return 1, null }
+        let out: map = null
+        let e = tua_json_parse_key_path_string_long_map(b, path, &out)
+        if e == 0 { return 0, out }
+        if e == 2 { return 2, null }
+        return 1, null
+    }
+
+    // Parse a nested JSON string array by dotted key path (e.g. "a.b.c") into `string[]`.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn parseKeyPathStringArray(b: bytes, path: string) -> int, string[] {
+        if b == null || path == null { return 1, null }
+        let e: int = 0
+        let arr = tua_json_parse_key_path_string_array(b, path, &e)
+        if e == 0 { return 0, arr }
+        if e == 2 { return 2, null }
+        return 1, null
     }
 }

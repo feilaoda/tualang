@@ -255,10 +255,14 @@
   - [x] scan API：按需读取顶层字段（不构建整个 DOM），适配 `tokenizer.json` 等大文件场景
   - [x] scan API（v1.1）：更多顶层标量类型（string/bool/long + 按需解析 value 子树）
   - [x] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
+  - [x] scan/streaming API（v1.3）：支持按 key-path 解析出常见容器（`map<string,long>` / `string[]`），适配 tokenizer 的 `vocab/merges`
   - [ ] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
   - [x] C runtime 加速（可选）：`tua_json_scan_top_level_{string,long,bool}` 在 C 侧扫描/跳过，`std.json` 优先走 C 快路径
   - [x] 数值解析优化：指数缩放改为 O(log|exp|)（pow10/exp-by-squaring）
-- [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能
+- [ ] Tokenizer：先做正确性，再做性能
+  - [x] BPE（v0）：加载 `tokenizer.json`（`vocab/merges/added_tokens`）+ 小型 fixture 的 encode/decode 冒烟测试
+  - [ ] BPE（v1）：加载真实模型（Qwen3）的 `tokenizer.json` + 与参考实现对齐（分词/解码一致性）
+  - [ ] BPE（perf）：减少分配/复制、预处理正则/分词、merge 循环优化、热点下沉到 C/Accelerate（预留后端）
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
 说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。
