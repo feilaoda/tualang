@@ -1,0 +1,43 @@
+import "std/strconv" as conv
+
+struct LlmOptions {
+    threads: int
+    kvMaxBytes: long
+}
+
+object LlmArgs {
+    fn defaults() -> LlmOptions {
+        return LlmOptions{ threads: 0, kvMaxBytes: 0L }
+    }
+
+    fn parseArgv(argv: string[]) -> int, LlmOptions {
+        let out = LlmArgs.defaults()
+        if argv == null { return 0, out }
+        let n = argv.len()
+
+        let i: int = 1
+        while i < n {
+            let a = argv[i]
+            if a == "--threads" {
+                if i + 1 >= n { return 1, out }
+                let opt = conv.Int.parse(argv[i + 1])
+                if opt.isNone() { return 1, out }
+                out.threads = opt.unwrap()
+                i = i + 2
+                continue
+            }
+            if a == "--kv-mib" {
+                if i + 1 >= n { return 1, out }
+                let opt = conv.Int.parse(argv[i + 1])
+                if opt.isNone() { return 1, out }
+                let mib = opt.unwrap()
+                if mib < 0 { return 1, out }
+                out.kvMaxBytes = (long)mib * 1024L * 1024L
+                i = i + 2
+                continue
+            }
+            i = i + 1
+        }
+        return 0, out
+    }
+}

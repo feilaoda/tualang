@@ -254,11 +254,12 @@
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
 说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。
-- [ ] 模型格式：先支持一种主流格式（建议 GGUF）
+- [ ] 模型格式：先支持一种主流格式（建议 GGUF）；也允许直接加载 HF 原生格式（如 safetensors）
   - [x] GGUF（v0）：解析 header + KV metadata（先不做 tensor）
   - [ ] GGUF（v1）：解析 tensor infos + tensor data layout
-- [ ] 数学内核：f32 baseline matmul/dot（可先朴素），再逐步并行化/向量化
-- [ ] KV cache：数据结构与更新（注意内存占用与布局）
+- [ ] SafeTensors（v0）：mmap + header 解析 + tensor 视图（零拷贝元数据；数据区按需转换/缓存）
+- [ ] 数学内核：优先“可用速度”，先接入系统 BLAS（macOS Accelerate），并保留可替换后端接口
+- [ ] KV cache：抽象接口 + 至少一种实现（layout/精度/内存上限可配置；为未来更多 KV 实现预留）
 - [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
 - [ ] Runner：提供 `examples/llm/run.tua`（或独立 CLI 工具），通过 `tuac run ...` 运行
 

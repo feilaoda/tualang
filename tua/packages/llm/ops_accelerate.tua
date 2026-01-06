@@ -1,0 +1,62 @@
+import OpsBackend, OpTranspose from "packages/llm/ops"
+
+// CBLAS constants (Apple Accelerate).
+private enum CblasOrder {
+    rowMajor = 101,
+    colMajor = 102,
+}
+
+private enum CblasTranspose {
+    noTrans = 111,
+    trans = 112,
+}
+
+extern fn cblas_sgemm(order: int, transA: int, transB: int,
+                     m: int, n: int, k: int,
+                     alpha: float, a: ptr, lda: int,
+                     b: ptr, ldb: int,
+                     beta: float, c: ptr, ldc: int)
+
+extern fn cblas_sgemv(order: int, transA: int,
+                     m: int, n: int,
+                     alpha: float, a: ptr, lda: int,
+                     x: ptr, incx: int,
+                     beta: float, y: ptr, incy: int)
+
+struct AccelerateOps {}
+
+impl AccelerateOps {
+    fn new() AccelerateOps { return AccelerateOps{} }
+}
+
+private fn _toCblasTranspose(t: int) int {
+    if t == OpTranspose.trans { return CblasTranspose.trans }
+    return CblasTranspose.noTrans
+}
+
+impl AccelerateOps {
+    fn setThreads(n: int) int {
+        let _ = n
+        return 0
+    }
+
+    fn gemmF32(transA: int, transB: int, m: int, n: int, k: int,
+               alpha: float, a: ptr, lda: int,
+               b: ptr, ldb: int,
+               beta: float, c: ptr, ldc: int) int {
+        cblas_sgemm(CblasOrder.rowMajor, _toCblasTranspose(transA), _toCblasTranspose(transB),
+                   m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+        return 0
+    }
+
+    fn gemvF32(transA: int, m: int, n: int,
+               alpha: float, a: ptr, lda: int,
+               x: ptr, incx: int,
+               beta: float, y: ptr, incy: int) int {
+        cblas_sgemv(CblasOrder.rowMajor, _toCblasTranspose(transA),
+                   m, n, alpha, a, lda, x, incx, beta, y, incy)
+        return 0
+    }
+}
+
+impl OpsBackend for AccelerateOps {}

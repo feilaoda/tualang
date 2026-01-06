@@ -27,6 +27,11 @@ AOT 生成可执行文件：
 /tmp/a.out
 ```
 
+AOT 链接外部库（示例）：
+
+- macOS Accelerate（BLAS）：`./bin/tuac --output /tmp/a.out --link-arg -framework --link-arg Accelerate <file.tua>`
+- Linux OpenBLAS（示例）：`./bin/tuac --output /tmp/a.out --link-lib openblas <file.tua>`
+
 运行测试：
 
 ```bash

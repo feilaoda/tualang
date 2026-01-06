@@ -1,0 +1,9 @@
+import "../packages/llm/options" as o
+
+fn main(args: string[]) -> int {
+    let e, opt = o.LlmArgs.parseArgv(args)
+    assert(e == 0)
+    assert(opt.threads == 0)
+    assert(opt.kvMaxBytes == 0L)
+    return 0
+}

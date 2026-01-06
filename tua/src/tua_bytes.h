@@ -23,6 +23,8 @@ tua_err_t tua_bytes_mmap_file(const char* path_utf8, tua_bytes** out_bytes);
 
 int64_t tua_bytes_len(tua_bytes* b);
 uint8_t* tua_bytes_data(tua_bytes* b);
+// Returns `tua_bytes_data(b) + off` when within bounds; otherwise NULL.
+uint8_t* tua_bytes_data_at(tua_bytes* b, int64_t off);
 int32_t tua_bytes_is_readonly(tua_bytes* b);
 
 // Safe-by-construction helpers for language bindings.
@@ -40,6 +42,11 @@ char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len);
 // Bit-cast helpers for binary formats.
 double tua_f32_from_u32_bits(uint32_t bits);
 double tua_f64_from_u64_bits(uint64_t bits);
+
+// Vectorized dtype conversions (for model weights, etc.).
+// `src_off`/`dst_off` are in bytes. `n` is number of elements.
+// Returns TUA_E_ACCESS if dst is readonly; TUA_E_INVALID on bounds/NULL.
+tua_err_t tua_bytes_bf16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
 
 void tua_bytes_free(tua_bytes* b);
 

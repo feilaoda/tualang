@@ -119,6 +119,13 @@ uint8_t* tua_bytes_data(tua_bytes* b) {
     return b->data;
 }
 
+uint8_t* tua_bytes_data_at(tua_bytes* b, int64_t off) {
+    if (!b) return NULL;
+    if (!b->data) return NULL;
+    if (off < 0 || off > b->len) return NULL;
+    return b->data + off;
+}
+
 int32_t tua_bytes_is_readonly(tua_bytes* b) {
     if (!b) return 0;
     return b->readonly ? 1 : 0;
@@ -187,6 +194,34 @@ double tua_f64_from_u64_bits(uint64_t bits) {
     double d = 0.0;
     memcpy(&d, &bits, sizeof(double));
     return d;
+}
+
+tua_err_t tua_bytes_bf16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n) {
+    if (!src || !dst) return TUA_E_INVALID;
+    if (dst->readonly) return TUA_E_ACCESS;
+    if (n < 0) return TUA_E_INVALID;
+    if (n == 0) return TUA_OK;
+    if (!src->data || !dst->data) return TUA_E_INVALID;
+    if (src_off < 0 || dst_off < 0) return TUA_E_INVALID;
+    if (src_off > src->len || dst_off > dst->len) return TUA_E_INVALID;
+
+    const int64_t src_bytes = n * 2;
+    const int64_t dst_bytes = n * 4;
+    if (src_bytes < 0 || dst_bytes < 0) return TUA_E_INVALID;
+    if (src_off + src_bytes > src->len) return TUA_E_INVALID;
+    if (dst_off + dst_bytes > dst->len) return TUA_E_INVALID;
+
+    const uint16_t* s = (const uint16_t*)(src->data + src_off);
+    float* d = (float*)(dst->data + dst_off);
+    for (int64_t i = 0; i < n; i++) {
+        union {
+            uint32_t u;
+            float f;
+        } v;
+        v.u = ((uint32_t)s[i]) << 16;
+        d[i] = v.f;
+    }
+    return TUA_OK;
 }
 
 void tua_bytes_free(tua_bytes* b) {

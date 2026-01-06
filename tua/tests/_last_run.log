@@ -1,0 +1,2508 @@
+In file included from src/main.c:17:
+src/lexer.h:4:9: warning: 'bool' macro redefined [-Wmacro-redefined]
+    4 | #define bool int
+      |         ^
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/stdbool.h:20:9: note: previous definition is here
+   20 | #define bool _Bool
+      |         ^
+In file included from src/main.c:18:
+src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/main.c:20:
+src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+src/main.c:1259:12: warning: unused function 'spawnAndWait' [-Wunused-function]
+ 1259 | static int spawnAndWait(const char* exe, char* const* args) {
+      |            ^~~~~~~~~~~~
+55 warnings generated.
+In file included from src/llvm/llvm.c:6:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm.c:7:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+In file included from src/llvm/llvm_var.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_var.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+src/llvm/llvm_for.c:336:20: warning: unused variable 'context' [-Wunused-variable]
+  336 |     LLVMContextRef context = compiler->context;
+      |                    ^~~~~~~
+src/llvm/llvm_for.c:337:20: warning: unused variable 'builder' [-Wunused-variable]
+  337 |     LLVMBuilderRef builder = compiler->builder;
+      |                    ^~~~~~~
+src/llvm/llvm_for.c:357:20: warning: unused variable 'context' [-Wunused-variable]
+  357 |     LLVMContextRef context = compiler->context;
+      |                    ^~~~~~~
+src/llvm/llvm_for.c:377:20: warning: unused variable 'context' [-Wunused-variable]
+  377 |     LLVMContextRef context = compiler->context;
+      |                    ^~~~~~~
+src/llvm/llvm_for.c:441:20: warning: unused variable 'context' [-Wunused-variable]
+  441 |     LLVMContextRef context = compiler->context;
+      |                    ^~~~~~~
+In file included from src/llvm/llvm_for.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_for.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+src/llvm/llvm_for.c:5:21: warning: unused function 'getOrCreateMalloc' [-Wunused-function]
+    5 | static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
+      |                     ^~~~~~~~~~~~~~~~~
+59 warnings generated.
+In file included from src/llvm/llvm_while.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_while.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+In file included from src/llvm/llvm_loop.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_loop.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+In file included from src/llvm/llvm_goto.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_goto.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+In file included from src/llvm/llvm_if.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_if.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+53 warnings generated.
+src/llvm/llvm_expr.c:599:22: warning: incompatible pointer types initializing 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') with an expression of type 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') [-Wincompatible-pointer-types]
+  599 |         LLVMValueRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+      |                      ^       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:600:58: warning: incompatible pointer types passing 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') to parameter of type 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') [-Wincompatible-pointer-types]
+  600 |         LLVMValueRef p = LLVMBuildBitCast(builder, cell, i8ptr, "cell_i8");
+      |                                                          ^~~~~
+/usr/local/Cellar/llvm/21.1.0/include/llvm-c/Core.h:4763:54: note: passing argument to parameter 'DestTy' here
+ 4763 |                                          LLVMTypeRef DestTy, const char *Name);
+      |                                                      ^
+src/llvm/llvm_expr.c:3876:36: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3876 |     if (!compiler || !type) return LLVMInt32TypeInContext(compiler->context);
+      |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3879:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3879 |             return compilerGetTuaValueType(compiler);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3885:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3885 |             return LLVMInt8TypeInContext(compiler->context);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3888:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3888 |             return LLVMInt16TypeInContext(compiler->context);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3889:31: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3889 |         case TYPE_INT: return LLVMInt32TypeInContext(compiler->context);
+      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3890:31: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3890 |         case TYPE_U32: return LLVMInt32TypeInContext(compiler->context);
+      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3891:32: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3891 |         case TYPE_LONG: return LLVMInt64TypeInContext(compiler->context);
+      |                                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3892:31: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3892 |         case TYPE_U64: return LLVMInt64TypeInContext(compiler->context);
+      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3895:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3895 |             return LLVMIntTypeInContext(compiler->context, (unsigned)(sizeof(void*) * 8));
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3897:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3897 |             return LLVMHalfTypeInContext(compiler->context);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3898:33: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3898 |         case TYPE_FLOAT: return LLVMFloatTypeInContext(compiler->context);
+      |                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3899:34: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3899 |         case TYPE_DOUBLE: return LLVMDoubleTypeInContext(compiler->context);
+      |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3901:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3901 |             return LLVMBFloatTypeInContext(compiler->context);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3902:32: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3902 |         case TYPE_BOOL: return LLVMInt1TypeInContext(compiler->context);
+      |                                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3905:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3905 |             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3908:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3908 |                 return compilerGetTuaValueType(compiler);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3911:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3911 |                 return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3914:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3914 |                 return compilerGetMapType(compiler);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3917:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3917 |                 return compilerGetBytesType(compiler);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3922:45: warning: pointer type mismatch ('LLVMValueRef' (aka 'struct LLVMOpaqueValue *') and 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *')) [-Wpointer-type-mismatch]
+ 3922 |                 LLVMTypeRef innerTy = inner ? astTypeToLLVMType(compiler, inner) : LLVMInt8TypeInContext(compiler->context);
+      |                                             ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3923:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3923 |                 return compilerGetSliceType(compiler, innerTy);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3928:45: warning: pointer type mismatch ('LLVMValueRef' (aka 'struct LLVMOpaqueValue *') and 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *')) [-Wpointer-type-mismatch]
+ 3928 |                 LLVMTypeRef innerTy = inner ? astTypeToLLVMType(compiler, inner) : compilerGetTuaValueType(compiler);
+      |                                             ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3929:24: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3929 |                 return compilerGetOptionType(compiler, innerTy);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3932:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3932 |             return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3934:20: warning: incompatible pointer types returning 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') from a function with result type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3934 |             return LLVMInt32TypeInContext(compiler->context);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3953:21: warning: incompatible pointer types initializing 'LLVMTypeRef' (aka 'struct LLVMOpaqueType *') with an expression of type 'LLVMValueRef' (aka 'struct LLVMOpaqueValue *') [-Wincompatible-pointer-types]
+ 3953 |         LLVMTypeRef dstTy = astTypeToLLVMType(compiler, expr->targetType);
+      |                     ^       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:4164:19: warning: unused variable 'recv' [-Wunused-variable]
+ 4164 |     VariableExpr* recv = (VariableExpr*)recvExpr;
+      |                   ^~~~
+In file included from src/llvm/llvm_expr.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_expr.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:635:21: warning: unused function 'getOrCreateTuaMapGet' [-Wunused-function]
+  635 | static LLVMValueRef getOrCreateTuaMapGet(Compiler* compiler) {
+      |                     ^~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:676:21: warning: unused function 'getOrCreateTuaArrayClone' [-Wunused-function]
+  676 | static LLVMValueRef getOrCreateTuaArrayClone(Compiler* compiler) {
+      |                     ^~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:827:12: warning: unused function 'isScalarValueLLVMType' [-Wunused-function]
+  827 | static int isScalarValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+      |            ^~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_expr.c:3287:12: warning: unused function 'tokenEqualsN' [-Wunused-function]
+ 3287 | static int tokenEqualsN(const Token* token, const char* s) {
+      |            ^~~~~~~~~~~~
+86 warnings generated.
+src/llvm/llvm_call.c:5198:25: warning: unused variable 'fnName' [-Wunused-variable]
+ 5198 |             const char* fnName = builtinId == BI_TUA_FS_READFILE_ALLOC_ASYNC_CL ? "tua_fs_readfile_alloc_async_cl"
+      |                         ^~~~~~
+In file included from src/llvm/llvm_call.c:1:
+In file included from src/llvm/llvm.h:7:
+In file included from ./src/compiler.h:3:
+./src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+./src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+./src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+./src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+./src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+./src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+./src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+./src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+./src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+./src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+./src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+./src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+./src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+./src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+./src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+./src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+./src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+./src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+./src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+./src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+./src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+./src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/llvm/llvm_call.c:3:
+./src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+./src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+./src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+./src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+./src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+./src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+./src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+./src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+./src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+src/llvm/llvm_call.c:567:12: warning: unused function 'astNamedTypeEqualsName' [-Wunused-function]
+  567 | static int astNamedTypeEqualsName(Type* t, const char* name, int nameLen) {
+      |            ^~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_call.c:1019:20: warning: unused function 'resolveClosureReturnSigForSimpleCall' [-Wunused-function]
+ 1019 | static LLVMTypeRef resolveClosureReturnSigForSimpleCall(Compiler* compiler, CallExpr* call) {
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/llvm/llvm_call.c:2198:12: warning: unused function 'isScalarValueLLVMType' [-Wunused-function]
+ 2198 | static int isScalarValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
+      |            ^~~~~~~~~~~~~~~~~~~~~
+57 warnings generated.
+In file included from src/debug.c:1:
+In file included from src/debug.h:3:
+src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/debug.c:1:
+src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+38 warnings generated.
+src/lexer.c:6:20: warning: unused variable 'TokenNames' [-Wunused-variable]
+    6 | static const char* TokenNames[] = {
+      |                    ^~~~~~~~~~
+src/lexer.c:243:13: warning: unused function 'checkEqWord' [-Wunused-function]
+  243 | static bool checkEqWord(Lexer* lexer, int start, int length, const char* rest) {
+      |             ^~~~~~~~~~~
+2 warnings generated.
+src/parser.c:730:19: warning: unused variable 'op2' [-Wunused-variable]
+  730 |         TokenType op2 = parser->current.type;
+      |                   ^~~
+In file included from src/parser.c:1:
+src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/parser.c:567:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  567 | static Stmt* newExpressionStmt(Expr* expression) {
+      |              ^~~~~~~~~~~~~~~~~
+In file included from src/parser.c:1:
+src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+In file included from src/parser.c:6:
+src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+23 warnings generated.
+In file included from src/compiler.c:8:
+In file included from src/compiler.h:3:
+src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+In file included from src/compiler.c:12:
+src/debug.h:16:13: warning: unused function 'printIndent' [-Wunused-function]
+   16 | static void printIndent(int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:17:20: warning: unused function 'typeToString' [-Wunused-function]
+   17 | static const char* typeToString(Type* type);
+      |                    ^~~~~~~~~~~~
+src/debug.h:21:13: warning: unused function 'printBinaryExpr' [-Wunused-function]
+   21 | static void printBinaryExpr(BinaryExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:22:13: warning: unused function 'printUnaryExpr' [-Wunused-function]
+   22 | static void printUnaryExpr(UnaryExpr* expr);
+      |             ^~~~~~~~~~~~~~
+src/debug.h:23:13: warning: unused function 'printLiteralExpr' [-Wunused-function]
+   23 | static void printLiteralExpr(LiteralExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:24:13: warning: unused function 'printVariableExpr' [-Wunused-function]
+   24 | static void printVariableExpr(VariableExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:25:13: warning: unused function 'printAssignExpr' [-Wunused-function]
+   25 | static void printAssignExpr(AssignExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:26:13: warning: unused function 'printCallExpr' [-Wunused-function]
+   26 | static void printCallExpr(CallExpr* expr);
+      |             ^~~~~~~~~~~~~
+src/debug.h:27:13: warning: unused function 'printGroupingExpr' [-Wunused-function]
+   27 | static void printGroupingExpr(GroupingExpr* expr);
+      |             ^~~~~~~~~~~~~~~~~
+src/debug.h:28:13: warning: unused function 'printPostfixExpr' [-Wunused-function]
+   28 | static void printPostfixExpr(PostfixExpr* expr);
+      |             ^~~~~~~~~~~~~~~~
+src/debug.h:29:13: warning: unused function 'printPrefixExpr' [-Wunused-function]
+   29 | static void printPrefixExpr(PrefixExpr* expr);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:35:13: warning: unused function 'printVarStmt' [-Wunused-function]
+   35 | static void printVarStmt(VarStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~
+src/debug.h:36:13: warning: unused function 'printIfStmt' [-Wunused-function]
+   36 | static void printIfStmt(IfStmt* stmt, int indent);
+      |             ^~~~~~~~~~~
+src/debug.h:39:13: warning: unused function 'printFuncStmt' [-Wunused-function]
+   39 | static void printFuncStmt(FuncStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~
+src/debug.h:40:13: warning: unused function 'printReturnStmt' [-Wunused-function]
+   40 | static void printReturnStmt(ReturnStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~~
+src/debug.h:41:13: warning: unused function 'printBlockStmt' [-Wunused-function]
+   41 | static void printBlockStmt(BlockStmt* stmt, int indent);
+      |             ^~~~~~~~~~~~~~
+src/compiler.c:559:21: warning: unused function 'getOrCreateTuaBoxInc' [-Wunused-function]
+  559 | static LLVMValueRef getOrCreateTuaBoxInc(Compiler* compiler) {
+      |                     ^~~~~~~~~~~~~~~~~~~~
+src/compiler.c:2951:20: warning: unused function 'typeToLLVM' [-Wunused-function]
+ 2951 | static const char* typeToLLVM(Type* type) {
+      |                    ^~~~~~~~~~
+src/compiler.c:3372:12: warning: unused function 'traitMethodIndexByName' [-Wunused-function]
+ 3372 | static int traitMethodIndexByName(TraitInfo* trait, const Token* name) {
+      |            ^~~~~~~~~~~~~~~~~~~~~~
+56 warnings generated.
+In file included from src/analyzer.c:1:
+In file included from src/analyzer.h:4:
+In file included from src/compiler.h:3:
+src/parser.h:516:14: warning: unused function 'parseStatement' [-Wunused-function]
+  516 | static Stmt* parseStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:517:14: warning: unused function 'parseExpression' [-Wunused-function]
+  517 | static Expr* parseExpression(Parser* parser);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:518:19: warning: unused function 'parseFunctionParameter' [-Wunused-function]
+  518 | static Parameter* parseFunctionParameter(Parser* parser);
+      |                   ^~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:519:14: warning: unused function 'parseIfStatement' [-Wunused-function]
+  519 | static Stmt* parseIfStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:520:14: warning: unused function 'parseForStatement' [-Wunused-function]
+  520 | static Stmt* parseForStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:521:14: warning: unused function 'parseBlockStatement' [-Wunused-function]
+  521 | static Stmt* parseBlockStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:522:14: warning: unused function 'parseReturnStatement' [-Wunused-function]
+  522 | static Stmt* parseReturnStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~
+src/parser.h:523:14: warning: unused function 'parseExpressionStatement' [-Wunused-function]
+  523 | static Stmt* parseExpressionStatement(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:525:14: warning: unused function 'parseVarDeclaration' [-Wunused-function]
+  525 | static Stmt* parseVarDeclaration(Parser* parser, bool identifierConsumed);
+      |              ^~~~~~~~~~~~~~~~~~~
+src/parser.h:526:14: warning: unused function 'parseFunctionDeclaration' [-Wunused-function]
+  526 | static Stmt* parseFunctionDeclaration(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~
+src/parser.h:528:14: warning: unused function 'parseType' [-Wunused-function]
+  528 | static Type* parseType(Parser* parser);
+      |              ^~~~~~~~~
+src/parser.h:529:14: warning: unused function 'parseUnaryExpr' [-Wunused-function]
+  529 | static Expr* parseUnaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:530:14: warning: unused function 'parseBinaryExpr' [-Wunused-function]
+  530 | static Expr* parseBinaryExpr(Parser* parser, int minPrec);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:531:14: warning: unused function 'parsePrimaryExpr' [-Wunused-function]
+  531 | static Expr* parsePrimaryExpr(Parser* parser);
+      |              ^~~~~~~~~~~~~~~~
+src/parser.h:532:14: warning: unused function 'parseBlock' [-Wunused-function]
+  532 | static List* parseBlock(Parser* parser);
+      |              ^~~~~~~~~~
+src/parser.h:533:12: warning: unused function 'getOperatorPrecedence' [-Wunused-function]
+  533 | static int getOperatorPrecedence(TokenType type);
+      |            ^~~~~~~~~~~~~~~~~~~~~
+src/parser.h:535:14: warning: unused function 'newBinaryExpr' [-Wunused-function]
+  535 | static Expr* newBinaryExpr(Expr* left, Token operator, Expr* right);
+      |              ^~~~~~~~~~~~~
+src/parser.h:536:14: warning: unused function 'newUnaryExpr' [-Wunused-function]
+  536 | static Expr* newUnaryExpr(Token operator, Expr* right);
+      |              ^~~~~~~~~~~~
+src/parser.h:537:14: warning: unused function 'newLiteralExpr' [-Wunused-function]
+  537 | static Expr* newLiteralExpr(Token value);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:538:14: warning: unused function 'newVariableExpr' [-Wunused-function]
+  538 | static Expr* newVariableExpr(Token value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:539:14: warning: unused function 'newGroupingExpr' [-Wunused-function]
+  539 | static Expr* newGroupingExpr(Expr* expression);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:540:14: warning: unused function 'newPostfixExpr' [-Wunused-function]
+  540 | static Expr* newPostfixExpr(Expr* operand, Token operator);
+      |              ^~~~~~~~~~~~~~
+src/parser.h:541:14: warning: unused function 'finishCall' [-Wunused-function]
+  541 | static Expr* finishCall(Parser* parser, Expr* callee);
+      |              ^~~~~~~~~~
+src/parser.h:542:14: warning: unused function 'newMapLiteralExpr' [-Wunused-function]
+  542 | static Expr* newMapLiteralExpr(Token lbrace, List* entries);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:543:14: warning: unused function 'newIndexExpr' [-Wunused-function]
+  543 | static Expr* newIndexExpr(Expr* object, Expr* index);
+      |              ^~~~~~~~~~~~
+src/parser.h:544:14: warning: unused function 'newIndexSetExpr' [-Wunused-function]
+  544 | static Expr* newIndexSetExpr(Expr* object, Expr* index, Expr* value);
+      |              ^~~~~~~~~~~~~~~
+src/parser.h:547:14: warning: unused function 'newExpressionStmt' [-Wunused-function]
+  547 | static Stmt* newExpressionStmt(Expr* expression);
+      |              ^~~~~~~~~~~~~~~~~
+src/parser.h:548:14: warning: unused function 'newVarStmt' [-Wunused-function]
+  548 | static Stmt* newVarStmt(Token name, Type* type, Expr* initializer, bool isConst);
+      |              ^~~~~~~~~~
+src/parser.h:549:14: warning: unused function 'newFuncStmt' [-Wunused-function]
+  549 | static Stmt* newFuncStmt(Token name, List* params, Type* returnType, List* returnTypes, List* body);
+      |              ^~~~~~~~~~~
+src/parser.h:550:14: warning: unused function 'newIfStmt' [-Wunused-function]
+  550 | static Stmt* newIfStmt(Expr* condition, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~
+src/parser.h:551:14: warning: unused function 'newIfLetStmt' [-Wunused-function]
+  551 | static Stmt* newIfLetStmt(Token name, Expr* value, Stmt* thenBranch, Stmt* elseBranch);
+      |              ^~~~~~~~~~~~
+src/parser.h:552:14: warning: unused function 'newForStmt' [-Wunused-function]
+  552 | static Stmt* newForStmt(Stmt* initializer, Expr* condition, Expr* increment, Stmt* body);
+      |              ^~~~~~~~~~
+src/parser.h:553:14: warning: unused function 'newBlockStmt' [-Wunused-function]
+  553 | static Stmt* newBlockStmt(List* statements);
+      |              ^~~~~~~~~~~~
+src/parser.h:554:14: warning: unused function 'newReturnStmt' [-Wunused-function]
+  554 | static Stmt* newReturnStmt(Token keyword, Expr* value, List* values);
+      |              ^~~~~~~~~~~~~
+src/parser.h:556:13: warning: unused function 'errorAt' [-Wunused-function]
+  556 | static void errorAt(Parser* parser,Token* token, const char* message);
+      |             ^~~~~~~
+src/parser.h:557:13: warning: unused function 'errorPrint' [-Wunused-function]
+  557 | static void errorPrint(Parser* parser,const char* message);
+      |             ^~~~~~~~~~
+src/parser.h:559:14: warning: unused function 'consume' [-Wunused-function]
+  559 | static Token consume(Parser* parser, TokenType type, const char* message);
+      |              ^~~~~~~
+src/analyzer.c:244:12: warning: unused function 'atFloatBits' [-Wunused-function]
+  244 | static int atFloatBits(const AType* t) {
+      |            ^~~~~~~~~~~
+38 warnings generated.
+[PASS] array_aot_slice_get_set_ok.tua
+[PASS] array_basic.tua
+[PASS] array_brace_expr_first.tua
+[PASS] array_brace_literal.tua
+[PASS] array_fail_const_index_set.tua (expected failure)
+[PASS] array_fail_move_while_slice_alive.tua (expected failure)
+[PASS] array_fail_no_init.tua (expected failure)
+[PASS] array_fail_oob.tua (expected failure)
+[PASS] array_fail_opt_stack_escape.tua (expected failure)
+[PASS] array_fail_opt_stack_escape_with_lambda.tua (expected failure)
+[PASS] array_fail_push_fixed.tua (expected failure)
+[PASS] array_forin_value_index.tua
+[PASS] array_forin_value_only.tua
+[PASS] array_opt_stack_basic.tua
+[PASS] array_opt_stack_forin.tua
+[PASS] array_opt_unchecked_basic.tua
+[PASS] array_push.tua
+[PASS] array_return_move_ok.tua
+[PASS] bitwise_fail_bool_operand.tua (expected failure)
+[PASS] bitwise_fail_float_operand.tua (expected failure)
+[PASS] bitwise_fail_mixed_signedness.tua (expected failure)
+[PASS] bitwise_shift_basic.tua
+[PASS] borrow_fail_mut_from_const_binding.tua (expected failure)
+[PASS] borrow_fail_mut_then_shared.tua (expected failure)
+[PASS] borrow_fail_mutate_while_shared_borrow.tua (expected failure)
+[PASS] borrow_fail_reborrow_const_alias_freezes_mut_ref.tua (expected failure)
+[PASS] borrow_fail_shared_then_mut.tua (expected failure)
+[PASS] borrow_reborrow_const_alias_scope_end_unfreezes_mut_ref.tua
+[PASS] borrow_scope_end_allows_mut.tua
+[PASS] borrow_two_shared_ok.tua
+[PASS] bytes_aot_mmap_read_ok.tua
+[PASS] bytes_aot_read_le_ok.tua
+[PASS] bytes_aot_set_get_ok.tua
+[PASS] cast_as_wrap_i32.tua
+[PASS] cast_asq_float_to_int_nan.tua
+[PASS] cast_asq_int_checked.tua
+[PASS] const_fail_inc_dec.tua (expected failure)
+[PASS] const_fail_ref_struct_field_set.tua (expected failure)
+[PASS] const_fail_struct_field_set.tua (expected failure)
+[PASS] const_view_struct_aliases.tua
+[PASS] core_aot_basic.tua
+[PASS] core_assert_basic.tua
+[PASS] core_entry_main_args_int_exit7_ok.tua
+[PASS] core_entry_select_module_ok.tua
+[PASS] core_fail_main_signature_return_int_no_args.tua (expected failure)
+[PASS] core_fail_module_top_level_expr_forbidden.tua (expected failure)
+[PASS] core_fail_module_top_level_let_forbidden.tua (expected failure)
+[PASS] core_not_semantics.tua
+[PASS] destructure_fail_infer_multi_return_use_after_move.tua (expected failure)
+[PASS] destructure_infer_fn_multi_return_struct_ok.tua
+[PASS] extern_aot_strlen.tua
+[PASS] extern_check_extern_std.tua
+[PASS] extern_fail_aot_missing_symbol.tua (expected failure)
+[PASS] extern_fail_check_extern_missing.tua (expected failure)
+[PASS] extern_fail_fn_as_conflict.tua (expected failure)
+[PASS] extern_fn_after_use.tua
+[PASS] extern_fn_as_alias.tua
+[PASS] extern_fn_strlen.tua
+[PASS] extern_fn_strlen_struct.tua
+[PASS] fn_fail_call_arity.tua (expected failure)
+[PASS] fn_fail_missing_return_branch.tua (expected failure)
+[PASS] fn_fail_missing_return_fn_ret_func.tua (expected failure)
+[PASS] fn_fail_param_borrow_default_cannot_mutate.tua (expected failure)
+[PASS] fn_fail_param_move_requires_move.tua (expected failure)
+[PASS] fn_fail_return_borrow_param_as_owned.tua (expected failure)
+[PASS] fn_fail_return_ref_local.tua (expected failure)
+[PASS] fn_fail_return_ref_local_ref_syntax.tua (expected failure)
+[PASS] fn_fail_return_ref_param_addr.tua (expected failure)
+[PASS] fn_fail_return_type_mismatch_and_missing_return_in_lambda.tua (expected failure)
+[PASS] fn_fail_type_lambda_ret_needs_arrow.tua (expected failure)
+[PASS] fn_fail_type_nested_missing_arrow.tua (expected failure)
+[PASS] fn_fail_undefined_function.tua (expected failure)
+[PASS] fn_param_borrow_default_ok.tua
+[PASS] fn_param_borrow_let_mutates_caller.tua
+[PASS] fn_param_move_ok.tua
+[PASS] fn_recursion_unused_ok.tua
+[PASS] fn_return_ref_param_ok.tua
+[PASS] fn_tailrec_sum_big.tua
+[PASS] fn_type_nested_return_ok.tua
+[PASS] fn_type_return_sugar.tua
+[PASS] generic_aot_bound_trait_ok.tua
+[PASS] generic_aot_fn_id_int.tua
+[PASS] generic_aot_fn_id_struct_move.tua
+[PASS] generic_aot_import_ok.tua
+[PASS] generic_fail_bound_missing_impl.tua (expected failure)
+[PASS] generic_fail_infer_conflict.tua (expected failure)
+[PASS] generic_fail_infer_missing_args.tua (expected failure)
+[PASS] generic_fail_infer_trait_object_arg.tua (expected failure)
+[PASS] generic_fail_infer_unsupported_nested_param.tua (expected failure)
+[PASS] generic_fail_instantiation_depth.tua (expected failure)
+[PASS] generic_fail_typeargs_on_nongeneric.tua (expected failure)
+[PASS] generic_fail_wrong_arity.tua (expected failure)
+[PASS] generic_infer_id_ok.tua
+[PASS] generic_infer_multi_params_ok.tua
+[PASS] if_fail_else_else.tua (expected failure)
+[PASS] import_all.tua
+[PASS] import_allsyntax.tua
+[PASS] import_default_namespace_keyword_ok.tua
+[PASS] import_default_namespace_std_ok.tua
+[PASS] import_fail_all_conflict.tua (expected failure)
+[PASS] import_fail_infer_generic_ns_use_after_move.tua (expected failure)
+[PASS] import_fail_infer_struct_assign_to_int.tua (expected failure)
+[PASS] import_fail_infer_struct_named_use_after_move.tua (expected failure)
+[PASS] import_fail_infer_struct_use_after_move.tua (expected failure)
+[PASS] import_fail_namespace_conflict.tua (expected failure)
+[PASS] import_infer_struct_move_ok.tua
+[PASS] import_namespace.tua
+[PASS] import_rename.tua
+[PASS] import_syntax.tua
+[PASS] io_aot_cursor_bufreader_ok.tua
+[PASS] io_aot_mmap_reader_ok.tua
+[PASS] io_fail_print_format_arity.tua (expected failure)
+[PASS] io_fail_print_format_non_literal.tua (expected failure)
+[PASS] io_print_format_ok.tua
+[PASS] io_print_newline_sep.tua
+[PASS] json_aot_parse_min_ok.tua
+[PASS] json_aot_parse_ok.tua
+[PASS] let_fail_infer_fn_return_struct_use_after_move.tua (expected failure)
+[PASS] let_infer_fn_return_struct_move_ok.tua
+[PASS] llm_aot_gguf_header_kv_ok.tua
+[FAIL] llm_options_parse_ok.tua
+[PASS] llm_safetensors_parse_ok.tua
+[PASS] map_aot_get_alias_ref_ok.tua
+[PASS] map_aot_get_get_read.tua
+[PASS] map_aot_get_option_ok.tua
+[PASS] map_aot_getmut_alias_write_ok.tua
+[PASS] map_aot_getmut_get_read.tua
+[PASS] map_aot_typed_map_get_len.tua
+[PASS] map_aot_typed_map_getmut_struct_ok.tua
+[PASS] map_api.tua
+[PASS] map_basic.tua
+[PASS] map_const_view_scope_end_allows_move.tua
+[PASS] map_default_init.tua
+[PASS] map_delete_clear.tua
+[PASS] map_fail_const_default_init.tua (expected failure)
+[PASS] map_fail_const_mutate.tua (expected failure)
+[PASS] map_fail_get_blocks_mutation.tua (expected failure)
+[PASS] map_fail_get_shared_write_forbidden.tua (expected failure)
+[PASS] map_fail_getmut_blocks_mutation.tua (expected failure)
+[PASS] map_fail_getmut_const_map.tua (expected failure)
+[PASS] map_fail_getmut_const_untyped_map.tua (expected failure)
+[PASS] map_fail_move_while_const_view.tua (expected failure)
+[PASS] map_fail_null_clear.tua (expected failure)
+[PASS] map_fail_null_delete.tua (expected failure)
+[PASS] map_fail_null_read.tua (expected failure)
+[PASS] map_fail_typed_index_read_moveonly.tua (expected failure)
+[PASS] map_fail_typed_key_mismatch.tua (expected failure)
+[PASS] map_fail_typed_map_get_scalar_ref_forbidden.tua (expected failure)
+[PASS] map_fail_typed_map_getmut_nll_conflict.tua (expected failure)
+[PASS] map_fail_typed_null_value.tua (expected failure)
+[PASS] map_fail_typed_set_value_mismatch.tua (expected failure)
+[PASS] map_forin.tua
+[PASS] map_forin_key_value.tua
+[PASS] map_forin_value_only.tua
+[PASS] map_iflet_getmut_write_ok.tua
+[PASS] map_infer_literal.tua
+[PASS] map_literal_overwrite.tua
+[PASS] map_mutate.tua
+[PASS] map_return_move_ok.tua
+[PASS] map_typed_option.tua
+[PASS] move_fail_map_index_set_moves_rhs.tua (expected failure)
+[PASS] move_fail_map_literal_moves_rhs.tua (expected failure)
+[PASS] move_fail_struct_field_set_moves_rhs.tua (expected failure)
+[PASS] move_fail_struct_from_const.tua (expected failure)
+[PASS] move_fail_struct_init_moves_field_value.tua (expected failure)
+[PASS] move_fail_struct_use_after_move.tua (expected failure)
+[PASS] move_fail_while_borrowed.tua (expected failure)
+[PASS] move_fail_while_const_view_struct.tua (expected failure)
+[PASS] namespace_enum_variant.tua
+[PASS] namespace_object_call.tua
+[PASS] namespace_struct_ctor.tua
+[PASS] numeric_checked_cast_unsigned.tua
+[PASS] numeric_fail_fp8_scalar_ops.tua (expected failure)
+[PASS] numeric_float16_bfloat16.tua
+[PASS] numeric_float_basic.tua
+[PASS] numeric_fp8_storage.tua
+[PASS] numeric_promotion.tua
+[PASS] numeric_unsigned_ops.tua
+[PASS] object_implicit_method_call.tua
+[PASS] object_method_recursion.tua
+[PASS] option_coalesce.tua
+[PASS] option_fail_assign_from_map_index.tua (expected failure)
+[PASS] option_fail_coalesce_non_option.tua (expected failure)
+[PASS] option_fail_compare.tua (expected failure)
+[PASS] option_fail_iflet_non_option.tua (expected failure)
+[PASS] option_fail_iflet_pattern_not_some.tua (expected failure)
+[PASS] option_fail_unwrap_none.tua (expected failure)
+[PASS] option_iflet_some_ok.tua
+[PASS] parser_fail_error_recovery_block.tua (expected failure)
+[PASS] ref_fail_escape_to_outer_scope.tua (expected failure)
+[PASS] ref_fail_escape_via_ref_var.tua (expected failure)
+[PASS] ref_fail_reborrow_freezes_mutref.tua (expected failure)
+[PASS] ref_fail_shared_cannot_mutate.tua (expected failure)
+[PASS] ref_inner_scope_ok.tua
+[PASS] ref_struct_field_set.tua
+[PASS] ref_type_syntax_ok.tua
+[PASS] slice_aot_bytes_slice_ok.tua
+[PASS] slice_aot_bytes_slice_set_ok.tua
+[PASS] slice_fail_bytes_move_while_slice_alive.tua (expected failure)
+[PASS] slice_fail_const_slice_set.tua (expected failure)
+[PASS] std_fs_sync_basic.tua
+[PASS] std_rt_fs_async_readfile.tua
+[SKIP] std_rt_net_async_loopback.tua (network sandboxed)
+[PASS] std_rt_post.tua
+[PASS] std_strconv_aot_to_string.tua
+[PASS] std_strconv_int_to_string.tua
+[PASS] std_strconv_parse_int.tua
+[PASS] std_time_async_after_ms.tua
+[PASS] std_time_async_after_ms_reuse_cb.tua
+[PASS] std_time_async_after_ms_scope_drop_ok.tua
+[PASS] std_time_async_every_ms.tua
+[PASS] std_time_basic.tua
+[PASS] string_concat.tua
+[PASS] struct_aot_embed_field_promotion.tua
+[PASS] struct_aot_embed_method_promotion.tua
+[PASS] struct_aot_embed_nested_promotion.tua
+[PASS] struct_aot_embed_shadowing_field.tua
+[PASS] struct_fail_embed_ambiguous_field.tua (expected failure)
+[PASS] struct_fail_embed_ambiguous_method.tua (expected failure)
+[PASS] struct_implicit_field_access.tua
+[PASS] trait_aot_auto_generic_and_dynamic_fallback_ok.tua
+[PASS] trait_aot_impl_map_return_trait.tua
+[PASS] trait_aot_impl_map_set_trait_ok.tua
+[PASS] trait_aot_impl_map_trait.tua
+[PASS] trait_aot_impl_mult_ok.tua
+[PASS] trait_aot_impl_promoted_ok.tua
+[PASS] trait_aot_object_dispatch_inherent_ok.tua
+[PASS] trait_aot_object_dispatch_promoted_ok.tua
+[PASS] trait_aot_object_dispatch_trait_impl_body_ok.tua
+[PASS] trait_aot_object_param_move_ok.tua
+[PASS] trait_aot_static_dispatch_override_ok.tua
+[PASS] trait_aot_static_dispatch_promoted_fallback_ok.tua
+[PASS] trait_fail_ambiguous_promoted_method.tua (expected failure)
+[PASS] trait_fail_aot_object_missing_impl_assign.tua (expected failure)
+[PASS] trait_fail_aot_param_missing_impl_auto_generic.tua (expected failure)
+[PASS] trait_fail_bound_method_not_in_trait.tua (expected failure)
+[PASS] trait_fail_missing_method.tua (expected failure)
+[PASS] trait_fail_object_method_not_in_trait.tua (expected failure)
+[PASS] trait_fail_object_use_after_move.tua (expected failure)
+[PASS] trait_fail_signature_mismatch.tua (expected failure)
+[PASS] utf8_aot_valid_decode_boundary_ok.tua

@@ -15,6 +15,10 @@ object Bytes {
         return tua_bytes_new(n)
     }
 
+    fn newLong(len: long) -> bytes {
+        return tua_bytes_new(len)
+    }
+
     fn fromString(s: string) -> bytes {
         return tua_bytes_from_string_copy(s)
     }
