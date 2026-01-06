@@ -11,11 +11,13 @@ fn fib(n:int) long {
     return b
 }
 
-let reps = 200000
-let i = 0
-let acc:long = 0L
-for i = 0; i < reps; i++ {
-    acc = acc + fib(40)
+fn main() {
+    let reps = 200000
+    let i = 0
+    let acc:long = 0L
+    for i = 0; i < reps; i++ {
+        acc = acc + fib(40)
+    }
+    assert(acc > 0L)
+    println(acc)
 }
-assert(acc > 0L)
-println(acc)

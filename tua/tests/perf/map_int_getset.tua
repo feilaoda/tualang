@@ -1,17 +1,19 @@
-let n = 200000
-let m: map<int, int> = {}
+fn main() {
+    let n = 200000
+    let m: map<int, int> = {}
 
-let i = 0
-for i = 0; i < n; i++ {
-    m[i] = i
+    let i = 0
+    for i = 0; i < n; i++ {
+        m[i] = i
+    }
+
+    let sum:long = 0L
+    for i = 0; i < n; i++ {
+        let v:int = m[i] ?? 0
+        sum = sum + v
+    }
+
+    let expect:long = (n - 1L) * n / 2L
+    assert(sum == expect)
+    println(sum)
 }
-
-let sum:long = 0L
-for i = 0; i < n; i++ {
-    let v:int = m[i] ?? 0
-    sum = sum + v
-}
-
-let expect:long = (n - 1L) * n / 2L
-assert(sum == expect)
-println(sum)

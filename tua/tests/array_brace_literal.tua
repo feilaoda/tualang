@@ -1,5 +1,4 @@
-
-fn main(args: string[]) {
+fn main() {
     let a:int[3] = {7}
     assert(a[0] == 7)
     assert(a[2] == 7)

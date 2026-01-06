@@ -1,5 +1,0 @@
-// expect-exit: 0
-// `fn main() int {}` is not a program entry; it should not be called implicitly.
-fn main() int {
-    return 42
-}

@@ -4,21 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-make tuac >/dev/null
+#make tuac >/dev/null
 
 bench() {
   local f="$1"
-  echo "== $f"
+  local cmd="$@"
+  echo "== $f, cmd: $cmd"
   # Warm-up (ignore output)
-  ./bin/tuac "$f" >/dev/null 2>&1 || true
+  ./bin/tuac --perf "$f" >/dev/null 2>&1 || true
   # Measure
-  /usr/bin/time -p ./bin/tuac "$f" >/dev/null
+  /usr/bin/time -p ./bin/tuac --perf $cmd >/dev/null
   echo
 }
 
-bench examples/perf/tailrec_sum.tua
-bench examples/perf/for_arith.tua
-bench examples/perf/map_int_getset.tua
-bench examples/perf/option_coalesce.tua
-bench examples/perf/fib_iter.tua
-
+bench tests/perf/tailrec_sum.tua
+bench tests/perf/for_arith.tua
+bench tests/perf/map_int_getset.tua
+bench tests/perf/option_coalesce.tua
+bench tests/perf/fib_iter.tua
+bench tests/perf/for_loop.tua 100 10 1000

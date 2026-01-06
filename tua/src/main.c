@@ -81,7 +81,6 @@ typedef struct ExternDecl {
 typedef enum {
     USER_MAIN_NONE = 0,
     USER_MAIN_VOID0,
-    USER_MAIN_VOID_ARGS,
     USER_MAIN_INT_ARGS,
 } UserMainKind;
 
@@ -574,7 +573,6 @@ static UserMainKind classifyUserMainSignature(FuncStmt* f) {
     if (paramCount != 1) return USER_MAIN_NONE;
     Parameter* p0 = (Parameter*)listGet(f->params, 0);
     if (!p0 || !isStringArrayType(p0->type)) return USER_MAIN_NONE;
-    if (retK == TYPE_VOID) return USER_MAIN_VOID_ARGS;
     if (retK == TYPE_INT) return USER_MAIN_INT_ARGS;
     return USER_MAIN_NONE;
 }
@@ -665,8 +663,6 @@ static void emitUserMainCall(Compiler* compiler, UserMainDecl sel) {
             if (LLVMTypeOf(rv) != i32) {
                 rv = LLVMBuildTrunc(builder, rv, i32, "main_rc");
             }
-        } else {
-            rv = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
         }
     }
 
@@ -700,6 +696,8 @@ static int isKeywordIdent(const char* s, int len) {
         "import","from","as","private","extern","struct","object","enum","trait","impl","init","deinit",
         // Builtins / operators spelled as idents
         "this","move","not","print","println",
+        // Reserved entry identifier
+        "main",
         // Literals
         "true","false","null",
         // Primitive / numeric type tokens (cannot be used as identifiers)
@@ -2372,7 +2370,7 @@ int main(int argc, char* argv[]) {
         }
         selectedMain = findUserMainInModule(target);
         if (selectedMain.kind == USER_MAIN_NONE) {
-            cliError("module '%s' has no valid entry main; allowed: `fn main() {}`, `fn main(args: string[]) {}`, `fn main(args: string[]) int {}`", target->path);
+            cliError("module '%s' has no valid entry main; allowed: `fn main() {}`, `fn main(args: string[]) int {}`", target->path);
             return 1;
         }
     }

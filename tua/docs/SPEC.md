@@ -398,11 +398,13 @@
     - 入口默认选择：**编译命令行指定的 source file 所属模块**内的 `fn main`（若其签名匹配下述允许形式）
     - 允许的入口签名（Frozen，v1）：
       - `fn main() {}`
-      - `fn main(args: string[]) {}`
       - `fn main(args: string[]) int {}`：其返回的 `int` 作为进程退出码（0=成功）
     - `fn main() int {}` 不作为入口（它只是一个普通函数，可被显式调用）
     - 当存在多个入口候选（例如入口模块不包含 `main`，但导入模块包含），需要使用 CLI `--entry <module>` 指定入口模块
       - `--entry` 的 `<module>` 使用与 `import "..."` 相同的路径解析规则（相对入口模块目录；支持 `std/`）
+    - `main` 是保留标识符（Frozen，v1）：
+      - 仅允许用于上述入口函数名 `fn main ...`
+      - 任何其他场景（变量/参数/struct/object/enum/trait 名称，或 `fn main` 但签名不匹配）均为编译错误
 - 当前限制：
   - 只支持字符串字面量路径（不支持表达式路径）
   - 仅支持导入 `fn/struct/trait/object/enum`；不支持导入模块级变量

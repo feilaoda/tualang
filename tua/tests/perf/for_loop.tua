@@ -14,14 +14,14 @@ fn loop(u:int, r:int, t:int) -> int {
     return res
 }
 
-let u = Int.parse(ARGV[1]) ?? 10
-let r = Int.parse(ARGV[2]) ?? 10
-let times = Int.parse(ARGV[3]) ?? 100
-println(loop(u,r,times))
-
-object Main {
-  fn main(argv:string[]) -> int{
-    println(loop(10,10,100))
+fn main(args: string[]) int {
+    // Use `tuac file.tua u r times`; defaults are stable for CI/bench runs.
+    let u: int = 10
+    let r: int = 10
+    let times: int = 100
+    if args.len() > 1 { u = Int.parse(args[1]) ?? 10 }
+    if args.len() > 2 { r = Int.parse(args[2]) ?? 10 }
+    if args.len() > 3 { times = Int.parse(args[3]) ?? 100 }
+    println(loop(u, r, times))
     return 0
-  }
 }

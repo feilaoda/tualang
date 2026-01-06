@@ -908,6 +908,47 @@ static int tokenTextEquals(const Token* tok, const char* s) {
     return tok->length == n && memcmp(tok->start, s, (size_t)n) == 0;
 }
 
+static int tokenIsReservedIdent(const Token* tok) {
+    if (!tok) return 0;
+    // `main` is reserved for program entry only.
+    if (tokenTextEquals(tok, "main")) return 1;
+    return 0;
+}
+
+static void validateReservedIdent(Compiler* compiler, const char* modulePath, const Token* tok, const char* kind) {
+    if (!compiler || !tok) return;
+    if (!tokenIsReservedIdent(tok)) return;
+    analyzeErrorAt(compiler, modulePath, tok->line, "reserved identifier '%.*s' cannot be used as %s", tok->length, tok->start, kind ? kind : "name");
+}
+
+static int isAllowedMainSignature(FuncStmt* fn) {
+    if (!fn) return 0;
+    if (!fn->body) return 0;
+    if (fn->typeParams && fn->typeParams->length > 0) return 0;
+    if (!tokenTextEquals(&fn->name, "main")) return 0;
+
+    int paramCount = fn->params ? fn->params->length : 0;
+    TypeKind retK = TYPE_VOID;
+    if (fn->returnTypes && fn->returnTypes->length > 0) {
+        Type* rt = (Type*)listGet(fn->returnTypes, 0);
+        if (rt) retK = rt->kind;
+    } else if (fn->returnType) {
+        retK = fn->returnType->kind;
+    }
+
+    if (paramCount == 0) {
+        return retK == TYPE_VOID;
+    }
+    if (paramCount != 1) return 0;
+    Parameter* p0 = (Parameter*)listGet(fn->params, 0);
+    if (!p0 || !p0->type) return 0;
+    // Only accept dynamic `string[]`.
+    if (p0->type->kind != TYPE_ARRAY) return 0;
+    if (!p0->type->inner || p0->type->inner->kind != TYPE_STRING) return 0;
+    if (p0->type->arrayLen != -1) return 0;
+    return retK == TYPE_INT;
+}
+
 // Detect `b.slice(off, n)` where `b` is a bytes variable.
 static const Token* bytesSliceOwnerName(Expr* expr) {
     expr = unwrapGrouping(expr);
@@ -2602,6 +2643,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
     switch (stmt->type) {
         case STMT_VAR: {
             VarStmt* v = (VarStmt*)stmt;
+            validateReservedIdent(compiler, modulePath, &v->name, "variable name");
             AType* annotated = v->type ? atFromAstType(v->type) : NULL;
             AType* initTy = NULL;
 
@@ -3098,12 +3140,24 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
         }
         case STMT_FUNC: {
             FuncStmt* fn = (FuncStmt*)stmt;
+            // `main` is reserved: only `fn main() {}` or `fn main(args: string[]) int {}` are allowed.
+            if (tokenTextEquals(&fn->name, "main")) {
+                if (!isAllowedMainSignature(fn)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        fn->name.line,
+                        "invalid main signature; allowed: `fn main() {}`, `fn main(args: string[]) int {}`"
+                    );
+                }
+            }
             // Extern functions have no body; skip return-path checks.
             if (!fn->body) break;
             Scope* fnScope = scopePush(scope);
             for (ListNode* p = fn->params ? fn->params->head : NULL; p != NULL; p = p->next) {
                 Parameter* param = (Parameter*)p->data;
                 if (!param) continue;
+                validateReservedIdent(compiler, modulePath, &param->name, "parameter name");
                 AType* pt = param->type ? atFromAstType(param->type) : atNew(AT_ANY);
                 int isRef = (param->type && param->type->kind == TYPE_REF) ? 1 : 0;
                 int isConst = (param->mode == PARAM_CONST) ? 1 : 0;
@@ -3132,6 +3186,26 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     fn->name.start
                 );
             }
+            break;
+        }
+        case STMT_STRUCT: {
+            StructStmt* s = (StructStmt*)stmt;
+            validateReservedIdent(compiler, modulePath, &s->name, "struct name");
+            break;
+        }
+        case STMT_OBJECT: {
+            ObjectStmt* o = (ObjectStmt*)stmt;
+            validateReservedIdent(compiler, modulePath, &o->name, "object name");
+            break;
+        }
+        case STMT_ENUM: {
+            EnumStmt* e = (EnumStmt*)stmt;
+            validateReservedIdent(compiler, modulePath, &e->name, "enum name");
+            break;
+        }
+        case STMT_TRAIT: {
+            TraitStmt* t = (TraitStmt*)stmt;
+            validateReservedIdent(compiler, modulePath, &t->name, "trait name");
             break;
         }
         case STMT_DESTRUCTURE: {

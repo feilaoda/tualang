@@ -88,7 +88,7 @@
 - [ ] 体验与工程化：
   - [x] 统一诊断格式（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时）
   - [x] 模块顶层仅允许声明（第一版）：禁止模块顶层 `let/const` 与可执行语句（含顶层 `assert`），消除初始化顺序问题
-  - [x] 程序入口 `main`（第一版）：支持 `fn main() {}` / `fn main(args:string[]) {}` / `fn main(args:string[]) int {}`，并支持 `tuac --entry <module>` 选择入口模块
+  - [x] 程序入口 `main`（第一版）：支持 `fn main() {}` / `fn main(args:string[]) int {}`，并支持 `tuac --entry <module>` 选择入口模块
   - [x] tests runner 增强（第一版）：支持 `// tuac: <flags>` 与 `// expect-exit: <code>` 指令
   - [ ] 补 examples 覆盖边界
   - [ ] 脚本批量跑 examples
