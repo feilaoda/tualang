@@ -3,6 +3,9 @@ import "std/utf8" as utf8
 
 extern fn tua_map_new() -> map
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
+extern fn tua_json_scan_top_level_string(b: bytes, key: string, out: &string) int
+extern fn tua_json_scan_top_level_long(b: bytes, key: string, out: &long) int
+extern fn tua_json_scan_top_level_bool(b: bytes, key: string, out: &int) int
 
 private fn _isWs(c: int) -> bool {
     return c == 32 || c == 10 || c == 13 || c == 9
@@ -23,7 +26,8 @@ private fn _hexVal(c: int) -> int {
 
 private fn _skipWs(b: bytes, pos: long, n: long) -> int, long {
     let i = pos
-    while i < n {
+    while true {
+        if i >= n { break }
         let e, c = bstd.Bytes.getU8(b, i)
         if e != 0 { return 1, pos }
         if !_isWs(c) { break }
@@ -34,7 +38,8 @@ private fn _skipWs(b: bytes, pos: long, n: long) -> int, long {
 
 private fn _hasBackslash(b: bytes, start: long, end: long) -> bool {
     let i = start
-    while i < end {
+    while true {
+        if i >= end { break }
         let e, c = bstd.Bytes.getU8(b, i)
         if e != 0 { return false }
         if c == 92 { return true }
@@ -50,7 +55,8 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
     if q != 34 { return 1, null, pos }
 
     let i = pos + 1L
-    while i < n {
+    while true {
+        if i >= n { break }
         let ei, c = bstd.Bytes.getU8(b, i)
         if ei != 0 { return 1, null, pos }
         if c == 92 { // '\\' (skip escaped byte so \" doesn't terminate the scan)
@@ -69,7 +75,8 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
             let tmp = bstd.Bytes.new((int)rawLen)
             let outLen: long = 0L
             let j = rawOff
-            while j < i {
+            while true {
+                if j >= i { break }
                 let ej, ch = bstd.Bytes.getU8(b, j)
                 if ej != 0 { return 1, null, pos }
                 if ch != 92 { // '\\'
@@ -133,10 +140,24 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
             let out = tua_str_from_bytes_copy(tmp, 0L, outLen)
             return 0, out, i + 1L
         }
-        if c < 32 { return 1, null, pos }
+        if c <= 31 { return 1, null, pos }
         i = i + 1L
     }
     return 1, null, pos
+}
+
+private fn _pow10i(exp: int) -> double {
+    // exp >= 0
+    let e: u32 = (u32)exp
+    let base: double = 10.0
+    let out: double = 1.0
+    while e > (u32)0 {
+        let bit = e & (u32)1
+        if bit != (u32)0 { out = out * base }
+        base = base * base
+        e = e >> (u32)1
+    }
+    return out
 }
 
 private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
@@ -158,7 +179,8 @@ private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
     if c1 == 48 {
         i = i + 1L
     } else if c1 >= 49 && c1 <= 57 {
-        while i < n {
+        while true {
+            if i >= n { break }
             let ed, cd = bstd.Bytes.getU8(b, i)
             if ed != 0 { return 1, null, pos }
             if !_isDigit(cd) { break }
@@ -182,7 +204,8 @@ private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
             let edg, dg = bstd.Bytes.getU8(b, i)
             if edg != 0 { return 1, null, pos }
             if !_isDigit(dg) { return 1, null, pos }
-            while i < n {
+            while true {
+                if i >= n { break }
                 let ed2, cd2 = bstd.Bytes.getU8(b, i)
                 if ed2 != 0 { return 1, null, pos }
                 if !_isDigit(cd2) { break }
@@ -210,7 +233,8 @@ private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
             let ed0, d0 = bstd.Bytes.getU8(b, i)
             if ed0 != 0 { return 1, null, pos }
             if !_isDigit(d0) { return 1, null, pos }
-            while i < n {
+            while true {
+                if i >= n { break }
                 let ed1, d1 = bstd.Bytes.getU8(b, i)
                 if ed1 != 0 { return 1, null, pos }
                 if !_isDigit(d1) { break }
@@ -224,13 +248,12 @@ private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
     if isFloat != 0 {
         let v: double = (double)intPart
         if fracDiv != 1.0 { v = v + (frac / fracDiv) }
-        if exp > 0 {
-            let k: int = 0
-            while k < exp { v = v * 10.0; k = k + 1 }
-        } else if exp < 0 {
-            let k: int = 0
-            let m: int = -exp
-            while k < m { v = v / 10.0; k = k + 1 }
+        if exp != 0 {
+            let a: int = exp
+            if a < 0 { a = -a }
+            let s = _pow10i(a)
+            if exp > 0 { v = v * s }
+            else { v = v / s }
         }
         if neg != 0 { v = -v }
         let av:any = v
@@ -364,7 +387,8 @@ private fn _parseValue(b: bytes, pos: long, n: long) -> int, any, long {
 
 private fn _skipLiteral(b: bytes, pos: long, n: long, lit: int[]) -> int, long {
     let i: long = 0L
-    while i < (long)lit.len() {
+    while true {
+        if i >= (long)lit.len() { break }
         let p = pos + i
         if p >= n { return 1, pos }
         let e, c = bstd.Bytes.getU8(b, p)
@@ -382,7 +406,8 @@ private fn _skipString(b: bytes, pos: long, n: long) -> int, long {
     if q != 34 { return 1, pos }
 
     let i = pos + 1L
-    while i < n {
+    while true {
+        if i >= n { break }
         let ei, c = bstd.Bytes.getU8(b, i)
         if ei != 0 { return 1, pos }
         if c == 92 {
@@ -391,7 +416,7 @@ private fn _skipString(b: bytes, pos: long, n: long) -> int, long {
             continue
         }
         if c == 34 { return 0, i + 1L }
-        if c < 32 { return 1, pos }
+        if c <= 31 { return 1, pos }
         i = i + 1L
     }
     return 1, pos
@@ -413,7 +438,8 @@ private fn _skipNumber(b: bytes, pos: long, n: long) -> int, long {
     if c1 == 48 {
         i = i + 1L
     } else if c1 >= 49 && c1 <= 57 {
-        while i < n {
+        while true {
+            if i >= n { break }
             let ed, cd = bstd.Bytes.getU8(b, i)
             if ed != 0 { return 1, pos }
             if !_isDigit(cd) { break }
@@ -432,7 +458,8 @@ private fn _skipNumber(b: bytes, pos: long, n: long) -> int, long {
             let edg, dg = bstd.Bytes.getU8(b, i)
             if edg != 0 { return 1, pos }
             if !_isDigit(dg) { return 1, pos }
-            while i < n {
+            while true {
+                if i >= n { break }
                 let ed2, cd2 = bstd.Bytes.getU8(b, i)
                 if ed2 != 0 { return 1, pos }
                 if !_isDigit(cd2) { break }
@@ -454,7 +481,8 @@ private fn _skipNumber(b: bytes, pos: long, n: long) -> int, long {
             let ed0, d0 = bstd.Bytes.getU8(b, i)
             if ed0 != 0 { return 1, pos }
             if !_isDigit(d0) { return 1, pos }
-            while i < n {
+            while true {
+                if i >= n { break }
                 let ed1, d1 = bstd.Bytes.getU8(b, i)
                 if ed1 != 0 { return 1, pos }
                 if !_isDigit(d1) { break }
@@ -584,6 +612,12 @@ object Json {
     // - 1, null on parse error
     fn scanTopLevelString(b: bytes, key: string) -> int, string {
         if b == null || key == null { return 1, null }
+
+        let out: string = null
+        let ce = tua_json_scan_top_level_string(b, key, &out)
+        if ce == 0 { return 0, out }
+        if ce == 2 { return 2, null }
+
         let n = bstd.Bytes.len(b)
         let se, i = _skipWs(b, 0L, n)
         if se != 0 { return 1, null }
@@ -633,5 +667,220 @@ object Json {
             return 1, null
         }
         return 2, null
+    }
+
+    // Scan a top-level JSON object and parse the value for `key` without building the full DOM.
+    // Unmatched keys are skipped via `_skipValue`.
+    // Error codes: 0 ok, 1 parse error, 2 not found.
+    fn scanTopLevelValue(b: bytes, key: string) -> int, any {
+        if b == null || key == null { return 1, null }
+        let n = bstd.Bytes.len(b)
+        let se, i = _skipWs(b, 0L, n)
+        if se != 0 { return 1, null }
+        if i >= n { return 1, null }
+        let eo, c = bstd.Bytes.getU8(b, i)
+        if eo != 0 || c != 123 { return 1, null } // '{'
+
+        let at = i + 1L
+        let se2, j = _skipWs(b, at, n)
+        if se2 != 0 { return 1, null }
+        if j < n {
+            let ee, cc = bstd.Bytes.getU8(b, j)
+            if ee != 0 { return 1, null }
+            if cc == 125 { return 2, null } // empty object
+        }
+        at = j
+        while true {
+            let se3, kpos = _skipWs(b, at, n)
+            if se3 != 0 { return 1, null }
+            let ke, k, afterKey = _parseString(b, kpos, n)
+            if ke != 0 { return 1, null }
+            let se4, afterWs = _skipWs(b, afterKey, n)
+            if se4 != 0 { return 1, null }
+            if afterWs >= n { return 1, null }
+            let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+            if ec2 != 0 || colon != 58 { return 1, null }
+
+            if k == key {
+                let ve, v, afterVal = _parseValue(b, afterWs + 1L, n)
+                let _ = afterVal
+                if ve != 0 { return 1, null }
+                return 0, v
+            }
+
+            let ve, afterVal = _skipValue(b, afterWs + 1L, n)
+            if ve != 0 { return 1, null }
+
+            let se5, afterWs2 = _skipWs(b, afterVal, n)
+            if se5 != 0 { return 1, null }
+            if afterWs2 >= n { return 1, null }
+            let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+            if ec3 != 0 { return 1, null }
+            if sep == 44 { at = afterWs2 + 1L; continue }
+            if sep == 125 { break }
+            return 1, null
+        }
+        return 2, null
+    }
+
+    // Scan a top-level JSON object and return the integer (no fraction/exponent) value for `key`.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn scanTopLevelLong(b: bytes, key: string) -> int, long {
+        if b == null || key == null { return 1, 0L }
+
+        let out: long = 0L
+        let ce = tua_json_scan_top_level_long(b, key, &out)
+        if ce == 0 { return 0, out }
+        if ce == 2 { return 2, 0L }
+
+        let n = bstd.Bytes.len(b)
+        let se, i = _skipWs(b, 0L, n)
+        if se != 0 { return 1, 0L }
+        if i >= n { return 1, 0L }
+        let eo, c = bstd.Bytes.getU8(b, i)
+        if eo != 0 || c != 123 { return 1, 0L } // '{'
+
+        let at = i + 1L
+        let se2, j = _skipWs(b, at, n)
+        if se2 != 0 { return 1, 0L }
+        if j < n {
+            let ee, cc = bstd.Bytes.getU8(b, j)
+            if ee != 0 { return 1, 0L }
+            if cc == 125 { return 2, 0L } // empty object
+        }
+        at = j
+        while true {
+            let se3, kpos = _skipWs(b, at, n)
+            if se3 != 0 { return 1, 0L }
+            let ke, k, afterKey = _parseString(b, kpos, n)
+            if ke != 0 { return 1, 0L }
+            let se4, afterWs = _skipWs(b, afterKey, n)
+            if se4 != 0 { return 1, 0L }
+            if afterWs >= n { return 1, 0L }
+            let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+            if ec2 != 0 || colon != 58 { return 1, 0L }
+
+            let se5, vpos = _skipWs(b, afterWs + 1L, n)
+            if se5 != 0 { return 1, 0L }
+            if vpos >= n { return 1, 0L }
+
+            if k == key {
+                // Parse strict integer at vpos.
+                let p = vpos
+                let e0, c0 = bstd.Bytes.getU8(b, p)
+                if e0 != 0 { return 1, 0L }
+                let sign: long = 1L
+                if c0 == 45 {
+                    sign = -1L
+                    p = p + 1L
+                    if p >= n { return 1, 0L }
+                }
+                let e1, d0 = bstd.Bytes.getU8(b, p)
+                if e1 != 0 { return 1, 0L }
+                if !_isDigit(d0) { return 1, 0L }
+                let v: long = 0L
+                while true {
+                    if p >= n { break }
+                    let ed, d = bstd.Bytes.getU8(b, p)
+                    if ed != 0 { return 1, 0L }
+                    if !_isDigit(d) { break }
+                    v = (v * 10L) + (long)(d - 48)
+                    p = p + 1L
+                }
+                // Reject float/exponent forms.
+                if p < n {
+                    let ee2, nxt = bstd.Bytes.getU8(b, p)
+                    if ee2 != 0 { return 1, 0L }
+                    if nxt == 46 || nxt == 101 || nxt == 69 { return 1, 0L }
+                }
+                return 0, v * sign
+            }
+
+            let ve, afterVal = _skipValue(b, vpos, n)
+            if ve != 0 { return 1, 0L }
+
+            let se6, afterWs2 = _skipWs(b, afterVal, n)
+            if se6 != 0 { return 1, 0L }
+            if afterWs2 >= n { return 1, 0L }
+            let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+            if ec3 != 0 { return 1, 0L }
+            if sep == 44 { at = afterWs2 + 1L; continue }
+            if sep == 125 { break }
+            return 1, 0L
+        }
+        return 2, 0L
+    }
+
+    // Scan a top-level JSON object and return the boolean value for `key`.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn scanTopLevelBool(b: bytes, key: string) -> int, bool {
+        if b == null || key == null { return 1, false }
+
+        let outI: int = 0
+        let ce = tua_json_scan_top_level_bool(b, key, &outI)
+        if ce == 0 { return 0, outI != 0 }
+        if ce == 2 { return 2, false }
+
+        let n = bstd.Bytes.len(b)
+        let se, i = _skipWs(b, 0L, n)
+        if se != 0 { return 1, false }
+        if i >= n { return 1, false }
+        let eo, c = bstd.Bytes.getU8(b, i)
+        if eo != 0 || c != 123 { return 1, false } // '{'
+
+        let at = i + 1L
+        let se2, j = _skipWs(b, at, n)
+        if se2 != 0 { return 1, false }
+        if j < n {
+            let ee, cc = bstd.Bytes.getU8(b, j)
+            if ee != 0 { return 1, false }
+            if cc == 125 { return 2, false }
+        }
+        at = j
+        while true {
+            let se3, kpos = _skipWs(b, at, n)
+            if se3 != 0 { return 1, false }
+            let ke, k, afterKey = _parseString(b, kpos, n)
+            if ke != 0 { return 1, false }
+            let se4, afterWs = _skipWs(b, afterKey, n)
+            if se4 != 0 { return 1, false }
+            if afterWs >= n { return 1, false }
+            let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+            if ec2 != 0 || colon != 58 { return 1, false }
+
+            let se5, vpos = _skipWs(b, afterWs + 1L, n)
+            if se5 != 0 { return 1, false }
+            if vpos >= n { return 1, false }
+
+            if k == key {
+                let e0, c0 = bstd.Bytes.getU8(b, vpos)
+                if e0 != 0 { return 1, false }
+                if c0 == 116 { // true
+                    let lit:int[] = {116,114,117,101}
+                    let el, _ = _skipLiteral(b, vpos, n, lit)
+                    if el != 0 { return 1, false }
+                    return 0, true
+                }
+                if c0 == 102 { // false
+                    let lit:int[] = {102,97,108,115,101}
+                    let el, _ = _skipLiteral(b, vpos, n, lit)
+                    if el != 0 { return 1, false }
+                    return 0, false
+                }
+                return 1, false
+            }
+
+            let ve, afterVal = _skipValue(b, vpos, n)
+            if ve != 0 { return 1, false }
+            let se6, afterWs2 = _skipWs(b, afterVal, n)
+            if se6 != 0 { return 1, false }
+            if afterWs2 >= n { return 1, false }
+            let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+            if ec3 != 0 { return 1, false }
+            if sep == 44 { at = afterWs2 + 1L; continue }
+            if sep == 125 { break }
+            return 1, false
+        }
+        return 2, false
     }
 }

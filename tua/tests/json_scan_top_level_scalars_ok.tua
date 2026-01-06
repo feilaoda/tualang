@@ -1,0 +1,42 @@
+import "std/bytes" as bstd
+import "std/json" as j
+
+private fn _mk() -> bytes {
+    // {"a":1,"b":true,"c":false,"d":[1,2,3]}
+    let tmp = bstd.Bytes.new(64)
+    let cs:int[] = {
+        123,
+        34,97,34,58,49,44,
+        34,98,34,58,116,114,117,101,44,
+        34,99,34,58,102,97,108,115,101,44,
+        34,100,34,58,91,49,44,50,44,51,93,
+        125
+    }
+    let i: long = 0L
+    while i < (long)cs.len() {
+        bstd.Bytes.setU8(tmp, i, cs[(int)i])
+        i = i + 1L
+    }
+    let out = bstd.Bytes.new((int)i)
+    bstd.Bytes.copy(out, 0L, tmp, 0L, i)
+    return out
+}
+
+fn main() {
+    let b = _mk()
+    let e0, a = j.Json.scanTopLevelLong(b, "a")
+    assert(e0 == 0)
+    assert(a == 1L)
+
+    let e1, bt = j.Json.scanTopLevelBool(b, "b")
+    assert(e1 == 0)
+    assert(bt == true)
+    let e2, bf = j.Json.scanTopLevelBool(b, "c")
+    assert(e2 == 0)
+    assert(bf == false)
+
+    let e3, miss = j.Json.scanTopLevelLong(b, "missing")
+    let _ = miss
+    assert(e3 == 2)
+}
+

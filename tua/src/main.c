@@ -1480,9 +1480,10 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     char* mapC = joinPath(srcDir, "tua_map.c");
     char* arrC = joinPath(srcDir, "tua_array.c");
     char* bytesC = joinPath(srcDir, "tua_bytes.c");
+    char* jsonC = joinPath(srcDir, "tua_json.c");
     char* rtArchive = findRuntimeArchivePath(argv0);
 
-    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC> <bytesC>
+    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC> <bytesC> <jsonC>
     const char* clangExe = "clang";
     const char* optFlag = "-O0";
     switch (compiler->llvmOptLevel) {
@@ -1496,7 +1497,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     int linkLibCount = compiler->linkLibs ? compiler->linkLibs->length : 0;
     int linkArgCount = compiler->linkArgs ? compiler->linkArgs->length : 0;
 
-    int cap = 32 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
+    int cap = 34 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
     char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
 
@@ -1511,6 +1512,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     args[n++] = mapC;
     args[n++] = arrC;
     if (bytesC && fileExists(bytesC)) args[n++] = bytesC;
+    if (jsonC && fileExists(jsonC)) args[n++] = jsonC;
     if (rtArchive) args[n++] = rtArchive;
 
     // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
@@ -1542,6 +1544,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     free(mapC);
     free(arrC);
     free(bytesC);
+    free(jsonC);
     free(rtArchive);
     free(srcDir);
     free(args);

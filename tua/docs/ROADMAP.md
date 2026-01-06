@@ -250,6 +250,14 @@
 - [x] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化（`Bytes.copy`）+ mmap-backed file reader（避免逐字节 set/get）
 - [x] `std.utf8`（v0）：UTF-8 校验 + codepoint 解码 + 边界切分（用于 tokenizer、文本切片）
 - [x] `std.json`（v0）：最小 JSON 解析（用于模型配置/metadata/推理参数）
+- [x] `std.json`（v1）：性能与可控性
+  - [x] string 解析快路径：无转义时零额外 buffer（直接 copy 子串）
+  - [x] scan API：按需读取顶层字段（不构建整个 DOM），适配 `tokenizer.json` 等大文件场景
+  - [x] scan API（v1.1）：更多顶层标量类型（string/bool/long + 按需解析 value 子树）
+  - [ ] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
+  - [ ] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
+  - [x] C runtime 加速（可选）：`tua_json_scan_top_level_{string,long,bool}` 在 C 侧扫描/跳过，`std.json` 优先走 C 快路径
+  - [x] 数值解析优化：指数缩放改为 O(log|exp|)（pow10/exp-by-squaring）
 - [ ] Tokenizer：BPE（GPT-2 风格）或 sentencepiece（择一），先做正确性再做性能
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
