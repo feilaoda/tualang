@@ -6,6 +6,9 @@ extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
 extern fn tua_json_scan_top_level_string(b: bytes, key: string, out: &string) int
 extern fn tua_json_scan_top_level_long(b: bytes, key: string, out: &long) int
 extern fn tua_json_scan_top_level_bool(b: bytes, key: string, out: &int) int
+extern fn tua_json_scan_key_path_string(b: bytes, path: string, out: &string) int
+extern fn tua_json_scan_key_path_long(b: bytes, path: string, out: &long) int
+extern fn tua_json_scan_key_path_bool(b: bytes, path: string, out: &int) int
 
 private fn _isWs(c: int) -> bool {
     return c == 32 || c == 10 || c == 13 || c == 9
@@ -882,5 +885,38 @@ object Json {
             return 1, false
         }
         return 2, false
+    }
+
+    // Scan a nested JSON object by dotted key path (e.g. "a.b.c") and return the string value.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn scanKeyPathString(b: bytes, path: string) -> int, string {
+        if b == null || path == null { return 1, null }
+        let out: string = null
+        let ce = tua_json_scan_key_path_string(b, path, &out)
+        if ce == 0 { return 0, out }
+        if ce == 2 { return 2, null }
+        return 1, null
+    }
+
+    // Scan a nested JSON object by dotted key path (e.g. "a.b.c") and return the integer value (no fraction/exponent).
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn scanKeyPathLong(b: bytes, path: string) -> int, long {
+        if b == null || path == null { return 1, 0L }
+        let out: long = 0L
+        let ce = tua_json_scan_key_path_long(b, path, &out)
+        if ce == 0 { return 0, out }
+        if ce == 2 { return 2, 0L }
+        return 1, 0L
+    }
+
+    // Scan a nested JSON object by dotted key path (e.g. "a.b.c") and return the boolean value.
+    // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
+    fn scanKeyPathBool(b: bytes, path: string) -> int, bool {
+        if b == null || path == null { return 1, false }
+        let outI: int = 0
+        let ce = tua_json_scan_key_path_bool(b, path, &outI)
+        if ce == 0 { return 0, outI != 0 }
+        if ce == 2 { return 2, false }
+        return 1, false
     }
 }

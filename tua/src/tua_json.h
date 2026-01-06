@@ -26,4 +26,25 @@ int32_t tua_json_scan_top_level_long(tua_bytes* b, const char* key, int64_t* out
 // - 1: parse error/invalid input (out_bool set to 0)
 int32_t tua_json_scan_top_level_bool(tua_bytes* b, const char* key, int32_t* out_bool);
 
+// Scan a nested JSON object by dotted key path (e.g. "a.b.c") and extract a string value.
+// Returns:
+// - 0: found, writes newly-allocated string to *out_str
+// - 2: not found (out_str set to NULL)
+// - 1: parse error/type mismatch/invalid input (out_str set to NULL)
+int32_t tua_json_scan_key_path_string(tua_bytes* b, const char* path, char** out_str);
+
+// Scan a nested JSON object by dotted key path (e.g. "a.b.c") and extract a strict integer value.
+// Returns:
+// - 0: found, writes value to *out_val
+// - 2: not found (out_val set to 0)
+// - 1: parse error/type mismatch/invalid input (out_val set to 0)
+int32_t tua_json_scan_key_path_long(tua_bytes* b, const char* path, int64_t* out_val);
+
+// Scan a nested JSON object by dotted key path (e.g. "a.b.c") and extract a boolean value.
+// Returns:
+// - 0: found, writes 0/1 to *out_bool
+// - 2: not found (out_bool set to 0)
+// - 1: parse error/type mismatch/invalid input (out_bool set to 0)
+int32_t tua_json_scan_key_path_bool(tua_bytes* b, const char* path, int32_t* out_bool);
+
 #endif

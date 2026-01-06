@@ -254,7 +254,7 @@
   - [x] string 解析快路径：无转义时零额外 buffer（直接 copy 子串）
   - [x] scan API：按需读取顶层字段（不构建整个 DOM），适配 `tokenizer.json` 等大文件场景
   - [x] scan API（v1.1）：更多顶层标量类型（string/bool/long + 按需解析 value 子树）
-  - [ ] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
+  - [x] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
   - [ ] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
   - [x] C runtime 加速（可选）：`tua_json_scan_top_level_{string,long,bool}` 在 C 侧扫描/跳过，`std.json` 优先走 C 快路径
   - [x] 数值解析优化：指数缩放改为 O(log|exp|)（pow10/exp-by-squaring）

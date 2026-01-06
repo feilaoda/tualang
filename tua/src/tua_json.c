@@ -153,10 +153,9 @@ static int decode_string_alloc(tua_bytes* b, const uint8_t* p, int64_t n, int64_
     return 0;
 }
 
-static int string_equals_key(tua_bytes* b, const uint8_t* p, int64_t n, int64_t pos_quote, int64_t end_quote, int has_esc, const char* key) {
+static int string_equals_key_span(tua_bytes* b, const uint8_t* p, int64_t n, int64_t pos_quote, int64_t end_quote, int has_esc, const char* key, size_t keyLen) {
     (void)b;
     if (!key) return 0;
-    size_t keyLen = strlen(key);
     int64_t rawOff = pos_quote + 1;
     int64_t rawLen = end_quote - rawOff;
     if (rawLen < 0) return 0;
@@ -227,6 +226,11 @@ static int string_equals_key(tua_bytes* b, const uint8_t* p, int64_t n, int64_t 
         return 0;
     }
     return ki == keyLen;
+}
+
+static int string_equals_key(tua_bytes* b, const uint8_t* p, int64_t n, int64_t pos_quote, int64_t end_quote, int has_esc, const char* key) {
+    if (!key) return 0;
+    return string_equals_key_span(b, p, n, pos_quote, end_quote, has_esc, key, strlen(key));
 }
 
 static int skip_string(const uint8_t* p, int64_t n, int64_t* io) {
@@ -410,6 +414,60 @@ static int scan_top_level_find_value_pos(tua_bytes* b, const uint8_t* p, int64_t
     }
 }
 
+static int scan_object_find_value_pos_span(
+    tua_bytes* b,
+    const uint8_t* p,
+    int64_t n,
+    int64_t obj_pos,
+    const char* key,
+    size_t key_len,
+    int64_t* out_value_pos
+) {
+    (void)b;
+    if (!p || !key || !out_value_pos) return 1;
+    *out_value_pos = 0;
+
+    int64_t i = obj_pos;
+    skip_ws(p, n, &i);
+    if (i >= n || p[i] != '{') return 1;
+    i++;
+    skip_ws(p, n, &i);
+    if (i >= n) return 1;
+    if (p[i] == '}') return 2;
+
+    for (;;) {
+        skip_ws(p, n, &i);
+        if (i >= n || p[i] != '"') return 1;
+
+        int64_t endq = 0;
+        int hasEsc = 0;
+        if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) return 1;
+        int match = string_equals_key_span(b, p, n, i, endq, hasEsc, key, key_len);
+        i = endq + 1;
+
+        skip_ws(p, n, &i);
+        if (i >= n || p[i] != ':') return 1;
+        i++;
+        skip_ws(p, n, &i);
+        if (i >= n) return 1;
+
+        if (match) {
+            *out_value_pos = i;
+            return 0;
+        }
+
+        if (skip_value(p, n, &i, 0) != 0) return 1;
+        skip_ws(p, n, &i);
+        if (i >= n) return 1;
+        if (p[i] == ',') {
+            i++;
+            continue;
+        }
+        if (p[i] == '}') return 2;
+        return 1;
+    }
+}
+
 static int parse_int64_strict(const uint8_t* p, int64_t n, int64_t pos, int64_t* out_val, int64_t* out_end) {
     if (!p || !out_val || !out_end) return 1;
     *out_val = 0;
@@ -519,6 +577,136 @@ int32_t tua_json_scan_top_level_bool(tua_bytes* b, const char* key, int32_t* out
 
     int64_t valuePos = 0;
     int32_t fe = (int32_t)scan_top_level_find_value_pos(b, p, n, key, &valuePos);
+    if (fe != 0) return fe;
+
+    if (valuePos >= n) return 1;
+    if (p[valuePos] == 't') {
+        if (valuePos + 4 > n) return 1;
+        if (p[valuePos + 1] != 'r' || p[valuePos + 2] != 'u' || p[valuePos + 3] != 'e') return 1;
+        if (check_object_value_boundary(p, n, valuePos + 4) != 0) return 1;
+        *out_bool = 1;
+        return 0;
+    }
+    if (p[valuePos] == 'f') {
+        if (valuePos + 5 > n) return 1;
+        if (p[valuePos + 1] != 'a' || p[valuePos + 2] != 'l' || p[valuePos + 3] != 's' || p[valuePos + 4] != 'e') return 1;
+        if (check_object_value_boundary(p, n, valuePos + 5) != 0) return 1;
+        *out_bool = 0;
+        return 0;
+    }
+    return 1;
+}
+
+static int scan_key_path_find_value_pos(tua_bytes* b, const uint8_t* p, int64_t n, const char* path, int64_t* out_value_pos) {
+    if (!b || !p || !path || !out_value_pos) return 1;
+    *out_value_pos = 0;
+
+    int64_t objPos = 0;
+    skip_ws(p, n, &objPos);
+    if (objPos >= n || p[objPos] != '{') return 1;
+
+    const char* seg = path;
+    const char* cur = path;
+    while (*cur) {
+        if (*cur == '.') break;
+        cur++;
+    }
+    if (cur == seg) return 1;
+
+    for (;;) {
+        size_t segLen = (size_t)(cur - seg);
+        int64_t valuePos = 0;
+        int r = scan_object_find_value_pos_span(b, p, n, objPos, seg, segLen, &valuePos);
+        if (r != 0) return r;
+
+        if (*cur == '\0') {
+            *out_value_pos = valuePos;
+            return 0;
+        }
+
+        // More segments: value must be an object.
+        if (valuePos >= n || p[valuePos] != '{') return 1;
+        objPos = valuePos;
+
+        // Advance to next segment.
+        cur++; // skip '.'
+        seg = cur;
+        if (*seg == '\0') return 1;
+        while (*cur) {
+            if (*cur == '.') break;
+            cur++;
+        }
+        if (cur == seg) return 1;
+    }
+}
+
+int32_t tua_json_scan_key_path_string(tua_bytes* b, const char* path, char** out_str) {
+    if (out_str) *out_str = NULL;
+    if (!out_str || !b || !path) return 1;
+
+    int64_t n = tua_bytes_len(b);
+    uint8_t* data = tua_bytes_data(b);
+    if (n < 0 || (n > 0 && !data)) return 1;
+    const uint8_t* p = (const uint8_t*)data;
+
+    int64_t valuePos = 0;
+    int32_t fe = (int32_t)scan_key_path_find_value_pos(b, p, n, path, &valuePos);
+    if (fe != 0) return fe;
+
+    if (valuePos >= n || p[valuePos] != '"') return 1;
+    int64_t vendq = 0;
+    int vHasEsc = 0;
+    if (parse_string_end(p, n, valuePos, &vendq, &vHasEsc) != 0) return 1;
+    int64_t rawOff = valuePos + 1;
+    int64_t rawLen = vendq - rawOff;
+    if (rawLen < 0) return 1;
+    char* s = NULL;
+    if (!vHasEsc) {
+        s = tua_str_from_bytes_copy(b, rawOff, rawLen);
+        if (!s) return 1;
+    } else {
+        if (decode_string_alloc(b, p, n, rawOff, vendq, &s) != 0) return 1;
+    }
+    if (check_object_value_boundary(p, n, vendq + 1) != 0) {
+        tua_free(s);
+        return 1;
+    }
+    *out_str = s;
+    return 0;
+}
+
+int32_t tua_json_scan_key_path_long(tua_bytes* b, const char* path, int64_t* out_val) {
+    if (out_val) *out_val = 0;
+    if (!out_val || !b || !path) return 1;
+
+    int64_t n = tua_bytes_len(b);
+    uint8_t* data = tua_bytes_data(b);
+    if (n < 0 || (n > 0 && !data)) return 1;
+    const uint8_t* p = (const uint8_t*)data;
+
+    int64_t valuePos = 0;
+    int32_t fe = (int32_t)scan_key_path_find_value_pos(b, p, n, path, &valuePos);
+    if (fe != 0) return fe;
+
+    int64_t endPos = 0;
+    int64_t v = 0;
+    if (parse_int64_strict(p, n, valuePos, &v, &endPos) != 0) return 1;
+    if (check_object_value_boundary(p, n, endPos) != 0) return 1;
+    *out_val = v;
+    return 0;
+}
+
+int32_t tua_json_scan_key_path_bool(tua_bytes* b, const char* path, int32_t* out_bool) {
+    if (out_bool) *out_bool = 0;
+    if (!out_bool || !b || !path) return 1;
+
+    int64_t n = tua_bytes_len(b);
+    uint8_t* data = tua_bytes_data(b);
+    if (n < 0 || (n > 0 && !data)) return 1;
+    const uint8_t* p = (const uint8_t*)data;
+
+    int64_t valuePos = 0;
+    int32_t fe = (int32_t)scan_key_path_find_value_pos(b, p, n, path, &valuePos);
     if (fe != 0) return fe;
 
     if (valuePos >= n) return 1;

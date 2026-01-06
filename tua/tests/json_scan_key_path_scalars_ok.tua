@@ -1,0 +1,30 @@
+import "std/bytes" as bstd
+import "std/fs" as fs
+import "std/json" as json
+import "std/rt" as rt
+
+fn main() {
+    let fe, data, _ = fs.Fs.readFile("tests/fixtures/json_key_path_scalars.json")
+    assert(fe == 0)
+    assert(data != null)
+    let b = bstd.Bytes.fromString(data)
+    rt.Rt.free(data)
+
+    let en, n = json.Json.scanKeyPathLong(b, "a.b.n")
+    assert(en == 0)
+    assert(n == 123L)
+
+    let et, t = json.Json.scanKeyPathBool(b, "a.b.t")
+    assert(et == 0)
+    assert(t == true)
+
+    let ef, f = json.Json.scanKeyPathBool(b, "a.b.f")
+    assert(ef == 0)
+    assert(f == false)
+
+    let eBad1, _ = json.Json.scanKeyPathLong(b, "a.b.c")
+    assert(eBad1 == 1)
+
+    let eBad2, _ = json.Json.scanKeyPathBool(b, "a.b.n")
+    assert(eBad2 == 1)
+}
