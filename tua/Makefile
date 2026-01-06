@@ -17,7 +17,7 @@ ifeq ($(UNAME_S),Darwin)
 	RT_DEFS = -DTUA_OS_DARWIN=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_KQUEUE=1
 	# JITed Tua code resolves runtime symbols from the host process; force-load the archive.
 	RT_LINK = -Wl,-force_load,bin/libtuart.a
-	TUAC_EXTRA_LIBS =
+	TUAC_EXTRA_LIBS = -framework Accelerate
 else ifeq ($(UNAME_S),Linux)
 	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_epoll.c
 	RT_DEFS = -DTUA_OS_LINUX=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_EPOLL=1
@@ -51,22 +51,22 @@ RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
 .PHONY: test
 
 tuac: bin/libtuart.a
-	$(CC) $(CFLAGS) -O2 \
-		src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
-		src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c \
-		$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
+		$(CC) $(CFLAGS) -O2 \
+			src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
+			src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c src/tua_llm.c \
+			$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
 
 tuac-debug: bin/libtuart.a
-	$(CC) $(CFLAGS) -O0 -g -DDEBUG \
-		src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
-		src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c \
-		$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
+		$(CC) $(CFLAGS) -O0 -g -DDEBUG \
+			src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
+			src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c src/tua_llm.c \
+			$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
 
 tuac-asan:
-	$(CC) $(CFLAGS) -O0 -g -DDEBUG -fsanitize=address -fno-omit-frame-pointer \
-		src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
-		src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c \
-		$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
+		$(CC) $(CFLAGS) -O0 -g -DDEBUG -fsanitize=address -fno-omit-frame-pointer \
+			src/main.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
+			src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c src/tua_map.c src/tua_array.c src/tua_bytes.c src/tua_json.c src/tua_llm.c \
+			$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
 
 tuaparse:
 	$(CC) -I./src -Wall -O0 -g \

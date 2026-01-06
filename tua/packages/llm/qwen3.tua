@@ -1,0 +1,511 @@
+import "std/bytes" as bstd
+import "std/json" as j
+import "std/strconv" as conv
+import "std/time" as time
+
+import SafeTensors, SafeDtype from "./safetensors"
+import OpsBackend, OpTranspose from "./ops"
+import AccelerateOps from "./ops_accelerate"
+import KvContiguous, KvSpec, KvDtype, KvBudget, Kv from "./kv"
+import LlmOptions from "./options"
+
+extern fn sqrtf(x: float) float
+extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
+extern fn tua_bytes_bf16_to_f32(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
+extern fn tua_llm_add_inplace_f32(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int
+extern fn tua_llm_rmsnorm_f32(out: bytes, outOff: long, x: bytes, xOff: long, w: bytes, wOff: long, n: int, eps: float) int
+extern fn tua_llm_qk_rmsnorm_inplace_f32(x: bytes, xOff: long, nHeads: int, headDim: int, w: bytes, wOff: long, eps: float) int
+extern fn tua_llm_silu_mul_f32(out: bytes, outOff: long, gate: bytes, gateOff: long, up: bytes, upOff: long, n: long) int
+extern fn tua_llm_rope_inplace_f32(x: bytes, xOff: long, nHeads: int, headDim: int, pos: int, theta: float) int
+extern fn tua_llm_attn_decode_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
+extern fn tua_llm_argmax_f32(x: bytes, xOff: long, n: int, outIndex: &long) int
+
+struct Qwen3Config {
+    hidden: int
+    intermediate: int
+    layers: int
+    heads: int
+    kvHeads: int
+    headDim: int
+    vocab: int
+    maxPos: int
+    ropeTheta: float
+    rmsEps: float
+    bos: long
+    eos: long
+}
+
+private fn _scanLong(b: bytes, path: string) -> int, long {
+    let e, v = j.Json.scanKeyPathLong(b, path)
+    return e, v
+}
+
+private fn _scanBool(b: bytes, path: string) -> int, int {
+    let e, v = j.Json.scanKeyPathBool(b, path)
+    if v { return e, 1 }
+    return e, 0
+}
+
+// object Qwen3 is declared below, after weight/scratch structs and helpers.
+
+// Weights are stored as a single float32 arena; each tensor is a byte offset into the arena.
+// Per-layer offsets are packed as layerOffs[layer*11 + kind].
+private enum LayerW {
+    inNorm = 0,
+    postNorm = 1,
+    qNorm = 2,
+    kNorm = 3,
+    qProj = 4,
+    kProj = 5,
+    vProj = 6,
+    oProj = 7,
+    gateProj = 8,
+    upProj = 9,
+    downProj = 10,
+    _count = 11,
+}
+
+struct Qwen3Weights {
+    arena: bytes
+    offEmbed: long
+    offLmHead: long
+    offNorm: long
+    layerOffs: long[]
+}
+
+private fn _align(off: long, a: long) -> long {
+    if a <= 1L { return off }
+    let r = off - (off / a) * a
+    if r == 0L { return off }
+    return off + (a - r)
+}
+
+private fn _layerOff(offs: long[], layer: int, kind: int) -> long {
+    let idx: int = layer * (int)LayerW._count + kind
+    return offs[idx]
+}
+
+private fn _tensorNumelBF16(st: SafeTensorsFile, name: string) -> int, long, long {
+    let ie, recAny = SafeTensors.tensorInfo(st, name)
+    if ie != 0 { return 1, 0L, 0L }
+    if recAny == null { return 1, 0L, 0L }
+    let rec: map = recAny
+    let dtAny: any = rec["dtype"].unwrap()
+    if (int)dtAny != SafeDtype.bfloat16 { return 2, 0L, 0L }
+    let offAny: any = rec["dataOff"].unwrap()
+    let lenAny: any = rec["dataLen"].unwrap()
+    let dataOff: long = (long)offAny
+    let dataLen: long = (long)lenAny
+    let r = dataLen - (dataLen / 2L) * 2L
+    if dataLen < 0L { return 3, 0L, 0L }
+    if r != 0L { return 3, 0L, 0L }
+    return 0, dataOff, dataLen / 2L
+}
+
+private fn _convertTensorBF16ToF32(st: SafeTensorsFile, base: long, name: string, arena: bytes, dstOff: long) -> int, long {
+    let te, dataOff, numel = _tensorNumelBF16(st, name)
+    if te != 0 { return te, 0L }
+    let e = tua_bytes_bf16_to_f32(st.data, base + dataOff, arena, dstOff, numel)
+    if e != 0 { return 4, 0L }
+    return 0, numel
+}
+
+private fn _layerName(i: int, suffix: string) -> string {
+    return "model.layers." + conv.Int.toString(i) + "." + suffix
+}
+
+struct Qwen3Scratch {
+    x: bytes
+    x1: bytes
+    x2: bytes
+    q: bytes
+    k: bytes
+    v: bytes
+    attn: bytes
+    gate: bytes
+    up: bytes
+    inter: bytes
+    logits: bytes
+    scores: bytes
+}
+
+private fn _f32Bytes(n: long) -> bytes { return bstd.Bytes.newLong(n * 4L) }
+
+struct Qwen3State {
+    cfg: Qwen3Config
+    be: AccelerateOps
+    pos: int
+
+    // Weights (float32 arena + offsets).
+    wArena: bytes
+    wOffEmbed: long
+    wOffLmHead: long
+    wOffNorm: long
+    wLayerOffs: long[]
+
+    // KV cache (float32).
+    kvBuf: bytes
+    kvKBase: long
+    kvVBase: long
+    kvLayerBytes: long
+    kvTokenBytes: long
+    kvMaxSeq: int
+
+    // Scratch buffers (float32).
+    x: bytes
+    x1: bytes
+    x2: bytes
+    q: bytes
+    k: bytes
+    v: bytes
+    attn: bytes
+    gate: bytes
+    up: bytes
+    inter: bytes
+    logits: bytes
+    scores: bytes
+}
+
+private fn _minInt(a: int, b: int) -> int { if a < b { return a } return b }
+
+private fn _maxSeq(cfg: Qwen3Config, opts: LlmOptions) -> int {
+    let maxSeq = cfg.maxPos
+    if opts.kvMaxSeq > 0 {
+        if opts.kvMaxSeq < maxSeq { maxSeq = opts.kvMaxSeq }
+    }
+    if opts.kvMaxBytes > 0L {
+        let m2 = KvBudget.maxSeqForBytes(cfg.layers, cfg.kvHeads, cfg.headDim, (int)KvDtype.float32, opts.kvMaxBytes)
+        if m2 > 0 {
+            if m2 < maxSeq { maxSeq = m2 }
+        }
+    }
+    if maxSeq < 1 { return 1 }
+    return maxSeq
+}
+
+object Qwen3 {
+    fn loadConfig(path: string) -> int, Qwen3Config {
+        let z = Qwen3Config{ hidden: 0, intermediate: 0, layers: 0, heads: 0, kvHeads: 0, headDim: 0, vocab: 0, maxPos: 0, ropeTheta: 1000000.0, rmsEps: 0.000001, bos: 0L, eos: 0L }
+
+        let e0, b = bstd.Bytes.mmapFile(path)
+        if e0 != 0 { return 1, z }
+
+        let e1, hs = _scanLong(b, "hidden_size")
+        if e1 != 0 { return 1, z }
+        let e2, inter = _scanLong(b, "intermediate_size")
+        if e2 != 0 { return 1, z }
+        let e3, nl = _scanLong(b, "num_hidden_layers")
+        if e3 != 0 { return 1, z }
+        let e4, nh = _scanLong(b, "num_attention_heads")
+        if e4 != 0 { return 1, z }
+        let e5, nkv = _scanLong(b, "num_key_value_heads")
+        if e5 != 0 { return 1, z }
+        let e6, hd = _scanLong(b, "head_dim")
+        if e6 != 0 { return 1, z }
+        let e7, vs = _scanLong(b, "vocab_size")
+        if e7 != 0 { return 1, z }
+        let e8, mp = _scanLong(b, "max_position_embeddings")
+        if e8 != 0 { return 1, z }
+        let e9, bos = _scanLong(b, "bos_token_id")
+        if e9 != 0 { return 1, z }
+        let e10, eos = _scanLong(b, "eos_token_id")
+        if e10 != 0 { return 1, z }
+        let e11, rope = _scanLong(b, "rope_theta")
+        if e11 == 0 { z.ropeTheta = (float)(double)rope }
+
+        // Small config: use DOM for rms_norm_eps (float).
+        let pe, rootAny = j.Json.parseBytes(b)
+        if pe == 0 {
+            if rootAny != null {
+            let root: map = rootAny
+            let oeps = root["rms_norm_eps"]
+            if oeps.isSome() {
+                let v:any = oeps.unwrap()
+                z.rmsEps = (float)(double)v
+            }
+            }
+        }
+
+        z.hidden = (int)hs
+        z.intermediate = (int)inter
+        z.layers = (int)nl
+        z.heads = (int)nh
+        z.kvHeads = (int)nkv
+        z.headDim = (int)hd
+        z.vocab = (int)vs
+        z.maxPos = (int)mp
+        z.bos = bos
+        z.eos = eos
+        return 0, z
+    }
+
+    fn loadWeightsF32(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
+        let z = Qwen3Weights{ arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+
+        let e0, st = SafeTensors.parseMmap(modelPath)
+        if e0 != 0 { return 1, z }
+        if st.data == null { return 1, z }
+        let base: long = 8L + st.headerLen
+
+        // Pass 1: size.
+        let cur: long = 0L
+        let offEmbed: long = 0L
+        let offLm: long = 0L
+        let offNorm: long = 0L
+        let layerOffs: long[] = {}
+
+        cur = _align(cur, 64L)
+        offEmbed = cur
+        let e1, tmpOff1, nEmbed = _tensorNumelBF16(st, "model.embed_tokens.weight")
+        let _ = tmpOff1
+        if e1 != 0 { return 1, z }
+        cur = cur + nEmbed * 4L
+
+        cur = _align(cur, 64L)
+        offLm = cur
+        let e2, tmpOff2, nLm = _tensorNumelBF16(st, "lm_head.weight")
+        let _ = tmpOff2
+        if e2 != 0 { return 1, z }
+        cur = cur + nLm * 4L
+
+        cur = _align(cur, 64L)
+        offNorm = cur
+        let e3, tmpOff3, nNorm = _tensorNumelBF16(st, "model.norm.weight")
+        let _ = tmpOff3
+        if e3 != 0 { return 1, z }
+        cur = cur + nNorm * 4L
+
+        let li: int = 0
+        while li < cfg.layers {
+            let names: string[] = { _layerName(li, "input_layernorm.weight"), _layerName(li, "post_attention_layernorm.weight"), _layerName(li, "self_attn.q_norm.weight"), _layerName(li, "self_attn.k_norm.weight"), _layerName(li, "self_attn.q_proj.weight"), _layerName(li, "self_attn.k_proj.weight"), _layerName(li, "self_attn.v_proj.weight"), _layerName(li, "self_attn.o_proj.weight"), _layerName(li, "mlp.gate_proj.weight"), _layerName(li, "mlp.up_proj.weight"), _layerName(li, "mlp.down_proj.weight") }
+            let ni: int = 0
+            while ni < names.len() {
+                cur = _align(cur, 64L)
+                layerOffs.push(cur)
+                let ee, tmpOff, numel = _tensorNumelBF16(st, names[ni])
+                let _ = tmpOff
+                if ee != 0 { return 1, z }
+                cur = cur + numel * 4L
+                ni = ni + 1
+            }
+            li = li + 1
+        }
+
+        let arena = bstd.Bytes.newLong(cur)
+
+        let ce, tmpNum = _convertTensorBF16ToF32(st, base, "model.embed_tokens.weight", arena, offEmbed)
+        let _ = tmpNum
+        if ce != 0 { return 1, z }
+        let ce2, tmpNum2 = _convertTensorBF16ToF32(st, base, "lm_head.weight", arena, offLm)
+        let _ = tmpNum2
+        if ce2 != 0 { return 1, z }
+        let ce3, tmpNum3 = _convertTensorBF16ToF32(st, base, "model.norm.weight", arena, offNorm)
+        let _ = tmpNum3
+        if ce3 != 0 { return 1, z }
+
+        let idx: int = 0
+        li = 0
+        while li < cfg.layers {
+            let names: string[] = { _layerName(li, "input_layernorm.weight"), _layerName(li, "post_attention_layernorm.weight"), _layerName(li, "self_attn.q_norm.weight"), _layerName(li, "self_attn.k_norm.weight"), _layerName(li, "self_attn.q_proj.weight"), _layerName(li, "self_attn.k_proj.weight"), _layerName(li, "self_attn.v_proj.weight"), _layerName(li, "self_attn.o_proj.weight"), _layerName(li, "mlp.gate_proj.weight"), _layerName(li, "mlp.up_proj.weight"), _layerName(li, "mlp.down_proj.weight") }
+            let ni: int = 0
+            while ni < names.len() {
+                let dstOff = layerOffs[idx]
+                let ecn, tmpNumN = _convertTensorBF16ToF32(st, base, names[ni], arena, dstOff)
+                let _ = tmpNumN
+                if ecn != 0 { return 1, z }
+                idx = idx + 1
+                ni = ni + 1
+            }
+            li = li + 1
+        }
+
+        let out = Qwen3Weights{ arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        return 0, out
+    }
+
+    fn newScratch(cfg: Qwen3Config, maxSeq: int) -> Qwen3Scratch {
+        let hidden: long = (long)cfg.hidden
+        let qdim: long = (long)cfg.heads * (long)cfg.headDim
+        let kvdim: long = (long)cfg.kvHeads * (long)cfg.headDim
+        let inter: long = (long)cfg.intermediate
+        let vocab: long = (long)cfg.vocab
+        return Qwen3Scratch{ x: _f32Bytes(hidden), x1: _f32Bytes(hidden), x2: _f32Bytes(hidden), q: _f32Bytes(qdim), k: _f32Bytes(kvdim), v: _f32Bytes(kvdim), attn: _f32Bytes(qdim), gate: _f32Bytes(inter), up: _f32Bytes(inter), inter: _f32Bytes(inter), logits: _f32Bytes(vocab), scores: _f32Bytes((long)maxSeq) }
+    }
+
+    fn loadState(modelDir: string, opts: LlmOptions) -> int, Qwen3State {
+        let z = Qwen3State{ cfg: Qwen3Config{}, w: Qwen3Weights{}, kv: KvContiguous{}, be: AccelerateOps{}, scratch: Qwen3Scratch{}, pos: 0 }
+
+        let ce, cfg = Qwen3.loadConfig(modelDir + "/config.json")
+        if ce != 0 { return 1, z }
+
+        let we, w = Qwen3.loadWeightsF32(modelDir + "/model.safetensors", cfg)
+        if we != 0 { return 1, z }
+
+        let maxSeq = _maxSeq(cfg, opts)
+        let spec = KvSpec{ layers: cfg.layers, kvHeads: cfg.kvHeads, headDim: cfg.headDim, maxSeq: maxSeq, dtype: (int)KvDtype.float32 }
+        let ke, kv = Kv.contiguous(move spec, opts.kvMaxBytes)
+        if ke != 0 { return 1, z }
+
+        let scratch = Qwen3.newScratch(cfg, maxSeq)
+
+        let be = AccelerateOps()
+        be.setThreads(opts.threads)
+
+        let out = Qwen3State{ cfg: cfg, w: w, kv: kv, be: be, scratch: scratch, pos: 0 }
+        return 0, out
+    }
+}
+
+private fn _embedRowBytes(cfg: Qwen3Config, id: long) -> long {
+    return id * (long)cfg.hidden * 4L
+}
+
+private fn _gemv(be: AccelerateOps, m: int, n: int, a: bytes, aOff: long, x: bytes, xOff: long, y: bytes, yOff: long) -> int {
+    let aPtr = tua_bytes_data_at(a, aOff)
+    let xPtr = tua_bytes_data_at(x, xOff)
+    let yPtr = tua_bytes_data_at(y, yOff)
+    if aPtr == null { return 1 }
+    if xPtr == null { return 1 }
+    if yPtr == null { return 1 }
+    return be.gemvF32((int)OpTranspose.none, m, n, 1.0, aPtr, n, xPtr, 1, 0.0, yPtr, 1)
+}
+
+private fn _rmsnorm(out: bytes, x: bytes, w: bytes, wOff: long, n: int, eps: float) -> int {
+    return tua_llm_rmsnorm_f32(out, 0L, x, 0L, w, wOff, n, eps)
+}
+
+private fn _addInplace(dst: bytes, src: bytes, n: long) -> int {
+    return tua_llm_add_inplace_f32(dst, 0L, src, 0L, n)
+}
+
+private fn _f32(n: int) -> long { return (long)n * 4L }
+
+impl Qwen3State {
+    fn clearKv() {
+        kv.seq = 0
+        pos = 0
+    }
+
+    fn forwardToken(id: long) -> int {
+        let cfg = cfg
+        if id < 0L { return 1 }
+        if id >= (long)cfg.vocab { return 1 }
+        let maxSeq: int = kv.maxSeq
+        if pos >= maxSeq { return 2 }
+
+        // x := embed[id]
+        let eoff = w.offEmbed + _embedRowBytes(cfg, id)
+        bstd.Bytes.copy(scratch.x, 0L, w.arena, eoff, _f32(cfg.hidden))
+
+        let hidden: long = (long)cfg.hidden
+        let qdim: int = cfg.heads * cfg.headDim
+        let kvdim: int = cfg.kvHeads * cfg.headDim
+        let scale: float = 1.0 / sqrtf((float)(double)cfg.headDim)
+
+        let layer: int = 0
+        while layer < cfg.layers {
+            // x1 = rmsnorm(x)
+            let inNormOff = _layerOff(w.layerOffs, layer, (int)LayerW.inNorm)
+            if _rmsnorm(scratch.x1, scratch.x, w.arena, inNormOff, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+
+            // q,k,v projections
+            let qOff = _layerOff(w.layerOffs, layer, (int)LayerW.qProj)
+            let kOff = _layerOff(w.layerOffs, layer, (int)LayerW.kProj)
+            let vOff = _layerOff(w.layerOffs, layer, (int)LayerW.vProj)
+            if _gemv(be, qdim, cfg.hidden, w.arena, qOff, scratch.x1, 0L, scratch.q, 0L) != 0 { return 1 }
+            if _gemv(be, kvdim, cfg.hidden, w.arena, kOff, scratch.x1, 0L, scratch.k, 0L) != 0 { return 1 }
+            if _gemv(be, kvdim, cfg.hidden, w.arena, vOff, scratch.x1, 0L, scratch.v, 0L) != 0 { return 1 }
+
+            // q/k head norm
+            let qnOff = _layerOff(w.layerOffs, layer, (int)LayerW.qNorm)
+            let knOff = _layerOff(w.layerOffs, layer, (int)LayerW.kNorm)
+            if tua_llm_qk_rmsnorm_inplace_f32(scratch.q, 0L, cfg.heads, cfg.headDim, w.arena, qnOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32(scratch.k, 0L, cfg.kvHeads, cfg.headDim, w.arena, knOff, cfg.rmsEps) != 0 { return 1 }
+
+            // RoPE
+            if tua_llm_rope_inplace_f32(scratch.q, 0L, cfg.heads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
+            if tua_llm_rope_inplace_f32(scratch.k, 0L, cfg.kvHeads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
+
+            // Store K/V for this position.
+            let tokBytes: long = kv.tokenBytes
+            let layerBytes: long = kv.layerBytes
+            let kdst: long = kv.kBase + (long)layer * layerBytes + (long)pos * tokBytes
+            let vdst: long = kv.vBase + (long)layer * layerBytes + (long)pos * tokBytes
+            bstd.Bytes.copy(kv.buf, kdst, scratch.k, 0L, tokBytes)
+            bstd.Bytes.copy(kv.buf, vdst, scratch.v, 0L, tokBytes)
+
+            // Attention: attn = Attn(q, K/V cache up to pos)
+            let ae = tua_llm_attn_decode_f32(scratch.attn, 0L, scratch.q, 0L, kv.buf, kv.kBase, kv.vBase, kv.layerBytes, kv.tokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, scratch.scores, 0L, (long)maxSeq)
+            if ae != 0 { return 1 }
+
+            // o_proj: x2 = o(attn)
+            let oOff = _layerOff(w.layerOffs, layer, (int)LayerW.oProj)
+            if _gemv(be, cfg.hidden, qdim, w.arena, oOff, scratch.attn, 0L, scratch.x2, 0L) != 0 { return 1 }
+            if _addInplace(scratch.x, scratch.x2, hidden) != 0 { return 1 }
+
+            // post-attn norm
+            let postNormOff = _layerOff(w.layerOffs, layer, (int)LayerW.postNorm)
+            if _rmsnorm(scratch.x1, scratch.x, w.arena, postNormOff, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+
+            // MLP: gate/up, silu(gate)*up, down
+            let gateOff = _layerOff(w.layerOffs, layer, (int)LayerW.gateProj)
+            let upOff = _layerOff(w.layerOffs, layer, (int)LayerW.upProj)
+            let downOff = _layerOff(w.layerOffs, layer, (int)LayerW.downProj)
+            if _gemv(be, cfg.intermediate, cfg.hidden, w.arena, gateOff, scratch.x1, 0L, scratch.gate, 0L) != 0 { return 1 }
+            if _gemv(be, cfg.intermediate, cfg.hidden, w.arena, upOff, scratch.x1, 0L, scratch.up, 0L) != 0 { return 1 }
+            if tua_llm_silu_mul_f32(scratch.inter, 0L, scratch.gate, 0L, scratch.up, 0L, (long)cfg.intermediate) != 0 { return 1 }
+            if _gemv(be, cfg.hidden, cfg.intermediate, w.arena, downOff, scratch.inter, 0L, scratch.x2, 0L) != 0 { return 1 }
+            if _addInplace(scratch.x, scratch.x2, hidden) != 0 { return 1 }
+
+            layer = layer + 1
+        }
+
+        pos = pos + 1
+        return 0
+    }
+
+    fn logits() -> int {
+        let cfg = cfg
+        // x1 = rmsnorm(x, model.norm)
+        if _rmsnorm(scratch.x1, scratch.x, w.arena, w.offNorm, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+        // logits = lm_head * x1
+        if _gemv(be, cfg.vocab, cfg.hidden, w.arena, w.offLmHead, scratch.x1, 0L, scratch.logits, 0L) != 0 { return 1 }
+        return 0
+    }
+
+    fn argmaxLogits() -> int, long {
+        let out: long = 0L
+        let e = tua_llm_argmax_f32(scratch.logits, 0L, cfg.vocab, &out)
+        if e != 0 { return 1, 0L }
+        return 0, out
+    }
+}
+
+object Qwen3Bench {
+    // Prefill prompt ids, then run 1 decode step (and return the generated token id).
+    fn prefillAndDecode1(let s: Qwen3State, promptIds: long[]) -> int, long {
+        if promptIds == null { return 1, 0L }
+        if promptIds.len() == 0 { return 1, 0L }
+        let t0 = time.Time.monoNs()
+
+        let i: int = 0
+        while i < promptIds.len() {
+            let e = s.forwardToken(promptIds[i])
+            if e != 0 { return 1, 0L }
+            i = i + 1
+        }
+
+        if s.logits() != 0 { return 1, 0L }
+        let ae, nextId = s.argmaxLogits()
+        if ae != 0 { return 1, 0L }
+
+        // One decode step to exercise KV usage; ignore its next logits.
+        let e2 = s.forwardToken(nextId)
+        if e2 != 0 { return 1, 0L }
+
+        let t1 = time.Time.monoNs()
+        let dtMs: long = (t1 - t0) / 1000000L
+        println("prefill+decode1: promptLen={} dtMs={} nextId={}", promptIds.len(), dtMs, nextId)
+        return 0, nextId
+    }
+}

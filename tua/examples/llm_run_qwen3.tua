@@ -1,0 +1,38 @@
+import "std/strconv" as conv
+import BpeTokenizer from "../packages/llm/tokenizer_bpe"
+import Qwen3, Qwen3State, Qwen3Bench from "../packages/llm/qwen3"
+import LlmArgs from "../packages/llm/options"
+
+fn main(args: string[]) -> int {
+    let modelDir = "examples/models/qwen3-0.6b"
+    let prompt = "Hello, world!"
+
+    // Args:
+    //   examples/llm_run_qwen3.tua [modelDir] [prompt] [--threads N] [--kv-mib M] [--kv-max-seq N]
+    if args.len() >= 2 { modelDir = args[1] }
+    if args.len() >= 3 { prompt = args[2] }
+
+    let oe, opts = LlmArgs.parseArgv(args)
+    if oe != 0 { println("bad args"); return 1 }
+
+    let te, tok = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
+    if te != 0 { println("load tokenizer failed"); return 1 }
+
+    let ee, ids0 = BpeTokenizer.encode(tok, prompt)
+    if ee != 0 { println("encode prompt failed"); return 1 }
+    let ids: long[] = ids0
+    if ids.len() == 0 { println("empty prompt ids"); return 1 }
+
+    let me, st = Qwen3.loadState(modelDir, opts)
+    if me != 0 { println("load model failed"); return 1 }
+
+    let ge, nextId = Qwen3Bench.prefillAndDecode1(st, ids)
+    if ge != 0 { println("run failed"); return 1 }
+
+    let one: long[] = { nextId }
+    let de, out = BpeTokenizer.decode(tok, one)
+    if de != 0 { println("decode failed"); return 1 }
+    println("prompt={}", prompt)
+    println("gen_id={} gen_text={}", nextId, out)
+    return 0
+}

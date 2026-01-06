@@ -53,46 +53,58 @@ private fn _hasBackslash(b: bytes, start: long, end: long) -> bool {
     return false
 }
 
-private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
-    if pos >= n { return 1, null, pos }
+private fn _parseStringImpl(b: bytes, pos: long, n: long) -> int, string, long, long {
+    if pos >= n { return 1, null, pos, 0L }
     let e0, q = bstd.Bytes.getU8(b, pos)
-    if e0 != 0 { return 1, null, pos }
-    if q != 34 { return 1, null, pos }
+    if e0 != 0 { return 1, null, pos, 0L }
+    if q != 34 { return 1, null, pos, 0L }
 
-    let i = pos + 1L
+    let rawOff = pos + 1L
+    let i = rawOff
     while true {
         if i >= n { break }
         let ei, c = bstd.Bytes.getU8(b, i)
-        if ei != 0 { return 1, null, pos }
-        if c == 92 { // '\\' (skip escaped byte so \" doesn't terminate the scan)
-            if i + 1L >= n { return 1, null, pos }
-            i = i + 2L
-            continue
-        }
+        if ei != 0 { return 1, null, pos, 0L }
         if c == 34 { // '"'
-            let rawOff = pos + 1L
             let rawLen = i - rawOff
-            if !_hasBackslash(b, rawOff, i) {
-                let out = tua_str_from_bytes_copy(b, rawOff, rawLen)
-                return 0, out, i + 1L
+            let out = tua_str_from_bytes_copy(b, rawOff, rawLen)
+            return 0, out, i + 1L, rawLen
+        }
+        if c == 92 { // '\\' => slow path (escaped)
+            if i + 1L >= n { return 1, null, pos, 0L }
+
+            let endPos = i + 2L
+            while true {
+                if endPos >= n { return 1, null, pos, 0L }
+                let ee, cc = bstd.Bytes.getU8(b, endPos)
+                if ee != 0 { return 1, null, pos, 0L }
+                if cc == 92 {
+                    if endPos + 1L >= n { return 1, null, pos, 0L }
+                    endPos = endPos + 2L
+                    continue
+                }
+                if cc == 34 { break }
+                if cc <= 31 { return 1, null, pos, 0L }
+                endPos = endPos + 1L
             }
 
+            let rawLen = endPos - rawOff
             let tmp = bstd.Bytes.new((int)rawLen)
             let outLen: long = 0L
             let j = rawOff
             while true {
-                if j >= i { break }
+                if j >= endPos { break }
                 let ej, ch = bstd.Bytes.getU8(b, j)
-                if ej != 0 { return 1, null, pos }
+                if ej != 0 { return 1, null, pos, 0L }
                 if ch != 92 { // '\\'
                     bstd.Bytes.setU8(tmp, outLen, ch)
                     outLen = outLen + 1L
                     j = j + 1L
                     continue
                 }
-                if j + 1L >= i { return 1, null, pos }
-                let ee, esc = bstd.Bytes.getU8(b, j + 1L)
-                if ee != 0 { return 1, null, pos }
+                if j + 1L >= endPos { return 1, null, pos, 0L }
+                let ee2, esc = bstd.Bytes.getU8(b, j + 1L)
+                if ee2 != 0 { return 1, null, pos, 0L }
                 if esc == 34 { bstd.Bytes.setU8(tmp, outLen, 34); outLen = outLen + 1L; j = j + 2L; continue } // \"
                 if esc == 92 { bstd.Bytes.setU8(tmp, outLen, 92); outLen = outLen + 1L; j = j + 2L; continue } // \\
                 if esc == 47 { bstd.Bytes.setU8(tmp, outLen, 47); outLen = outLen + 1L; j = j + 2L; continue } // \/
@@ -103,52 +115,57 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
                 if esc == 116 { bstd.Bytes.setU8(tmp, outLen, 9); outLen = outLen + 1L; j = j + 2L; continue }  // \t
 
                 if esc == 117 { // \uXXXX
-                    if j + 6L > i { return 1, null, pos }
+                    if j + 6L > endPos { return 1, null, pos, 0L }
                     let eh0, h0 = bstd.Bytes.getU8(b, j + 2L)
                     let eh1, h1 = bstd.Bytes.getU8(b, j + 3L)
                     let eh2, h2 = bstd.Bytes.getU8(b, j + 4L)
                     let eh3, h3 = bstd.Bytes.getU8(b, j + 5L)
-                    if eh0 != 0 || eh1 != 0 || eh2 != 0 || eh3 != 0 { return 1, null, pos }
-                    if !_isHex(h0) || !_isHex(h1) || !_isHex(h2) || !_isHex(h3) { return 1, null, pos }
+                    if eh0 != 0 || eh1 != 0 || eh2 != 0 || eh3 != 0 { return 1, null, pos, 0L }
+                    if !_isHex(h0) || !_isHex(h1) || !_isHex(h2) || !_isHex(h3) { return 1, null, pos, 0L }
                     let cpL: long = ((long)_hexVal(h0)) * 4096L + ((long)_hexVal(h1)) * 256L + ((long)_hexVal(h2)) * 16L + (long)_hexVal(h3)
                     let cp: int = (int)cpL
                     j = j + 6L
 
                     if cp >= 55296 && cp <= 56319 {
-                        if j + 6L > i { return 1, null, pos }
+                        if j + 6L > endPos { return 1, null, pos, 0L }
                         let ebk, bk = bstd.Bytes.getU8(b, j)
                         let euu, uu = bstd.Bytes.getU8(b, j + 1L)
-                        if ebk != 0 || euu != 0 { return 1, null, pos }
-                        if bk != 92 || uu != 117 { return 1, null, pos }
+                        if ebk != 0 || euu != 0 { return 1, null, pos, 0L }
+                        if bk != 92 || uu != 117 { return 1, null, pos, 0L }
                         let el0, l0 = bstd.Bytes.getU8(b, j + 2L)
                         let el1, l1 = bstd.Bytes.getU8(b, j + 3L)
                         let el2, l2 = bstd.Bytes.getU8(b, j + 4L)
                         let el3, l3 = bstd.Bytes.getU8(b, j + 5L)
-                        if el0 != 0 || el1 != 0 || el2 != 0 || el3 != 0 { return 1, null, pos }
-                        if !_isHex(l0) || !_isHex(l1) || !_isHex(l2) || !_isHex(l3) { return 1, null, pos }
+                        if el0 != 0 || el1 != 0 || el2 != 0 || el3 != 0 { return 1, null, pos, 0L }
+                        if !_isHex(l0) || !_isHex(l1) || !_isHex(l2) || !_isHex(l3) { return 1, null, pos, 0L }
                         let low: int = _hexVal(l0) * 4096 + _hexVal(l1) * 256 + _hexVal(l2) * 16 + _hexVal(l3)
-                        if low < 56320 || low > 57343 { return 1, null, pos }
+                        if low < 56320 || low > 57343 { return 1, null, pos, 0L }
                         cp = 65536 + ((cp - 55296) * 1024) + (low - 56320)
                         j = j + 6L
                     } else {
-                        if cp >= 56320 && cp <= 57343 { return 1, null, pos }
+                        if cp >= 56320 && cp <= 57343 { return 1, null, pos, 0L }
                     }
 
-                    let ee2, wrote = utf8.Utf8.encode1(cp, tmp, outLen)
-                    if ee2 != 0 { return 1, null, pos }
+                    let ee3, wrote = utf8.Utf8.encode1(cp, tmp, outLen)
+                    if ee3 != 0 { return 1, null, pos, 0L }
                     outLen = outLen + wrote
                     continue
                 }
-                return 1, null, pos
+                return 1, null, pos, 0L
             }
 
             let out = tua_str_from_bytes_copy(tmp, 0L, outLen)
-            return 0, out, i + 1L
+            return 0, out, endPos + 1L, outLen
         }
-        if c <= 31 { return 1, null, pos }
+        if c <= 31 { return 1, null, pos, 0L }
         i = i + 1L
     }
-    return 1, null, pos
+    return 1, null, pos, 0L
+}
+
+private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
+    let e, s, j, _ = _parseStringImpl(b, pos, n)
+    return e, s, j
 }
 
 private fn _pow10i(exp: int) -> double {
@@ -269,6 +286,174 @@ private fn _parseNumber(b: bytes, pos: long, n: long) -> int, any, long {
     if neg != 0 { out = -out }
     let av:any = out
     return 0, av, i
+}
+
+private fn _incNode(nodes: long, maxNodes: long) -> int, long {
+    let next = nodes + 1L
+    if maxNodes > 0L && next > maxNodes { return 3, nodes }
+    return 0, next
+}
+
+private fn _incStrBytes(total: long, add: long, maxBytes: long) -> int, long {
+    let next = total + add
+    if maxBytes > 0L && next > maxBytes { return 3, total }
+    return 0, next
+}
+
+private fn _parseValueLimited(b: bytes, pos: long, n: long, depth: int, maxDepth: int, maxNodes: long, maxStringBytes: long, nodes: long, stringBytes: long) -> int, any, long, long, long {
+    let se, i = _skipWs(b, pos, n)
+    if se != 0 { return 1, null, pos, nodes, stringBytes }
+    if i >= n { return 1, null, pos, nodes, stringBytes }
+
+    let ec, c = bstd.Bytes.getU8(b, i)
+    if ec != 0 { return 1, null, pos, nodes, stringBytes }
+
+    if c == 34 {
+        let pe, s, j, sLen = _parseStringImpl(b, i, n)
+        if pe != 0 { return 1, null, pos, nodes, stringBytes }
+        let ne, nodes2 = _incNode(nodes, maxNodes)
+        if ne != 0 { return 3, null, pos, nodes, stringBytes }
+        let be, bytes2 = _incStrBytes(stringBytes, sLen, maxStringBytes)
+        if be != 0 { return 3, null, pos, nodes, stringBytes }
+        return 0, s, j, nodes2, bytes2
+    }
+
+    if c == 123 { // '{'
+        let nextDepth = depth + 1
+        if maxDepth > 0 && nextDepth > maxDepth { return 3, null, pos, nodes, stringBytes }
+        let ne0, nodes0 = _incNode(nodes, maxNodes)
+        if ne0 != 0 { return 3, null, pos, nodes, stringBytes }
+        let obj: map = tua_map_new()
+
+        let se2, j = _skipWs(b, i + 1L, n)
+        if se2 != 0 { return 1, null, pos, nodes, stringBytes }
+        if j < n {
+            let ee, cc = bstd.Bytes.getU8(b, j)
+            if ee != 0 { return 1, null, pos, nodes, stringBytes }
+            if cc == 125 { return 0, obj, j + 1L, nodes0, stringBytes }
+        }
+
+        let at = j
+        let nodes1 = nodes0
+        let bytes1 = stringBytes
+        while true {
+            let se3, kpos = _skipWs(b, at, n)
+            if se3 != 0 { return 1, null, pos, nodes, stringBytes }
+            let ke, key, afterKey, keyLen = _parseStringImpl(b, kpos, n)
+            if ke != 0 { return 1, null, pos, nodes, stringBytes }
+            let kne, nodes2 = _incNode(nodes1, maxNodes)
+            if kne != 0 { return 3, null, pos, nodes, stringBytes }
+            let kbe, bytes2 = _incStrBytes(bytes1, keyLen, maxStringBytes)
+            if kbe != 0 { return 3, null, pos, nodes, stringBytes }
+
+            let se4, afterWs = _skipWs(b, afterKey, n)
+            if se4 != 0 { return 1, null, pos, nodes, stringBytes }
+            if afterWs >= n { return 1, null, pos, nodes, stringBytes }
+            let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+            if ec2 != 0 || colon != 58 { return 1, null, pos, nodes, stringBytes }
+
+            let ve, val, afterVal, nodes3, bytes3 = _parseValueLimited(b, afterWs + 1L, n, nextDepth, maxDepth, maxNodes, maxStringBytes, nodes2, bytes2)
+            if ve != 0 { return ve, null, pos, nodes, stringBytes }
+            obj[key] = val
+
+            let se5, afterWs2 = _skipWs(b, afterVal, n)
+            if se5 != 0 { return 1, null, pos, nodes, stringBytes }
+            if afterWs2 >= n { return 1, null, pos, nodes, stringBytes }
+            let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+            if ec3 != 0 { return 1, null, pos, nodes, stringBytes }
+            nodes1 = nodes3
+            bytes1 = bytes3
+            if sep == 44 { at = afterWs2 + 1L; continue }
+            if sep == 125 { return 0, obj, afterWs2 + 1L, nodes1, bytes1 }
+            return 1, null, pos, nodes, stringBytes
+        }
+    }
+
+    if c == 91 { // '['
+        let nextDepth = depth + 1
+        if maxDepth > 0 && nextDepth > maxDepth { return 3, null, pos, nodes, stringBytes }
+        let ne0, nodes0 = _incNode(nodes, maxNodes)
+        if ne0 != 0 { return 3, null, pos, nodes, stringBytes }
+        let arr: any[] = {}
+
+        let se2, j = _skipWs(b, i + 1L, n)
+        if se2 != 0 { return 1, null, pos, nodes, stringBytes }
+        if j < n {
+            let ee, cc = bstd.Bytes.getU8(b, j)
+            if ee != 0 { return 1, null, pos, nodes, stringBytes }
+            if cc == 93 { return 0, arr, j + 1L, nodes0, stringBytes }
+        }
+
+        let at = j
+        let nodes1 = nodes0
+        let bytes1 = stringBytes
+        while true {
+            let ve, v, afterV, nodes2, bytes2 = _parseValueLimited(b, at, n, nextDepth, maxDepth, maxNodes, maxStringBytes, nodes1, bytes1)
+            if ve != 0 { return ve, null, pos, nodes, stringBytes }
+            arr.push(v)
+
+            let se3, afterWs = _skipWs(b, afterV, n)
+            if se3 != 0 { return 1, null, pos, nodes, stringBytes }
+            if afterWs >= n { return 1, null, pos, nodes, stringBytes }
+            let ec2, sep = bstd.Bytes.getU8(b, afterWs)
+            if ec2 != 0 { return 1, null, pos, nodes, stringBytes }
+            nodes1 = nodes2
+            bytes1 = bytes2
+            if sep == 44 { at = afterWs + 1L; continue }
+            if sep == 93 { return 0, arr, afterWs + 1L, nodes1, bytes1 }
+            return 1, null, pos, nodes, stringBytes
+        }
+    }
+
+    // true
+    if c == 116 {
+        if i + 4L > n { return 1, null, pos, nodes, stringBytes }
+        let e1, c1 = bstd.Bytes.getU8(b, i + 1L)
+        let e2, c2 = bstd.Bytes.getU8(b, i + 2L)
+        let e3, c3 = bstd.Bytes.getU8(b, i + 3L)
+        if e1 != 0 || e2 != 0 || e3 != 0 { return 1, null, pos, nodes, stringBytes }
+        if c1 != 114 || c2 != 117 || c3 != 101 { return 1, null, pos, nodes, stringBytes }
+        let ne, nodes2 = _incNode(nodes, maxNodes)
+        if ne != 0 { return 3, null, pos, nodes, stringBytes }
+        return 0, true, i + 4L, nodes2, stringBytes
+    }
+
+    // false
+    if c == 102 {
+        if i + 5L > n { return 1, null, pos, nodes, stringBytes }
+        let e1, c1 = bstd.Bytes.getU8(b, i + 1L)
+        let e2, c2 = bstd.Bytes.getU8(b, i + 2L)
+        let e3, c3 = bstd.Bytes.getU8(b, i + 3L)
+        let e4, c4 = bstd.Bytes.getU8(b, i + 4L)
+        if e1 != 0 || e2 != 0 || e3 != 0 || e4 != 0 { return 1, null, pos, nodes, stringBytes }
+        if c1 != 97 || c2 != 108 || c3 != 115 || c4 != 101 { return 1, null, pos, nodes, stringBytes }
+        let ne, nodes2 = _incNode(nodes, maxNodes)
+        if ne != 0 { return 3, null, pos, nodes, stringBytes }
+        return 0, false, i + 5L, nodes2, stringBytes
+    }
+
+    // null
+    if c == 110 {
+        if i + 4L > n { return 1, null, pos, nodes, stringBytes }
+        let e1, c1 = bstd.Bytes.getU8(b, i + 1L)
+        let e2, c2 = bstd.Bytes.getU8(b, i + 2L)
+        let e3, c3 = bstd.Bytes.getU8(b, i + 3L)
+        if e1 != 0 || e2 != 0 || e3 != 0 { return 1, null, pos, nodes, stringBytes }
+        if c1 != 117 || c2 != 108 || c3 != 108 { return 1, null, pos, nodes, stringBytes }
+        let ne, nodes2 = _incNode(nodes, maxNodes)
+        if ne != 0 { return 3, null, pos, nodes, stringBytes }
+        return 0, null, i + 4L, nodes2, stringBytes
+    }
+
+    if c == 45 || _isDigit(c) {
+        let pe, v, j = _parseNumber(b, i, n)
+        if pe != 0 { return 1, null, pos, nodes, stringBytes }
+        let ne, nodes2 = _incNode(nodes, maxNodes)
+        if ne != 0 { return 3, null, pos, nodes, stringBytes }
+        return 0, v, j, nodes2, stringBytes
+    }
+
+    return 1, null, pos, nodes, stringBytes
 }
 
 private fn _parseValue(b: bytes, pos: long, n: long) -> int, any, long {
@@ -608,6 +793,69 @@ object Json {
     fn parse(s: string) -> int, any {
         let b = bstd.Bytes.fromString(s)
         return Json.parseBytes(b)
+    }
+
+    // Parse JSON into a DOM like `parseBytes`, but abort when exceeding limits to avoid peak memory blowups.
+    // Limits semantics:
+    // - maxDepth: maximum nesting depth of `{}` / `[]` (root container counts as depth=1). <=0 means unlimited.
+    // - maxNodes: maximum number of JSON values (including containers and strings, including object keys). <=0 means unlimited.
+    // - maxStringBytes: maximum total UTF-8 bytes allocated for strings (including object keys). <=0 means unlimited.
+    // Error codes:
+    // - 0: ok
+    // - 1: parse error
+    // - 3: limit exceeded
+    fn parseBytesWithLimits(b: bytes, maxDepth: int, maxNodes: long, maxStringBytes: long) -> int, any {
+        if b == null { return 1, null }
+        let n = bstd.Bytes.len(b)
+        let e, v, end, _, _ = _parseValueLimited(b, 0L, n, 0, maxDepth, maxNodes, maxStringBytes, 0L, 0L)
+        if e != 0 { return e, null }
+        let se, tail = _skipWs(b, end, n)
+        if se != 0 { return 1, null }
+        if tail != n { return 1, null }
+        return 0, v
+    }
+
+    fn parseWithLimits(s: string, maxDepth: int, maxNodes: long, maxStringBytes: long) -> int, any {
+        let b = bstd.Bytes.fromString(s)
+        return Json.parseBytesWithLimits(b, maxDepth, maxNodes, maxStringBytes)
+    }
+
+    // DOM helper APIs (reduce `unwrap()+index` chains; assumes schema types are correct).
+    fn getAny(m: map, key: string) -> Option<any> { return m[key] }
+    fn getStr(m: map, key: string) -> Option<string> {
+        let o = m[key]
+        if o.isNone() { return None() }
+        let v:any = o.unwrap()
+        let s: string = v
+        return Some(s)
+    }
+    fn getLong(m: map, key: string) -> Option<long> {
+        let o = m[key]
+        if o.isNone() { return None() }
+        let v:any = o.unwrap()
+        let x: long = v
+        return Some(x)
+    }
+    fn getBool(m: map, key: string) -> Option<bool> {
+        let o = m[key]
+        if o.isNone() { return None() }
+        let v:any = o.unwrap()
+        let x: bool = v
+        return Some(x)
+    }
+    fn getArr(m: map, key: string) -> Option<any[]> {
+        let o = m[key]
+        if o.isNone() { return None() }
+        let v:any = o.unwrap()
+        let a: any[] = v
+        return Some(a)
+    }
+    fn getMap(m: map, key: string) -> Option<map> {
+        let o = m[key]
+        if o.isNone() { return None() }
+        let v:any = o.unwrap()
+        let mm: map = v
+        return Some(mm)
     }
 
     // Scan a top-level JSON object and return the string value for `key` without building the full DOM.

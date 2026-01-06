@@ -256,7 +256,7 @@
   - [x] scan API（v1.1）：更多顶层标量类型（string/bool/long + 按需解析 value 子树）
   - [x] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
   - [x] scan/streaming API（v1.3）：支持按 key-path 解析出常见容器（`map<string,long>` / `string[]`），适配 tokenizer 的 `vocab/merges`
-  - [ ] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
+  - [x] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
   - [x] C runtime 加速（可选）：`tua_json_scan_top_level_{string,long,bool}` 在 C 侧扫描/跳过，`std.json` 优先走 C 快路径
   - [x] 数值解析优化：指数缩放改为 O(log|exp|)（pow10/exp-by-squaring）
 - [ ] Tokenizer：先做正确性，再做性能

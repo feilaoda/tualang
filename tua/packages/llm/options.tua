@@ -3,11 +3,12 @@ import "std/strconv" as conv
 struct LlmOptions {
     threads: int
     kvMaxBytes: long
+    kvMaxSeq: int
 }
 
 object LlmArgs {
     fn defaults() -> LlmOptions {
-        return LlmOptions{ threads: 0, kvMaxBytes: 0L }
+        return LlmOptions{ threads: 0, kvMaxBytes: 0L, kvMaxSeq: 0 }
     }
 
     fn parseArgv(argv: string[]) -> int, LlmOptions {
@@ -33,6 +34,16 @@ object LlmArgs {
                 let mib = opt.unwrap()
                 if mib < 0 { return 1, out }
                 out.kvMaxBytes = (long)mib * 1024L * 1024L
+                i = i + 2
+                continue
+            }
+            if a == "--kv-max-seq" {
+                if i + 1 >= n { return 1, out }
+                let opt = conv.Int.parse(argv[i + 1])
+                if opt.isNone() { return 1, out }
+                let v = opt.unwrap()
+                if v < 0 { return 1, out }
+                out.kvMaxSeq = v
                 i = i + 2
                 continue
             }

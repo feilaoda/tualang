@@ -32,17 +32,15 @@ fn main(args: string[]) -> int {
     let bPtr = tua_bytes_data_at(bBytes, 0L)
     let cPtr = tua_bytes_data_at(cBytes, 0L)
 
-    let be = acc.AccelerateOps.new()
+    let be = acc.AccelerateOps()
     be.setThreads(0)
 
     // Warmup
-    be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none,
-              m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
+    be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none, m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
 
     let start = t.Time.monoNs()
     for i = 0; i < iters; i++ {
-        be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none,
-                  m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
+        be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none, m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
     }
     let end = t.Time.monoNs()
     let dt = end - start
