@@ -16,10 +16,12 @@ fn take(move x: HasId) -> int {
   return x.id()
 }
 
-let v: HasId = S{ id: 1 }
-let n = take(move v)
-println(n)
 
 // Use-after-move.
-println(v.id())
 
+fn main() {
+    let v: HasId = S{ id: 1 }
+    let n = take(move v)
+    println(n)
+    println(v.id())
+}

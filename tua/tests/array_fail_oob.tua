@@ -1,3 +1,5 @@
-let a:int[] = {1, 2}
-let x = a[2]
-println(x)
+fn main() {
+    let a:int[] = {1, 2}
+    let x = a[2]
+    println(x)
+}

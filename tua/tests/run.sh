@@ -40,11 +40,55 @@ for f in tests/*.tua; do
   if [[ "$base" == aot_* || "$base" == *_aot_* ]]; then wants_aot=1; fi
   if [[ "$base" == fail_* || "$base" == *_fail_* ]]; then expects_fail=1; fi
 
+  # Optional per-test directives (must appear in the leading comment header):
+  #   // tuac: <extra flags>
+  #   // expect-exit: <code>
+  tuac_line=""
+  expect_exit=""
+  while IFS= read -r line; do
+    case "$line" in
+      "// tuac:"*)
+        tuac_line="${line#// tuac:}"
+        tuac_line="${tuac_line# }"
+        ;;
+      "// expect-exit:"*)
+        expect_exit="${line#// expect-exit:}"
+        expect_exit="${expect_exit# }"
+        ;;
+      "//"*) ;;
+      "") ;;
+      *) break ;;
+    esac
+  done < "$f"
+
+  args=()
+  if [[ -n "$extra" ]]; then args+=("$extra"); fi
+  if [[ -n "$tuac_line" ]]; then
+    read -r -a dirArgs <<< "$tuac_line"
+    args+=("${dirArgs[@]}")
+  fi
+
   if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 0 ]]; then
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
-    if ./bin/tuac $extra --output "$out" "$f" >/dev/null 2>&1 && "$out" >/dev/null 2>&1; then
-      echo "[PASS] $base"
+    if ./bin/tuac ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>&1; then
+      rc=0
+      "$out" >/dev/null 2>&1 || rc=$?
+      if [[ -n "$expect_exit" ]]; then
+        if [[ "$rc" -ne "$expect_exit" ]]; then
+          echo "[FAIL] $base (expected exit $expect_exit, got $rc)"
+          fail=1
+        else
+          echo "[PASS] $base"
+        fi
+      else
+        if [[ "$rc" -ne 0 ]]; then
+          echo "[FAIL] $base (expected exit 0, got $rc)"
+          fail=1
+        else
+          echo "[PASS] $base"
+        fi
+      fi
     else
       echo "[FAIL] $base"
       fail=1
@@ -57,7 +101,7 @@ for f in tests/*.tua; do
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
     tmp="$(mktemp)"
-    if ./bin/tuac $extra --output "$out" "$f" >/dev/null 2>"$tmp"; then
+    if ./bin/tuac ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>"$tmp"; then
       echo "[FAIL] $base (expected failure, got success)"
       fail=1
     else
@@ -75,7 +119,7 @@ for f in tests/*.tua; do
 
   if [[ "$expects_fail" -eq 1 ]]; then
     tmp="$(mktemp)"
-    if ./bin/tuac $extra "$f" >/dev/null 2>"$tmp"; then
+    if ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>"$tmp"; then
       echo "[FAIL] $base (expected failure, got success)"
       fail=1
     else
@@ -97,11 +141,22 @@ for f in tests/*.tua; do
         fi
         ;;
     esac
-    if ./bin/tuac $extra "$f" >/dev/null 2>&1; then
-      echo "[PASS] $base"
+    rc=0
+    ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>&1 || rc=$?
+    if [[ -n "$expect_exit" ]]; then
+      if [[ "$rc" -ne "$expect_exit" ]]; then
+        echo "[FAIL] $base (expected exit $expect_exit, got $rc)"
+        fail=1
+      else
+        echo "[PASS] $base"
+      fi
     else
-      echo "[FAIL] $base"
-      fail=1
+      if [[ "$rc" -ne 0 ]]; then
+        echo "[FAIL] $base"
+        fail=1
+      else
+        echo "[PASS] $base"
+      fi
     fi
   fi
 done

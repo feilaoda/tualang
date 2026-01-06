@@ -4,6 +4,8 @@ fn make() -> map {
   return n
 }
 
-let x: map = make()
-let v:int = x["a"].unwrap()
-assert(v == 1)
+fn main() {
+    let x: map = make()
+    let v:int = x["a"].unwrap()
+    assert(v == 1)
+}

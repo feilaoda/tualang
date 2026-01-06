@@ -2,9 +2,11 @@ struct Box {
   m: map
 }
 
-let m: map = {"a": 1}
-let b: Box = Box{ m: {} }
 
-b.m = m
-println(m.len())
 
+fn main() {
+    let m: map = {"a": 1}
+    let b: Box = Box{ m: {} }
+    b.m = m
+    println(m.len())
+}

@@ -1,3 +1,5 @@
-let m: map = null
-let ok:bool = m.delete("a")
-println(ok)
+fn main() {
+    let m: map = null
+    let ok:bool = m.delete("a")
+    println(ok)
+}

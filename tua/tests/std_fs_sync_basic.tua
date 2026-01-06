@@ -1,26 +1,28 @@
 import "std/rt" as rt
 import "std/fs" as fs
 
-let err, data, n = fs.Fs.readFile("README.md")
-assert(err == 0)
-assert(data != null)
-assert(n > 0)
-rt.Rt.free(data)
 
-let serr, kind, size, mtimeNs, mode = fs.Fs.stat("README.md")
-assert(serr == 0)
-assert(kind == 1) // file
-assert(size > 0L)
-assert(mtimeNs > 0L)
-assert(mode != 0)
 
-let rerr, names = fs.Fs.readdir(".")
-assert(rerr == 0)
-assert(names != null)
-assert(len(names) > 0)
-fs.Fs.freeStringArray(names)
 
-let perr, p = fs.Fs.realpath("README.md")
-assert(perr == 0)
-assert(p != null)
-rt.Rt.free(p)
+fn main() {
+    let err, data, n = fs.Fs.readFile("README.md")
+    assert(err == 0)
+    assert(data != null)
+    assert(n > 0)
+    rt.Rt.free(data)
+    let serr, kind, size, mtimeNs, mode = fs.Fs.stat("README.md")
+    assert(serr == 0)
+    assert(kind == 1) // file
+    assert(size > 0L)
+    assert(mtimeNs > 0L)
+    assert(mode != 0)
+    let rerr, names = fs.Fs.readdir(".")
+    assert(rerr == 0)
+    assert(names != null)
+    assert(len(names) > 0)
+    fs.Fs.freeStringArray(names)
+    let perr, p = fs.Fs.realpath("README.md")
+    assert(perr == 0)
+    assert(p != null)
+    rt.Rt.free(p)
+}

@@ -5,4 +5,6 @@ object Foo {
   }
 }
 
-assert(Foo.fib(10) == 55)
+fn main() {
+    assert(Foo.fib(10) == 55)
+}

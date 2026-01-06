@@ -78,6 +78,19 @@ typedef struct ExternDecl {
     char* alias;  // NUL-terminated (may be NULL)
 } ExternDecl;
 
+typedef enum {
+    USER_MAIN_NONE = 0,
+    USER_MAIN_VOID0,
+    USER_MAIN_VOID_ARGS,
+    USER_MAIN_INT_ARGS,
+} UserMainKind;
+
+typedef struct {
+    ModuleInfo* module;
+    FuncStmt* decl; // AST decl (unqualified name)
+    UserMainKind kind;
+} UserMainDecl;
+
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
     if (file == NULL) {
@@ -517,6 +530,148 @@ static char* discoverStdDir(const char* argv0) {
     char* out = canonicalizePath(cand);
     free(cand);
     return out;
+}
+
+static VariableRef* findCurrentVarByName(Compiler* compiler, const char* name) {
+    if (!compiler || !name) return NULL;
+    if (!compiler->current || !compiler->current->variables) return NULL;
+    for (ListNode* n = compiler->current->variables->head; n != NULL; n = n->next) {
+        VariableRef* v = (VariableRef*)n->data;
+        if (!v || !v->name) continue;
+        if (strcmp(v->name, name) == 0) return v;
+    }
+    return NULL;
+}
+
+static int isStringArrayType(Type* t) {
+    if (!t) return 0;
+    if (t->kind != TYPE_ARRAY) return 0;
+    if (!t->inner) return 0;
+    if (t->inner->kind != TYPE_STRING) return 0;
+    // Only accept dynamic `string[]` for now.
+    if (t->arrayLen != -1) return 0;
+    return 1;
+}
+
+static UserMainKind classifyUserMainSignature(FuncStmt* f) {
+    if (!f) return USER_MAIN_NONE;
+    if (!f->body) return USER_MAIN_NONE;
+    if (f->typeParams && f->typeParams->length > 0) return USER_MAIN_NONE;
+    if (f->name.length != 4 || memcmp(f->name.start, "main", 4) != 0) return USER_MAIN_NONE;
+
+    int paramCount = f->params ? f->params->length : 0;
+    TypeKind retK = TYPE_VOID;
+    if (f->returnTypes && f->returnTypes->length > 0) {
+        Type* rt = (Type*)listGet(f->returnTypes, 0);
+        if (rt) retK = rt->kind;
+    } else if (f->returnType) {
+        retK = f->returnType->kind;
+    }
+
+    if (paramCount == 0) {
+        return (retK == TYPE_VOID) ? USER_MAIN_VOID0 : USER_MAIN_NONE;
+    }
+    if (paramCount != 1) return USER_MAIN_NONE;
+    Parameter* p0 = (Parameter*)listGet(f->params, 0);
+    if (!p0 || !isStringArrayType(p0->type)) return USER_MAIN_NONE;
+    if (retK == TYPE_VOID) return USER_MAIN_VOID_ARGS;
+    if (retK == TYPE_INT) return USER_MAIN_INT_ARGS;
+    return USER_MAIN_NONE;
+}
+
+static UserMainDecl findUserMainInModule(ModuleInfo* m) {
+    UserMainDecl out;
+    memset(&out, 0, sizeof(out));
+    out.module = m;
+    out.decl = NULL;
+    out.kind = USER_MAIN_NONE;
+    if (!m || !m->statements) return out;
+
+    for (ListNode* n = m->statements->head; n != NULL; n = n->next) {
+        Stmt* s = (Stmt*)n->data;
+        if (!s) continue;
+        if (s->type == STMT_PRIVATE) s = ((PrivateStmt*)s)->inner;
+        if (!s || s->type != STMT_FUNC) continue;
+        FuncStmt* f = (FuncStmt*)s;
+        UserMainKind k = classifyUserMainSignature(f);
+        if (k == USER_MAIN_NONE) continue;
+        out.decl = f;
+        out.kind = k;
+        return out;
+    }
+    return out;
+}
+
+static void cliError(const char* fmt, ...) {
+    fprintf(stderr, "error: ");
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    if (fmt) {
+        size_t n = strlen(fmt);
+        if (n == 0 || fmt[n - 1] != '\n') fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+static void emitUserMainCall(Compiler* compiler, UserMainDecl sel) {
+    if (!compiler || !sel.module || sel.kind == USER_MAIN_NONE) return;
+    LLVMModuleRef module = compiler->module;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+
+    // If the current block is already terminated, do not attempt to inject user main.
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        return;
+    }
+
+    // Find the qualified function name: <prefix>__main.
+    int ql = sel.module->prefixLen + 2 + 4;
+    char* qname = (char*)malloc((size_t)ql + 1);
+    memcpy(qname, sel.module->prefix, (size_t)sel.module->prefixLen);
+    memcpy(qname + sel.module->prefixLen, "__", 2);
+    memcpy(qname + sel.module->prefixLen + 2, "main", 4);
+    qname[ql] = '\0';
+
+    LLVMValueRef fn = LLVMGetNamedFunction(module, qname);
+    if (!fn) {
+        free(qname);
+        compiler->hadError = 1;
+        cliError("selected entry module has no compiled main (internal error)");
+        return;
+    }
+
+    LLVMValueRef rv = NULL;
+    if (sel.kind == USER_MAIN_VOID0) {
+        LLVMBuildCall2(builder, LLVMGlobalGetValueType(fn), fn, NULL, 0, "");
+        rv = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+    } else {
+        VariableRef* argvVar = findCurrentVarByName(compiler, "ARGV");
+        if (!argvVar) {
+            free(qname);
+            compiler->hadError = 1;
+            cliError("internal error: ARGV is missing");
+            return;
+        }
+        LLVMTypeRef arrTy = argvVar->type;
+        LLVMValueRef argvArr = LLVMBuildLoad2(builder, arrTy, argvVar->value, "argv");
+        LLVMValueRef args[1] = { argvArr };
+        LLVMValueRef callV = LLVMBuildCall2(builder, LLVMGlobalGetValueType(fn), fn, args, 1, "");
+        if (sel.kind == USER_MAIN_INT_ARGS) {
+            rv = callV;
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+            if (LLVMTypeOf(rv) != i32) {
+                rv = LLVMBuildTrunc(builder, rv, i32, "main_rc");
+            }
+        } else {
+            rv = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+        }
+    }
+
+    free(qname);
+    LLVMBuildRet(builder, rv);
 }
 
 static int isStdImportPath(const char* raw) {
@@ -1532,6 +1687,7 @@ int endLLVM(Compiler* compiler, const char* argv0) {
         tm = NULL;
     }
 
+    int execRc = 0;
 #ifdef DEBUG
     debug("call print IR\n");
     char *ir = LLVMPrintModuleToString(module);
@@ -1545,7 +1701,7 @@ int endLLVM(Compiler* compiler, const char* argv0) {
     }
     struct timeval stop, start;
     gettimeofday(&start, NULL);
-    executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
+    execRc = executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
     gettimeofday(&stop, NULL);
     printf("====result0: time: %fs\n",(float)((stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec)/1000000.0);
     if (tm) LLVMDisposeTargetMachine(tm);
@@ -1557,11 +1713,11 @@ int endLLVM(Compiler* compiler, const char* argv0) {
         cleanup(module, builder, context, NULL);
         return rc;
     }
-    executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
+    execRc = executeModule(module, compiler ? compiler->runArgc : 0, compiler ? compiler->runArgv : NULL);
     if (tm) LLVMDisposeTargetMachine(tm);
     cleanup(module, builder, context, NULL);
 #endif
-    return 0;
+    return execRc;
 }
 
 static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
@@ -1903,6 +2059,7 @@ int main(int argc, char* argv[]) {
     int optLevel = 0;
     const char* srcPath = NULL;
     const char* outPath = NULL;
+    const char* entryRaw = NULL;
     int uncheckedIndex = 0;
     int stackFixedArrays = 0;
     int emitLoc = 1;
@@ -1921,7 +2078,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
@@ -2046,6 +2203,26 @@ int main(int argc, char* argv[]) {
             checkExtern = 1;
             continue;
         }
+        if (strncmp(a, "--entry=", 8) == 0) {
+            entryRaw = a + 8;
+            if (!entryRaw || entryRaw[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(a, "--entry") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            entryRaw = argv[++i];
+            if (!entryRaw || entryRaw[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            continue;
+        }
         if (strcmp(a, "-L") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "Missing value for %s\n", a);
@@ -2108,7 +2285,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
         return 1;
     }
     compiler.llvmOptLevel = optLevel;
@@ -2159,8 +2336,9 @@ int main(int argc, char* argv[]) {
     sys.stdDir = discoverStdDir(argv[0]);
 
     char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
-    moduleLoad(&sys, entryPath);
+    ModuleInfo* entryModule = moduleLoad(&sys, entryPath);
     if (sys.hadError) return 1;
+    if (!entryModule) return 1;
 
     compiler.externDecls = collectExternDecls(&sys);
 
@@ -2171,6 +2349,34 @@ int main(int argc, char* argv[]) {
     }
 
     // Compile modules in dependency-first order into the single LLVM module's main.
+    UserMainDecl selectedMain;
+    memset(&selectedMain, 0, sizeof(selectedMain));
+    selectedMain.kind = USER_MAIN_NONE;
+
+    // Default: if the entry source module defines a valid user `fn main(...)`, use it.
+    selectedMain = findUserMainInModule(entryModule);
+
+    // Optional override: --entry <module> chooses the user main from a specific module path.
+    if (entryRaw && entryRaw[0] != '\0') {
+        Token dummy = (Token){0};
+        char* full = resolveImportPath(&sys, entryModule, entryRaw, dummy);
+        if (!full) return 1;
+        char* canon = canonicalizePath(full);
+        free(full);
+
+        ModuleInfo* target = moduleFind(&sys, canon);
+        free(canon);
+        if (!target) {
+            cliError("unknown entry module '%s' (not loaded; import it from %s)", entryRaw, entryModule->path);
+            return 1;
+        }
+        selectedMain = findUserMainInModule(target);
+        if (selectedMain.kind == USER_MAIN_NONE) {
+            cliError("module '%s' has no valid entry main; allowed: `fn main() {}`, `fn main(args: string[]) {}`, `fn main(args: string[]) int {}`", target->path);
+            return 1;
+        }
+    }
+
     for (ListNode* node = sys.order->head; node != NULL; node = node->next) {
         ModuleInfo* m = (ModuleInfo*)node->data;
         if (!analyzeModule(&compiler, m->statements, m->aliases, m->path, m->prefix, m->prefixLen)) {
@@ -2178,6 +2384,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         compileModuleIntoMain(&compiler, m);
+        if (compiler.hadError) {
+            free(entryPath);
+            return 1;
+        }
+    }
+
+    // If a user entry main was selected, call it from the generated host `main`.
+    if (selectedMain.kind != USER_MAIN_NONE) {
+        emitUserMainCall(&compiler, selectedMain);
         if (compiler.hadError) {
             free(entryPath);
             return 1;

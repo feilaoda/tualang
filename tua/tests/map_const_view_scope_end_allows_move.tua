@@ -1,8 +1,10 @@
-let m: map = { "a": 1 }
-{
-  const v = m
-  assert(v.len() == 1)
-}
-let n = m
-assert(n.len() == 1)
 
+fn main() {
+    let m: map = { "a": 1 }
+    {
+      const v = m
+      assert(v.len() == 1)
+    }
+    let n = m
+    assert(n.len() == 1)
+}

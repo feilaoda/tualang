@@ -538,6 +538,36 @@ static FuncInfo* scopeFindFunc(Scope* scope, const Token* name) {
     return NULL;
 }
 
+static FuncSigInfo* compilerFindFuncSig(Compiler* compiler, const char* qualified, int qualifiedLen) {
+    if (!compiler || !compiler->funcSigs || !qualified || qualifiedLen <= 0) return NULL;
+    for (ListNode* n = compiler->funcSigs->head; n != NULL; n = n->next) {
+        FuncSigInfo* fs = (FuncSigInfo*)n->data;
+        if (!fs) continue;
+        if (fs->qualifiedLen != qualifiedLen) continue;
+        if (memcmp(fs->qualified, qualified, (size_t)qualifiedLen) == 0) return fs;
+    }
+    return NULL;
+}
+
+static FuncSigInfo* compilerRegisterFuncSig(Compiler* compiler, const char* qualified, int qualifiedLen) {
+    if (!compiler || !compiler->funcSigs || !qualified || qualifiedLen <= 0) return NULL;
+    FuncSigInfo* existing = compilerFindFuncSig(compiler, qualified, qualifiedLen);
+    if (existing) return existing;
+
+    FuncSigInfo* fs = (FuncSigInfo*)malloc(sizeof(FuncSigInfo));
+    memset(fs, 0, sizeof(FuncSigInfo));
+    fs->qualified = (char*)malloc((size_t)qualifiedLen + 1);
+    memcpy(fs->qualified, qualified, (size_t)qualifiedLen);
+    fs->qualified[qualifiedLen] = '\0';
+    fs->qualifiedLen = qualifiedLen;
+    fs->typeParamCount = 0;
+    fs->typeParamNames = NULL;
+    fs->typeParamNameLens = NULL;
+    fs->returnTypes = listNew();
+    listAppend(compiler->funcSigs, fs);
+    return fs;
+}
+
 static VarInfo* scopeFind(Scope* scope, const Token* name) {
     if (!scope || !name || !name->start || name->length <= 0) return NULL;
     for (Scope* s = scope; s != NULL; s = s->parent) {
@@ -1072,6 +1102,79 @@ static AType* inferCallReturnAt(Compiler* compiler, FuncInfo* fi, CallExpr* call
     return out;
 }
 
+static AType* inferFuncSigReturnAt(Compiler* compiler, FuncSigInfo* fs, CallExpr* call, int index) {
+    (void)compiler;
+    if (!fs || !fs->returnTypes || index < 0 || index >= fs->returnTypes->length) return atNew(AT_ANY);
+    Type* baseAst = (Type*)listGet(fs->returnTypes, index);
+    AType* base = baseAst ? atFromAstType(baseAst) : atNew(AT_ANY);
+
+    int tac = (call && call->typeArgs) ? call->typeArgs->length : 0;
+    if (tac <= 0) return base;
+
+    const char** names = NULL;
+    const int* lens = NULL;
+    int count = 0;
+
+    if (fs->typeParamCount > 0 && fs->typeParamNames && fs->typeParamNameLens) {
+        int tpc = fs->typeParamCount;
+        count = (tac < tpc) ? tac : tpc;
+        names = (const char**)fs->typeParamNames;
+        lens = (const int*)fs->typeParamNameLens;
+    } else {
+        static const char* fallbackNames[] = {"T", "U", "V", "W", "X", "Y", "Z"};
+        static const int fallbackLens[] = {1, 1, 1, 1, 1, 1, 1};
+        int max = (int)(sizeof(fallbackNames) / sizeof(fallbackNames[0]));
+        count = tac < max ? tac : max;
+        names = fallbackNames;
+        lens = fallbackLens;
+    }
+
+    if (count <= 0 || !names || !lens) return base;
+
+    AType** args = (AType**)malloc(sizeof(AType*) * (size_t)count);
+    for (int i = 0; i < count; i++) {
+        Type* ta = (Type*)listGet(call->typeArgs, i);
+        args[i] = atFromAstType(ta);
+    }
+    AType* out = atSubstituteTypeParams(base, names, lens, args, count);
+    free(args);
+    return out;
+}
+
+static FuncSigInfo* resolveImportedFuncSigFromCall(Compiler* compiler, CallExpr* call) {
+    if (!compiler || !call || !call->callee) return NULL;
+
+    if (call->callee->type == EXPR_VARIABLE) {
+        VariableExpr* callee = (VariableExpr*)call->callee;
+        SymbolAlias* a = compilerFindAlias(compiler, callee->name.start, callee->name.length);
+        if (a && a->kind == ALIAS_FUNC) {
+            return compilerFindFuncSig(compiler, a->qualified, a->qualifiedLen);
+        }
+        return NULL;
+    }
+
+    if (call->callee->type == EXPR_GET) {
+        GetExpr* get = (GetExpr*)call->callee;
+        if (get->object && get->object->type == EXPR_VARIABLE) {
+            VariableExpr* ns = (VariableExpr*)get->object;
+            SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
+            if (a && a->kind == ALIAS_MODULE) {
+                const int sepLen = 2;
+                int ql = a->qualifiedLen + sepLen + get->name.length;
+                char* q = (char*)malloc((size_t)ql + 1);
+                memcpy(q, a->qualified, (size_t)a->qualifiedLen);
+                memcpy(q + a->qualifiedLen, "__", (size_t)sepLen);
+                memcpy(q + a->qualifiedLen + sepLen, get->name.start, (size_t)get->name.length);
+                q[ql] = '\0';
+                FuncSigInfo* fs = compilerFindFuncSig(compiler, q, ql);
+                free(q);
+                return fs;
+            }
+        }
+    }
+    return NULL;
+}
+
 static int atAssignable(Compiler* compiler, AType* to, AType* from) {
     if (atIsAny(to) || atIsAny(from)) return 1;
     if (!to || !from) return 1;
@@ -1595,6 +1698,13 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
         if (fi->returnTypes->length == 0) return atNew(AT_VOID);
         return inferCallReturnAt(compiler, fi, call, 0);
     }
+
+    // Infer return type for imported calls (dependency-first, signatures recorded in compiler->funcSigs).
+    FuncSigInfo* fs = resolveImportedFuncSigFromCall(compiler, call);
+    if (fs && fs->returnTypes) {
+        if (fs->returnTypes->length == 0) return atNew(AT_VOID);
+        return inferFuncSigReturnAt(compiler, fs, call, 0);
+    }
     return atNew(AT_ANY);
 }
 
@@ -1766,6 +1876,17 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
         case EXPR_ASSIGN: {
             AssignExpr* a = (AssignExpr*)expr;
             VarInfo* vi = scopeFind(scope, &a->name);
+            if (!vi) {
+                analyzeErrorAt(
+                    compiler,
+                    modulePath,
+                    a->name.line,
+                    "undefined variable '%.*s' (declare it with `let`/`const` first)",
+                    a->name.length,
+                    a->name.start
+                );
+                // Keep going to find more errors.
+            }
             if (vi && vi->isConst) {
                 analyzeErrorAt(
                     compiler,
@@ -3022,6 +3143,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             // to type destructured targets.
             List* callReturns = NULL;
             FuncInfo* callFi = NULL;
+            FuncSigInfo* callFs = NULL;
             CallExpr* callExpr = NULL;
             if (rhsExpr && rhsExpr->type == EXPR_CALL) {
                 CallExpr* c = (CallExpr*)rhsExpr;
@@ -3031,6 +3153,20 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     if (fi && fi->returnTypes) {
                         callReturns = fi->returnTypes;
                         callFi = fi;
+                        callExpr = c;
+                    } else {
+                        FuncSigInfo* fs = resolveImportedFuncSigFromCall(compiler, c);
+                        if (fs && fs->returnTypes) {
+                            callReturns = fs->returnTypes;
+                            callFs = fs;
+                            callExpr = c;
+                        }
+                    }
+                } else {
+                    FuncSigInfo* fs = resolveImportedFuncSigFromCall(compiler, c);
+                    if (fs && fs->returnTypes) {
+                        callReturns = fs->returnTypes;
+                        callFs = fs;
                         callExpr = c;
                     }
                 }
@@ -3057,7 +3193,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     }
                     AType* inferred = atNew(AT_ANY);
                     if (callReturns && idx < callReturns->length) {
-                        inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                        if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                        else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
                     } else if (d->names->length == 1) {
                         // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
                         inferred = rhs;
@@ -3102,7 +3239,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     }
                     AType* inferred = rhs;
                     if (callReturns && idx < callReturns->length) {
-                        inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                        if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                        else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
                     }
                     if (vi && vi->type && !atAssignable(compiler, vi->type, inferred)) {
                         if (atIsOption(inferred) && !atIsOption(vi->type)) {
@@ -3230,6 +3368,130 @@ static void scanReturnRefKindInStmt(FuncStmt* fn, Stmt* stmt, int* ioKind, int* 
     }
 }
 
+static const Token* moduleTopLevelTokenForStmt(Stmt* stmt) {
+    if (!stmt) return NULL;
+    if (stmt->type == STMT_PRIVATE) {
+        PrivateStmt* p = (PrivateStmt*)stmt;
+        return moduleTopLevelTokenForStmt(p ? p->inner : NULL);
+    }
+    switch (stmt->type) {
+        case STMT_VAR: {
+            VarStmt* v = (VarStmt*)stmt;
+            return v ? &v->name : NULL;
+        }
+        case STMT_EXPR: {
+            ExprStmt* e = (ExprStmt*)stmt;
+            return (e && e->expression) ? &e->expression->token : NULL;
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* i = (IfLetStmt*)stmt;
+            return i ? &i->name : NULL;
+        }
+        case STMT_IMPORT: {
+            ImportStmt* i = (ImportStmt*)stmt;
+            return i ? &i->keyword : NULL;
+        }
+        case STMT_FROM_IMPORT: {
+            FromImportStmt* fi = (FromImportStmt*)stmt;
+            return fi ? &fi->keywordFrom : NULL;
+        }
+        case STMT_FUNC: {
+            FuncStmt* f = (FuncStmt*)stmt;
+            return f ? &f->name : NULL;
+        }
+        case STMT_STRUCT: {
+            StructStmt* s = (StructStmt*)stmt;
+            return s ? &s->name : NULL;
+        }
+        case STMT_OBJECT: {
+            ObjectStmt* o = (ObjectStmt*)stmt;
+            return o ? &o->name : NULL;
+        }
+        case STMT_ENUM: {
+            EnumStmt* e = (EnumStmt*)stmt;
+            return e ? &e->name : NULL;
+        }
+        case STMT_TRAIT: {
+            TraitStmt* t = (TraitStmt*)stmt;
+            return t ? &t->name : NULL;
+        }
+        case STMT_IMPL: {
+            ImplStmt* im = (ImplStmt*)stmt;
+            return im ? &im->name : NULL;
+        }
+        case STMT_TRAIT_IMPL: {
+            TraitImplStmt* ti = (TraitImplStmt*)stmt;
+            return ti ? &ti->keywordImpl : NULL;
+        }
+        case STMT_DESTRUCTURE: {
+            DestructureStmt* d = (DestructureStmt*)stmt;
+            return d ? &d->keyword : NULL;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* r = (ReturnStmt*)stmt;
+            return r ? &r->keyword : NULL;
+        }
+        case STMT_BREAK: {
+            BreakStmt* b = (BreakStmt*)stmt;
+            return b ? &b->keyword : NULL;
+        }
+        case STMT_CONTINUE: {
+            ContinueStmt* c = (ContinueStmt*)stmt;
+            return c ? &c->keyword : NULL;
+        }
+        case STMT_GOTO: {
+            GotoStmt* g = (GotoStmt*)stmt;
+            return g ? &g->keyword : NULL;
+        }
+        case STMT_LABEL: {
+            LabelStmt* l = (LabelStmt*)stmt;
+            return l ? &l->name : NULL;
+        }
+        default:
+            return NULL;
+    }
+}
+
+static int analyzeValidateModuleTopLevel(Compiler* compiler, List* statements) {
+    // Enforce: module top-level only allows declarations (no executable code / no global variables).
+    // Allowed at module top-level:
+    // - import/from import
+    // - fn / struct / object / enum / trait / impl / impl Trait for Struct
+    // - private <any of the above>
+    for (ListNode* node = statements ? statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* s = (Stmt*)node->data;
+        if (!s) continue;
+        if (s->type == STMT_PRIVATE) s = ((PrivateStmt*)s)->inner;
+        if (!s) continue;
+        switch (s->type) {
+            case STMT_IMPORT:
+            case STMT_FROM_IMPORT:
+            case STMT_FUNC:
+            case STMT_STRUCT:
+            case STMT_OBJECT:
+            case STMT_ENUM:
+            case STMT_TRAIT:
+            case STMT_IMPL:
+            case STMT_TRAIT_IMPL:
+                continue;
+            default: {
+                const Token* tok = moduleTopLevelTokenForStmt((Stmt*)node->data);
+                if (tok && compiler) {
+                    compilerErrorAtToken(
+                        compiler,
+                        tok,
+                        "module top-level only allows declarations (import/from/fn/struct/object/enum/trait/impl); move executable code into `fn main(...) {}`"
+                    );
+                } else if (compiler) {
+                    compilerErrorAt(compiler, 1, "module top-level only allows declarations (import/from/fn/struct/object/enum/trait/impl); move executable code into `fn main(...) {}`");
+                }
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 int analyzeModule(
     Compiler* compiler,
     List* statements,
@@ -3250,6 +3512,18 @@ int analyzeModule(
         compiler->currentAliases = aliases;
     }
     Scope* scope = scopePush(NULL);
+
+    if (compiler) {
+        if (!analyzeValidateModuleTopLevel(compiler, statements)) {
+            if (compiler) {
+                compiler->currentFilePath = savedFile;
+                compiler->currentModulePrefix = savedPrefix;
+                compiler->currentModulePrefixLen = savedPrefixLen;
+                compiler->currentAliases = savedAliases;
+            }
+            return 0;
+        }
+    }
 
     // Pre-pass: register trait declarations so analyzer can treat `TraitName` as a first-class type
     // (trait object) and perform basic assignability checks.
@@ -3351,6 +3625,8 @@ int analyzeModule(
         if (stmt->type != STMT_FUNC) continue;
         FuncStmt* fn = (FuncStmt*)stmt;
         if (!fn || !fn->name.start || fn->name.length <= 0) continue;
+        // Skip extern declarations (not exported and no body for signature scan).
+        if (!fn->body) continue;
 
         FuncInfo* fi = (FuncInfo*)malloc(sizeof(FuncInfo));
         memset(fi, 0, sizeof(FuncInfo));
@@ -3426,6 +3702,49 @@ int analyzeModule(
             fi->returnRefKind = 0;
         }
         listAppend(scope->funcs, fi);
+
+        // Register for cross-module return type inference (keyed by qualified name).
+        // This relies on dependency-first module analysis order.
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &fn->name, &ql);
+        const char* useQ = q ? q : fn->name.start;
+        int useQL = q ? ql : fn->name.length;
+        FuncSigInfo* fs = compilerRegisterFuncSig(compiler, useQ, useQL);
+        if (fs) {
+            // Type params
+            fs->typeParamCount = fn->typeParams ? fn->typeParams->length : 0;
+            if (fs->typeParamCount > 0) {
+                fs->typeParamNames = (char**)malloc(sizeof(char*) * (size_t)fs->typeParamCount);
+                fs->typeParamNameLens = (int*)malloc(sizeof(int) * (size_t)fs->typeParamCount);
+                for (int i = 0; i < fs->typeParamCount; i++) {
+                    TypeParamDecl* tp = fn->typeParams ? (TypeParamDecl*)listGet(fn->typeParams, i) : NULL;
+                    if (!tp || !tp->name.start || tp->name.length <= 0) {
+                        fs->typeParamNames[i] = NULL;
+                        fs->typeParamNameLens[i] = 0;
+                        continue;
+                    }
+                    fs->typeParamNames[i] = (char*)malloc((size_t)tp->name.length + 1);
+                    memcpy(fs->typeParamNames[i], tp->name.start, (size_t)tp->name.length);
+                    fs->typeParamNames[i][tp->name.length] = '\0';
+                    fs->typeParamNameLens[i] = tp->name.length;
+                }
+            }
+            // Return types (AST)
+            if (fs->returnTypes) {
+                // Clear existing (in case of duplicate register). We only append pointers; no frees.
+                while (fs->returnTypes->length > 0) { listPop(fs->returnTypes); }
+            }
+            if (!fs->returnTypes) fs->returnTypes = listNew();
+            if (fn->returnTypes && fn->returnTypes->length > 0) {
+                for (ListNode* rn = fn->returnTypes->head; rn != NULL; rn = rn->next) {
+                    Type* rt = (Type*)rn->data;
+                    listAppend(fs->returnTypes, rt);
+                }
+            } else if (fn->returnType) {
+                listAppend(fs->returnTypes, fn->returnType);
+            }
+        }
+        if (q) free(q);
     }
 
     // Pre-scan module statements to compute statement-granular last-use indices for NLL borrow expiry.

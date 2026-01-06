@@ -19,10 +19,12 @@ if t == "girl" {
 return Boy{ base: Base{ id: 6 }, extra3: 3 }
 }
 
-let p: HasId = whos("girl")
-assert(p.id() == 5)
-let p2: HasId = whos("boy")
-assert(p2.id() == 6)
 
 
 
+fn main() {
+    let p: HasId = whos("girl")
+    assert(p.id() == 5)
+    let p2: HasId = whos("boy")
+    assert(p2.id() == 6)
+}

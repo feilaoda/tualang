@@ -5,6 +5,8 @@ fn bar(x:int) (int) -> int {
 }
 
 // should not hang: parser must recover and terminate
-let ok = 1
-println(ok)
 
+fn main() {
+    let ok = 1
+    println(ok)
+}

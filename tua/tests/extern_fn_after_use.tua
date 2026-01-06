@@ -6,4 +6,7 @@ object Foo {
 
 extern fn atoi(s: string) int
 
-assert(Foo.atoi10() == 10)
+
+fn main() {
+    assert(Foo.atoi10() == 10)
+}

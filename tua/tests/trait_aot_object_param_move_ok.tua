@@ -16,7 +16,9 @@ fn take(move x: HasId) -> int {
   return x.id()
 }
 
-let v: HasId = S{ id: 5 }
-let n = take(move v)
-assert(n == 5)
 
+fn main() {
+    let v: HasId = S{ id: 5 }
+    let n = take(move v)
+    assert(n == 5)
+}

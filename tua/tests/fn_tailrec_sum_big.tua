@@ -5,5 +5,7 @@ fn sum(n:int, acc:long) -> long {
     return sum(n - 1, acc + n)
 }
 
-let r:long = sum(200000, 0L)
-assert(r == 20000100000L)
+fn main() {
+    let r:long = sum(200000, 0L)
+    assert(r == 20000100000L)
+}

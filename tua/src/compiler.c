@@ -79,6 +79,7 @@ void initCompiler(Compiler* compiler) {
 
     compiler->multiReturns = listNew();
     compiler->wantMultiValue = 0;
+    compiler->funcSigs = listNew();
 
     compiler->boxAllLocals = 0;
     compiler->boxedLocals = NULL;

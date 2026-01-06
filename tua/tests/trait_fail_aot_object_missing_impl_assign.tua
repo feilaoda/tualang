@@ -11,6 +11,8 @@ impl S {
 }
 
 // Missing: `impl HasId for S {}`
-let v: HasId = S{ id: 1 }
-println(v.id())
 
+fn main() {
+    let v: HasId = S{ id: 1 }
+    println(v.id())
+}

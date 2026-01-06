@@ -11,4 +11,6 @@ fn ok() {
   }
 }
 
-ok()
+fn main() {
+    ok()
+}

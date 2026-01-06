@@ -2,5 +2,7 @@ fn id<T>(move x: T) -> T {
   return x
 }
 
-assert(id<int>(1) == 1)
-assert(id<long>(123l) == 123l)
+fn main() {
+    assert(id<int>(1) == 1)
+    assert(id<long>(123l) == 123l)
+}

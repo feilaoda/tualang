@@ -4,5 +4,7 @@ fn makeAdder(n:int) -> (int) int {
     }
 }
 
-assert(makeAdder(5)(10) == 15)
 
+fn main() {
+    assert(makeAdder(5)(10) == 15)
+}

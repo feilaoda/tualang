@@ -4,6 +4,8 @@ fn two() -> S, S {
   return S{ a: 1 }, S{ a: 2 }
 }
 
-let a, b = two()
-assert(a.a == 1)
-assert(b.a == 2)
+fn main() {
+    let a, b = two()
+    assert(a.a == 1)
+    assert(b.a == 2)
+}

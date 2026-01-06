@@ -21,5 +21,7 @@ struct C {
   ...B
 }
 
-let c: C = C{ a: A{}, b: B{} }
-println(c.f()) // ambiguous: must write c.a.f() or c.b.f()
+fn main() {
+    let c: C = C{ a: A{}, b: B{} }
+    println(c.f()) // ambiguous: must write c.a.f() or c.b.f()
+}

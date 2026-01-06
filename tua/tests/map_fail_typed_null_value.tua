@@ -1,3 +1,5 @@
-let m: map<string, int> = { "a": null }
-println(m.len())
 
+fn main() {
+    let m: map<string, int> = { "a": null }
+    println(m.len())
+}

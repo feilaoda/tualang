@@ -1,10 +1,13 @@
-let m: map = {}
-m["a"] = 1
 
-let o = m.get("a")
 
 // m is borrowed by `o` (Option<Ref<...>>)
-m["b"] = 2
 
 // keep `o` alive past the mutation so the borrow can't end early (NLL)
-assert(o.isSome())
+
+fn main() {
+    let m: map = {}
+    m["a"] = 1
+    let o = m.get("a")
+    m["b"] = 2
+    assert(o.isSome())
+}

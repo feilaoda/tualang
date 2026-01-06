@@ -6,5 +6,7 @@ fn bad(p: Foo) -> &Foo {
   return &p
 }
 
-let a: Foo = Foo()
-println(bad(a).x)
+fn main() {
+    let a: Foo = Foo()
+    println(bad(a).x)
+}

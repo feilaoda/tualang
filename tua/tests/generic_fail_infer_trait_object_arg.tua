@@ -16,6 +16,8 @@ fn getIdGeneric<T: HasId>(x: T) -> int {
   return x.id()
 }
 
-let v: HasId = S{ id: 1 }
-getIdGeneric(v)
 
+fn main() {
+    let v: HasId = S{ id: 1 }
+    getIdGeneric(v)
+}

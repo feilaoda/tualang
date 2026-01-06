@@ -1,46 +1,48 @@
 import "std/bytes" as bstd
 
-let b = bstd.Bytes.new(16)
 
 // 0..7: 1..8
-let i: long = 0L
-while i < 8L {
-    bstd.Bytes.setU8(b, i, (int)(i + 1L))
-    i = i + 1L
-}
 
-let e16, u16v = bstd.Bytes.readU16LE(b, 0L)
-assert(e16 == 0)
-assert((int)u16v == 513) // 0x0201
 
-let e32, u32v = bstd.Bytes.readU32LE(b, 0L)
-assert(e32 == 0)
-assert((int)u32v == 67305985) // 0x04030201
 
-let e64, u64v = bstd.Bytes.readU64LE(b, 0L)
-assert(e64 == 0)
-assert((long)u64v == 578437695752307201L) // 0x0807060504030201
 
 // Signed reads
-bstd.Bytes.setU8(b, 8L, 255)
-bstd.Bytes.setU8(b, 9L, 255)
-bstd.Bytes.setU8(b, 10L, 255)
-bstd.Bytes.setU8(b, 11L, 255)
 
-let ei32, i32v = bstd.Bytes.readI32LE(b, 8L)
-assert(ei32 == 0)
-assert(i32v == -1)
 
 // Fast copy
-let dst = bstd.Bytes.new(4)
-let ce = bstd.Bytes.copy(dst, 0L, b, 0L, 4L)
-assert(ce == 0)
-let ce0, c0 = bstd.Bytes.getU8(dst, 0L)
-let ce3, c3 = bstd.Bytes.getU8(dst, 3L)
-assert(ce0 == 0)
-assert(ce3 == 0)
-assert(c0 == 1)
-assert(c3 == 4)
 
-let oob, _ = bstd.Bytes.readU32LE(b, 100L)
-assert(oob != 0)
+fn main() {
+    let b = bstd.Bytes.new(16)
+    let i: long = 0L
+    while i < 8L {
+        bstd.Bytes.setU8(b, i, (int)(i + 1L))
+        i = i + 1L
+    }
+    let e16, u16v = bstd.Bytes.readU16LE(b, 0L)
+    assert(e16 == 0)
+    assert((int)u16v == 513) // 0x0201
+    let e32, u32v = bstd.Bytes.readU32LE(b, 0L)
+    assert(e32 == 0)
+    assert((int)u32v == 67305985) // 0x04030201
+    let e64, u64v = bstd.Bytes.readU64LE(b, 0L)
+    assert(e64 == 0)
+    assert((long)u64v == 578437695752307201L) // 0x0807060504030201
+    bstd.Bytes.setU8(b, 8L, 255)
+    bstd.Bytes.setU8(b, 9L, 255)
+    bstd.Bytes.setU8(b, 10L, 255)
+    bstd.Bytes.setU8(b, 11L, 255)
+    let ei32, i32v = bstd.Bytes.readI32LE(b, 8L)
+    assert(ei32 == 0)
+    assert(i32v == -1)
+    let dst = bstd.Bytes.new(4)
+    let ce = bstd.Bytes.copy(dst, 0L, b, 0L, 4L)
+    assert(ce == 0)
+    let ce0, c0 = bstd.Bytes.getU8(dst, 0L)
+    let ce3, c3 = bstd.Bytes.getU8(dst, 3L)
+    assert(ce0 == 0)
+    assert(ce3 == 0)
+    assert(c0 == 1)
+    assert(c3 == 4)
+    let oob, _ = bstd.Bytes.readU32LE(b, 100L)
+    assert(oob != 0)
+}

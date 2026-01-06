@@ -5,4 +5,7 @@ fn f() int {
   }
   return a[9999]
 }
-assert(f() == 2)
+
+fn main() {
+    assert(f() == 2)
+}

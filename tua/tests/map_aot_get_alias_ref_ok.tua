@@ -1,9 +1,11 @@
-let m: map = {}
-m["a"] = 1
 
-let p = m.get("a").unwrap()
-let v:any = p.get()
-assert((long)v == 1L)
 
-let o2 = m.get("missing")
-assert(o2.isNone())
+fn main() {
+    let m: map = {}
+    m["a"] = 1
+    let p = m.get("a").unwrap()
+    let v:any = p.get()
+    assert((long)v == 1L)
+    let o2 = m.get("missing")
+    assert(o2.isNone())
+}

@@ -3,11 +3,13 @@ struct S {
   b: int
 }
 
-let m: map<string, S> = { "x": S{ a: 1, b: 2 } }
-let r = m.getMut("x").unwrap()
-r.a = 10
-r.b = 20
 
-let r1 = m.get("x").unwrap()
-assert(r1.a == 10)
-assert(r1.b == 20)
+fn main() {
+    let m: map<string, S> = { "x": S{ a: 1, b: 2 } }
+    let r = m.getMut("x").unwrap()
+    r.a = 10
+    r.b = 20
+    let r1 = m.get("x").unwrap()
+    assert(r1.a == 10)
+    assert(r1.b == 20)
+}

@@ -1,9 +1,11 @@
 import "std/bytes" as bstd
 
-let b: bytes = bstd.Bytes.fromString("abc")
-const s: Slice<byte> = b.slice(1L, 2L)
 
 // const slice is readonly
-let e = s.set(0L, (byte)120)
-println(e)
 
+fn main() {
+    let b: bytes = bstd.Bytes.fromString("abc")
+    const s: Slice<byte> = b.slice(1L, 2L)
+    let e = s.set(0L, (byte)120)
+    println(e)
+}

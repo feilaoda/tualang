@@ -16,6 +16,8 @@ struct Child {
 
 impl HasId for Child {}
 
-let v: HasId = Child{ base: Base{ id: 7 } }
-assert(v.id() == 7)
 
+fn main() {
+    let v: HasId = Child{ base: Base{ id: 7 } }
+    assert(v.id() == 7)
+}

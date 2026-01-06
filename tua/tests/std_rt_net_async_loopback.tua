@@ -1,76 +1,78 @@
 import "std/rt" as rt
 import "std/net" as net
 
-let loop = rt.Rt.loopCreate()
-assert(loop != null)
 
-let wq = rt.Rt.workqueueCreate(1)
-assert(wq != null)
 
-let lst = net.Tcp.listen(null, "0", 16)
-assert(lst != null)
 
-let port = net.Tcp.listenerPort(lst)
-assert(port > 0)
 
-let ok = 0
-let acceptHandle: ptr = null
-let client: ptr = null
-let server: ptr = null
 
-let onRead = fn(err: int, data: string, n: int) {
-    if err == 0 && n == 5 && data == "hello" {
-        ok = 1
-    }
-    rt.Rt.free(data)
-    if server != null {
-        net.Tcp.close(server)
-        server = null
-    }
-    if client != null {
-        net.Tcp.close(client)
-        client = null
-    }
-    if acceptHandle != null {
-        net.Tcp.acceptCancel(acceptHandle)
-        acceptHandle = null
-    }
-    rt.Rt.loopStop(loop)
-}
 
-let onAccept = fn(err: int, sock: ptr) {
-    if err != 0 || sock == null {
-        rt.Rt.loopStop(loop)
-        return
-    }
-    server = sock
-    net.Tcp.read(loop, sock, 32, 2000, onRead)
-}
 
-acceptHandle = net.Tcp.accept(loop, lst, onAccept)
-assert(acceptHandle != null)
 
-let onWrite = fn(err: int, n: long) {
-    if err != 0 {
+
+
+
+
+
+fn main() {
+    let loop = rt.Rt.loopCreate()
+    assert(loop != null)
+    let wq = rt.Rt.workqueueCreate(1)
+    assert(wq != null)
+    let lst = net.Tcp.listen(null, "0", 16)
+    assert(lst != null)
+    let port = net.Tcp.listenerPort(lst)
+    assert(port > 0)
+    let ok = 0
+    let acceptHandle: ptr = null
+    let client: ptr = null
+    let server: ptr = null
+    let onRead = fn(err: int, data: string, n: int) {
+        if err == 0 && n == 5 && data == "hello" {
+            ok = 1
+        }
+        rt.Rt.free(data)
+        if server != null {
+            net.Tcp.close(server)
+            server = null
+        }
+        if client != null {
+            net.Tcp.close(client)
+            client = null
+        }
+        if acceptHandle != null {
+            net.Tcp.acceptCancel(acceptHandle)
+            acceptHandle = null
+        }
         rt.Rt.loopStop(loop)
     }
-}
-
-let onConnect = fn(err: int, sock: ptr) {
-    if err != 0 || sock == null {
-        rt.Rt.loopStop(loop)
-        return
+    let onAccept = fn(err: int, sock: ptr) {
+        if err != 0 || sock == null {
+            rt.Rt.loopStop(loop)
+            return
+        }
+        server = sock
+        net.Tcp.read(loop, sock, 32, 2000, onRead)
     }
-    client = sock
-    net.Tcp.write(loop, sock, "hello", 2000, onWrite)
+    acceptHandle = net.Tcp.accept(loop, lst, onAccept)
+    assert(acceptHandle != null)
+    let onWrite = fn(err: int, n: long) {
+        if err != 0 {
+            rt.Rt.loopStop(loop)
+        }
+    }
+    let onConnect = fn(err: int, sock: ptr) {
+        if err != 0 || sock == null {
+            rt.Rt.loopStop(loop)
+            return
+        }
+        client = sock
+        net.Tcp.write(loop, sock, "hello", 2000, onWrite)
+    }
+    net.Tcp.connectPort(loop, wq, "127.0.0.1", port, 2000, onConnect)
+    rt.Rt.loopRun(loop)
+    assert(ok == 1)
+    net.Tcp.listenerClose(lst)
+    rt.Rt.workqueueFree(wq)
+    rt.Rt.loopFree(loop)
 }
-
-net.Tcp.connectPort(loop, wq, "127.0.0.1", port, 2000, onConnect)
-
-rt.Rt.loopRun(loop)
-assert(ok == 1)
-
-net.Tcp.listenerClose(lst)
-rt.Rt.workqueueFree(wq)
-rt.Rt.loopFree(loop)
-

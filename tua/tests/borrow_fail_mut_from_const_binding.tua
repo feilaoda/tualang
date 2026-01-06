@@ -2,6 +2,8 @@ struct Foo {
   x: int
 }
 
-const foo: Foo = Foo()
-let m: &Foo = &foo
-m.x = 1
+fn main() {
+    const foo: Foo = Foo()
+    let m: &Foo = &foo
+    m.x = 1
+}

@@ -6,9 +6,11 @@ fn id(let p: Ref<Foo>) -> Ref<Foo> {
   return p
 }
 
-let foo: Foo = Foo()
-foo.x = 1
 
-let r: Ref<Foo> = id(&foo)
-r.x = 2
-assert(foo.x == 2)
+fn main() {
+    let foo: Foo = Foo()
+    foo.x = 1
+    let r: Ref<Foo> = id(&foo)
+    r.x = 2
+    assert(foo.x == 2)
+}

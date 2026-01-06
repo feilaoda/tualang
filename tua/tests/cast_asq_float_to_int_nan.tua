@@ -1,7 +1,9 @@
-let d: double = 0.0 / 0.0
-let o1: Option<int> = d as int
-assert(o1.isNone())
 
-let o2: Option<int> = 3.9 as int
-assert(o2.isSome())
-assert(o2.unwrap() == 3)
+fn main() {
+    let d: double = 0.0 / 0.0
+    let o1: Option<int> = d as int
+    assert(o1.isNone())
+    let o2: Option<int> = 3.9 as int
+    assert(o2.isSome())
+    assert(o2.unwrap() == 3)
+}

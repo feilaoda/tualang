@@ -14,10 +14,12 @@ private fn _mk() -> bytes {
     return out
 }
 
-let b = _mk()
-let e, root = j.Json.parseBytes(b)
-assert(e == 0)
 
-let m: map = root
-let av:any = m["a"].unwrap()
-assert((long)av == 1L)
+fn main() {
+    let b = _mk()
+    let e, root = j.Json.parseBytes(b)
+    assert(e == 0)
+    let m: map = root
+    let av:any = m["a"].unwrap()
+    assert((long)av == 1L)
+}

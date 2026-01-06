@@ -20,6 +20,8 @@ struct None { ...Base as b }
     }
   }
 
-  let p: HasId = whos("girl1")
-  println(p.id())
 
+fn main() {
+      let p: HasId = whos("girl1")
+      println(p.id())
+}

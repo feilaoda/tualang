@@ -22,7 +22,9 @@ fn getId<T: HasId>(x: T) -> int {
   return x.id()
 }
 
-let s: S = S{id: 10}
-assert(s.id() == 1)
-assert(getId<S>(s) == 2)
 
+fn main() {
+    let s: S = S{id: 10}
+    assert(s.id() == 1)
+    assert(getId<S>(s) == 2)
+}

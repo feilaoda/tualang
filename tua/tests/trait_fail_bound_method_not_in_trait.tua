@@ -9,5 +9,7 @@ fn bad<T: HasId>(x: T) -> int {
   return x.nope()
 }
 
-bad<S>(S{id: 1})
 
+fn main() {
+    bad<S>(S{id: 1})
+}

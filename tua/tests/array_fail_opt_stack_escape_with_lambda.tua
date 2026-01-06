@@ -7,4 +7,6 @@ fn f() int {
   return b[0]
 }
 
-println(f())
+fn main() {
+    println(f())
+}

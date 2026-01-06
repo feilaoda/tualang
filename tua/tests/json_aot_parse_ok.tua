@@ -19,62 +19,13 @@ private fn _mk1() -> bytes {
     return out
 }
 
-let b1 = _mk1()
-let e, root = j.Json.parseBytes(b1)
-assert(e == 0)
 
-let m: map = root
 
-let av:any = m["a"].unwrap()
-assert((long)av == 1L)
 
-let bv:any = m["b"].unwrap()
-let arr:any[] = bv
-assert(arr.len() == 3)
-let b0: bool = arr[0]
-assert(b0 == true)
-let b1: bool = arr[1]
-assert(b1 == false)
-let n2:any = arr[2]
-assert(n2 == null)
 
-let sv:any = m["s"].unwrap()
-let ss: string = sv
-let sb = bstd.Bytes.fromString(ss)
-assert(bstd.Bytes.len(sb) == 5L)
-let se0, c0 = bstd.Bytes.getU8(sb, 0L)
-assert(se0 == 0)
-assert(c0 == 120) // 'x'
-let se1, c1 = bstd.Bytes.getU8(sb, 1L)
-assert(se1 == 0)
-assert(c1 == 10)  // '\n'
-let se2, c2 = bstd.Bytes.getU8(sb, 2L)
-assert(se2 == 0)
-assert(c2 == 34)  // '"'
-let se3, c3 = bstd.Bytes.getU8(sb, 3L)
-assert(se3 == 0)
-assert(c3 == 121) // 'y'
-let se4, c4 = bstd.Bytes.getU8(sb, 4L)
-assert(se4 == 0)
-assert(c4 == 34)  // '"'
 
-let uv:any = m["u"].unwrap()
-let us: string = uv
-assert(us == "AB")
 
 // Numbers: integer vs float/exponent
-let b2 = bstd.Bytes.fromString("[1,2.5,1e2,-3]")
-let e2, v2 = j.Json.parseBytes(b2)
-assert(e2 == 0)
-let a2:any[] = v2
-let n0: long = a2[0]
-assert(n0 == 1L)
-let n1: double = a2[1]
-assert(n1 == 2.5)
-let n2: double = a2[2]
-assert(n2 == 100.0)
-let n3: long = a2[3]
-assert(n3 == -3L)
 
 // Surrogate pair: 😀 => UTF-8 length 4 bytes.
 private fn _mk3() -> bytes {
@@ -91,11 +42,62 @@ private fn _mk3() -> bytes {
     return out
 }
 
-let b3 = _mk3()
-let e3, v3 = j.Json.parseBytes(b3)
-assert(e3 == 0)
-let m3: map = v3
-let x:any = m3["x"].unwrap()
-let xs: string = x
-let bx = bstd.Bytes.fromString(xs)
-assert(bstd.Bytes.len(bx) == 4L)
+fn main() {
+    let b1 = _mk1()
+    let e, root = j.Json.parseBytes(b1)
+    assert(e == 0)
+    let m: map = root
+    let av:any = m["a"].unwrap()
+    assert((long)av == 1L)
+    let bv:any = m["b"].unwrap()
+    let arr:any[] = bv
+    assert(arr.len() == 3)
+    let b0: bool = arr[0]
+    assert(b0 == true)
+    let b1: bool = arr[1]
+    assert(b1 == false)
+    let n2:any = arr[2]
+    assert(n2 == null)
+    let sv:any = m["s"].unwrap()
+    let ss: string = sv
+    let sb = bstd.Bytes.fromString(ss)
+    assert(bstd.Bytes.len(sb) == 5L)
+    let se0, c0 = bstd.Bytes.getU8(sb, 0L)
+    assert(se0 == 0)
+    assert(c0 == 120) // 'x'
+    let se1, c1 = bstd.Bytes.getU8(sb, 1L)
+    assert(se1 == 0)
+    assert(c1 == 10)  // '\n'
+    let se2, c2 = bstd.Bytes.getU8(sb, 2L)
+    assert(se2 == 0)
+    assert(c2 == 34)  // '"'
+    let se3, c3 = bstd.Bytes.getU8(sb, 3L)
+    assert(se3 == 0)
+    assert(c3 == 121) // 'y'
+    let se4, c4 = bstd.Bytes.getU8(sb, 4L)
+    assert(se4 == 0)
+    assert(c4 == 34)  // '"'
+    let uv:any = m["u"].unwrap()
+    let us: string = uv
+    assert(us == "AB")
+    let b2 = bstd.Bytes.fromString("[1,2.5,1e2,-3]")
+    let e2, v2 = j.Json.parseBytes(b2)
+    assert(e2 == 0)
+    let a2:any[] = v2
+    let n0: long = a2[0]
+    assert(n0 == 1L)
+    let n1: double = a2[1]
+    assert(n1 == 2.5)
+    let n2: double = a2[2]
+    assert(n2 == 100.0)
+    let n3: long = a2[3]
+    assert(n3 == -3L)
+    let b3 = _mk3()
+    let e3, v3 = j.Json.parseBytes(b3)
+    assert(e3 == 0)
+    let m3: map = v3
+    let x:any = m3["x"].unwrap()
+    let xs: string = x
+    let bx = bstd.Bytes.fromString(xs)
+    assert(bstd.Bytes.len(bx) == 4L)
+}

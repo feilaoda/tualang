@@ -4,7 +4,9 @@ fn make() -> S {
   return S{ a: 1 }
 }
 
-let x = make()
-let y = x
-let z = x
 
+fn main() {
+    let x = make()
+    let y = x
+    let z = x
+}

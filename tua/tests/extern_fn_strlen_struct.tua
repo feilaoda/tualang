@@ -1,4 +1,3 @@
-extern fn strlen(s: string) long
 
 struct Foo {
     x: string
@@ -10,7 +9,11 @@ struct Foo {
     }
 }
 
-let foo = Foo("abcd")
+extern fn strlen(s: string) long
 
-println(foo.strlen())
 
+
+fn main() {
+    let foo = Foo("abcd")
+    println(foo.strlen())
+}

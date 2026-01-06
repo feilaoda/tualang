@@ -6,5 +6,7 @@ fn bad(f: Foo) {
   f.x = 1
 }
 
-bad(Foo())
 
+fn main() {
+    bad(Foo())
+}

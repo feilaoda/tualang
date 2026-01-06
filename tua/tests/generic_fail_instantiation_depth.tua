@@ -2,4 +2,6 @@ fn grow<T>() -> int {
   return grow<Ref<T>>()
 }
 
-grow<int>()
+fn main() {
+    grow<int>()
+}

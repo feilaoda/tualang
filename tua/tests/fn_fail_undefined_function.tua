@@ -1,2 +1,4 @@
-typeof(1)
 
+fn main() {
+    typeof(1)
+}

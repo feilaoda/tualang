@@ -4,7 +4,9 @@ fn make() -> S {
   return S{ a: 1 }
 }
 
-let x = make()
-let y = x
-assert(y.a == 1)
 
+fn main() {
+    let x = make()
+    let y = x
+    assert(y.a == 1)
+}

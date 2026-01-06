@@ -1,4 +1,3 @@
-extern fn atoi(s: string) int as c_atoi
 
 object Foo {
   fn atoi(s: string) int {
@@ -11,5 +10,9 @@ object Foo {
   }
 }
 
-assert(Foo.atoi("10") == 10)
-assert(Foo.fib(10) == 55)
+extern fn atoi(s: string) int as c_atoi
+
+fn main() {
+    assert(Foo.atoi("10") == 10)
+    assert(Foo.fib(10) == 55)
+}

@@ -1,3 +1,6 @@
 import "modules/import_mod"
 import "modules/import_mod_conflict"
-println(A())
+
+fn main() {
+    println(A())
+}

@@ -6,8 +6,10 @@ fn inc(let f: Foo) {
   f.x = f.x + 1
 }
 
-let a: Foo = Foo()
-a.x = 1
-inc(a)
-assert(a.x == 2)
 
+fn main() {
+    let a: Foo = Foo()
+    a.x = 1
+    inc(a)
+    assert(a.x == 2)
+}

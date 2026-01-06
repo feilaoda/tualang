@@ -1,4 +1,6 @@
-let a: int = 1
-let b: u32 = 1
-let c = a & b
 
+fn main() {
+    let a: int = 1
+    let b: u32 = 1
+    let c = a & b
+}

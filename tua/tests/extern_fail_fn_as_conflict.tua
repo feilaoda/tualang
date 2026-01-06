@@ -1,2 +1,4 @@
-extern fn atoi(s: string) int as c_atoi
-extern fn atoi(s: string) int as c_atoi
+fn main() {
+    extern fn atoi(s: string) int as c_atoi
+    extern fn atoi(s: string) int as c_atoi
+}

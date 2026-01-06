@@ -2,5 +2,7 @@ fn id<T>(x: T) -> T {
   return x
 }
 
-id<int, long>(1)
 
+fn main() {
+    id<int, long>(1)
+}

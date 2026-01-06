@@ -1,2 +1,4 @@
-let m: map = null
-m.clear()
+fn main() {
+    let m: map = null
+    m.clear()
+}

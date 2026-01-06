@@ -179,19 +179,31 @@ static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_box_dec", fty);
 }
 
-static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueType, Type* astType, TraitInfo* traitInfo) {
+static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueType, Type* astType, TraitInfo* traitInfo, int isMapHint, int isArrayHint, int isBytesHint) {
     if (!compiler || !valueType) return NULL;
-    LLVMTypeRef mapTy = compilerGetMapType(compiler);
-    LLVMTypeRef arrTy = compilerGetArrayType(compiler);
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
 
-    int isMap = (valueType == mapTy);
-    int isArray = (valueType == arrTy);
+    int isMap = isMapHint ? 1 : 0;
+    int isArray = isArrayHint ? 1 : 0;
+    int isBytes = isBytesHint ? 1 : 0;
     int isClosure = (valueType == cloTy);
     StructInfo* structInfo = NULL;
 
-    if (!isMap && !isArray && !isClosure && !traitInfo && astType && astType->kind == TYPE_NAMED) {
-        structInfo = compilerResolveStructByToken(compiler, &astType->name);
+    if (astType) {
+        if (!isMap && astType->kind == TYPE_NAMED &&
+            astType->name.length == 3 && memcmp(astType->name.start, "map", 3) == 0) {
+            isMap = 1;
+        }
+        if (!isBytes && astType->kind == TYPE_NAMED &&
+            astType->name.length == 5 && memcmp(astType->name.start, "bytes", 5) == 0) {
+            isBytes = 1;
+        }
+        if (!isArray && astType->kind == TYPE_ARRAY) {
+            isArray = 1;
+        }
+        if (!isMap && !isArray && !isBytes && !isClosure && !traitInfo && astType->kind == TYPE_NAMED) {
+            structInfo = compilerResolveStructByToken(compiler, &astType->name);
+        }
     } else if (!isMap && !isArray && !isClosure && !traitInfo && LLVMGetTypeKind(valueType) == LLVMStructTypeKind) {
         const char* llvmName = LLVMGetStructName(valueType);
         if (llvmName && llvmName[0] != '\0') {
@@ -199,12 +211,13 @@ static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueTy
         }
     }
 
-    if (!isMap && !isArray && !isClosure && !traitInfo && !structInfo) return NULL;
+    if (!isMap && !isArray && !isBytes && !isClosure && !traitInfo && !structInfo) return NULL;
 
     const char* base = NULL;
     int baseLen = 0;
     if (isMap) { base = "map"; baseLen = 3; }
     else if (isArray) { base = "array"; baseLen = 5; }
+    else if (isBytes) { base = "bytes"; baseLen = 5; }
     else if (isClosure) { base = "closure"; baseLen = 7; }
     else if (traitInfo) { base = traitInfo->name; baseLen = traitInfo->nameLength; }
     else if (structInfo) { base = structInfo->name; baseLen = structInfo->nameLength; }
@@ -250,6 +263,7 @@ static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueTy
         LLVMBuildCall2(compiler->builder, dropFnTy, dropFn, &data, 1, "");
         LLVMBuildStore(compiler->builder, LLVMConstNull(objTy), payloadPtr);
     } else if (isMap) {
+        LLVMTypeRef mapTy = compilerGetMapType(compiler);
         LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, mapTy, payloadPtr, "mcur");
         LLVMValueRef freeFn = getOrCreateTuaMapFree(compiler);
         LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
@@ -257,12 +271,21 @@ static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueTy
         LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
         LLVMBuildStore(compiler->builder, LLVMConstNull(mapTy), payloadPtr);
     } else if (isArray) {
+        LLVMTypeRef arrTy = compilerGetArrayType(compiler);
         LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, arrTy, payloadPtr, "acur");
         LLVMValueRef freeFn = getOrCreateTuaArrayFree(compiler);
         LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
         LLVMValueRef args1[1] = { cur };
         LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
         LLVMBuildStore(compiler->builder, LLVMConstNull(arrTy), payloadPtr);
+    } else if (isBytes) {
+        LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+        LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, bytesTy, payloadPtr, "bcur");
+        LLVMValueRef freeFn = getOrCreateTuaBytesFree(compiler);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(freeFn);
+        LLVMValueRef args1[1] = { cur };
+        LLVMBuildCall2(compiler->builder, fty, freeFn, args1, 1, "");
+        LLVMBuildStore(compiler->builder, LLVMConstNull(bytesTy), payloadPtr);
     } else if (isClosure) {
         LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, cloTy, payloadPtr, "ccur");
         LLVMValueRef env = LLVMBuildExtractValue(compiler->builder, cur, 1, "env");
@@ -4672,7 +4695,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             traitInfo = compilerResolveTraitByToken(compiler, &pType->name);
         }
         int isBorrowedParam = (!p || p->mode != PARAM_MOVE) ? 1 : 0;
-        LLVMValueRef dropFn = (!isBorrowedParam) ? getOrCreateBoxDropFn(compiler, vType, pType, traitInfo) : NULL;
+        LLVMValueRef dropFn = (!isBorrowedParam) ? getOrCreateBoxDropFn(compiler, vType, pType, traitInfo, 0, 0, 0) : NULL;
 
         LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMValueRef sizeV = LLVMSizeOf(vType);

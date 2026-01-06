@@ -9,6 +9,3 @@ fn main() {
     assert(sum == 6)
     assert(sumIdx == 3)
 }
-
-main()
-

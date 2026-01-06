@@ -2,7 +2,9 @@ struct Foo {
   x: int
 }
 
-let a: Foo = Foo()
-a.x = 1
-let b: Foo = a
-println(a.x)
+fn main() {
+    let a: Foo = Foo()
+    a.x = 1
+    let b: Foo = a
+    println(a.x)
+}

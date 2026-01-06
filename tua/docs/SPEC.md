@@ -49,7 +49,7 @@
   - `let name[:Type] = expr`
   - `const name[:Type] = expr`
   - `let name = expr` 会进行类型推断（Status: Partial）：
-    - 语义层（analyzer）已支持：字面量/容器字面量 + **本模块 `fn` 调用的声明返回类型**（`let x = f()` 取第 1 返回）
+    - 语义层（analyzer）已支持：字面量/容器字面量 + **`fn` 调用的声明返回类型**（`let x = f()` 取第 1 返回；含导入/跨模块调用）
     - 其余场景仍可能依赖 codegen 的 LLVM 侧“从 initializer 推断 LLVMType”的兜底（后续会逐步收敛到语义层）
   - 若无法推断，当前默认按 `int` 处理（后续语义层会补齐错误提示）
 - 可修改性（Frozen）：
@@ -271,7 +271,7 @@
 - `this`（Frozen）：
   - 仅在 `struct` 实例方法中可用，类型恒为 `Ref<T>`（过渡期 `&T`）
   - `this` 绑定不可重新赋值；字段是否可写取决于接收者是否为 `let` 绑定（`const` 接收者上写字段为编译错误，Planned：由借用检查器统一判定）
-  - 隐式字段访问/赋值（Frozen）：在 `struct` 实例方法中，若标识符既不是局部变量/参数/模块顶层变量，且 `this` 上存在同名字段，则将 `x` / `x = v` 分别解析为 `this.x` / `this.x = v`（便于写 `x` 代替 `this.x`）
+  - 隐式字段访问/赋值（Frozen）：在 `struct` 实例方法中，若标识符既不是局部变量/参数/模块顶层绑定（函数/类型/对象等），且 `this` 上存在同名字段，则将 `x` / `x = v` 分别解析为 `this.x` / `this.x = v`（便于写 `x` 代替 `this.x`）
 - 实例方法调用（Frozen）：
   - `p.m(a,b)` 会被编译为 `T__m(recv, a, b)`，其中 `recv` 恒为 `Ref<T>`（过渡期 `&T`）
     - 若 `p` 为 `T`（值），则 `recv = &p`
@@ -387,8 +387,22 @@
   - 相对路径以当前文件所在目录为基准
   - 若省略后缀，会自动补 `.tua`
   - 标准库路径：以 `std/` 开头的导入路径会从标准库目录解析（见 `std/README.md`）
-  - 模块缓存：同一模块只会被加载/执行一次（顶层语句只会在 `main` 中生成一次）
-  - 循环依赖：允许；按依赖优先的加载顺序进行一次性执行（后续可补更精确的初始化时序定义）
+  - 模块缓存：同一模块只会被加载/编译一次（仅声明；无顶层可执行代码）
+  - 循环依赖：允许；由于模块顶层无可执行语句，不存在“初始化顺序”问题
+  - 模块顶层限制（Frozen，Status: Implemented）：
+    - 模块顶层只允许**声明语句**：`import/from`、`fn`、`struct`、`object`、`enum`、`trait`、`impl`、`impl Trait for Struct`（以及 `private` 修饰的这些）
+    - 禁止模块顶层出现任何可执行语句：`let/const`、表达式语句（含顶层 `assert`/`print`）、`if/for/while/do/goto/label/return/break/continue` 等
+    - 约束目的：消除模块级初始化时机/顺序问题；所有执行都必须显式放进 `fn main(...) {}` 或其他函数中
+  - 程序入口（Status: Implemented）：
+    - 程序启动时，不执行任何模块顶层语句（因为模块顶层仅允许声明）；随后（可选）调用一次“用户 `main`”作为入口函数
+    - 入口默认选择：**编译命令行指定的 source file 所属模块**内的 `fn main`（若其签名匹配下述允许形式）
+    - 允许的入口签名（Frozen，v1）：
+      - `fn main() {}`
+      - `fn main(args: string[]) {}`
+      - `fn main(args: string[]) int {}`：其返回的 `int` 作为进程退出码（0=成功）
+    - `fn main() int {}` 不作为入口（它只是一个普通函数，可被显式调用）
+    - 当存在多个入口候选（例如入口模块不包含 `main`，但导入模块包含），需要使用 CLI `--entry <module>` 指定入口模块
+      - `--entry` 的 `<module>` 使用与 `import "..."` 相同的路径解析规则（相对入口模块目录；支持 `std/`）
 - 当前限制：
   - 只支持字符串字面量路径（不支持表达式路径）
   - 仅支持导入 `fn/struct/trait/object/enum`；不支持导入模块级变量

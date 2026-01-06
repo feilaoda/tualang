@@ -14,8 +14,6 @@ fn getId<T: HasId>(x: T) -> int {
   return x.id()
 }
 
-let s: S = S{ id: 9 }
-assert(getId<S>(s) == 9)
 
 trait HasId2 {
   fn id2() -> int
@@ -29,4 +27,8 @@ fn getId2<T: HasId2>(x: T) -> int {
   return x.id2()
 }
 
-assert(getId2<S>(s) == 18)
+fn main() {
+    let s: S = S{ id: 9 }
+    assert(getId<S>(s) == 9)
+    assert(getId2<S>(s) == 18)
+}

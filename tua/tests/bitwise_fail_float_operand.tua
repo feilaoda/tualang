@@ -1,4 +1,6 @@
-let a: float = 1.0
-let b: int = 1
-let c = a & b
 
+fn main() {
+    let a: float = 1.0
+    let b: int = 1
+    let c = a & b
+}

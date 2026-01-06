@@ -2,6 +2,8 @@ struct Foo {
   x: int
 }
 
-const a: Foo = Foo()
-let b: Foo = a
-println(b.x)
+fn main() {
+    const a: Foo = Foo()
+    let b: Foo = a
+    println(b.x)
+}

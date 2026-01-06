@@ -8,6 +8,8 @@ fn getId<T: HasId>(x: T) -> int {
   return 0
 }
 
-let s: S = S{ id: 1 }
-getId<S>(s)
 
+fn main() {
+    let s: S = S{ id: 1 }
+    getId<S>(s)
+}

@@ -2,8 +2,10 @@ struct Foo {
   x: int
 }
 
-let foo: Foo = Foo()
-const r: &Foo = &foo
-let m: &Foo = &foo
-println(r.x)
-m.x = 1
+fn main() {
+    let foo: Foo = Foo()
+    const r: &Foo = &foo
+    let m: &Foo = &foo
+    println(r.x)
+    m.x = 1
+}

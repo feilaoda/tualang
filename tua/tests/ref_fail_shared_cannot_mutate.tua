@@ -6,7 +6,9 @@ fn id(p: Ref<Foo>) -> Ref<Foo> {
   return p
 }
 
-let a: Foo = Foo()
-let r: Ref<Foo> = id(&a)
-r.x = 1
 
+fn main() {
+    let a: Foo = Foo()
+    let r: Ref<Foo> = id(&a)
+    r.x = 1
+}

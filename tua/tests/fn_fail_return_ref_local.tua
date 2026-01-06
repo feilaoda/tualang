@@ -8,4 +8,6 @@ fn bad() -> &Foo {
   return &a
 }
 
-println(bad().x)
+fn main() {
+    println(bad().x)
+}

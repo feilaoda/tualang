@@ -81,12 +81,15 @@
   - [x] trait v2（第一版）：动态分发 trait object（fat pointer/vtable），并支持“静态优先、必要时自动降级为动态”（不要求显式 `dyn` 关键字）
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
   - [x] 从本模块 `fn` 的声明返回类型推断：`let x = f()` 取第 1 返回；`let a,b = f()` 按返回列表逐项推断/校验
-  - [ ] 覆盖导入/跨模块函数的返回类型推断
+  - [x] 覆盖导入/跨模块函数的返回类型推断：支持 `import f from "m"` 与 `import "m" as ns; ns.f()`
   - [ ] 覆盖条件表达式/分支表达式（含 `if`/`??`）的推断
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化
 - [ ] 体验与工程化：
   - [x] 统一诊断格式（基础版）：`file:line:col: error: message`（词法/语法/语义/模块导入/运行时）
+  - [x] 模块顶层仅允许声明（第一版）：禁止模块顶层 `let/const` 与可执行语句（含顶层 `assert`），消除初始化顺序问题
+  - [x] 程序入口 `main`（第一版）：支持 `fn main() {}` / `fn main(args:string[]) {}` / `fn main(args:string[]) int {}`，并支持 `tuac --entry <module>` 选择入口模块
+  - [x] tests runner 增强（第一版）：支持 `// tuac: <flags>` 与 `// expect-exit: <code>` 指令
   - [ ] 补 examples 覆盖边界
   - [ ] 脚本批量跑 examples
 

@@ -1,8 +1,10 @@
-let m: map<string, map<string, int>> = {}
 
 // Insert a temporary map literal as value (runtime handle).
-m["a"] = { "k": 1 }
 
-let r = m.get("a").unwrap()
-assert(r.len() == 1)
-println(r.len())
+fn main() {
+    let m: map<string, map<string, int>> = {}
+    m["a"] = { "k": 1 }
+    let r = m.get("a").unwrap()
+    assert(r.len() == 1)
+    println(r.len())
+}

@@ -2,5 +2,7 @@ fn f(x: int) -> int {
   return x
 }
 
-f<int>(1)
 
+fn main() {
+    f<int>(1)
+}

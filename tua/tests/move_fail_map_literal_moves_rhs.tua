@@ -1,5 +1,7 @@
-let inner: map = {"a": 1}
-let outer: map = {"x": inner}
 
-println(inner.len())
 
+fn main() {
+    let inner: map = {"a": 1}
+    let outer: map = {"x": inner}
+    println(inner.len())
+}

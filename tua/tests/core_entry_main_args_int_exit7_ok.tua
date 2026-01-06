@@ -1,0 +1,6 @@
+// expect-exit: 7
+fn main(args: string[]) int {
+    assert(args.len() >= 1)
+    return 7
+}
+

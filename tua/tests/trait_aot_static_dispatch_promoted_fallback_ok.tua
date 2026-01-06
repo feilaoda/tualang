@@ -22,6 +22,8 @@ fn getId<T: HasId>(x: T) -> int {
   return x.id()
 }
 
-let c: Child = Child{ base: Base{ id: 7 } }
-assert(getId<Child>(c) == 7)
 
+fn main() {
+    let c: Child = Child{ base: Base{ id: 7 } }
+    assert(getId<Child>(c) == 7)
+}

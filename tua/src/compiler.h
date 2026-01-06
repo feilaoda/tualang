@@ -63,6 +63,11 @@ typedef struct Compiler{
     List* multiReturns; // List<MultiReturnInfo*>
     int wantMultiValue; // when true, calls return full tuple value
 
+    // Analyzer: cross-module function signature table for return-type inference.
+    // Keyed by qualified name (e.g. `mod__f`), populated by analyzeModule() as modules are analyzed
+    // in dependency-first order.
+    List* funcSigs; // List<FuncSigInfo*>
+
     // Closure / lambda (LLVM JIT path)
     int boxAllLocals;        // when true, locals/params stored in heap boxes
     // Escape analysis v1: when non-NULL, this function-scoped name set (List<Token*>) indicates
@@ -152,6 +157,15 @@ typedef struct MultiReturnInfo {
     int nameLen;
     int count;
 } MultiReturnInfo;
+
+typedef struct FuncSigInfo {
+    char* qualified;
+    int qualifiedLen;
+    int typeParamCount;
+    char** typeParamNames;   // each NUL-terminated
+    int* typeParamNameLens;
+    List* returnTypes;       // List<Type*>, len==0 => void
+} FuncSigInfo;
 
 typedef struct ClosureSig {
     char* name;

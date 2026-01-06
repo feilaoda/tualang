@@ -6,6 +6,8 @@ fn id(f: Foo) -> Foo {
   return f
 }
 
-let a: Foo = Foo()
-id(a)
 
+fn main() {
+    let a: Foo = Foo()
+    id(a)
+}

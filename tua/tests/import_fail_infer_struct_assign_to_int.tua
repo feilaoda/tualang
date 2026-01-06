@@ -1,0 +1,7 @@
+import "modules/ret_struct_mod" as m
+
+
+fn main() {
+    let x = m.make()
+    let y: int = x
+}
