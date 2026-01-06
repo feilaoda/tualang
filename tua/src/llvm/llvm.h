@@ -37,6 +37,12 @@ typedef struct VariableRef {
     int isSlice;
     LLVMTypeRef sliceElemType;
     TypeKind sliceElemKind;
+    // Best-effort: remember the owner variable name for slices created via `bytes.slice(...)` or `array.slice(...)`,
+    // so `Slice.set` can safely write back (e.g. honoring readonly mmap bytes via tua_bytes_set_u8).
+    const char* sliceOwnerName;
+    int sliceOwnerNameLength;
+    int sliceOwnerIsBytes;
+    int sliceOwnerIsArray;
     int isTraitObj;
     const char* traitName;
     int traitNameLength;

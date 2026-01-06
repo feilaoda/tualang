@@ -48,7 +48,9 @@
 - 变量声明：
   - `let name[:Type] = expr`
   - `const name[:Type] = expr`
-  - `let name = expr` 会进行类型推断（当前为“编译期 LLVM 类型推断”，尚未做完整语义层）
+  - `let name = expr` 会进行类型推断（Status: Partial）：
+    - 语义层（analyzer）已支持：字面量/容器字面量 + **本模块 `fn` 调用的声明返回类型**（`let x = f()` 取第 1 返回）
+    - 其余场景仍可能依赖 codegen 的 LLVM 侧“从 initializer 推断 LLVMType”的兜底（后续会逐步收敛到语义层）
   - 若无法推断，当前默认按 `int` 处理（后续语义层会补齐错误提示）
 - 可修改性（Frozen）：
   - `let`：绑定可修改（可重新赋值；且允许通过该绑定修改其指向/拥有的对象内容）
@@ -198,6 +200,7 @@
   - `return` 支持多表达式：`return a, b`
   - 解构声明：`let a, b = f()` / `const a, b = f()`
   - 解构赋值：`a, b = f()`
+  - 语义层补充（Status: Partial）：当 RHS 是本模块已知 `fn` 调用时，解构会按声明返回列表逐项推断/校验，并在 arity 不匹配时报错
   - 表达式上下文规则：当 `f()` 返回多个值时，在普通表达式上下文会自动取第一个值（例如 `let x = f()`）
   - `return f()` 转发规则：当当前函数是多返回值函数时，`return f()` 会直接转发 `f()` 的多返回结果
 - 闭包/upvalue（Status: Implemented，第一版）：
@@ -534,7 +537,7 @@
   - 若存在期望类型且为数组类型，则 `{}` 表示空数组
   - 否则默认 `{}` 表示空 map
 
-#### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` v0 已实现一部分）
+#### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` v1 已实现）
 - 目标：为二进制解析（GGUF/量化/bit-pack）与大文件 mmap 提供“零拷贝读取”的基础类型。
 - `bytes`（拥有所有权，move-only，Implemented）：
   - 运行时表示：`tua_bytes*`（见 `src/tua_bytes.h`）
@@ -551,17 +554,20 @@
   - `BufReader`：对任意 `Reader` 做缓冲（v0 为字节拷贝实现；后续在 `tua_rt` 加 memcpy 优化）
   - 工厂函数：`Io.cursorFromBytes(move b)` / `Io.bufReader(move inner, cap)`
   - `MmapFileReader`：mmap-backed Reader（拥有 `bytes` 映射；自动 unmap），工厂 `Io.mmapFileReader(path)`
-- `Slice<T>`（借用视图，指针 + 长度，Planned）：
+- `Slice<T>`（借用视图，指针 + 长度，Implemented v1）：
   - 语义：`Slice<T>` 是借用值（非 owning），其可写性由绑定的 `const/let` 决定（与 `Ref<T>` 一致）
   - 生命周期/借用检查（NLL v0，语句级）：当 `Slice<T>` 存活时，禁止对其 owner 执行 move/可能失效的写；借用在“最后一次使用”后结束
   - 运行时布局（ABI）：`{ T* data, long len }`
   - 方法（第一版）：
     - `s.len() -> long`
     - `s.get(i: long) -> T`（当前仅保证 `T` 为标量时可用；越界触发运行时错误）
-    - `s.set(i: long, v: T) -> int`（Planned：需要 `s` 为可写绑定；当前仅保证 `T` 为标量时可用）
-  - 当前实现（v0）：
-    - `bytes.slice(off, n) -> Slice<byte>`（只读视图，越界触发运行时错误）
-    - `Slice<T>.len()` / `Slice<T>.get(i)` 已实现（只读）
+    - `s.set(i: long, v: T) -> int`（需要 `s` 为可写绑定；当前仅支持标量元素；越界触发运行时错误）
+    - `a.slice(off: long, n: long) -> Slice<T>`（数组切片；越界触发运行时错误）
+    - `b.slice(off: long, n: long) -> Slice<byte>`（bytes 切片；越界触发运行时错误；写回通过 `tua_bytes_set_u8` 返回 err，支持 readonly mmap 失败返回）
+  - 当前实现（v1）：
+    - `bytes.slice(off, n) -> Slice<byte>`
+    - `array.slice(off, n) -> Slice<T>`
+    - `Slice<T>.len/get/set`（`set` 仅标量元素；`Slice<byte>` 写回通过 `tua_bytes_set_u8` 返回 err）
     - `Slice<T>` 当前按 **move-only** 处理（避免隐式 copy 导致 borrow 生命周期变长且难以静态追踪）
 
 #### 9.2.4 `std/utf8` 与 `std/json`（Status: Implemented v0）

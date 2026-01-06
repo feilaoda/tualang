@@ -1,0 +1,11 @@
+let a: int[] = {1, 2, 3}
+let s: Slice<int> = a.slice(1L, 2L)
+
+assert(s.len() == 2L)
+assert(s.get(0L) == 2)
+assert(s.get(1L) == 3)
+
+let e = s.set(1L, 9)
+assert(e == 0)
+assert(a[2] == 9)
+

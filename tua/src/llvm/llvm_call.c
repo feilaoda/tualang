@@ -3139,7 +3139,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        // Array built-in methods: `a.len()`, `a.clone()`
+        // Array built-in methods: `a.len()`, `a.clone()`, `a.push(v)`, `a.slice(off,n)`
         if (recvVar.value && recvVar.isArray) {
             LLVMTypeRef arrType = compilerGetArrayType(compiler);
             LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
@@ -3222,6 +3222,91 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 LLVMValueRef out = LLVMBuildTrunc(compiler->builder, len64, i32, "plen");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return out;
+            }
+
+            if (tokenEquals(&get->name, "slice")) {
+                if (got != 2) {
+                    compilerErrorAt(compiler, get->name.line, "array.slice expects 2 arguments");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMTypeRef elemTy = recvVar.arrayElemType;
+                if (!elemTy) {
+                    compilerErrorAt(compiler, get->name.line, "missing array element type metadata");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMContextRef context = compiler->context;
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+                LLVMValueRef off = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef n = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                if (!off || !n) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                off = castValueToType(compiler, off, i64);
+                n = castValueToType(compiler, n, i64);
+
+                // Determine base pointer and length.
+                LLVMValueRef len64 = NULL;
+                LLVMValueRef basePtr = NULL; // elemTy*
+                if (compiler->stackFixedArrays && recvVar.isStackArray && recvVar.stackArrayData && recvVar.arrayFixedLen >= 0) {
+                    len64 = LLVMConstInt(i64, (uint64_t)recvVar.arrayFixedLen, 1);
+                    basePtr = recvVar.stackArrayData;
+                } else {
+                    // null check
+                    LLVMValueRef isNull = LLVMBuildICmp(compiler->builder, LLVMIntEQ, arrPtr, LLVMConstNull(arrType), "asnull");
+                    LLVMValueRef fn = compiler->current->func;
+                    LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "as.ok");
+                    LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "as.null");
+                    LLVMBuildCondBr(compiler->builder, isNull, badBB, okBB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, badBB);
+                    LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                    LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                    LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "null array", "asmsg");
+                    LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                    LLVMBuildUnreachable(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, okBB);
+                    LLVMValueRef lenPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arrPtr, 0, "aslenp");
+                    len64 = LLVMBuildLoad2(compiler->builder, i64, lenPtr, "aslen");
+                    LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(compiler->builder, arrStruct, arrPtr, 2, "asdatap");
+                    LLVMValueRef dataI8 = LLVMBuildLoad2(compiler->builder, i8ptr, dataPtrPtr, "asdata");
+                    basePtr = LLVMBuildBitCast(compiler->builder, dataI8, LLVMPointerType(elemTy, 0), "asbase");
+                }
+
+                // Bounds: off>=0, n>=0, off+n <= len
+                LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
+                LLVMValueRef offNeg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, off, zero, "asoffneg");
+                LLVMValueRef nNeg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, n, zero, "asnneg");
+                LLVMValueRef sum = LLVMBuildAdd(compiler->builder, off, n, "assum");
+                LLVMValueRef over = LLVMBuildICmp(compiler->builder, LLVMIntSGT, sum, len64, "asover");
+                LLVMValueRef bad0 = LLVMBuildOr(compiler->builder, offNeg, nNeg, "asbad0");
+                LLVMValueRef bad = LLVMBuildOr(compiler->builder, bad0, over, "asbad");
+
+                LLVMValueRef fn2 = compiler->current->func;
+                LLVMBasicBlockRef inBB = LLVMAppendBasicBlock(fn2, "as.in");
+                LLVMBasicBlockRef oobBB = LLVMAppendBasicBlock(fn2, "as.oob");
+                LLVMBuildCondBr(compiler->builder, bad, oobBB, inBB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, oobBB);
+                LLVMValueRef panicFn2 = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef pty2 = LLVMGlobalGetValueType(panicFn2);
+                LLVMValueRef msg2 = LLVMBuildGlobalStringPtr(compiler->builder, "array.slice out of bounds", "asmsg2");
+                LLVMBuildCall2(compiler->builder, pty2, panicFn2, &msg2, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, inBB);
+                LLVMValueRef dataOff = LLVMBuildInBoundsGEP2(compiler->builder, elemTy, basePtr, &off, 1, "asdataoff");
+                LLVMTypeRef sliceTy = compilerGetSliceType(compiler, elemTy);
+                LLVMValueRef s = LLVMGetUndef(sliceTy);
+                s = LLVMBuildInsertValue(compiler->builder, s, dataOff, 0, "s0");
+                s = LLVMBuildInsertValue(compiler->builder, s, n, 1, "s1");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return s;
             }
 
             compilerErrorAt(compiler, get->name.line, "unknown array method: %.*s", get->name.length, get->name.start);
@@ -3398,9 +3483,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             return NULL;
         }
 
-        // Slice<T> built-in methods (v0: readonly only):
+        // Slice<T> built-in methods:
         // - `s.len() -> long`
         // - `s.get(i: long) -> T` (panics on invalid)
+        // - `s.set(i: long, v: T) -> int` (requires writable binding; scalar elements only in v1)
         if (recvVar.value && recvVar.isSlice && recvVar.sliceElemType) {
             LLVMValueRef sliceVal = loadLocalValue(compiler, recvVar);
             if (!sliceVal) {
@@ -3463,6 +3549,109 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 LLVMPositionBuilderAtEnd(compiler->builder, contB);
                 LLVMValueRef phi = LLVMBuildPhi(compiler->builder, elemTy, "sget");
                 LLVMAddIncoming(phi, &val, &okB, 1);
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return phi;
+            }
+
+            if (tokenEquals(&get->name, "set")) {
+                if (got != 2) {
+                    compilerErrorAt(compiler, get->name.line, "Slice.set expects 2 arguments");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (recvVar.isConst) {
+                    compilerErrorAt(compiler, get->name.line, "cannot call Slice.set on const binding");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (!typeKindIsScalarValueKind(recvVar.sliceElemKind)) {
+                    compilerErrorAt(compiler, get->name.line, "Slice.set is only supported for scalar element types in v1");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+
+                LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef vv = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                if (!idx || !vv) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                idx = castValueToType(compiler, idx, i64);
+                vv = castValueToType(compiler, vv, elemTy);
+
+                LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
+                LLVMValueRef neg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, idx, zero, "idxneg");
+                LLVMValueRef ge = LLVMBuildICmp(compiler->builder, LLVMIntSGE, idx, len, "idxge");
+                LLVMValueRef bad = LLVMBuildOr(compiler->builder, neg, ge, "bad");
+
+                LLVMValueRef fn = compiler->current->func;
+                LLVMBasicBlockRef okB = LLVMAppendBasicBlock(fn, "ss_ok");
+                LLVMBasicBlockRef badB = LLVMAppendBasicBlock(fn, "ss_bad");
+                LLVMBasicBlockRef contB = LLVMAppendBasicBlock(fn, "ss_cont");
+                LLVMBuildCondBr(compiler->builder, bad, badB, okB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, badB);
+                LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "Slice.set out of bounds", "ssmsg");
+                LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                LLVMBuildUnreachable(compiler->builder);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, okB);
+                LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+                LLVMValueRef err32 = LLVMConstInt(i32, 0, 0);
+
+                if (recvVar.sliceOwnerIsBytes && recvVar.sliceOwnerName && recvVar.sliceOwnerNameLength > 0 &&
+                    recvVar.sliceElemKind == TYPE_BYTE) {
+                    VariableExpr ve;
+                    memset(&ve, 0, sizeof(ve));
+                    ve.base.type = EXPR_VARIABLE;
+                    ve.name = (Token){TOKEN_IDENTIFIER, recvVar.sliceOwnerName, recvVar.sliceOwnerNameLength, get->name.line, get->name.col, 0};
+                    VariableRef owner = findVariableExpr(compiler, (Expr*)&ve);
+                    if (owner.value && owner.isBytes) {
+                        LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+                        LLVMValueRef bytesPtr = NULL;
+                        if (owner.isBoxed) {
+                            if (!owner.boxPtrType) {
+                                compilerErrorAt(compiler, get->name.line, "missing boxed pointer type metadata");
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return NULL;
+                            }
+                            LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, owner.boxPtrType, owner.value, "cell");
+                            bytesPtr = LLVMBuildLoad2(compiler->builder, bytesTy, cell, "bval");
+                        } else {
+                            bytesPtr = LLVMBuildLoad2(compiler->builder, bytesTy, owner.value, "bval");
+                        }
+
+                        LLVMValueRef dataFn = getOrCreateTuaBytesData(compiler);
+                        LLVMTypeRef dataTy = LLVMGlobalGetValueType(dataFn);
+                        LLVMValueRef dataArgs[1] = { bytesPtr };
+                        LLVMValueRef baseI8 = LLVMBuildCall2(compiler->builder, dataTy, dataFn, dataArgs, 1, "bdata");
+
+                        LLVMValueRef sliceI8 = LLVMBuildBitCast(compiler->builder, data, LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), "sdata8");
+                        LLVMValueRef baseI8i = LLVMBuildPtrToInt(compiler->builder, baseI8, i64, "bpi");
+                        LLVMValueRef sliceI8i = LLVMBuildPtrToInt(compiler->builder, sliceI8, i64, "spi");
+                        LLVMValueRef diff = LLVMBuildSub(compiler->builder, sliceI8i, baseI8i, "boff");
+                        LLVMValueRef absIdx = LLVMBuildAdd(compiler->builder, diff, idx, "absidx");
+
+                        LLVMValueRef setFn = getOrCreateTuaBytesSetU8(compiler);
+                        LLVMTypeRef setTy = LLVMGlobalGetValueType(setFn);
+                        LLVMValueRef vv32 = LLVMBuildZExt(compiler->builder, vv, i32, "vv32");
+                        LLVMValueRef args3[3] = { bytesPtr, absIdx, vv32 };
+                        err32 = LLVMBuildCall2(compiler->builder, setTy, setFn, args3, 3, "setu8");
+                    }
+                } else {
+                    LLVMTypeRef elemPtrTy = LLVMPointerType(elemTy, 0);
+                    LLVMValueRef typed = castValueToType(compiler, data, elemPtrTy);
+                    LLVMValueRef ptr = LLVMBuildGEP2(compiler->builder, elemTy, typed, &idx, 1, "ep");
+                    LLVMBuildStore(compiler->builder, vv, ptr);
+                }
+
+                LLVMBuildBr(compiler->builder, contB);
+
+                LLVMPositionBuilderAtEnd(compiler->builder, contB);
+                LLVMValueRef phi = LLVMBuildPhi(compiler->builder, i32, "serr");
+                LLVMAddIncoming(phi, &err32, &okB, 1);
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return phi;
             }

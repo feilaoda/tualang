@@ -62,10 +62,10 @@
   - [x] 引用类型语法（`language/spec`）：类型层统一 `Ref<T>`；`&T` 为过渡别名并逐步废弃
   - [x] 重借用（reborrow，`language/spec`）：允许独占 -> 共享降级；共享存活期间冻结原独占引用（诊断要清晰）
   - [x] 借用寿命（NLL v0，语句级）：借用在“最后一次使用”后结束（不必延伸到词法作用域末尾）
-  - [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（LLM/IO/ABI 的核心前置）
-  - [ ] `Slice<T>` 借用视图（指针+长度）+ NLL 规则 + ABI 冻结
-    - [x] v0：`bytes.slice(off,n) -> Slice<byte>` + `Slice.len/get` + borrow 阻止 move（语句级 NLL）
-    - [ ] v1：可写 slice（`set`）、更完整的 copy/借用语义、以及 array->slice 等扩展
+- [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（LLM/IO/ABI 的核心前置）
+- [x] `Slice<T>` 借用视图（指针+长度）+ NLL 规则 + ABI 冻结
+  - [x] v0：`bytes.slice(off,n) -> Slice<byte>` + `Slice.len/get` + borrow 阻止 move（语句级 NLL）
+  - [x] v1：可写 slice（`set`）、array->slice（`a.slice`）、以及更完整的 borrow 规则（`const`=共享，`let`=独占）
 - [x] 引用读取（第一版）：`r.get()`（替代 `*r`；不提供 `*r = v` 形式写回）
 - [x] drop（第一版）：`map/array` 在作用域结束/覆盖赋值/`return` 路径自动释放（RAII）
 - [x] move 规则补齐（第一版）：`struct` 字面量/字段赋值、`m[k]=v`、`{k:v}`/`[v]` 会移动 move-only 值并在 codegen 置空源 slot（避免 UAF/double-free）
@@ -80,6 +80,9 @@
   - [x] trait v1：静态分发（泛型单态化，例如 `fn f<T: Trait>(x: T)`；支持 `impl Trait for Struct { fn ... }` 提供 trait 方法体并在 bound 上分发）
   - [x] trait v2（第一版）：动态分发 trait object（fat pointer/vtable），并支持“静态优先、必要时自动降级为动态”（不要求显式 `dyn` 关键字）
 - [ ] 强化 `let` 类型推断：覆盖 call/成员访问/条件表达式/函数返回值（减少 codegen 里的特判）
+  - [x] 从本模块 `fn` 的声明返回类型推断：`let x = f()` 取第 1 返回；`let a,b = f()` 按返回列表逐项推断/校验
+  - [ ] 覆盖导入/跨模块函数的返回类型推断
+  - [ ] 覆盖条件表达式/分支表达式（含 `if`/`??`）的推断
 - [ ] 完成 `struct init/deinit` + 内存策略：`init(a,b)`、析构触发点、`free`/资源释放方案
 - [ ] 升级 `enum` 模型：显式值/字符串 raw、`toString`/`fromString`、（可选）`println(enum)` 自动字符串化
 - [ ] 体验与工程化：

@@ -1826,6 +1826,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->isSlice = 0;
     variable->sliceElemType = NULL;
     variable->sliceElemKind = TYPE_ANY;
+    variable->sliceOwnerName = NULL;
+    variable->sliceOwnerNameLength = 0;
+    variable->sliceOwnerIsBytes = 0;
+    variable->sliceOwnerIsArray = 0;
     variable->isTraitObj = 0;
     variable->traitName = NULL;
     variable->traitNameLength = 0;
@@ -1897,6 +1901,29 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
         } else {
             variable->sliceElemType = LLVMInt8TypeInContext(compiler->context);
             variable->sliceElemKind = TYPE_BYTE;
+        }
+    }
+
+    // Inference: `let s = b.slice(...)` / `let s = a.slice(...)` without an explicit `: Slice<T>` annotation.
+    if (!stmt->type && stmt->initializer && stmt->initializer->type == EXPR_CALL) {
+        CallExpr* call = (CallExpr*)stmt->initializer;
+        if (call->callee && call->callee->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)call->callee;
+            if (get->object && get->object->type == EXPR_VARIABLE &&
+                get->name.length == 5 && memcmp(get->name.start, "slice", 5) == 0) {
+                VariableRef base = findVariableExpr(compiler, get->object);
+                if (base.value) {
+                    if (base.isBytes && !variable->isSlice) {
+                        variable->isSlice = 1;
+                        variable->sliceElemType = LLVMInt8TypeInContext(compiler->context);
+                        variable->sliceElemKind = TYPE_BYTE;
+                    } else if (base.isArray && base.arrayElemType && !variable->isSlice) {
+                        variable->isSlice = 1;
+                        variable->sliceElemType = base.arrayElemType;
+                        variable->sliceElemKind = base.arrayElemKind;
+                    }
+                }
+            }
         }
     }
 
@@ -2029,6 +2056,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                 variable->isSlice = 1;
                 variable->sliceElemType = base.sliceElemType;
                 variable->sliceElemKind = base.sliceElemKind;
+                variable->sliceOwnerName = base.sliceOwnerName;
+                variable->sliceOwnerNameLength = base.sliceOwnerNameLength;
+                variable->sliceOwnerIsBytes = base.sliceOwnerIsBytes;
+                variable->sliceOwnerIsArray = base.sliceOwnerIsArray;
             }
         }
     } else if (stmt->initializer && stmt->initializer->type == EXPR_CALL) {
@@ -2043,6 +2074,25 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                     variable->arrayElemType = base.arrayElemType;
                     variable->arrayFixedLen = base.arrayFixedLen;
                     variable->arrayElemKind = base.arrayElemKind;
+                }
+            }
+        }
+    }
+
+    // Slice owner tracking: preserve the owner var name for slices created from bytes/array vars.
+    if (variable->isSlice && stmt->initializer && stmt->initializer->type == EXPR_CALL) {
+        CallExpr* call = (CallExpr*)stmt->initializer;
+        if (call->callee && call->callee->type == EXPR_GET) {
+            GetExpr* get = (GetExpr*)call->callee;
+            if (get->object && get->object->type == EXPR_VARIABLE &&
+                get->name.length == 5 && memcmp(get->name.start, "slice", 5) == 0) {
+                VariableExpr* recv = (VariableExpr*)get->object;
+                VariableRef base = findVariableExpr(compiler, get->object);
+                if (base.value && (base.isBytes || base.isArray)) {
+                    variable->sliceOwnerName = recv->name.start;
+                    variable->sliceOwnerNameLength = recv->name.length;
+                    variable->sliceOwnerIsBytes = base.isBytes ? 1 : 0;
+                    variable->sliceOwnerIsArray = base.isArray ? 1 : 0;
                 }
             }
         }

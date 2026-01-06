@@ -78,6 +78,10 @@ typedef struct {
     int paramCount;
     int* paramModes;     // ParamMode
     int* paramIsMoveOnly; // true for move-only params (struct/map/array), excluding refs
+    List* returnTypes;   // List<AType*> (len==0 => void)
+    int typeParamCount;
+    char** typeParamNames;
+    int* typeParamNameLens;
     int returnsRef;
     int returnRefKind; // only meaningful when returnsRef=1
 } FuncInfo;
@@ -160,6 +164,9 @@ static AType* atFunc(List* paramTypes, List* returnTypes) {
 static int atIsOption(const AType* t) { return t && t->kind == AT_OPTION; }
 static int atIsMap(const AType* t) { return t && t->kind == AT_MAP; }
 static int atIsSlice(const AType* t) { return t && t->kind == AT_SLICE; }
+static int atIsBytes(const AType* t) {
+    return t && t->kind == AT_NAMED && t->name && t->nameLen == 5 && memcmp(t->name, "bytes", 5) == 0;
+}
 static int atIsArray(const AType* t) { return t && t->kind == AT_ARRAY; }
 static int atIsAny(const AType* t) { return !t || t->kind == AT_ANY; }
 static int atIsNull(const AType* t) { return t && t->kind == AT_NULL; }
@@ -884,6 +891,19 @@ static const Token* bytesSliceOwnerName(Expr* expr) {
     return &((VariableExpr*)get->object)->name;
 }
 
+// Detect `a.slice(off, n)` where `a` is an array variable.
+static const Token* arraySliceOwnerName(Expr* expr) {
+    expr = unwrapGrouping(expr);
+    if (!expr) return NULL;
+    if (expr->type != EXPR_CALL) return NULL;
+    CallExpr* call = (CallExpr*)expr;
+    if (!call->callee || call->callee->type != EXPR_GET) return NULL;
+    GetExpr* get = (GetExpr*)call->callee;
+    if (!tokenTextEquals(&get->name, "slice")) return NULL;
+    if (!get->object || get->object->type != EXPR_VARIABLE) return NULL;
+    return &((VariableExpr*)get->object)->name;
+}
+
 static int tokenLooksLikeTypeNameA(const Token* tok) {
     if (!tok || !tok->start || tok->length <= 0) return 0;
     unsigned char c = (unsigned char)tok->start[0];
@@ -967,6 +987,89 @@ static AType* atFromAstType(Type* t) {
         default:
             return atNew(AT_ANY);
     }
+}
+
+static AType* atSubstituteTypeParams(AType* t, const char** names, const int* lens, AType** args, int count) {
+    if (!t) return atNew(AT_ANY);
+    if (!names || !lens || !args || count <= 0) return t;
+
+    switch (t->kind) {
+        case AT_OPTION:
+            return atOption(atSubstituteTypeParams(t->inner, names, lens, args, count));
+        case AT_MAP:
+            return atMap(
+                atSubstituteTypeParams(t->key, names, lens, args, count),
+                atSubstituteTypeParams(t->value, names, lens, args, count)
+            );
+        case AT_ARRAY:
+            return atArray(atSubstituteTypeParams(t->inner, names, lens, args, count), t->arrayLen);
+        case AT_SLICE:
+            return atSlice(atSubstituteTypeParams(t->inner, names, lens, args, count));
+        case AT_FUNC: {
+            List* ps = listNew();
+            for (ListNode* n = t->paramTypes ? t->paramTypes->head : NULL; n != NULL; n = n->next) {
+                listAppend(ps, atSubstituteTypeParams((AType*)n->data, names, lens, args, count));
+            }
+            List* rs = listNew();
+            for (ListNode* n = t->returnTypes ? t->returnTypes->head : NULL; n != NULL; n = n->next) {
+                listAppend(rs, atSubstituteTypeParams((AType*)n->data, names, lens, args, count));
+            }
+            return atFunc(ps, rs);
+        }
+        case AT_NAMED: {
+            for (int i = 0; i < count; i++) {
+                if (t->nameLen == lens[i] && memcmp(t->name, names[i], (size_t)t->nameLen) == 0) {
+                    return args[i] ? args[i] : t;
+                }
+            }
+            return t;
+        }
+        default:
+            return t;
+    }
+}
+
+static AType* inferCallReturnAt(Compiler* compiler, FuncInfo* fi, CallExpr* call, int index) {
+    (void)compiler;
+    if (!fi || !fi->returnTypes || index < 0 || index >= fi->returnTypes->length) return atNew(AT_ANY);
+    AType* base = (AType*)listGet(fi->returnTypes, index);
+    if (!base) return atNew(AT_ANY);
+
+    int tpc = fi->typeParamCount;
+    int tac = (call && call->typeArgs) ? call->typeArgs->length : 0;
+    if (tac <= 0) return base;
+
+    const char** names = NULL;
+    const int* lens = NULL;
+    int count = 0;
+
+    if (tpc > 0 && fi->typeParamNames && fi->typeParamNameLens) {
+        // Prefer declared type parameter names when available; tolerate mismatched arity here
+        // because generic diagnostics live in the compiler monomorphization pipeline.
+        count = (tac < tpc) ? tac : tpc;
+        names = (const char**)fi->typeParamNames;
+        lens = (const int*)fi->typeParamNameLens;
+    } else {
+        // Fallback: common convention for generic params (T,U,V,...) so explicit calls like `id<int>(...)`
+        // can still infer the instantiated return type.
+        static const char* fallbackNames[] = {"T", "U", "V", "W", "X", "Y", "Z"};
+        static const int fallbackLens[] = {1, 1, 1, 1, 1, 1, 1};
+        int max = (int)(sizeof(fallbackNames) / sizeof(fallbackNames[0]));
+        count = tac < max ? tac : max;
+        names = fallbackNames;
+        lens = fallbackLens;
+    }
+
+    if (count <= 0 || !names || !lens) return base;
+
+    AType** args = (AType**)malloc(sizeof(AType*) * (size_t)count);
+    for (int i = 0; i < count; i++) {
+        Type* ta = (Type*)listGet(call->typeArgs, i);
+        args[i] = atFromAstType(ta);
+    }
+    AType* out = atSubstituteTypeParams(base, names, lens, args, count);
+    free(args);
+    return out;
 }
 
 static int atAssignable(Compiler* compiler, AType* to, AType* from) {
@@ -1342,6 +1445,13 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             if (tokenTextEquals(&get->name, "clone")) {
                 return atArray(recvTy->inner ? recvTy->inner : atNew(AT_ANY), recvTy->arrayLen);
             }
+            if (tokenTextEquals(&get->name, "slice")) {
+                unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+                if (got != 2) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "array.slice expects 2 arguments");
+                }
+                return atSlice(recvTy->inner ? recvTy->inner : atNew(AT_ANY));
+            }
             if (tokenTextEquals(&get->name, "push")) {
                 if (recvTy->arrayLen >= 0) {
                     analyzeErrorAt(compiler, modulePath, get->name.line, "cannot push to fixed-length array");
@@ -1354,6 +1464,38 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                     AType* argTy = inferExpr(compiler, scope, arg0, modulePath);
                     if (recvTy->inner && !atIsAny(recvTy->inner) && !atAssignable(compiler, recvTy->inner, argTy)) {
                         analyzeErrorAt(compiler, modulePath, get->name.line, "array element type mismatch");
+                    }
+                }
+                return atNew(AT_INT);
+            }
+        }
+        if (atIsBytes(recvTy)) {
+            if (tokenTextEquals(&get->name, "len")) return atNew(AT_LONG);
+            if (tokenTextEquals(&get->name, "get")) return atNew(AT_BYTE);
+            if (tokenTextEquals(&get->name, "set")) return atNew(AT_INT);
+            if (tokenTextEquals(&get->name, "slice")) return atSlice(atNew(AT_BYTE));
+        }
+        if (atIsSlice(recvTy)) {
+            if (tokenTextEquals(&get->name, "len")) return atNew(AT_LONG);
+            if (tokenTextEquals(&get->name, "get")) {
+                if (recvTy->inner && !atIsAny(recvTy->inner)) {
+                    if (!(atIsNumeric(recvTy->inner) || recvTy->inner->kind == AT_BOOL || recvTy->inner->kind == AT_STRING || recvTy->inner->kind == AT_BYTE)) {
+                        analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.get is only supported for scalar element types in v1");
+                    }
+                }
+                return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+            }
+            if (tokenTextEquals(&get->name, "set")) {
+                if (get->object && get->object->type == EXPR_VARIABLE) {
+                    VariableExpr* recv = (VariableExpr*)get->object;
+                    VarInfo* vi = scopeFind(scope, &recv->name);
+                    if (vi && vi->isConst) {
+                        analyzeErrorAt(compiler, modulePath, get->name.line, "cannot call Slice.set on const binding '%.*s'", recv->name.length, recv->name.start);
+                    }
+                }
+                if (recvTy->inner && !atIsAny(recvTy->inner)) {
+                    if (!(atIsNumeric(recvTy->inner) || recvTy->inner->kind == AT_BOOL || recvTy->inner->kind == AT_STRING || recvTy->inner->kind == AT_BYTE)) {
+                        analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.set is only supported for scalar element types in v1");
                     }
                 }
                 return atNew(AT_INT);
@@ -1446,6 +1588,12 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
 
     for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
         inferExpr(compiler, callScope, (Expr*)n->data, modulePath);
+    }
+
+    // Infer call return type for known local functions.
+    if (fi && fi->returnTypes) {
+        if (fi->returnTypes->length == 0) return atNew(AT_VOID);
+        return inferCallReturnAt(compiler, fi, call, 0);
     }
     return atNew(AT_ANY);
 }
@@ -2425,7 +2573,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             }
 
             // bytes.slice(...) borrows the bytes owner for as long as the slice binding is live.
-            // v0: shared/readonly borrow; Slice<T> is move-only to avoid silent copies extending borrows.
+            // v1: `const s = b.slice(...)` => shared borrow; `let s = b.slice(...)` => exclusive borrow.
+            // Slice<T> is move-only to avoid silent copies extending borrows.
             const Token* bytesSliceOwner = NULL;
             {
                 bytesSliceOwner = bytesSliceOwnerName(v->initializer);
@@ -2434,7 +2583,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     int ok = (bv && bv->type && bv->type->kind == AT_NAMED &&
                               bv->type->nameLen == 5 && memcmp(bv->type->name, "bytes", 5) == 0);
                     if (!ok) {
-                        analyzeErrorAt(compiler, modulePath, v->name.line, "bytes.slice receiver must be a bytes variable");
+                        // Not a bytes receiver: this may be `array.slice(...)`, so ignore here.
+                        bytesSliceOwner = NULL;
                     } else {
                         // If annotated, enforce Slice<byte> for now.
                         if (annotated && annotated->kind == AT_SLICE) {
@@ -2442,7 +2592,53 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                                 analyzeErrorAt(compiler, modulePath, v->name.line, "bytes.slice currently returns Slice<byte> only");
                             }
                         }
-                        borrowCheckAndRecord(compiler, scope, bytesSliceOwner, 0, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                        int wantMut = v->isConst ? 0 : 1;
+                        if (wantMut && bv && bv->isConst) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                v->name.line,
+                                "cannot take mutable slice from const binding '%.*s'",
+                                bytesSliceOwner->length,
+                                bytesSliceOwner->start
+                            );
+                        } else {
+                            borrowCheckAndRecord(compiler, scope, bytesSliceOwner, wantMut, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                        }
+                    }
+                }
+            }
+
+            // array.slice(...) borrows the array owner for as long as the slice binding is live.
+            const Token* arraySliceOwner = NULL;
+            {
+                arraySliceOwner = arraySliceOwnerName(v->initializer);
+                if (arraySliceOwner) {
+                    VarInfo* av = scopeFind(scope, arraySliceOwner);
+                    int ok = (av && av->type && av->type->kind == AT_ARRAY);
+                    if (!ok) {
+                        // Not an array receiver: this may be `bytes.slice(...)`, so ignore here.
+                        arraySliceOwner = NULL;
+                    } else {
+                        if (annotated && annotated->kind == AT_SLICE) {
+                            AType* inner = av->type->inner ? av->type->inner : atNew(AT_ANY);
+                            if (annotated->inner && !atIsAny(annotated->inner) && !atAssignable(compiler, annotated->inner, inner)) {
+                                analyzeErrorAt(compiler, modulePath, v->name.line, "array.slice element type mismatch");
+                            }
+                        }
+                        int wantMut = v->isConst ? 0 : 1;
+                        if (wantMut && av && av->isConst) {
+                            analyzeErrorAt(
+                                compiler,
+                                modulePath,
+                                v->name.line,
+                                "cannot take mutable slice from const binding '%.*s'",
+                                arraySliceOwner->length,
+                                arraySliceOwner->start
+                            );
+                        } else {
+                            borrowCheckAndRecord(compiler, scope, arraySliceOwner, wantMut, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
+                        }
                     }
                 }
             }
@@ -2602,9 +2798,11 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             // Attach borrow-source metadata so borrows can propagate across moves/assignments.
             VarInfo* dst = scopeFind(scope, &v->name);
             if (dst && bytesSliceOwner) {
-                varInfoSetBorrowedFrom(dst, bytesSliceOwner, 0);
+                varInfoSetBorrowedFrom(dst, bytesSliceOwner, v->isConst ? 0 : 1);
             } else if (dst && mapRefOwner) {
                 varInfoSetBorrowedFrom(dst, mapRefOwner, mapRefOwnerMut);
+            } else if (dst && arraySliceOwner) {
+                varInfoSetBorrowedFrom(dst, arraySliceOwner, v->isConst ? 0 : 1);
             } else if (dst && refBaseOwner) {
                 varInfoSetBorrowedFrom(dst, refBaseOwner, refBaseOwnerMut);
             } else if (v->initializer && v->initializer->type == EXPR_VARIABLE) {
@@ -2817,10 +3015,35 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
         }
         case STMT_DESTRUCTURE: {
             DestructureStmt* d = (DestructureStmt*)stmt;
-            AType* rhs = inferExpr(compiler, scope, d->value, modulePath);
+            Expr* rhsExpr = unwrapGrouping(d->value);
+            AType* rhs = inferExpr(compiler, scope, rhsExpr, modulePath);
+
+            // Best-effort: when RHS is a call to a known local function, use its full return list
+            // to type destructured targets.
+            List* callReturns = NULL;
+            FuncInfo* callFi = NULL;
+            CallExpr* callExpr = NULL;
+            if (rhsExpr && rhsExpr->type == EXPR_CALL) {
+                CallExpr* c = (CallExpr*)rhsExpr;
+                if (c->callee && c->callee->type == EXPR_VARIABLE) {
+                    VariableExpr* callee = (VariableExpr*)c->callee;
+                    FuncInfo* fi = scopeFindFunc(scope, &callee->name);
+                    if (fi && fi->returnTypes) {
+                        callReturns = fi->returnTypes;
+                        callFi = fi;
+                        callExpr = c;
+                    }
+                }
+            }
 
             // Declaration: define names; Assignment: check against existing vars if known.
             if (d->isDeclaration && d->names) {
+                if (d->names->length > 1 && callReturns) {
+                    int rc = callReturns->length;
+                    if (rc != d->names->length) {
+                        analyzeErrorAt(compiler, modulePath, d->keyword.line, "destructuring arity mismatch");
+                    }
+                }
                 int idx = 0;
                 for (ListNode* n = d->names->head; n != NULL; n = n->next, idx++) {
                     Token* nameTok = (Token*)n->data;
@@ -2832,8 +3055,13 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         annotated = t ? atFromAstType(t) : NULL;
                         if (t && t->kind == TYPE_REF) isRefBinding = 1;
                     }
-                    // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
-                    AType* inferred = (d->names->length == 1) ? rhs : atNew(AT_ANY);
+                    AType* inferred = atNew(AT_ANY);
+                    if (callReturns && idx < callReturns->length) {
+                        inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                    } else if (d->names->length == 1) {
+                        // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
+                        inferred = rhs;
+                    }
                     AType* chosen = annotated ? annotated : inferred;
                     if (annotated && !atAssignable(compiler, annotated, inferred)) {
                         if (atIsOption(inferred) && !atIsOption(annotated)) {
@@ -2848,7 +3076,16 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding, isRefBinding ? 0 : -1, 0, isRefBinding ? 1 : 0);
                 }
             } else if (!d->isDeclaration && d->names) {
-                for (ListNode* n = d->names->head; n != NULL; n = n->next) {
+                if (d->names->length > 1 && callReturns) {
+                    int rc = callReturns->length;
+                    if (rc != d->names->length) {
+                        Token* first = (Token*)listGet(d->names, 0);
+                        int line = first ? first->line : 1;
+                        analyzeErrorAt(compiler, modulePath, line, "destructuring arity mismatch");
+                    }
+                }
+                int idx = 0;
+                for (ListNode* n = d->names->head; n != NULL; n = n->next, idx++) {
                     Token* nameTok = (Token*)n->data;
                     if (!nameTok) continue;
                     VarInfo* vi = scopeFind(scope, nameTok);
@@ -2863,8 +3100,12 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         );
                         continue;
                     }
-                    if (vi && vi->type && !atAssignable(compiler, vi->type, rhs)) {
-                        if (atIsOption(rhs) && !atIsOption(vi->type)) {
+                    AType* inferred = rhs;
+                    if (callReturns && idx < callReturns->length) {
+                        inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
+                    }
+                    if (vi && vi->type && !atAssignable(compiler, vi->type, inferred)) {
+                        if (atIsOption(inferred) && !atIsOption(vi->type)) {
                             analyzeErrorAt(
                                 compiler,
                                 modulePath,
@@ -3118,6 +3359,24 @@ int analyzeModule(
         fi->name[fn->name.length] = '\0';
         fi->nameLen = fn->name.length;
 
+        fi->typeParamCount = fn->typeParams ? fn->typeParams->length : 0;
+        if (fi->typeParamCount > 0) {
+            fi->typeParamNames = (char**)malloc(sizeof(char*) * (size_t)fi->typeParamCount);
+            fi->typeParamNameLens = (int*)malloc(sizeof(int) * (size_t)fi->typeParamCount);
+            for (int i = 0; i < fi->typeParamCount; i++) {
+                TypeParamDecl* tp = fn->typeParams ? (TypeParamDecl*)listGet(fn->typeParams, i) : NULL;
+                if (!tp || !tp->name.start || tp->name.length <= 0) {
+                    fi->typeParamNames[i] = NULL;
+                    fi->typeParamNameLens[i] = 0;
+                    continue;
+                }
+                fi->typeParamNames[i] = (char*)malloc((size_t)tp->name.length + 1);
+                memcpy(fi->typeParamNames[i], tp->name.start, (size_t)tp->name.length);
+                fi->typeParamNames[i][tp->name.length] = '\0';
+                fi->typeParamNameLens[i] = tp->name.length;
+            }
+        }
+
         fi->paramCount = fn->params ? fn->params->length : 0;
         if (fi->paramCount > 0) {
             fi->paramModes = (int*)malloc(sizeof(int) * (size_t)fi->paramCount);
@@ -3130,6 +3389,17 @@ int analyzeModule(
                 fi->paramModes[i] = mode;
                 fi->paramIsMoveOnly[i] = atIsMoveOnly(pt, isRef);
             }
+        }
+
+        // Record declared return types for inference at call sites.
+        fi->returnTypes = listNew();
+        if (fn->returnTypes && fn->returnTypes->length > 0) {
+            for (ListNode* rn = fn->returnTypes->head; rn != NULL; rn = rn->next) {
+                Type* rt = (Type*)rn->data;
+                listAppend(fi->returnTypes, atFromAstType(rt));
+            }
+        } else if (fn->returnType) {
+            listAppend(fi->returnTypes, atFromAstType(fn->returnType));
         }
 
         // Best-effort: infer reference return kind for local functions like:
