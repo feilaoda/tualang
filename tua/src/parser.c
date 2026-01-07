@@ -712,29 +712,8 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
     Expr* left = parseUnaryExpr(parser);
     parserDebug("parseBinaryExpr: left type:%d\n", left->type);
     while (true) {
-        if (check(parser, TOKEN_DOT)) {
-            advance(parser); // consume '.'
-            Token member = consume(parser, TOKEN_IDENTIFIER, "Expect member name after '.'");
-            left = newGetExpr(left, member);
-            if (match(parser, TOKEN_LPAREN)) {
-                left = finishCall(parser, left);
-            }
-            continue;
-        }
-        // Call chaining: `callee(args...)(args...)`
-        if (match(parser, TOKEN_LPAREN)) {
-            left = finishCall(parser, left);
-            continue;
-        }
-        // Named struct init: `TypeName{ field: expr, ... }` or `ns.TypeName{ ... }`
-        // Important: only treat `{` as struct init when the LHS is a type name expression.
-        // Otherwise `{` may start a statement block (e.g. `for ... {`) and must not be consumed here.
-        if (check(parser, TOKEN_LBRACE) && exprLooksLikeTypeNameExpr(left)) {
-            advance(parser); // consume '{'
-            left = finishStructInit(parser, left);
-            continue;
-        }
-        // Checked cast: `expr as T` (returns Option<T>)
+        // Checked cast: `expr as T` (returns Option<T>).
+        // Keep this lower-precedence than unary operators so `-x as u32` parses as `(-x) as u32`.
         if (match(parser, TOKEN_AS)) {
             Token asTok = parser->previous;
             if (match(parser, TOKEN_QMARK)) {
@@ -743,31 +722,6 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
             }
             Type* target = parseType(parser);
             left = newCastExpr(asTok, left, target, 1);
-            continue;
-        }
-        // Indexing: `obj[expr]`
-        if (match(parser, TOKEN_LBRACKET)) {
-            Expr* index = parseExpression(parser);
-            consume(parser, TOKEN_RBRACKET, "Expect ']' after index expression");
-            left = newIndexExpr(left, index);
-            continue;
-        }
-        // Guard block: `callExpr ? { ... }`
-        if (match(parser, TOKEN_QMARK)) {
-            Token qmark = parser->previous;
-            Expr* call = unwrapGroupingExpr(left);
-            if (!call || call->type != EXPR_CALL) {
-                errorAtCurrent(parser, "`? { ... }` must follow a call expression");
-                return NULL;
-            }
-            consume(parser, TOKEN_LBRACE, "Expect '{' after '?'");
-            Stmt* blockStmt = parseBlockStatement(parser); // `{` already consumed
-            if (!blockStmt || blockStmt->type != STMT_BLOCK) return NULL;
-            if (!stmtAlwaysInterrupt(blockStmt)) {
-                errorAtCurrent(parser, "Guard block must interrupt control flow (return/break/continue)");
-                return NULL;
-            }
-            left = newGuardExpr(qmark, call, (BlockStmt*)blockStmt);
             continue;
         }
         TokenType op = parser->current.type;
@@ -804,6 +758,73 @@ static Expr* parseBinaryExpr(Parser* parser, int minPrec) {
     return left;
 }
 
+static Expr* parsePostfixExpr(Parser* parser) {
+    Expr* left = parsePrimaryExpr(parser);
+    while (true) {
+        // Member access: `a.b` / `a.b(...)` / `a.b<T>(...)`.
+        if (check(parser, TOKEN_DOT)) {
+            advance(parser); // consume '.'
+            Token member = consume(parser, TOKEN_IDENTIFIER, "Expect member name after '.'");
+            left = newGetExpr(left, member);
+            if (check(parser, TOKEN_LT) && looksLikeGenericCall(parser)) {
+                List* typeArgs = parseCallTypeArgs(parser);
+                consume(parser, TOKEN_LPAREN, "Expect '(' after generic type arguments");
+                left = finishCallWithTypeArgs(parser, left, typeArgs);
+                continue;
+            }
+            if (match(parser, TOKEN_LPAREN)) {
+                left = finishCall(parser, left);
+            }
+            continue;
+        }
+        // Postfix inc/dec: `x++`, `x--`
+        if (match(parser, TOKEN_INC) || match(parser, TOKEN_DEC)) {
+            left = newPostfixExpr(left, parser->previous);
+            continue;
+        }
+        // Call chaining: `callee(args...)(args...)`
+        if (match(parser, TOKEN_LPAREN)) {
+            left = finishCall(parser, left);
+            continue;
+        }
+        // Named struct init: `TypeName{ field: expr, ... }` or `ns.TypeName{ ... }`
+        // Important: only treat `{` as struct init when the LHS is a type name expression.
+        // Otherwise `{` may start a statement block (e.g. `for ... {`) and must not be consumed here.
+        if (check(parser, TOKEN_LBRACE) && exprLooksLikeTypeNameExpr(left)) {
+            advance(parser); // consume '{'
+            left = finishStructInit(parser, left);
+            continue;
+        }
+        // Indexing: `obj[expr]`
+        if (match(parser, TOKEN_LBRACKET)) {
+            Expr* index = parseExpression(parser);
+            consume(parser, TOKEN_RBRACKET, "Expect ']' after index expression");
+            left = newIndexExpr(left, index);
+            continue;
+        }
+        // Guard block: `callExpr ? { ... }`
+        if (match(parser, TOKEN_QMARK)) {
+            Token qmark = parser->previous;
+            Expr* call = unwrapGroupingExpr(left);
+            if (!call || call->type != EXPR_CALL) {
+                errorAtCurrent(parser, "`? { ... }` must follow a call expression");
+                return NULL;
+            }
+            consume(parser, TOKEN_LBRACE, "Expect '{' after '?'");
+            Stmt* blockStmt = parseBlockStatement(parser); // `{` already consumed
+            if (!blockStmt || blockStmt->type != STMT_BLOCK) return NULL;
+            if (!stmtAlwaysInterrupt(blockStmt)) {
+                errorAtCurrent(parser, "Guard block must interrupt control flow (return/break/continue)");
+                return NULL;
+            }
+            left = newGuardExpr(qmark, call, (BlockStmt*)blockStmt);
+            continue;
+        }
+        break;
+    }
+    return left;
+}
+
 static Expr* parseUnaryExpr(Parser* parser) {
     parserDebugStart("parseUnaryExpr");
 
@@ -828,12 +849,12 @@ static Expr* parseUnaryExpr(Parser* parser) {
         Expr* right = parseUnaryExpr(parser);
         parserDebugEnd("parseUnaryExpr");
         return newUnaryExpr(operator, right);
-    }
-    
-    Expr* expr = parsePrimaryExpr(parser);
-    parserDebugEnd("parseUnaryExpr");
-    return expr;
-}
+	    }
+	    
+	    Expr* expr = parsePostfixExpr(parser);
+	    parserDebugEnd("parseUnaryExpr");
+	    return expr;
+	}
 
 static Expr* parsePrimaryExpr(Parser* parser) {
     parserDebugStart("parsePrimaryExpr");
@@ -2067,10 +2088,84 @@ static Stmt* parseImplDeclaration(Parser* parser) {
     parserDebugStart("parseImplDeclaration");
 
     Token kwImpl = parser->previous;
-    Token first = consume(parser, TOKEN_IDENTIFIER, "Expect name after 'impl'");
+    // Generic impl: `impl<T,U> TypeName<...> { ... }`
+    List* typeParams = NULL;
+    if (match(parser, TOKEN_LT)) {
+        typeParams = listNew();
+        while (match(parser, TOKEN_SEMICOLON)) {}
+        if (!check(parser, TOKEN_GT) && !check(parser, TOKEN_SHR)) {
+            do {
+                while (match(parser, TOKEN_SEMICOLON)) {}
+                Token p = consume(parser, TOKEN_IDENTIFIER, "Expect type parameter name");
+                TypeParamDecl* tp = malloc(sizeof(TypeParamDecl));
+                tp->name = p;
+                tp->hasBound = 0;
+                tp->boundTrait = (Token){0};
+
+                if (match(parser, TOKEN_COLON)) {
+                    Token tr = consume(parser, TOKEN_IDENTIFIER, "Expect trait name after ':' in type parameter bound");
+                    tp->hasBound = 1;
+                    tp->boundTrait = tr;
+                }
+
+                listAppend(typeParams, tp);
+                while (match(parser, TOKEN_SEMICOLON)) {}
+            } while (match(parser, TOKEN_COMMA));
+        }
+        consumeTypeGt(parser, "Expect '>' after type parameter list");
+    }
+
+    // Capture the leading token for the impl target name (e.g. `ptr`, `Option`, `Slice`).
+    Token targetNameTok = parser->current;
+	    Type* headType = parseType(parser);
+	    if (!headType) {
+	        parserDebugEnd("parseImplDeclaration");
+	        return NULL;
+	    }
+	    // Allowed impl targets:
+	    // - named types (structs and builtin named types like bytes/map/Option/Slice)
+	    // - builtin primitives (int/long/string/bool/...)
+	    // - ptr
+	    // - arrays (`T[]` / `array<T>`)
+	    int okTarget =
+	        headType->kind == TYPE_NAMED ||
+	        headType->kind == TYPE_PTR ||
+	        headType->kind == TYPE_ARRAY ||
+	        headType->kind == TYPE_BOOL ||
+	        headType->kind == TYPE_STRING ||
+	        headType->kind == TYPE_BYTE ||
+	        headType->kind == TYPE_I8 ||
+	        headType->kind == TYPE_I16 ||
+	        headType->kind == TYPE_INT ||
+	        headType->kind == TYPE_LONG ||
+	        headType->kind == TYPE_ISIZE ||
+	        headType->kind == TYPE_U8 ||
+	        headType->kind == TYPE_U16 ||
+	        headType->kind == TYPE_U32 ||
+	        headType->kind == TYPE_U64 ||
+	        headType->kind == TYPE_USIZE ||
+	        headType->kind == TYPE_F8 ||
+	        headType->kind == TYPE_F16 ||
+	        headType->kind == TYPE_FLOAT ||
+	        headType->kind == TYPE_DOUBLE ||
+	        headType->kind == TYPE_BF8 ||
+	        headType->kind == TYPE_BF16;
+	    if (!okTarget) {
+	        errorAtCurrent(parser, "impl target must be a concrete type (e.g. impl Foo/bytes/map/ptr/int/array<T> { ... })");
+	    }
+	    Token first = (headType->kind == TYPE_NAMED) ? headType->name : targetNameTok;
 
     // Trait impl: `impl TraitName for StructName { ... }` (methods optional).
     if (match(parser, TOKEN_FOR)) {
+        if (typeParams && typeParams->length > 0) {
+            errorAtCurrent(parser, "generic parameters on `impl Trait for Struct` are not supported yet");
+        }
+        if (headType->kind != TYPE_NAMED) {
+            errorAtCurrent(parser, "trait impl expects a trait name after 'impl'");
+        }
+        if (headType->typeArgs && headType->typeArgs->length > 0) {
+            errorAtCurrent(parser, "generic trait names in `impl Trait for Struct` are not supported yet");
+        }
         Token target = consume(parser, TOKEN_IDENTIFIER, "Expect struct name after 'for'");
 
         List* methods = listNew();
@@ -2137,7 +2232,7 @@ static Stmt* parseImplDeclaration(Parser* parser) {
         return (Stmt*)stmt;
     }
 
-    // Struct impl: `impl StructName { ... }`
+    // Named-type impl: `impl TypeName { ... }` / `impl TypeName<...> { ... }` / `impl<T> TypeName<T> { ... }`
     Token name = first;
     while (match(parser, TOKEN_SEMICOLON)) {
         // allow newline before '{'
@@ -2195,6 +2290,8 @@ static Stmt* parseImplDeclaration(Parser* parser) {
     ImplStmt* stmt = malloc(sizeof(ImplStmt));
     stmt->base.type = STMT_IMPL;
     stmt->name = name;
+    stmt->targetType = headType;
+    stmt->typeParams = typeParams;
     stmt->methods = methods;
 
     parserDebugEnd("parseImplDeclaration");
@@ -2558,11 +2655,11 @@ static Type* parseType(Parser* parser) {
         type->returnTypes = NULL;
         type->arrayLen = 0;
         base = type;
-    } else if (match(parser, TOKEN_IDENTIFIER)) {
-        // Builtin raw pointer type: `ptr`
-        if (parser->previous.length == 3 && memcmp(parser->previous.start, "ptr", 3) == 0) {
-            Type* type = malloc(sizeof(Type));
-            type->kind = TYPE_PTR;
+	    } else if (match(parser, TOKEN_IDENTIFIER)) {
+	        // Builtin raw pointer type: `ptr`
+	        if (parser->previous.length == 3 && memcmp(parser->previous.start, "ptr", 3) == 0) {
+	            Type* type = malloc(sizeof(Type));
+	            type->kind = TYPE_PTR;
             type->name = (Token){0};
             type->inner = NULL;
             type->typeArgs = NULL;
@@ -2606,12 +2703,43 @@ static Type* parseType(Parser* parser) {
                 type->paramTypes = NULL;
                 type->returnTypes = NULL;
                 type->arrayLen = 0;
-                base = type;
-            }
-        } else {
-        Type* type = malloc(sizeof(Type));
-        type->kind = TYPE_NAMED;
-        type->name = parser->previous;
+	                base = type;
+	            }
+	        } else if (parser->previous.length == 5 && memcmp(parser->previous.start, "array", 5) == 0) {
+	            // Named alias for dynamic arrays: `array<T>` == `T[]`.
+	            // Lowered as `TYPE_ARRAY(inner=T, arrayLen=-1)` so the rest of the compiler treats them identically.
+	            Type* inner = NULL;
+	            if (!match(parser, TOKEN_LT)) {
+	                errorAtCurrent(parser, "Type 'array' expects one type argument: array<T>");
+	            } else {
+	                inner = parseType(parser);
+	                if (match(parser, TOKEN_COMMA)) {
+	                    errorAtCurrent(parser, "Type 'array' expects exactly one type argument");
+	                    // Best-effort recovery: consume remaining args until '>'.
+	                    while (!check(parser, TOKEN_GT) && !check(parser, TOKEN_EOF)) {
+	                        parseType(parser);
+	                        if (!match(parser, TOKEN_COMMA)) break;
+	                    }
+	                }
+	                consumeTypeGt(parser, "Expect '>' after array type argument");
+	            }
+	            if (!inner) {
+	                inner = (Type*)calloc(1, sizeof(Type));
+	                inner->kind = TYPE_ANY;
+	            }
+	            Type* arr = (Type*)calloc(1, sizeof(Type));
+	            arr->kind = TYPE_ARRAY;
+	            arr->name = (Token){0};
+	            arr->inner = inner;
+	            arr->typeArgs = NULL;
+	            arr->paramTypes = NULL;
+	            arr->returnTypes = NULL;
+	            arr->arrayLen = -1;
+	            base = arr;
+	        } else {
+	        Type* type = malloc(sizeof(Type));
+	        type->kind = TYPE_NAMED;
+	        type->name = parser->previous;
         type->inner = NULL;
         type->typeArgs = NULL;
         type->paramTypes = NULL;

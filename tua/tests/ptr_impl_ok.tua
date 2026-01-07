@@ -1,0 +1,8 @@
+import "std/ptr"
+
+fn main() {
+    let p: ptr = null
+    assert(p.isNull())
+    assert(!p.isNonNull())
+}
+

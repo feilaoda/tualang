@@ -140,6 +140,105 @@ static int tokenEquals(const Token* token, const char* s) {
     return token->length == n && memcmp(token->start, s, (size_t)n) == 0;
 }
 
+typedef enum {
+    ARRAY_M_UNKNOWN = 0,
+    ARRAY_M_LEN,
+    ARRAY_M_CLONE,
+    ARRAY_M_PUSH,
+    ARRAY_M_SLICE,
+} ArrayMethodId;
+
+typedef enum {
+    BYTES_M_UNKNOWN = 0,
+    BYTES_M_LEN,
+    BYTES_M_GET,       // get/getU8
+    BYTES_M_SET,       // set/setU8
+    BYTES_M_SLICE,
+    BYTES_M_COPY,
+    BYTES_M_ISREADONLY,
+} BytesMethodId;
+
+typedef enum {
+    MAP_M_UNKNOWN = 0,
+    MAP_M_LEN,
+    MAP_M_HASKEY,
+    MAP_M_DELETE,
+    MAP_M_GET,
+    MAP_M_GETMUT,
+    MAP_M_GETREF,
+    MAP_M_GETREFWRITE,
+    MAP_M_CLEAR,
+} MapMethodId;
+
+static ArrayMethodId arrayMethodId(const Token* name) {
+    if (!name || !name->start) return ARRAY_M_UNKNOWN;
+    switch (name->length) {
+        case 3:
+            if (memcmp(name->start, "len", 3) == 0) return ARRAY_M_LEN;
+            break;
+        case 4:
+            if (memcmp(name->start, "push", 4) == 0) return ARRAY_M_PUSH;
+            break;
+        case 5:
+            if (memcmp(name->start, "clone", 5) == 0) return ARRAY_M_CLONE;
+            if (memcmp(name->start, "slice", 5) == 0) return ARRAY_M_SLICE;
+            break;
+        default:
+            break;
+    }
+    return ARRAY_M_UNKNOWN;
+}
+
+static BytesMethodId bytesMethodId(const Token* name) {
+    if (!name || !name->start) return BYTES_M_UNKNOWN;
+    switch (name->length) {
+        case 3:
+            if (memcmp(name->start, "len", 3) == 0) return BYTES_M_LEN;
+            if (memcmp(name->start, "get", 3) == 0) return BYTES_M_GET;
+            if (memcmp(name->start, "set", 3) == 0) return BYTES_M_SET;
+            break;
+        case 4:
+            if (memcmp(name->start, "copy", 4) == 0) return BYTES_M_COPY;
+            break;
+        case 5:
+            if (memcmp(name->start, "getU8", 5) == 0) return BYTES_M_GET;
+            if (memcmp(name->start, "setU8", 5) == 0) return BYTES_M_SET;
+            if (memcmp(name->start, "slice", 5) == 0) return BYTES_M_SLICE;
+            break;
+        case 10:
+            if (memcmp(name->start, "isReadonly", 10) == 0) return BYTES_M_ISREADONLY;
+            break;
+        default:
+            break;
+    }
+    return BYTES_M_UNKNOWN;
+}
+
+static MapMethodId mapMethodId(const Token* name) {
+    if (!name || !name->start) return MAP_M_UNKNOWN;
+    switch (name->length) {
+        case 3:
+            if (memcmp(name->start, "len", 3) == 0) return MAP_M_LEN;
+            if (memcmp(name->start, "get", 3) == 0) return MAP_M_GET;
+            break;
+        case 5:
+            if (memcmp(name->start, "clear", 5) == 0) return MAP_M_CLEAR;
+            break;
+        case 6:
+            if (memcmp(name->start, "hasKey", 6) == 0) return MAP_M_HASKEY;
+            if (memcmp(name->start, "delete", 6) == 0) return MAP_M_DELETE;
+            if (memcmp(name->start, "getMut", 6) == 0) return MAP_M_GETMUT;
+            if (memcmp(name->start, "getRef", 6) == 0) return MAP_M_GETREF;
+            break;
+        case 11:
+            if (memcmp(name->start, "getRefWrite", 11) == 0) return MAP_M_GETREFWRITE;
+            break;
+        default:
+            break;
+    }
+    return MAP_M_UNKNOWN;
+}
+
 static char* tokenToCString(const Token* token) {
     char* s = malloc((size_t)token->length + 1);
     memcpy(s, token->start, (size_t)token->length);
@@ -442,6 +541,7 @@ static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type) {
 }
 
 static Expr* unwrapGroupingExpr(Expr* e);
+static Type* cloneTypeTreeDeep(const Type* t);
 
 static Type* inferTypeFromValueExpr(Compiler* compiler, Expr* e) {
     if (!compiler || !e) return NULL;
@@ -474,6 +574,9 @@ static Type* inferTypeFromValueExpr(Compiler* compiler, Expr* e) {
 
     if (e->type == EXPR_VARIABLE) {
         VariableRef v = findVariableExpr(compiler, e);
+        if (v.astType) {
+            return cloneTypeTreeDeep(v.astType);
+        }
         if (v.typeName && v.typeNameLength > 0) {
             Type* t = malloc(sizeof(Type));
             memset(t, 0, sizeof(*t));
@@ -500,6 +603,63 @@ static Type* inferTypeFromValueExpr(Compiler* compiler, Expr* e) {
     if (e->type == EXPR_CALL) {
         CallExpr* c = (CallExpr*)e;
         Expr* callee = c->callee ? unwrapGroupingExpr(c->callee) : NULL;
+
+        // Builtins: `Some(x)` / `None()` => Option<T>.
+        if (callee && callee->type == EXPR_VARIABLE) {
+            VariableExpr* ve = (VariableExpr*)callee;
+            if (tokenEquals(&ve->name, "Some") || tokenEquals(&ve->name, "None")) {
+                Type* inner = NULL;
+                if (tokenEquals(&ve->name, "Some")) {
+                    Expr* arg0 = c->arguments && c->arguments->head ? (Expr*)c->arguments->head->data : NULL;
+                    inner = inferTypeFromValueExpr(compiler, arg0);
+                }
+                if (!inner) {
+                    inner = (Type*)malloc(sizeof(Type));
+                    memset(inner, 0, sizeof(*inner));
+                    inner->kind = TYPE_ANY;
+                }
+
+                Type* opt = (Type*)malloc(sizeof(Type));
+                memset(opt, 0, sizeof(*opt));
+                opt->kind = TYPE_NAMED;
+                opt->name = (Token){TOKEN_IDENTIFIER, "Option", 6, e->token.line, e->token.col, 0};
+                opt->typeArgs = listNew();
+                listAppend(opt->typeArgs, inner);
+                return opt;
+            }
+        }
+
+        // Best-effort: treat `x.slice(...)` on bytes/arrays as producing `Slice<T>`.
+        if (callee && callee->type == EXPR_GET) {
+            GetExpr* ge = (GetExpr*)callee;
+            if (tokenEquals(&ge->name, "slice")) {
+                Expr* recv = unwrapGroupingExpr(ge->object);
+                Type* inner = NULL;
+                if (recv && recv->type == EXPR_VARIABLE) {
+                    VariableRef base = findVariableExpr(compiler, recv);
+                    if (base.isBytes) {
+                        inner = (Type*)malloc(sizeof(Type));
+                        memset(inner, 0, sizeof(*inner));
+                        inner->kind = TYPE_BYTE;
+                    } else if (base.isArray && base.astType && base.astType->kind == TYPE_ARRAY) {
+                        inner = cloneTypeTreeDeep(base.astType->inner);
+                    }
+                }
+                if (!inner) {
+                    inner = (Type*)malloc(sizeof(Type));
+                    memset(inner, 0, sizeof(*inner));
+                    inner->kind = TYPE_ANY;
+                }
+                Type* st = (Type*)malloc(sizeof(Type));
+                memset(st, 0, sizeof(*st));
+                st->kind = TYPE_NAMED;
+                st->name = (Token){TOKEN_IDENTIFIER, "Slice", 5, e->token.line, e->token.col, 0};
+                st->typeArgs = listNew();
+                listAppend(st->typeArgs, inner);
+                return st;
+            }
+        }
+
         if (callee && callee->type == EXPR_VARIABLE) {
             VariableExpr* ve = (VariableExpr*)callee;
             StructInfo* si = compilerResolveStructByToken(compiler, &ve->name);
@@ -655,6 +815,36 @@ static void freeTypeTreeDeep(Type* t) {
     free(t);
 }
 
+static Type* cloneTypeTreeDeep(const Type* t) {
+    if (!t) return NULL;
+    Type* out = (Type*)malloc(sizeof(Type));
+    memset(out, 0, sizeof(*out));
+    out->kind = t->kind;
+    out->name = t->name;
+    out->arrayLen = t->arrayLen;
+    out->inner = t->inner ? cloneTypeTreeDeep(t->inner) : NULL;
+
+    if (t->typeArgs && t->typeArgs->length > 0) {
+        out->typeArgs = listNew();
+        for (ListNode* n = t->typeArgs->head; n != NULL; n = n->next) {
+            listAppend(out->typeArgs, cloneTypeTreeDeep((Type*)n->data));
+        }
+    }
+    if (t->paramTypes && t->paramTypes->length > 0) {
+        out->paramTypes = listNew();
+        for (ListNode* n = t->paramTypes->head; n != NULL; n = n->next) {
+            listAppend(out->paramTypes, cloneTypeTreeDeep((Type*)n->data));
+        }
+    }
+    if (t->returnTypes && t->returnTypes->length > 0) {
+        out->returnTypes = listNew();
+        for (ListNode* n = t->returnTypes->head; n != NULL; n = n->next) {
+            listAppend(out->returnTypes, cloneTypeTreeDeep((Type*)n->data));
+        }
+    }
+    return out;
+}
+
 static int astTypeContainsTypeParamDeep(Type* t, const Token* tpName) {
     if (!t || !tpName || !tpName->start || tpName->length <= 0) return 0;
     switch (t->kind) {
@@ -724,9 +914,131 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
         if (!p || !p->type) continue;
 
         Type* pt = compilerResolveGenericType(compiler, p->type);
-        // Only infer for top-level occurrences of type params: `x: T` or `x: Ref<T>` (aka `&T`).
-        const char* tpName = NULL;
-        int tpLen = 0;
+
+	        // v0.6: support inference through a single-layer generic wrapper for builtin types:
+	        // - `Option<T>` from an argument of type `Option<U>`
+	        // - `Slice<T>`  from an argument of type `Slice<U>`
+	        if (pt && pt->kind == TYPE_NAMED && pt->typeArgs && pt->typeArgs->length == 1) {
+	            int isOption = (pt->name.length == 6 && memcmp(pt->name.start, "Option", 6) == 0);
+	            int isSlice = (pt->name.length == 5 && memcmp(pt->name.start, "Slice", 5) == 0);
+	            if (isOption || isSlice) {
+                Type* targ0 = (Type*)pt->typeArgs->head->data;
+                if (targ0 && targ0->kind == TYPE_NAMED && (!targ0->typeArgs || targ0->typeArgs->length == 0)) {
+                    int tpIndex = -1;
+                    for (int j = 0; j < expected; j++) {
+                        TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, j);
+                        if (!td) continue;
+                        if (td->name.length == targ0->name.length &&
+                            memcmp(td->name.start, targ0->name.start, (size_t)td->name.length) == 0) {
+                            tpIndex = j;
+                            break;
+                        }
+                    }
+
+                    if (tpIndex >= 0) {
+                        Type* at = inferTypeFromValueExpr(compiler, arg);
+                        Type* innerInferred = NULL;
+                        if (at && at->kind == TYPE_NAMED && at->typeArgs && at->typeArgs->length == 1 &&
+                            at->name.length == pt->name.length &&
+                            memcmp(at->name.start, pt->name.start, (size_t)pt->name.length) == 0) {
+                            innerInferred = cloneTypeTreeDeep((Type*)at->typeArgs->head->data);
+                        }
+                        if (at) freeTypeTreeDeep(at);
+
+                        if (innerInferred) {
+                            if (!inferred[tpIndex]) {
+                                inferred[tpIndex] = innerInferred;
+                                inferredFromArg[tpIndex] = i;
+                            } else if (inferred[tpIndex]->kind == TYPE_ANY && innerInferred->kind != TYPE_ANY) {
+                                freeTypeTreeDeep(inferred[tpIndex]);
+                                inferred[tpIndex] = innerInferred;
+                                inferredFromArg[tpIndex] = i;
+                            } else if (innerInferred->kind == TYPE_ANY && inferred[tpIndex]->kind != TYPE_ANY) {
+                                freeTypeTreeDeep(innerInferred);
+                            } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
+                                for (int j = 0; j < expected; j++) {
+                                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+                                }
+                                freeTypeTreeDeep(innerInferred);
+                                free(inferredFromArg);
+                                free(inferred);
+                                free(nestedSeen);
+                                free(nestedFromArg);
+                                if (diag) {
+                                    diag->status = GEN_INFER_CONFLICT;
+                                    diag->tpIndex = tpIndex;
+                                    diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
+                                    diag->secondArgIndex = i + 1;
+                                }
+                                return NULL;
+                            } else {
+                                freeTypeTreeDeep(innerInferred);
+                            }
+                        }
+                    }
+                }
+	            }
+	        }
+
+	        // `array<T>` / `T[]`: infer T from an argument of type `array<U>` / `U[]`.
+	        if (pt && pt->kind == TYPE_ARRAY && pt->inner && pt->inner->kind == TYPE_NAMED &&
+	            (!pt->inner->typeArgs || pt->inner->typeArgs->length == 0)) {
+	            Type* targ0 = pt->inner;
+	            int tpIndex = -1;
+	            for (int j = 0; j < expected; j++) {
+	                TypeParamDecl* td = (TypeParamDecl*)listGet(tmpl->decl->typeParams, j);
+	                if (!td) continue;
+	                if (td->name.length == targ0->name.length &&
+	                    memcmp(td->name.start, targ0->name.start, (size_t)td->name.length) == 0) {
+	                    tpIndex = j;
+	                    break;
+	                }
+	            }
+
+	            if (tpIndex >= 0) {
+	                Type* at = inferTypeFromValueExpr(compiler, arg);
+	                Type* innerInferred = NULL;
+	                if (at && at->kind == TYPE_ARRAY && at->inner) {
+	                    innerInferred = cloneTypeTreeDeep(at->inner);
+	                }
+	                if (at) freeTypeTreeDeep(at);
+
+	                if (innerInferred) {
+	                    if (!inferred[tpIndex]) {
+	                        inferred[tpIndex] = innerInferred;
+	                        inferredFromArg[tpIndex] = i;
+	                    } else if (inferred[tpIndex]->kind == TYPE_ANY && innerInferred->kind != TYPE_ANY) {
+	                        freeTypeTreeDeep(inferred[tpIndex]);
+	                        inferred[tpIndex] = innerInferred;
+	                        inferredFromArg[tpIndex] = i;
+	                    } else if (innerInferred->kind == TYPE_ANY && inferred[tpIndex]->kind != TYPE_ANY) {
+	                        freeTypeTreeDeep(innerInferred);
+	                    } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
+	                        for (int j = 0; j < expected; j++) {
+	                            if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+	                        }
+	                        freeTypeTreeDeep(innerInferred);
+	                        free(inferredFromArg);
+	                        free(inferred);
+	                        free(nestedSeen);
+	                        free(nestedFromArg);
+	                        if (diag) {
+	                            diag->status = GEN_INFER_CONFLICT;
+	                            diag->tpIndex = tpIndex;
+	                            diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
+	                            diag->secondArgIndex = i + 1;
+	                        }
+	                        return NULL;
+	                    } else {
+	                        freeTypeTreeDeep(innerInferred);
+	                    }
+	                }
+	            }
+	        }
+
+	        // Only infer for top-level occurrences of type params: `x: T` or `x: Ref<T>` (aka `&T`).
+	        const char* tpName = NULL;
+	        int tpLen = 0;
         if (pt && pt->kind == TYPE_NAMED) {
             tpName = pt->name.start;
             tpLen = pt->name.length;
@@ -789,6 +1101,14 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
         if (!inferred[tpIndex]) {
             inferred[tpIndex] = it;
             inferredFromArg[tpIndex] = i;
+        } else if (inferred[tpIndex]->kind == TYPE_ANY && it->kind != TYPE_ANY) {
+            // Upgrade from wildcard `any` to a concrete inference.
+            freeTypeTreeDeep(inferred[tpIndex]);
+            inferred[tpIndex] = it;
+            inferredFromArg[tpIndex] = i;
+        } else if (it->kind == TYPE_ANY && inferred[tpIndex]->kind != TYPE_ANY) {
+            // Keep existing concrete inference.
+            freeTypeTreeDeep(it);
         } else {
             // Consistency check across arguments.
             if (!astTypeEqualsDeep(inferred[tpIndex], it)) {
@@ -1235,6 +1555,294 @@ static char* mangleRawAndToken(const char* left, int leftLen, const Token* right
     s[len] = '\0';
     if (outLen) *outLen = len;
     return s;
+}
+
+// Forward decl (used by early helpers).
+static LLVMValueRef collapseMultiReturnByTypeIfNeeded(Compiler* compiler, LLVMValueRef call, LLVMTypeRef retType);
+
+static int isBuiltinHandleTypeName(const char* name, int nameLen) {
+    if (!name || nameLen <= 0) return 0;
+    if (nameLen == 5 && memcmp(name, "bytes", 5) == 0) return 1;
+    if (nameLen == 3 && memcmp(name, "map", 3) == 0) return 1;
+    return 0;
+}
+
+// Try to resolve and call a std-defined `impl <builtin-handle> { ... }` method:
+// `<TypeName>__<method>(this, ...)`. Returns NULL if not found.
+static LLVMValueRef tryEmitBuiltinHandleImplMethodCall(
+    Compiler* compiler,
+    VariableRef recvVar,
+    GetExpr* get,
+    CallExpr* expr,
+    int wantMultiForThisCall
+) {
+    if (!compiler || !get || !expr) return NULL;
+    if (!recvVar.value) return NULL;
+    if (!recvVar.typeName || recvVar.typeNameLength <= 0) return NULL;
+    if (!isBuiltinHandleTypeName(recvVar.typeName, recvVar.typeNameLength)) return NULL;
+    if (expr->typeArgs && expr->typeArgs->length > 0) {
+        compilerErrorAtToken(compiler, &get->name, "generic type arguments on instance methods are not supported yet");
+        return NULL;
+    }
+
+    int mangledLen = 0;
+    char* mangled = mangleRawAndToken(recvVar.typeName, recvVar.typeNameLength, &get->name, &mangledLen);
+    LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
+    free(mangled);
+    if (!func) return NULL;
+
+    LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
+    unsigned expected = LLVMCountParamTypes(funcType);
+    unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+    if (expected != got + 1) {
+        compilerErrorAtToken(
+            compiler,
+            &get->name,
+            "argument count mismatch for call '%.*s': expected %u, got %u",
+            get->name.length,
+            get->name.start,
+            expected > 0 ? (unsigned)(expected - 1) : 0,
+            got
+        );
+        return NULL;
+    }
+
+    LLVMTypeRef* paramTypes = NULL;
+    if (expected > 0) {
+        paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+        LLVMGetParamTypes(funcType, paramTypes);
+    }
+
+    LLVMValueRef thisArg = NULL;
+    if (recvVar.isBoxed) {
+        if (!recvVar.boxPtrType) {
+            if (paramTypes) free(paramTypes);
+            compilerErrorAtToken(compiler, &get->name, "missing boxed pointer type for receiver");
+            return NULL;
+        }
+        LLVMValueRef cellPtr = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cellptr");
+        thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, cellPtr, "this");
+    } else {
+        thisArg = LLVMBuildLoad2(compiler->builder, recvVar.type, recvVar.value, "this");
+    }
+
+    LLVMValueRef* args = NULL;
+    if (expected > 0) {
+        args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+        args[0] = castValueToType(compiler, thisArg, paramTypes ? paramTypes[0] : LLVMTypeOf(thisArg));
+        ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+        for (unsigned i = 1; i < expected; i++) {
+            LLVMTypeRef pt = paramTypes ? paramTypes[i] : NULL;
+            LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, pt);
+            if (!av) {
+                if (paramTypes) free(paramTypes);
+                if (args) free(args);
+                return NULL;
+            }
+            args[i] = av;
+            node = node->next;
+        }
+    }
+
+    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+    LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
+    LLVMTypeRef retType = LLVMGetReturnType(funcType);
+    LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
+    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+
+    if (paramTypes) free(paramTypes);
+    if (args) free(args);
+    return out;
+}
+
+// Slice type cache entry (must match `SliceTypeEntry` in `src/compiler.c`).
+typedef struct {
+    LLVMTypeRef elem;
+    LLVMTypeRef slice;
+} SliceTypeEntry;
+
+static LLVMTypeRef sliceElemTypeFromSliceStruct(Compiler* compiler, LLVMTypeRef sliceStruct) {
+    if (!compiler || !sliceStruct || !compiler->sliceTypes) return NULL;
+    for (int i = 0; i < compiler->sliceTypes->length; i++) {
+        SliceTypeEntry* e = (SliceTypeEntry*)listGet(compiler->sliceTypes, i);
+        if (e && e->slice == sliceStruct) return e->elem;
+    }
+    return NULL;
+}
+
+// Try to resolve and call a std-defined `impl <builtin-value> { ... }` method:
+// `<TypeName>__<method>(this, ...)`.
+// Returns NULL if not found or if a generic template exists but cannot be instantiated.
+static LLVMValueRef tryEmitBuiltinValueImplMethodCall(
+    Compiler* compiler,
+    const char* typeName,
+    int typeNameLen,
+    Expr* recvExpr,
+    LLVMValueRef recvVal,
+    GetExpr* get,
+    CallExpr* expr,
+    int wantMultiForThisCall,
+    int* outSawTemplate
+) {
+    if (outSawTemplate) *outSawTemplate = 0;
+    if (!compiler || !typeName || typeNameLen <= 0 || !recvVal || !get || !expr) return NULL;
+
+    int mangledLen = 0;
+    char* mangled = mangleRawAndToken(typeName, typeNameLen, &get->name, &mangledLen);
+    if (!mangled) return NULL;
+
+    // Direct (non-generic) function.
+    LLVMValueRef func = LLVMGetNamedFunction(compiler->module, mangled);
+    if (func) {
+        LLVMTypeRef funcType = LLVMGlobalGetValueType(func);
+        unsigned expected = LLVMCountParamTypes(funcType);
+        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+        if (expected != got + 1) {
+            compilerErrorAtToken(
+                compiler,
+                &get->name,
+                "argument count mismatch for call '%.*s': expected %u, got %u",
+                get->name.length,
+                get->name.start,
+                expected > 0 ? (unsigned)(expected - 1) : 0,
+                got
+            );
+            free(mangled);
+            return NULL;
+        }
+
+        LLVMTypeRef* paramTypes = NULL;
+        if (expected > 0) {
+            paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+            LLVMGetParamTypes(funcType, paramTypes);
+        }
+
+        LLVMValueRef* args = NULL;
+        if (expected > 0) {
+            args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+            args[0] = castValueToType(compiler, recvVal, paramTypes ? paramTypes[0] : LLVMTypeOf(recvVal));
+            ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+            for (unsigned i = 1; i < expected; i++) {
+                LLVMTypeRef pt = paramTypes ? paramTypes[i] : NULL;
+                LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, pt);
+                if (!av) {
+                    if (paramTypes) free(paramTypes);
+                    if (args) free(args);
+                    free(mangled);
+                    return NULL;
+                }
+                args[i] = av;
+                node = node->next;
+            }
+        }
+
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+        LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, func, args, expected, callInstNameForFnType(funcType));
+        LLVMTypeRef retType = LLVMGetReturnType(funcType);
+        LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
+        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+
+        if (paramTypes) free(paramTypes);
+        if (args) free(args);
+        free(mangled);
+        return out;
+    }
+
+    // Generic template.
+    GenericFuncTemplate* tmpl = compilerFindGenericFuncTemplate(compiler, mangled, mangledLen);
+    if (!tmpl || !tmpl->qualifiedName || tmpl->qualifiedNameLen <= 0) {
+        free(mangled);
+        return NULL;
+    }
+    if (outSawTemplate) *outSawTemplate = 1;
+
+    LLVMValueRef inst = NULL;
+    if (expr->typeArgs && expr->typeArgs->length > 0) {
+        inst = compilerInstantiateGenericFunc(compiler, tmpl->qualifiedName, tmpl->qualifiedNameLen, expr->typeArgs, &get->name);
+        if (!inst) {
+            free(mangled);
+            return NULL;
+        }
+    } else {
+        // Build a synthetic call for inference: the receiver is the first argument.
+        CallExpr fake;
+        memset(&fake, 0, sizeof(fake));
+        fake.base.type = EXPR_CALL;
+        fake.base.token = expr->base.token;
+        fake.arguments = listNew();
+        if (recvExpr) listAppend(fake.arguments, recvExpr);
+        for (ListNode* n = expr->arguments ? expr->arguments->head : NULL; n != NULL; n = n->next) {
+            listAppend(fake.arguments, n->data);
+        }
+
+        GenericInferDiag inferDiag;
+        initGenericInferDiag(&inferDiag);
+        List* inferred = inferTypeArgsForGenericCall(compiler, tmpl, &fake, &inferDiag);
+        listFree(fake.arguments);
+
+        if (inferred) {
+            inst = compilerInstantiateGenericFunc(compiler, tmpl->qualifiedName, tmpl->qualifiedNameLen, inferred, &get->name);
+            // inferred list elements are heap-allocated Type*; keep for compiler cache lifetime.
+            listFree(inferred);
+        }
+    }
+    if (!inst) {
+        free(mangled);
+        return NULL;
+    }
+
+    LLVMTypeRef funcType = LLVMGlobalGetValueType(inst);
+    unsigned expected = LLVMCountParamTypes(funcType);
+    unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+    if (expected != got + 1) {
+        compilerErrorAtToken(
+            compiler,
+            &get->name,
+            "argument count mismatch for call '%.*s': expected %u, got %u",
+            get->name.length,
+            get->name.start,
+            expected > 0 ? (unsigned)(expected - 1) : 0,
+            got
+        );
+        free(mangled);
+        return NULL;
+    }
+
+    LLVMTypeRef* paramTypes = NULL;
+    if (expected > 0) {
+        paramTypes = malloc(sizeof(LLVMTypeRef) * (size_t)expected);
+        LLVMGetParamTypes(funcType, paramTypes);
+    }
+
+    LLVMValueRef* args = NULL;
+    if (expected > 0) {
+        args = malloc(sizeof(LLVMValueRef) * (size_t)expected);
+        args[0] = castValueToType(compiler, recvVal, paramTypes ? paramTypes[0] : LLVMTypeOf(recvVal));
+        ListNode* node = expr->arguments ? expr->arguments->head : NULL;
+        for (unsigned i = 1; i < expected; i++) {
+            LLVMTypeRef pt = paramTypes ? paramTypes[i] : NULL;
+            LLVMValueRef av = compileCallArgForParam(compiler, (Expr*)node->data, pt);
+            if (!av) {
+                if (paramTypes) free(paramTypes);
+                if (args) free(args);
+                free(mangled);
+                return NULL;
+            }
+            args[i] = av;
+            node = node->next;
+        }
+    }
+
+    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+    LLVMValueRef call = LLVMBuildCall2(compiler->builder, funcType, inst, args, expected, callInstNameForFnType(funcType));
+    LLVMTypeRef retType = LLVMGetReturnType(funcType);
+    LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retType);
+    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+
+    if (paramTypes) free(paramTypes);
+    if (args) free(args);
+    free(mangled);
+    return out;
 }
 
 typedef struct {
@@ -2191,6 +2799,13 @@ static int isOptionLLVMType(LLVMTypeRef t) {
     return LLVMGetIntTypeWidth(f0) == 1;
 }
 
+static int isSliceLLVMType(LLVMTypeRef t) {
+    if (!t) return 0;
+    if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
+    const char* n = LLVMGetStructName(t);
+    return n && strncmp(n, "tua_slice$", 10) == 0;
+}
+
 static int isTuaValueLLVMType(Compiler* compiler, LLVMTypeRef t) {
     if (!compiler || !t) return 0;
     if (LLVMGetTypeKind(t) != LLVMStructTypeKind) return 0;
@@ -2252,6 +2867,41 @@ static int typeKindIsScalarValueKind(TypeKind k) {
         default:
             return 0;
     }
+}
+
+static int implTypeNameForTypeKind(TypeKind k, const char** outName, int* outLen) {
+    if (outName) *outName = NULL;
+    if (outLen) *outLen = 0;
+    const char* n = NULL;
+    int l = 0;
+    switch (k) {
+        case TYPE_BOOL: n = "bool"; l = 4; break;
+        case TYPE_STRING: n = "string"; l = 6; break;
+        case TYPE_PTR: n = "ptr"; l = 3; break;
+        case TYPE_BYTE: n = "byte"; l = 4; break;
+        case TYPE_I8: n = "i8"; l = 2; break;
+        case TYPE_I16: n = "i16"; l = 3; break;
+        case TYPE_INT: n = "int"; l = 3; break;
+        case TYPE_LONG: n = "long"; l = 4; break;
+        case TYPE_ISIZE: n = "isize"; l = 5; break;
+        case TYPE_U8: n = "u8"; l = 2; break;
+        case TYPE_U16: n = "u16"; l = 3; break;
+        case TYPE_U32: n = "u32"; l = 3; break;
+        case TYPE_U64: n = "u64"; l = 3; break;
+        case TYPE_USIZE: n = "usize"; l = 5; break;
+        case TYPE_F8: n = "fp8"; l = 3; break;
+        case TYPE_BF8: n = "bfp8"; l = 4; break;
+        case TYPE_F16: n = "half"; l = 4; break;
+        case TYPE_BF16: n = "bfloat"; l = 6; break;
+        case TYPE_FLOAT: n = "float"; l = 5; break;
+        case TYPE_DOUBLE: n = "double"; l = 6; break;
+        case TYPE_ARRAY: n = "array"; l = 5; break;
+        default:
+            return 0;
+    }
+    if (outName) *outName = n;
+    if (outLen) *outLen = l;
+    return 1;
 }
 
 static int typedMapValueIsScalarMeta(const VariableRef* recvVar) {
@@ -2673,19 +3323,47 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         }
 
         // Built-in member calls can accept non-variable receivers.
-        if (get->object->type != EXPR_VARIABLE) {
-            LLVMValueRef recvVal = compileExpr(compiler, get->object);
-            if (!recvVal) {
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return NULL;
-            }
-            LLVMTypeRef recvType = LLVMTypeOf(recvVal);
-            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+	        if (get->object->type != EXPR_VARIABLE) {
+	            LLVMValueRef recvVal = compileExpr(compiler, get->object);
+	            if (!recvVal) {
+	                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                return NULL;
+	            }
+	            LLVMTypeRef recvType = LLVMTypeOf(recvVal);
+	            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
 
-            // Map built-in methods on non-variable receivers are intentionally disabled for now:
-            // LLVM opaque pointers make it impossible to reliably distinguish `%tua_map*` from other pointers here.
-            if (0 && recvType == compilerGetMapType(compiler)) {
-                LLVMValueRef mapPtr = recvVal;
+	            // `impl <scalar/array> { ... }` methods can also be called on non-variable receivers
+	            // when the receiver has a known inferred kind (or explicit type args are provided).
+	            {
+	                TypeKind k = get->object->inferredType;
+	                Type* it = inferTypeFromValueExpr(compiler, get->object);
+	                if (it) {
+	                    k = it->kind;
+	                    freeTypeTreeDeep(it);
+	                }
+	                const char* tn = NULL;
+	                int tnLen = 0;
+	                if (implTypeNameForTypeKind(k, &tn, &tnLen)) {
+	                    int saw = 0;
+	                    LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+	                        compiler,
+	                        tn,
+	                        tnLen,
+	                        get->object,
+	                        recvVal,
+	                        get,
+	                        expr,
+	                        wantMultiForThisCall,
+	                        &saw
+	                    );
+	                    if (implOut) return implOut;
+	                }
+	            }
+
+	            // Map built-in methods on non-variable receivers are intentionally disabled for now:
+	            // LLVM opaque pointers make it impossible to reliably distinguish `%tua_map*` from other pointers here.
+	            if (0 && recvType == compilerGetMapType(compiler)) {
+	                LLVMValueRef mapPtr = recvVal;
 
                 if (tokenEquals(&get->name, "len")) {
                     if (got != 0) {
@@ -2824,8 +3502,104 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
             }
 
+            // Slice<T> built-in methods (non-variable receiver):
+            // - `s.len() -> long`
+            // - `s.get(i: long) -> T` (panics on invalid)
+            if (isSliceLLVMType(recvType)) {
+                int saw = 0;
+                LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+                    compiler,
+                    "Slice",
+                    5,
+                    get->object,
+                    recvVal,
+                    get,
+                    expr,
+                    wantMultiForThisCall,
+                    &saw
+                );
+                if (implOut) return implOut;
+
+                LLVMTypeRef elemTy = sliceElemTypeFromSliceStruct(compiler, recvType);
+                if (!elemTy) {
+                    elemTy = LLVMInt8TypeInContext(compiler->context);
+                }
+
+                LLVMValueRef data = LLVMBuildExtractValue(compiler->builder, recvVal, 0, "sdata");
+                LLVMValueRef len = LLVMBuildExtractValue(compiler->builder, recvVal, 1, "slen");
+                LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+
+                if (tokenEquals(&get->name, "len")) {
+                    if (got != 0) {
+                        emitDebug("Slice.len expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return len;
+                }
+
+                if (tokenEquals(&get->name, "get")) {
+                    if (got != 1) {
+                        emitDebug("Slice.get expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    if (!idx) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    idx = castValueToType(compiler, idx, i64);
+                    LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
+                    LLVMValueRef neg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, idx, zero, "idxneg");
+                    LLVMValueRef ge = LLVMBuildICmp(compiler->builder, LLVMIntSGE, idx, len, "idxge");
+                    LLVMValueRef bad = LLVMBuildOr(compiler->builder, neg, ge, "bad");
+
+                    LLVMValueRef fn = compiler->current->func;
+                    LLVMBasicBlockRef okB = LLVMAppendBasicBlock(fn, "sg_ok");
+                    LLVMBasicBlockRef badB = LLVMAppendBasicBlock(fn, "sg_bad");
+                    LLVMBasicBlockRef contB = LLVMAppendBasicBlock(fn, "sg_cont");
+                    LLVMBuildCondBr(compiler->builder, bad, badB, okB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, badB);
+                    LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+                    LLVMTypeRef pty = LLVMGlobalGetValueType(panicFn);
+                    LLVMValueRef msg = LLVMBuildGlobalStringPtr(compiler->builder, "Slice.get out of bounds", "sgmsg");
+                    LLVMBuildCall2(compiler->builder, pty, panicFn, &msg, 1, "");
+                    LLVMBuildUnreachable(compiler->builder);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, okB);
+                    LLVMTypeRef elemPtrTy = LLVMPointerType(elemTy, 0);
+                    LLVMValueRef typed = castValueToType(compiler, data, elemPtrTy);
+                    LLVMValueRef ptr = LLVMBuildGEP2(compiler->builder, elemTy, typed, &idx, 1, "ep");
+                    LLVMValueRef val = LLVMBuildLoad2(compiler->builder, elemTy, ptr, "sv");
+                    LLVMBuildBr(compiler->builder, contB);
+
+                    LLVMPositionBuilderAtEnd(compiler->builder, contB);
+                    LLVMValueRef phi = LLVMBuildPhi(compiler->builder, elemTy, "sget");
+                    LLVMAddIncoming(phi, &val, &okB, 1);
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return phi;
+                }
+            }
+
             // Option built-in methods: `opt.isSome()`, `opt.unwrap()`, ...
             if (isOptionLLVMType(recvType)) {
+                int saw = 0;
+                LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+                    compiler,
+                    "Option",
+                    6,
+                    get->object,
+                    recvVal,
+                    get,
+                    expr,
+                    wantMultiForThisCall,
+                    &saw
+                );
+                if (implOut) return implOut;
+
                 LLVMTypeRef innerType = LLVMStructGetTypeAtIndex(recvType, 1);
                 LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, recvVal, 0, "opt_ok");
                 LLVMValueRef payload = LLVMBuildExtractValue(compiler->builder, recvVal, 1, "opt_v");
@@ -3043,10 +3817,10 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 	            }
 	        }
 
-	        // Built-in methods on `Ref<map>` / `Ref<T[]>`:
-	        // When receiver is a reference to a map/array handle, load the handle and call the same runtime APIs.
-	        if (recvVar.value && recvVar.pointeeType == compilerGetMapType(compiler)) {
-            LLVMTypeRef mapType = compilerGetMapType(compiler);
+		        // Built-in methods on `Ref<map>` / `Ref<T[]>`:
+		        // When receiver is a reference to a map/array handle, load the handle and call the same runtime APIs.
+		        if (recvVar.value && recvVar.pointeeType == compilerGetMapType(compiler)) {
+	            LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef refPtr = loadLocalValue(compiler, recvVar); // tua_map**
             if (!refPtr) {
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3055,76 +3829,77 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             LLVMValueRef mapPtr = LLVMBuildLoad2(compiler->builder, mapType, refPtr, "mref");
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
 
-            if (tokenEquals(&get->name, "len")) {
-                if (got != 0) {
-                    emitDebug("map.len expects 0 arguments\n");
+            switch (mapMethodId(&get->name)) {
+                case MAP_M_LEN: {
+                    if (got != 0) {
+                        emitDebug("map.len expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { mapPtr };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "mlen");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
+                    return out;
                 }
-                LLVMValueRef fn = getOrCreateTuaMapLen(compiler);
-                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-                LLVMValueRef args1[1] = { mapPtr };
-                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "mlen");
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return out;
-            }
-
-            if (tokenEquals(&get->name, "hasKey")) {
-                if (got != 1) {
-                    emitDebug("map.hasKey expects 1 argument\n");
+                case MAP_M_HASKEY: {
+                    if (got != 1) {
+                        emitDebug("map.hasKey expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    Expr* keyAst = (Expr*)expr->arguments->head->data;
+                    LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                    if (!key) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapHas(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args2[2] = { mapPtr, key };
+                    LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mhas");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "ok");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
+                    return ok;
                 }
-                Expr* keyAst = (Expr*)expr->arguments->head->data;
-                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
-                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
-                if (!key) {
+                case MAP_M_DELETE: {
+                    if (got != 1) {
+                        emitDebug("map.delete expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    Expr* keyAst = (Expr*)expr->arguments->head->data;
+                    LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
+                    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
+                    if (!key) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapDelete(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args2[2] = { mapPtr, key };
+                    LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mdel32");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
+                    return ok;
                 }
-                LLVMValueRef fn = getOrCreateTuaMapHas(compiler);
-                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-                LLVMValueRef args2[2] = { mapPtr, key };
-                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mhas");
-                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "ok");
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return ok;
-            }
-
-            if (tokenEquals(&get->name, "delete")) {
-                if (got != 1) {
-                    emitDebug("map.delete expects 1 argument\n");
+                case MAP_M_CLEAR: {
+                    if (got != 0) {
+                        emitDebug("map.clear expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaMapClear(compiler);
+                    LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { mapPtr };
+                    LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
+                    return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
                 }
-                Expr* keyAst = (Expr*)expr->arguments->head->data;
-                LLVMValueRef keyExpr = compileExpr(compiler, keyAst);
-                LLVMValueRef key = tuaValueFromKey(compiler, keyExpr);
-                if (!key) {
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
-                LLVMValueRef fn = getOrCreateTuaMapDelete(compiler);
-                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-                LLVMValueRef args2[2] = { mapPtr, key };
-                LLVMValueRef ok32 = LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "mdel32");
-                LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mdel");
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return ok;
-            }
-
-            if (tokenEquals(&get->name, "clear")) {
-                if (got != 0) {
-                    emitDebug("map.clear expects 0 arguments\n");
-                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                    return NULL;
-                }
-                LLVMValueRef fn = getOrCreateTuaMapClear(compiler);
-                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
-                LLVMValueRef args1[1] = { mapPtr };
-                LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "");
-                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-                return LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0);
+                default:
+                    break;
             }
         }
 
@@ -3137,7 +3912,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
             LLVMValueRef arrPtr = LLVMBuildLoad2(compiler->builder, arrType, refPtr, "aref");
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
-            if (tokenEquals(&get->name, "len")) {
+            if (arrayMethodId(&get->name) == ARRAY_M_LEN) {
                 if (got != 0) {
                     emitDebug("array.len expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3160,11 +3935,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             }
         }
 
-        // Array built-in methods: `a.len()`, `a.clone()`, `a.push(v)`, `a.slice(off,n)`
-        if (recvVar.value && recvVar.isArray) {
-            LLVMTypeRef arrType = compilerGetArrayType(compiler);
-            LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
-            LLVMValueRef arrPtr = NULL;
+	        // Array built-in methods: `a.len()`, `a.clone()`, `a.push(v)`, `a.slice(off,n)`
+	        if (recvVar.value && recvVar.isArray) {
+	            LLVMTypeRef arrType = compilerGetArrayType(compiler);
+	            LLVMTypeRef arrStruct = LLVMGetTypeByName2(compiler->context, "tua_array");
+	            LLVMValueRef arrPtr = NULL;
             if (recvVar.isBoxed) {
                 if (!recvVar.boxPtrType) {
                     emitDebug("Missing boxed pointer type for array receiver\n");
@@ -3173,15 +3948,30 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
                 LLVMValueRef cell = LLVMBuildLoad2(compiler->builder, recvVar.boxPtrType, recvVar.value, "cell");
                 arrPtr = LLVMBuildLoad2(compiler->builder, arrType, cell, "aval");
-            } else {
-                arrPtr = LLVMBuildLoad2(compiler->builder, arrType, recvVar.value, "aval");
-            }
+	            } else {
+	                arrPtr = LLVMBuildLoad2(compiler->builder, arrType, recvVar.value, "aval");
+	            }
 
-            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
-            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
-            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+	            int saw = 0;
+	            LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+	                compiler,
+	                "array",
+	                5,
+	                get->object,
+	                arrPtr,
+	                get,
+	                expr,
+	                wantMultiForThisCall,
+	                &saw
+	            );
+	            if (implOut) return implOut;
 
-            if (tokenEquals(&get->name, "len")) {
+	            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+	            LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+	            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+
+            ArrayMethodId mid = arrayMethodId(&get->name);
+            if (mid == ARRAY_M_LEN) {
                 if (got != 0) {
                     emitDebug("array.len expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3199,7 +3989,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "clone")) {
+            if (mid == ARRAY_M_CLONE) {
                 if (got != 0) {
                     emitDebug("array.clone expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3213,7 +4003,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "push")) {
+            if (mid == ARRAY_M_PUSH) {
                 if (got != 1) {
                     compilerErrorAt(compiler, get->name.line, "array.push expects 1 argument");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3245,7 +4035,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "slice")) {
+            if (mid == ARRAY_M_SLICE) {
                 if (got != 2) {
                     compilerErrorAt(compiler, get->name.line, "array.slice expects 2 arguments");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3345,6 +4135,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // - `b.copy(dstOff: long, src: bytes, srcOff: long, n: long) -> int`
         // - `b.slice(off: long, n: long) -> Slice<byte>` (panics on invalid)
         if (recvVar.value && recvVar.isBytes) {
+            LLVMValueRef implOut = tryEmitBuiltinHandleImplMethodCall(compiler, recvVar, get, expr, wantMultiForThisCall);
+            if (implOut) return implOut;
+
             LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
             LLVMValueRef bytesPtr = NULL;
             if (recvVar.isBoxed) {
@@ -3364,7 +4157,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
             LLVMTypeRef i8 = LLVMInt8TypeInContext(compiler->context);
 
-            if (tokenEquals(&get->name, "len")) {
+            BytesMethodId mid = bytesMethodId(&get->name);
+            if (mid == BYTES_M_LEN) {
                 if (got != 0) {
                     emitDebug("bytes.len expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3378,7 +4172,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "get") || tokenEquals(&get->name, "getU8")) {
+            if (mid == BYTES_M_GET) {
                 if (got != 1) {
                     emitDebug("bytes.get/getU8 expects 1 argument\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3421,7 +4215,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return phi;
             }
 
-            if (tokenEquals(&get->name, "set") || tokenEquals(&get->name, "setU8")) {
+            if (mid == BYTES_M_SET) {
                 if (got != 2) {
                     emitDebug("bytes.set/setU8 expects 2 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3443,7 +4237,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return err;
             }
 
-            if (tokenEquals(&get->name, "isReadonly")) {
+            if (mid == BYTES_M_ISREADONLY) {
                 if (got != 0) {
                     emitDebug("bytes.isReadonly expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3457,7 +4251,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "copy")) {
+            if (mid == BYTES_M_COPY) {
                 if (got != 4) {
                     emitDebug("bytes.copy expects 4 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3483,7 +4277,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "slice")) {
+            if (mid == BYTES_M_SLICE) {
                 if (got != 2) {
                     emitDebug("bytes.slice expects 2 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3558,6 +4352,19 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return NULL;
             }
+            int saw = 0;
+            LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+                compiler,
+                "Slice",
+                5,
+                get->object,
+                sliceVal,
+                get,
+                expr,
+                wantMultiForThisCall,
+                &saw
+            );
+            if (implOut) return implOut;
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
             LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
             LLVMTypeRef elemTy = recvVar.sliceElemType;
@@ -3724,6 +4531,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
         // Map built-in methods: `m.hasKey(k)`, `m.len()`
         if (recvVar.value && recvVar.isMap) {
+            LLVMValueRef implOut = tryEmitBuiltinHandleImplMethodCall(compiler, recvVar, get, expr, wantMultiForThisCall);
+            if (implOut) return implOut;
+
             LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef mapPtr = NULL;
             if (recvVar.isBoxed) {
@@ -3740,7 +4550,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
 
-            if (tokenEquals(&get->name, "len")) {
+            MapMethodId mid = mapMethodId(&get->name);
+            if (mid == MAP_M_LEN) {
                 if (got != 0) {
                     emitDebug("map.len expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3754,7 +4565,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "hasKey")) {
+            if (mid == MAP_M_HASKEY) {
                 if (got != 1) {
                     emitDebug("map.hasKey expects 1 argument\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3783,7 +4594,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return ok;
             }
 
-            if (tokenEquals(&get->name, "delete")) {
+            if (mid == MAP_M_DELETE) {
                 if (got != 1) {
                     emitDebug("map.delete expects 1 argument\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3812,9 +4623,8 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return ok;
             }
 
-            int isGet = tokenEquals(&get->name, "get");
-            int isGetMut = tokenEquals(&get->name, "getMut");
-            if (isGet || isGetMut) {
+            int isGetMut = (mid == MAP_M_GETMUT);
+            if (mid == MAP_M_GET || mid == MAP_M_GETMUT) {
                 if (got != 1) {
                     emitDebug("map.get/getMut expects 1 argument\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3920,13 +4730,13 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return opt;
             }
 
-            if (tokenEquals(&get->name, "getRef") || tokenEquals(&get->name, "getRefWrite")) {
+            if (mid == MAP_M_GETREF || mid == MAP_M_GETREFWRITE) {
                 compilerErrorAt(compiler, get->name.line, "map.getRef/getRefWrite is removed; use get/getMut");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return NULL;
             }
 
-            if (tokenEquals(&get->name, "clear")) {
+            if (mid == MAP_M_CLEAR) {
                 if (got != 0) {
                     emitDebug("map.clear expects 0 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
@@ -3946,6 +4756,19 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // Option built-in methods (variable receiver): `o.isSome()`, `o.unwrap()`, ...
         if (recvVar.value && isOptionLLVMType(recvVar.type)) {
             LLVMValueRef optVal = loadLocalValue(compiler, recvVar);
+            int saw = 0;
+            LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+                compiler,
+                "Option",
+                6,
+                get->object,
+                optVal,
+                get,
+                expr,
+                wantMultiForThisCall,
+                &saw
+            );
+            if (implOut) return implOut;
             LLVMTypeRef optType = recvVar.type;
             LLVMTypeRef innerType = LLVMStructGetTypeAtIndex(optType, 1);
             LLVMValueRef ok = LLVMBuildExtractValue(compiler->builder, optVal, 0, "opt_ok");
@@ -4134,14 +4957,41 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             LLVMValueRef out = collapseMultiReturnByTypeIfNeeded(compiler, call, retTy);
             if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
             return out;
-        }
+	        }
 
-        bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
-        bool isTraitDispatch = isInstance && recvVar.genericBoundTraitName != NULL && recvVar.genericBoundTraitNameLength > 0;
-        if (hasTypeArgs && isInstance) {
-            compilerErrorAtToken(compiler, &get->name, "generic type arguments on instance methods are not supported yet");
-            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
-            return NULL;
+	        // Scalar `impl` methods (e.g. `impl int { ... }`) use the same `<TypeName>__<method>` lowering
+	        // as builtin value types, but don't participate in struct instance resolution.
+	        if (recvVar.value && typeKindIsScalarValueKind(recvVar.typeKind)) {
+	            const char* tn = NULL;
+	            int tnLen = 0;
+	            if (implTypeNameForTypeKind(recvVar.typeKind, &tn, &tnLen)) {
+	                LLVMValueRef recvVal = loadLocalValue(compiler, recvVar);
+	                if (!recvVal) {
+	                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	                    return NULL;
+	                }
+	                int saw = 0;
+	                LLVMValueRef implOut = tryEmitBuiltinValueImplMethodCall(
+	                    compiler,
+	                    tn,
+	                    tnLen,
+	                    get->object,
+	                    recvVal,
+	                    get,
+	                    expr,
+	                    wantMultiForThisCall,
+	                    &saw
+	                );
+	                if (implOut) return implOut;
+	            }
+	        }
+
+	        bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
+	        bool isTraitDispatch = isInstance && recvVar.genericBoundTraitName != NULL && recvVar.genericBoundTraitNameLength > 0;
+	        if (hasTypeArgs && isInstance) {
+	            compilerErrorAtToken(compiler, &get->name, "generic type arguments on instance methods are not supported yet");
+	            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+	            return NULL;
         }
 
         if (isTraitDispatch) {

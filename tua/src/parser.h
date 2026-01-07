@@ -448,7 +448,11 @@ typedef struct StructStmt {
 
 typedef struct ImplStmt {
     Stmt base;
-    Token name;     // target struct name
+    // Target type for this impl block. Currently only supports named types (optionally generic),
+    // e.g. `impl bytes {}`, `impl<T> Option<T> {}`.
+    Token name;        // target type name (legacy convenience; equals targetType->name)
+    Type* targetType;  // full target type (including generic args)
+    List* typeParams;  // optional: List<TypeParamDecl*>
     List* methods;  // List<FuncStmt*>
 } ImplStmt;
 

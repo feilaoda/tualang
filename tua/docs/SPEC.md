@@ -358,11 +358,19 @@
 
 #### 7.3 impl（Status: Implemented，Rust 风格）
 - 语法：
-  - `impl StructName { fn func(...) ... }`
+  - `impl Type { fn func(...) ... }`
+    - `Type` 可以是用户 `struct`，也可以是内建类型：`bytes`/`map`/`ptr`、标量（`int/long/string/bool/...`）、以及数组别名 `array<T>`（等价于 `T[]`）
+  - 泛型 impl（Partial）：
+    - `impl<T> Option<T> { ... }` / `impl<T> Slice<T> { ... }` / `impl<T> array<T> { ... }`
 - 语义：
-  - `impl StructName` 中的 `fn` 会作为 `StructName` 的实例方法（与 `struct StructName { fn ... }` 等价）
-  - 这些方法内允许使用 `this`（类型恒为 `Ref<StructName>`；过渡期 `&StructName`）
+  - `impl TypeName` 中的 `fn` 会作为 `TypeName` 的实例方法（与 `struct TypeName { fn ... }` 等价，若该类型可声明）
+  - 这些方法内允许使用 `this`：
+    - 对 `struct`：`this` 的类型恒为 `Ref<StructName>`（过渡期 `&StructName`）
+    - 对内建 handle 类型（例如 `bytes`/`map`）：`this` 的类型为 `TypeName`（handle 本身即为引用语义）
   - 若同名方法重复定义（struct 内 vs impl 块，或多个 impl），视为编译错误（第一版）
+  - 与 intrinsic/builtin 的关系（Planned，逐步下放）：
+    - 方法调用解析优先级：trait 分发（泛型 bound 场景）> 固有方法（`struct/impl`）> 编译器 intrinsic（仅作为缺省/fallback）
+    - 目标：`std` 通过 `impl bytes/map/...` 提供大多数“自带方法”，编译器只保留少数必须内建的 intrinsic（例如 slice 构造/边界检查等）
 
 #### 7.4 object（Status: Implemented）
 - `object O { fn f(...) ... }`
@@ -539,6 +547,7 @@
 #### 9.2.1 数组：`T[]` / `T[N]`（Status: Implemented）
 - 类型：
   - `T[]`：动态数组
+  - `array<T>`：动态数组的具名别名（等价于 `T[]`，方便在泛型/impl 语法中使用）
   - `T[N]`：定长数组（`N` 为编译期常量整数）
   - 数组为“引用型容器”（运行时为句柄/指针）：`let b = a` 移动句柄（所有权转移），`a` 之后不可再用；`clone()` 会深拷贝
 - 字面量：

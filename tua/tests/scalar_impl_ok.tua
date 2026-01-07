@@ -1,0 +1,50 @@
+
+impl int {
+    fn abs2() int {
+        if this < 0 {
+            return -this
+        }
+        return this
+    }
+}
+
+impl long {
+    fn abs2() long {
+        if this < 0L {
+            return -this
+        }
+        return this
+    }
+}
+
+impl string {
+    fn isEmpty() bool {
+        return this == ""
+    }
+}
+
+impl bool {
+    fn not2() bool {
+        return !this
+    }
+}
+
+fn main() {
+    let x: int = -3
+    assert(x.abs2() == 3)
+    let x2: int = -4
+    assert(x2.abs2() == 4)
+
+    let y: long = -5L
+    assert(y.abs2() == 5L)
+    let y2: long = -6L
+    assert(y2.abs2() == 6L)
+
+    let s: string = ""
+    assert(s.isEmpty())
+    assert("".isEmpty())
+    assert(!"a".isEmpty())
+
+    assert(true.not2() == false)
+    assert(false.not2() == true)
+}

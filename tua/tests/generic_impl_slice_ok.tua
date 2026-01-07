@@ -1,0 +1,17 @@
+
+impl<T> Slice<T> {
+    fn len2() long {
+        return this.len()
+    }
+}
+
+fn main() {
+    let a: int[] = {1, 2, 3}
+    assert(a.slice(1L, 2L).len() == 2L)
+    assert(a.slice(1L, 2L).get(0L) == 2)
+    assert(a.slice(1L, 2L).len2() == 2L)
+
+    let s: Slice<int> = a.slice(1L, 2L)
+    assert(s.len2() == 2L)
+}
+

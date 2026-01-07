@@ -17,6 +17,9 @@ typedef struct VariableRef {
     int length;
     LLVMValueRef value;
     LLVMTypeRef type;
+    // Optional: original declared AST type (including generic args).
+    // Used for generic type-argument inference and method resolution.
+    Type* astType;
     // For pointer-like values (e.g. Ref<T>), track the pointee type explicitly.
     // Needed for LLVM opaque pointers where `LLVMGetElementType(ptr)` is unreliable.
     LLVMTypeRef pointeeType;

@@ -15,6 +15,7 @@
 #define compilerDebug(...) debug(__VA_ARGS__)
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);
+static int astTypeIsBuiltinNamed(const Token* name);
 static LLVMValueRef buildEntryAllocaForStmt(Compiler* compiler, LLVMTypeRef type, const char* name) {
     if (!compiler || !compiler->current || !compiler->current->func) return NULL;
     LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(compiler->current->func);
@@ -68,6 +69,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     // Exclude built-in named types that are pointer-like or special-cased.
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
+    if (t->name.length == 5 && memcmp(t->name.start, "Slice", 5) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
     if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
@@ -3037,30 +3039,88 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
     if (!compiler || !stmt) return;
     if (!stmt->methods) return;
 
-    StructInfo* info = compilerResolveStructByToken(compiler, &stmt->name);
-    if (!info) {
-        error("Unknown struct for impl: %.*s\n", stmt->name.length, stmt->name.start);
+    // Generic impl blocks are lowered to generic function templates during the module pre-pass
+    // (see `compileModuleIntoMain`), and instantiated from call sites. Do not compile methods here.
+    if (stmt->typeParams && stmt->typeParams->length > 0) {
         return;
     }
-    if (!info->methods) info->methods = listNew();
 
-    Token structTok = stmt->name;
-    structTok.start = info->name;
-    structTok.length = info->nameLength;
+    Type* targetType = stmt->targetType;
+    if (!targetType) {
+        error("Missing impl target type\n");
+        return;
+    }
+
+    // Only allow non-generic impl on arrays via the generic path (`impl<T> array<T> { ... }`).
+    if (targetType->kind == TYPE_ARRAY) {
+        error("Non-generic impl for arrays is not supported yet; use `impl<T> array<T> { ... }`\n");
+        return;
+    }
+
+    // Resolve `impl StructName { ... }` to the canonical struct token for mangling.
+    StructInfo* info = NULL;
+    Token baseTok = (Token){0};
+    if (targetType->kind == TYPE_NAMED) {
+        info = compilerResolveStructByToken(compiler, &targetType->name);
+        if (!info) {
+            // Allow builtin named types.
+            int isBuiltinNamed = astTypeIsBuiltinNamed(&targetType->name);
+            if (!isBuiltinNamed) {
+                error("Unknown impl target: %.*s\n", targetType->name.length, targetType->name.start);
+                return;
+            }
+            baseTok = targetType->name;
+        } else {
+            if (!info->methods) info->methods = listNew();
+            baseTok = targetType->name;
+            baseTok.start = info->name;
+            baseTok.length = info->nameLength;
+        }
+    } else {
+        // Builtin primitives / ptr.
+        const char* tn = NULL;
+        int tnLen = 0;
+        switch (targetType->kind) {
+            case TYPE_BOOL: tn = "bool"; tnLen = 4; break;
+            case TYPE_STRING: tn = "string"; tnLen = 6; break;
+            case TYPE_PTR: tn = "ptr"; tnLen = 3; break;
+            case TYPE_BYTE: tn = "byte"; tnLen = 4; break;
+            case TYPE_I8: tn = "i8"; tnLen = 2; break;
+            case TYPE_I16: tn = "i16"; tnLen = 3; break;
+            case TYPE_INT: tn = "int"; tnLen = 3; break;
+            case TYPE_LONG: tn = "long"; tnLen = 4; break;
+            case TYPE_ISIZE: tn = "isize"; tnLen = 5; break;
+            case TYPE_U8: tn = "u8"; tnLen = 2; break;
+            case TYPE_U16: tn = "u16"; tnLen = 3; break;
+            case TYPE_U32: tn = "u32"; tnLen = 3; break;
+            case TYPE_U64: tn = "u64"; tnLen = 3; break;
+            case TYPE_USIZE: tn = "usize"; tnLen = 5; break;
+            case TYPE_F8: tn = "fp8"; tnLen = 3; break;
+            case TYPE_BF8: tn = "bfp8"; tnLen = 4; break;
+            case TYPE_F16: tn = "half"; tnLen = 4; break;
+            case TYPE_BF16: tn = "bfloat"; tnLen = 6; break;
+            case TYPE_FLOAT: tn = "float"; tnLen = 5; break;
+            case TYPE_DOUBLE: tn = "double"; tnLen = 6; break;
+            default:
+                error("Unknown impl target type kind: %d\n", (int)targetType->kind);
+                return;
+        }
+        baseTok = (Token){TOKEN_IDENTIFIER, tn, tnLen, stmt->name.line, stmt->name.col, 0};
+    }
 
     for (ListNode* node = stmt->methods->head; node != NULL; node = node->next) {
         FuncStmt* method = (FuncStmt*)node->data;
         if (!method) continue;
-        if (info->methods) listAppend(info->methods, method);
+        if (info && info->methods) listAppend(info->methods, method);
 
         int mangledLen = 0;
-        char* mangled = mangleTwo(&structTok, &method->name, "__", &mangledLen);
+        char* mangled = mangleTwo(&baseTok, &method->name, "__", &mangledLen);
 
         // If a function with this mangled name already exists, treat as duplicate method definition.
         LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, mangled);
         if (existing) {
             error("Duplicate method definition: %.*s.%.*s\n",
-                  stmt->name.length, stmt->name.start,
+                  baseTok.length, baseTok.start,
                   method->name.length, method->name.start);
             free(mangled);
             continue;
@@ -3074,16 +3134,23 @@ void compileImplStmt(Compiler* compiler, ImplStmt* stmt) {
         List* params = listNew();
         Token thisNameTok = (Token){TOKEN_IDENTIFIER, "this", 4, method->name.line, method->name.col, 0};
 
-        Type* thisInner = (Type*)calloc(1, sizeof(Type));
-        thisInner->kind = TYPE_NAMED;
-        thisInner->name = structTok;
-        thisInner->arrayLen = -1;
+        Type* thisType = NULL;
+        if (info) {
+            // Struct methods: `this: Ref<StructName>`.
+            Type* thisInner = (Type*)calloc(1, sizeof(Type));
+            thisInner->kind = TYPE_NAMED;
+            thisInner->name = baseTok;
+            thisInner->arrayLen = -1;
 
-        Type* thisType = (Type*)calloc(1, sizeof(Type));
-        thisType->kind = TYPE_REF;
-        thisType->name = (Token){0};
-        thisType->inner = thisInner;
-        thisType->arrayLen = -1;
+            thisType = (Type*)calloc(1, sizeof(Type));
+            thisType->kind = TYPE_REF;
+            thisType->name = (Token){0};
+            thisType->inner = thisInner;
+            thisType->arrayLen = -1;
+        } else {
+            // Builtin named types and primitive scalars: pass `this` by value.
+            thisType = targetType;
+        }
 
         Parameter* thisParam = malloc(sizeof(Parameter));
         thisParam->name = thisNameTok;
@@ -4271,6 +4338,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->length = p->name.length;
         variable->value = slot;
         variable->type = valueType;
+        variable->astType = pType ? pType : (p ? p->type : NULL);
         variable->pointeeType = (pType && pType->kind == TYPE_REF)
                                     ? (pType->inner ? typeToLLVMType(compiler, pType->inner, false)
                                                     : LLVMInt32TypeInContext(compiler->context))

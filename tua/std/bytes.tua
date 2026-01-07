@@ -9,6 +9,43 @@ extern fn tua_bytes_get_u8(b: bytes, idx: long, out: &int) int
 extern fn tua_bytes_set_u8(b: bytes, idx: long, v: int) int
 extern fn tua_bytes_copy(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int
 extern fn tua_bytes_is_readonly(b: bytes) int
+extern fn tua_panic(msg: string)
+
+impl bytes {
+    fn len() long {
+        return tua_bytes_len(this)
+    }
+
+    fn isReadonly() int {
+        return tua_bytes_is_readonly(this)
+    }
+
+    fn getU8(idx: long) -> byte {
+        let out: int = 0
+        let err = tua_bytes_get_u8(this, idx, &out)
+        if err != 0 {
+            tua_panic("bytes.get out of bounds or null")
+            return (byte)0
+        }
+        return (byte)out
+    }
+
+    fn get(idx: long) -> byte {
+        return this.getU8(idx)
+    }
+
+    fn setU8(idx: long, v: int) int {
+        return tua_bytes_set_u8(this, idx, v)
+    }
+
+    fn set(idx: long, v: int) int {
+        return this.setU8(idx, v)
+    }
+
+    fn copy(dstOff: long, src: bytes, srcOff: long, n: long) int {
+        return tua_bytes_copy(this, dstOff, src, srcOff, n)
+    }
+}
 
 object Bytes {
     fn new(len: int) -> bytes {

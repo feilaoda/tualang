@@ -1,0 +1,15 @@
+
+impl<T> array<T> {
+    fn len2() int {
+        return this.len()
+    }
+}
+
+fn main() {
+    let a: array<int> = {1, 2, 3}
+    assert(a.len2() == 3)
+
+    let b: int[] = {4, 5}
+    assert(b.len2() == 2)
+}
+

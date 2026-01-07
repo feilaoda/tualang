@@ -454,6 +454,7 @@ static int astTypeIsNamedStructValue(Compiler* compiler, Type* t) {
     if (t->name.length == 3 && memcmp(t->name.start, "any", 3) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
     if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
+    if (t->name.length == 5 && memcmp(t->name.start, "Slice", 5) == 0) return 0;
     if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) return 0;
     if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 0;
     if (compilerResolveTraitByToken(compiler, &t->name)) return 0;
@@ -4734,6 +4735,9 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
                 variable->typeName = p->type->inner->name.start;
                 variable->typeNameLength = p->type->inner->name.length;
             }
+        } else if (p->type && p->type->kind == TYPE_PTR) {
+            variable->typeName = "ptr";
+            variable->typeNameLength = 3;
         } else {
             variable->typeName = NULL;
             variable->typeNameLength = 0;

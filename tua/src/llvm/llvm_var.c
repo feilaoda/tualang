@@ -1776,6 +1776,7 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
     variable->length = stmt->name.length;
     variable->value = slot;
     variable->type = valueType;
+    variable->astType = stmt->type;
     variable->pointeeType = NULL;
     variable->typeKind = stmt->type ? stmt->type->kind : (stmt->initializer ? stmt->initializer->inferredType : TYPE_ANY);
     if (stmt->type && stmt->type->kind == TYPE_NAMED) {
@@ -1796,6 +1797,10 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             variable->typeName = stmt->type->inner->name.start;
             variable->typeNameLength = stmt->type->inner->name.length;
         }
+    } else if (stmt->type && stmt->type->kind == TYPE_PTR) {
+        // Allow `ptr` to participate in instance method resolution (`impl ptr { ... }`).
+        variable->typeName = "ptr";
+        variable->typeNameLength = 3;
     } else if (stmt->initializer && (stmt->initializer->type == EXPR_CALL || stmt->initializer->type == EXPR_STRUCT_INIT)) {
         Expr* ctor = stmt->initializer;
         Expr* ctorCallee = NULL;

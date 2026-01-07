@@ -1511,12 +1511,32 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             return atNew(AT_ANY);
         }
         if (atIsOption(recvTy)) {
-            if (tokenTextEquals(&get->name, "isSome")) return atNew(AT_BOOL);
-            if (tokenTextEquals(&get->name, "isNone")) return atNew(AT_BOOL);
-            if (tokenTextEquals(&get->name, "unwrap")) return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+            unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+            if (tokenTextEquals(&get->name, "isSome")) {
+                if (got != 0) analyzeErrorAt(compiler, modulePath, get->name.line, "Option.isSome expects 0 arguments");
+                return atNew(AT_BOOL);
+            }
+            if (tokenTextEquals(&get->name, "isNone")) {
+                if (got != 0) analyzeErrorAt(compiler, modulePath, get->name.line, "Option.isNone expects 0 arguments");
+                return atNew(AT_BOOL);
+            }
+            if (tokenTextEquals(&get->name, "unwrap")) {
+                if (got != 0) analyzeErrorAt(compiler, modulePath, get->name.line, "Option.unwrap expects 0 arguments");
+                return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+            }
             if (tokenTextEquals(&get->name, "unwrapOr")) {
-                Expr* arg0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
-                inferExpr(compiler, scope, arg0, modulePath);
+                if (got != 1) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "Option.unwrapOr expects 1 argument");
+                    for (ListNode* n = call->arguments ? call->arguments->head : NULL; n != NULL; n = n->next) {
+                        inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+                    }
+                    return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
+                }
+                Expr* arg0 = (Expr*)call->arguments->head->data;
+                AType* argTy = inferExpr(compiler, scope, arg0, modulePath);
+                if (recvTy->inner && !atIsAny(recvTy->inner) && argTy && !atIsAny(argTy) && !atAssignable(compiler, recvTy->inner, argTy)) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "Option.unwrapOr default value type mismatch");
+                }
                 return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
             }
         }
@@ -1625,8 +1645,16 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             if (tokenTextEquals(&get->name, "slice")) return atSlice(atNew(AT_BYTE));
         }
         if (atIsSlice(recvTy)) {
-            if (tokenTextEquals(&get->name, "len")) return atNew(AT_LONG);
+            unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+            if (tokenTextEquals(&get->name, "len")) {
+                if (got != 0) analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.len expects 0 arguments");
+                return atNew(AT_LONG);
+            }
             if (tokenTextEquals(&get->name, "get")) {
+                if (got != 1) analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.get expects 1 argument");
+                if (got >= 1 && call->arguments && call->arguments->head) {
+                    inferExpr(compiler, scope, (Expr*)call->arguments->head->data, modulePath);
+                }
                 if (recvTy->inner && !atIsAny(recvTy->inner)) {
                     if (!(atIsNumeric(recvTy->inner) || recvTy->inner->kind == AT_BOOL || recvTy->inner->kind == AT_STRING || recvTy->inner->kind == AT_BYTE)) {
                         analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.get is only supported for scalar element types in v1");
@@ -1635,6 +1663,17 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                 return recvTy->inner ? recvTy->inner : atNew(AT_ANY);
             }
             if (tokenTextEquals(&get->name, "set")) {
+                if (got != 2) analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.set expects 2 arguments");
+                if (got >= 1 && call->arguments && call->arguments->head) {
+                    inferExpr(compiler, scope, (Expr*)call->arguments->head->data, modulePath);
+                }
+                if (got >= 2 && call->arguments && call->arguments->head && call->arguments->head->next) {
+                    Expr* vexpr = (Expr*)call->arguments->head->next->data;
+                    AType* vty = inferExpr(compiler, scope, vexpr, modulePath);
+                    if (recvTy->inner && !atIsAny(recvTy->inner) && vty && !atIsAny(vty) && !atAssignable(compiler, recvTy->inner, vty)) {
+                        analyzeErrorAt(compiler, modulePath, get->name.line, "Slice.set value type mismatch");
+                    }
+                }
                 if (get->object && get->object->type == EXPR_VARIABLE) {
                     VariableExpr* recv = (VariableExpr*)get->object;
                     VarInfo* vi = scopeFind(scope, &recv->name);
@@ -1774,7 +1813,10 @@ static AType* inferBinary(Compiler* compiler, Scope* scope, BinaryExpr* b, const
                        b->operator.type == TOKEN_BXOR);
 
     if (b->operator.type == TOKEN_EQ || b->operator.type == TOKEN_NEQ) {
-        if (atIsOption(l) != atIsOption(r)) {
+        // Keep permissive when either operand type is unknown. This avoids false positives for
+        // user-defined / imported functions (including generic impl methods) that return Option<T>
+        // but aren't modeled by the analyzer yet.
+        if (!atIsAny(l) && !atIsAny(r) && atIsOption(l) != atIsOption(r)) {
             analyzeErrorAt(
                 compiler,
                 modulePath,

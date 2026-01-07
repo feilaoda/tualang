@@ -1,0 +1,31 @@
+// Small convenience methods for primitive scalars.
+
+impl int {
+    fn abs() int {
+        if this < 0 {
+            return -this
+        }
+        return this
+    }
+}
+
+impl long {
+    fn abs() long {
+        if this < 0L {
+            return -this
+        }
+        return this
+    }
+}
+
+impl string {
+    fn isEmpty() bool {
+        return this == ""
+    }
+}
+
+impl bool {
+    fn not2() bool {
+        return !this
+    }
+}

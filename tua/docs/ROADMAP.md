@@ -41,6 +41,9 @@
 
 ### 7. TODO List（下一阶段，按执行顺序）
 - [x] 冻结核心语义/spec：`struct` 值/引用语义、`enum` tag/raw 语义、`null/nil`、字段/构造参数初始化优先级、`this` 规则（见 `docs/SPEC.md`）
+- [ ] 内建容器方法下放到 `std`（长期方案，最像 Rust/C++）
+  - 目标：允许 `std` 写 `impl bytes/map/... { ... }` 来提供大多数 `b.len()` 这类“自带方法”，编译器只保留少数 intrinsic（边界检查、slice 构造、少量必须内建的低层原语）
+  - 过渡策略：先把编译器内置方法收敛成 registry/表驱动；再逐步把方法实现迁移到 `std`（存在即优先，不存在走 intrinsic fallback）
 - [x] 位运算/移位（高优先级）：`~ & | ^ << >>`（含优先级/结合性、与无符号语义的交互、测试用例）
 - [ ] 泛型 + 单态化（高优先级）：通用类型参数（函数/struct/trait）+ 编译期实例化（monomorphization）（当前：函数泛型已完成；`struct/trait` 泛型待做）
   - [x] v0 语法与 AST：`fn f<T>(...)` + 调用处显式 `f<int>(1)`（先不做推断）

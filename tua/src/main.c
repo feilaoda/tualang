@@ -1853,6 +1853,104 @@ static void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
         if (compiler->hadError) return;
     }
 
+    // Pre-pass: register generic method templates declared inside `impl` blocks.
+    // This enables `impl<T> Option<T> { ... }` / `impl<T> Slice<T> { ... }` methods to be instantiated
+    // from call sites (including before their declaration in source order).
+    for (ListNode* node = module->statements ? module->statements->head : NULL; node != NULL; node = node->next) {
+        Stmt* stmt = (Stmt*)node->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type != STMT_IMPL) continue;
+        ImplStmt* im = (ImplStmt*)stmt;
+        if (!im->methods || im->methods->length <= 0) continue;
+        if (!im->typeParams || im->typeParams->length <= 0) continue;
+        if (!im->targetType) continue;
+
+        // v1: only support generic impl templates for builtin generic types.
+        const char* typeName = NULL;
+        int typeNameLen = 0;
+        Token tn = im->name;
+        if (im->targetType->kind == TYPE_NAMED) {
+            tn = im->targetType->name;
+            typeName = tn.start;
+            typeNameLen = tn.length;
+        } else if (im->targetType->kind == TYPE_ARRAY) {
+            typeName = "array";
+            typeNameLen = 5;
+        } else {
+            continue;
+        }
+
+        int isBuiltinGeneric =
+            (typeNameLen == 6 && memcmp(typeName, "Option", 6) == 0) ||
+            (typeNameLen == 5 && memcmp(typeName, "Slice", 5) == 0) ||
+            (typeNameLen == 5 && memcmp(typeName, "array", 5) == 0);
+        if (!isBuiltinGeneric) {
+            compilerErrorAtToken(compiler, &tn, "generic impl is only supported for Option<T>, Slice<T>, and array<T> for now");
+            if (compiler->hadError) return;
+            continue;
+        }
+
+        // Require the target to reference type parameters (e.g. `impl<T> Option<T>`).
+        int targArgs = 0;
+        if (im->targetType->kind == TYPE_NAMED) {
+            targArgs = im->targetType->typeArgs ? im->targetType->typeArgs->length : 0;
+        } else if (im->targetType->kind == TYPE_ARRAY) {
+            targArgs = im->targetType->inner ? 1 : 0;
+        }
+        if (targArgs <= 0) {
+            compilerErrorAtToken(compiler, &tn, "generic impl target must specify type arguments (e.g. impl<T> %.*s<T> { ... })", typeNameLen, typeName);
+            if (compiler->hadError) return;
+            continue;
+        }
+
+        for (int mi = 0; mi < im->methods->length; mi++) {
+            FuncStmt* m = (FuncStmt*)listGet(im->methods, mi);
+            if (!m) continue;
+
+            if (m->typeParams && m->typeParams->length > 0) {
+                compilerErrorAtToken(compiler, &m->name, "generic method type parameters inside `impl<T> ...` are not supported yet");
+                if (compiler->hadError) return;
+                continue;
+            }
+
+            // Build a synthetic generic function template:
+            //   <TypeName>__<method>(this: <TypeName><...>, ...).
+            int baseLen = typeNameLen + 2 + m->name.length;
+            char* baseName = (char*)malloc((size_t)baseLen + 1);
+            memcpy(baseName, typeName, (size_t)typeNameLen);
+            memcpy(baseName + typeNameLen, "__", 2);
+            memcpy(baseName + typeNameLen + 2, m->name.start, (size_t)m->name.length);
+            baseName[baseLen] = '\0';
+
+            FuncStmt* g = (FuncStmt*)malloc(sizeof(FuncStmt));
+            *g = *m;
+            g->name = (Token){TOKEN_IDENTIFIER, baseName, baseLen, m->name.line, m->name.col, 0};
+
+            // this + original params
+            List* params = listNew();
+            Parameter* thisParam = (Parameter*)malloc(sizeof(Parameter));
+            thisParam->name = (Token){TOKEN_IDENTIFIER, "this", 4, m->name.line, m->name.col, 0};
+            thisParam->type = im->targetType;
+            thisParam->mode = PARAM_CONST;
+            listAppend(params, thisParam);
+            if (m->params) {
+                for (ListNode* pn = m->params->head; pn != NULL; pn = pn->next) {
+                    listAppend(params, pn->data);
+                }
+            }
+            g->params = params;
+            g->typeParams = im->typeParams;
+
+            compilerRegisterGenericFuncTemplate(compiler, g, baseName, baseLen, module->path, module->prefix, module->prefixLen, module->aliases);
+            if (compiler->hadError) return;
+        }
+    }
+
     // Pre-pass: record `impl Trait for Struct` pairs so generic bounds checks can work even when the
     // impl statement appears after a generic call in source order. This is a declaration-only pass;
     // validation is still performed when compiling the trait impl statement.
