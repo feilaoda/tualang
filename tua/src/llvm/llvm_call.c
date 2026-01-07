@@ -6008,7 +6008,24 @@ LLVMValueRef emitGuardExpr(Compiler* compiler, GuardExpr* expr) {
         LLVMBuildUnreachable(builder);
     }
 
-    // Success path: yield the first return value.
+    // Success path: drop trailing `err` and yield remaining return values.
     LLVMPositionBuilderAtEnd(builder, okBB);
-    return LLVMBuildExtractValue(builder, callValue, 0, "guard.ok");
+    unsigned okCount = errIndex; // n-1
+    if (!compiler->wantMultiValue || okCount <= 1) {
+        return LLVMBuildExtractValue(builder, callValue, 0, "guard.ok");
+    }
+
+    LLVMTypeRef* elemTys = (LLVMTypeRef*)malloc(sizeof(LLVMTypeRef) * (size_t)okCount);
+    for (unsigned i = 0; i < okCount; i++) {
+        elemTys[i] = LLVMStructGetTypeAtIndex(retTy, i);
+    }
+    LLVMTypeRef outTy = LLVMStructTypeInContext(compiler->context, elemTys, okCount, 0);
+    free(elemTys);
+
+    LLVMValueRef out = LLVMGetUndef(outTy);
+    for (unsigned i = 0; i < okCount; i++) {
+        LLVMValueRef v = LLVMBuildExtractValue(builder, callValue, i, "guard.mv");
+        out = LLVMBuildInsertValue(builder, out, v, i, "guard.mvo");
+    }
+    return out;
 }

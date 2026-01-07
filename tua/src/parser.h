@@ -29,7 +29,7 @@ typedef enum {
     // Postfix guard block: `callExpr ? { ... }`
     // Semantics (v1): call must return >=2 values and the last one must be `int` (error code).
     // If err != 0, the guard block runs and must interrupt control flow (return/break/continue).
-    // Otherwise the expression yields the first return value.
+    // Otherwise the expression yields all return values except the trailing `err` (expression context keeps the default "first value" rule).
     EXPR_GUARD,
     EXPR_CAST,
     EXPR_POSTFIX,

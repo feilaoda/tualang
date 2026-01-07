@@ -4,6 +4,13 @@ import "std/utf8" as utf8
 
 extern fn strlen(s: string) long
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
+extern fn tua_str_ptr(s: string) -> ptr
+
+extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
+extern fn memcmp(a: ptr, b: ptr, n: long) int
+
+extern fn tua_llm_bpe_merge_ids(ids: long[], pairRank: map<long, long>, pairMergeId: map<long, long>, outErr: &int) -> long[]
+extern fn tua_llm_bpe_bytes_to_ids(b: bytes, off: long, len: long, byteToId: long[], outErr: &int) -> long[]
 
 extern fn tua_json_parse_key_path_bpe_merges_pair_maps(b: bytes, path: string, vocab: map, outRank: &map, outMergeId: &map, outCount: &long) int
 
@@ -14,6 +21,7 @@ struct TokenizerBpe {
     vocab: map<string, long>
     idToToken: map<long, string>           // vocab + added
     added: map<string, long>
+    addedList: string[]                   // added token contents (desc by strlen)
     pairRank: map<long, long>
     pairMergeId: map<long, long>
     byteToId: long[]                       // 256 entries, -1 if unknown
@@ -48,14 +56,80 @@ private fn _isAsciiLetter(cp: int) -> bool {
 
 private fn _isAsciiDigit(cp: int) -> bool { return cp >= 48 && cp <= 57 }
 
+private fn _isCrLf(cp: int) -> bool { return cp == 10 || cp == 13 }
+
 private fn _isWs(cp: int) -> bool {
-    return cp == 32 || cp == 9 || cp == 10 || cp == 13 || cp == 11 || cp == 12
+    // Best-effort Unicode whitespace set for tokenizer regex \s.
+    if cp == 32 || cp == 9 || cp == 10 || cp == 13 || cp == 11 || cp == 12 { return true }
+    if cp == 160 { return true } // NBSP
+    if cp == 5760 { return true } // OGHAM SPACE MARK
+    if cp >= 8192 && cp <= 8202 { return true } // EN QUAD..HAIR SPACE
+    if cp == 8232 || cp == 8233 { return true } // LINE/PARAGRAPH SEPARATOR
+    if cp == 8239 { return true } // NARROW NBSP
+    if cp == 8287 { return true } // MEDIUM MATHEMATICAL SPACE
+    if cp == 12288 { return true } // IDEOGRAPHIC SPACE
+    return false
 }
 
 private fn _isLetter(cp: int) -> bool {
     if _isAsciiLetter(cp) { return true }
-    if cp >= 128 && !_isWs(cp) { return true }
+    // Fullwidth Latin.
+    if cp >= 65313 && cp <= 65338 { return true } // Ａ..Ｚ
+    if cp >= 65345 && cp <= 65370 { return true } // ａ..ｚ
+    // Latin-1 supplement + Latin extended + IPA.
+    if cp >= 192 && cp <= 214 { return true }
+    if cp >= 216 && cp <= 246 { return true }
+    if cp >= 248 && cp <= 687 { return true }
+    // Greek, Cyrillic, Armenian (rough blocks).
+    if cp >= 880 && cp <= 1327 { return true }
+    // Hebrew + Arabic + Indic (rough; better than treating all non-ASCII as letters).
+    if cp >= 1424 && cp <= 1791 { return true }
+    if cp >= 1536 && cp <= 1791 { return true }
+    if cp >= 2304 && cp <= 2431 { return true } // Devanagari
+    // Hiragana / Katakana / Hangul / Bopomofo.
+    if cp >= 12352 && cp <= 12543 { return true }
+    if cp >= 12544 && cp <= 12783 { return true }
+    if cp >= 13312 && cp <= 40959 { return true } // CJK Ext A + Unified
+    if cp >= 44032 && cp <= 55215 { return true } // Hangul syllables
+    if cp >= 63744 && cp <= 64255 { return true } // CJK compatibility ideographs
     return false
+}
+
+private fn _isNumber(cp: int) -> bool {
+    if _isAsciiDigit(cp) { return true }
+    if cp >= 65296 && cp <= 65305 { return true } // fullwidth digits
+    if cp >= 1632 && cp <= 1641 { return true } // Arabic-Indic digits
+    if cp >= 1776 && cp <= 1785 { return true } // Extended Arabic-Indic digits
+    return false
+}
+
+private fn _isPunctLike(cp: int) -> bool {
+    // For `[^\s\p{L}\p{N}]`
+    if _isWs(cp) { return false }
+    if _isLetter(cp) { return false }
+    if _isNumber(cp) { return false }
+    return true
+}
+
+private fn _matchContractionAscii(b: bytes, off: long, end: long) -> long {
+    // ASCII-only: "'s|'t|'re|'ve|'m|'ll|'d" (case-insensitive)
+    if off + 1L >= end { return 0L }
+    let e0, b0 = bstd.Bytes.getU8(b, off)
+    if e0 != 0 || b0 != 39 { return 0L } // '\''
+    let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+    if e1 != 0 { return 0L }
+    let c1 = b1
+    if c1 >= 65 && c1 <= 90 { c1 = c1 + 32 }
+    if c1 == 115 || c1 == 116 || c1 == 109 || c1 == 100 { return 2L } // s t m d
+    if off + 2L >= end { return 0L }
+    let e2, b2 = bstd.Bytes.getU8(b, off + 2L)
+    if e2 != 0 { return 0L }
+    let c2 = b2
+    if c2 >= 65 && c2 <= 90 { c2 = c2 + 32 }
+    if c1 == 114 && c2 == 101 { return 3L } // re
+    if c1 == 118 && c2 == 101 { return 3L } // ve
+    if c1 == 108 && c2 == 108 { return 3L } // ll
+    return 0L
 }
 
 private fn _matchContraction(b: bytes, off: long) -> long {
@@ -102,119 +176,174 @@ private fn _matchContraction(b: bytes, off: long) -> long {
     return 0L
 }
 
-private fn _splitGpt2Approx(s: string) -> int, string[] {
-    if s == null { return 1, null }
-    let b = bstd.Bytes.fromString(s)
+private fn _splitGpt2RegexSpans(b: bytes, off: long, len: long) -> int, long[] {
+    if b == null { return 1, null }
+    if off < 0L || len < 0L { return 1, null }
     let n = bstd.Bytes.len(b)
-    let out: string[] = {}
+    if off > n { return 1, null }
+    let end = off + len
+    if end > n { return 1, null }
 
-    let i: long = 0L
-    while i < n {
-        let e0, cp, sz = utf8.Utf8.decode1(b, i)
-        if e0 != 0 { return 1, null }
-
-        // Contractions.
-        let clen = _matchContraction(b, i)
+    let spans: long[] = {}
+    let i: long = off
+    while i < end {
+        // 1) Contractions.
+        let clen = _matchContractionAscii(b, i, end)
         if clen > 0L {
-            let piece = tua_str_from_bytes_copy(b, i, clen)
-            out.push(piece)
+            spans.push(i); spans.push(clen)
             i = i + clen
             continue
         }
 
-        // Optional leading space.
-        if cp == 32 && i + 1L < n {
-            let e1, cp1, _ = utf8.Utf8.decode1(b, i + 1L)
-            if e1 == 0 && !_isWs(cp1) {
-                let start = i
-                i = i + 1L
-                let e2, cp2, sz2 = utf8.Utf8.decode1(b, i)
-                if e2 != 0 { return 1, null }
+        let e0, cp, sz = utf8.Utf8.decode1(b, i)
+        if e0 != 0 { return 1, null }
 
-                if _isLetter(cp2) {
-                    while i < n {
-                        let e3, c3, s3 = utf8.Utf8.decode1(b, i)
-                        if e3 != 0 { return 1, null }
-                        if _matchContraction(b, i) > 0L { break }
-                        if !_isLetter(c3) { break }
-                        i = i + s3
+        // 2) `[^\r\n\p{L}\p{N}]?\p{L}+`
+        if _isLetter(cp) {
+            let j: long = i + sz
+            while j < end {
+                let e1, c1, s1 = utf8.Utf8.decode1(b, j)
+                if e1 != 0 { return 1, null }
+                if !_isLetter(c1) { break }
+                j = j + s1
+            }
+            spans.push(i); spans.push(j - i)
+            i = j
+            continue
+        }
+        if !_isCrLf(cp) && !_isLetter(cp) && !_isNumber(cp) {
+            let j0: long = i + sz
+            if j0 < end {
+                let e1, c1, s1 = utf8.Utf8.decode1(b, j0)
+                if e1 != 0 { return 1, null }
+                if _isLetter(c1) {
+                    let j: long = j0 + s1
+                    while j < end {
+                        let e2, c2, s2 = utf8.Utf8.decode1(b, j)
+                        if e2 != 0 { return 1, null }
+                        if !_isLetter(c2) { break }
+                        j = j + s2
                     }
-                } else if _isAsciiDigit(cp2) {
-                    while i < n {
-                        let e3, c3, s3 = utf8.Utf8.decode1(b, i)
-                        if e3 != 0 { return 1, null }
-                        if !_isAsciiDigit(c3) { break }
-                        i = i + s3
-                    }
-                } else {
-                    while i < n {
-                        let e3, c3, s3 = utf8.Utf8.decode1(b, i)
-                        if e3 != 0 { return 1, null }
-                        if _isWs(c3) || _isLetter(c3) || _isAsciiDigit(c3) { break }
-                        if _matchContraction(b, i) > 0L { break }
-                        i = i + s3
-                    }
+                    spans.push(i); spans.push(j - i)
+                    i = j
+                    continue
                 }
-                let piece = tua_str_from_bytes_copy(b, start, i - start)
-                out.push(piece)
+            }
+        }
+
+        // 3) `\p{N}`
+        if _isNumber(cp) {
+            spans.push(i); spans.push(sz)
+            i = i + sz
+            continue
+        }
+
+        // 4) ` ?[^\s\p{L}\p{N}]+[\r\n]*`
+        let hasLeadSpace: int = 0
+        let j: long = i
+        let punctStart: long = i
+        let punctCp: int = cp
+        let punctSz: long = sz
+        if cp == 32 {
+            let nextOff = i + sz
+            if nextOff < end {
+                let e1, c1, s1 = utf8.Utf8.decode1(b, nextOff)
+                if e1 != 0 { return 1, null }
+                if _isPunctLike(c1) {
+                    hasLeadSpace = 1
+                    punctStart = nextOff
+                    punctCp = c1
+                    punctSz = s1
+                }
+            }
+        }
+        if hasLeadSpace == 1 || _isPunctLike(cp) {
+            if hasLeadSpace == 1 {
+                j = punctStart + punctSz
+            } else {
+                j = i + sz
+            }
+            while j < end {
+                let e2, c2, s2 = utf8.Utf8.decode1(b, j)
+                if e2 != 0 { return 1, null }
+                if !_isPunctLike(c2) { break }
+                j = j + s2
+            }
+            // trailing [\r\n]*
+            while j < end {
+                let e3, c3, s3 = utf8.Utf8.decode1(b, j)
+                if e3 != 0 { return 1, null }
+                if !_isCrLf(c3) { break }
+                j = j + s3
+            }
+            spans.push(i); spans.push(j - i)
+            i = j
+            continue
+        }
+
+        // 5) `\s*[\r\n]+` (spaces before newline stick with newline)
+        if _isWs(cp) {
+            let j2: long = i
+            while j2 < end {
+                let e4, c4, s4 = utf8.Utf8.decode1(b, j2)
+                if e4 != 0 { return 1, null }
+                if !_isWs(c4) { break }
+                if _isCrLf(c4) { break }
+                j2 = j2 + s4
+            }
+            if j2 < end {
+                let e5, c5, s5 = utf8.Utf8.decode1(b, j2)
+                if e5 != 0 { return 1, null }
+                if _isCrLf(c5) {
+                    let j3: long = j2 + s5
+                    while j3 < end {
+                        let e6, c6, s6 = utf8.Utf8.decode1(b, j3)
+                        if e6 != 0 { return 1, null }
+                        if !_isCrLf(c6) { break }
+                        j3 = j3 + s6
+                    }
+                    spans.push(i); spans.push(j3 - i)
+                    i = j3
+                    continue
+                }
+            }
+        }
+
+        // 6) `\s+(?!\S)` => whitespace at end.
+        if _isWs(cp) {
+            let j4: long = i + sz
+            while j4 < end {
+                let e7, c7, s7 = utf8.Utf8.decode1(b, j4)
+                if e7 != 0 { return 1, null }
+                if !_isWs(c7) { break }
+                j4 = j4 + s7
+            }
+            if j4 == end {
+                spans.push(i); spans.push(j4 - i)
+                i = j4
                 continue
             }
         }
 
+        // 7) `\s+`
         if _isWs(cp) {
-            let start = i
-            i = i + sz
-            while i < n {
-                let e1, c1, s1 = utf8.Utf8.decode1(b, i)
-                if e1 != 0 { return 1, null }
-                if !_isWs(c1) { break }
-                i = i + s1
+            let j5: long = i + sz
+            while j5 < end {
+                let e8, c8, s8 = utf8.Utf8.decode1(b, j5)
+                if e8 != 0 { return 1, null }
+                if !_isWs(c8) { break }
+                j5 = j5 + s8
             }
-            out.push(tua_str_from_bytes_copy(b, start, i - start))
+            spans.push(i); spans.push(j5 - i)
+            i = j5
             continue
         }
 
-        if _isLetter(cp) {
-            let start = i
-            i = i + sz
-            while i < n {
-                if _matchContraction(b, i) > 0L { break }
-                let e1, c1, s1 = utf8.Utf8.decode1(b, i)
-                if e1 != 0 { return 1, null }
-                if !_isLetter(c1) { break }
-                i = i + s1
-            }
-            out.push(tua_str_from_bytes_copy(b, start, i - start))
-            continue
-        }
-
-        if _isAsciiDigit(cp) {
-            let start = i
-            i = i + sz
-            while i < n {
-                let e1, c1, s1 = utf8.Utf8.decode1(b, i)
-                if e1 != 0 { return 1, null }
-                if !_isAsciiDigit(c1) { break }
-                i = i + s1
-            }
-            out.push(tua_str_from_bytes_copy(b, start, i - start))
-            continue
-        }
-
-        // Other.
-        let start = i
+        // Fallback: 1 codepoint.
+        spans.push(i); spans.push(sz)
         i = i + sz
-        while i < n {
-            if _matchContraction(b, i) > 0L { break }
-            let e1, c1, s1 = utf8.Utf8.decode1(b, i)
-            if e1 != 0 { return 1, null }
-            if _isWs(c1) || _isLetter(c1) || _isAsciiDigit(c1) { break }
-            i = i + s1
-        }
-        out.push(tua_str_from_bytes_copy(b, start, i - start))
     }
-
-    return 0, out
+    return 0, spans
 }
 
 private fn _pairKey(a: long, b: long) -> long {
@@ -223,20 +352,54 @@ private fn _pairKey(a: long, b: long) -> long {
     return hi | lo
 }
 
+private fn _encodeSegmentBytes(t: TokenizerBpe, b: bytes, off: long, len: long) -> long[], int {
+    if len <= 0L {
+        let z: long[] = {}
+        return z, 0
+    }
+    let se, spans0 = _splitGpt2RegexSpans(b, off, len)
+    if se != 0 || spans0 == null { return null, 1 }
+    let spans: long[] = spans0
+
+    let out: long[] = {}
+    let si: int = 0
+    while si + 1 < spans.len() {
+        let poff: long = spans[si]
+        let plen: long = spans[si + 1]
+        si = si + 2
+        if plen <= 0L { continue }
+
+        // Byte-level ids (C runtime fast path).
+        let be: int = 0
+        let ids: long[] = tua_llm_bpe_bytes_to_ids(b, poff, plen, t.byteToId, &be)
+        if be != 0 || ids == null { return null, 1 }
+
+        // BPE merge on ids (C runtime).
+        let me: int = 0
+        let word: long[] = tua_llm_bpe_merge_ids(ids, t.pairRank, t.pairMergeId, &me)
+        if me != 0 || word == null { return null, 1 }
+
+        let mi: int = 0
+        while mi < word.len() { out.push(word[mi]); mi = mi + 1 }
+    }
+
+    return out, 0
+}
+
 object BpeTokenizer {
-    fn loadFromTokenizerJson(path: string) -> int, TokenizerBpe {
+    fn loadFromTokenizerJson(path: string) -> TokenizerBpe, int {
         let e0, raw = bstd.Bytes.mmapFile(path)
-        if e0 != 0 { return 1, TokenizerBpe{} }
+        if e0 != 0 { return TokenizerBpe{}, 1 }
 
         let ve, vocabAny = json.Json.parseKeyPathStringLongMap(raw, "model.vocab")
-        if ve != 0 || vocabAny == null { return 1, TokenizerBpe{} }
+        if ve != 0 || vocabAny == null { return TokenizerBpe{}, 1 }
         let vocab: map<string, long> = vocabAny
 
         let rankAny: map = null
         let mergeAny: map = null
         let mergeCount: long = 0L
         let me = tua_json_parse_key_path_bpe_merges_pair_maps(raw, "model.merges", vocab, &rankAny, &mergeAny, &mergeCount)
-        if me != 0 || rankAny == null || mergeAny == null { return 1, TokenizerBpe{} }
+        if me != 0 || rankAny == null || mergeAny == null { return TokenizerBpe{}, 1 }
         let pairRank: map<long, long> = rankAny
         let pairMergeId: map<long, long> = mergeAny
 
@@ -245,6 +408,27 @@ object BpeTokenizer {
         let added: map<string, long> = {}
         if ae == 0 && addedAny != null {
             added = addedAny
+        }
+        let addedList: string[] = {}
+        if added != null {
+            for content, _ in added {
+                addedList.push(content)
+            }
+        }
+        // Sort addedList by strlen desc (longest match wins).
+        let si: int = 1
+        while si < addedList.len() {
+            let key: string = addedList[si]
+            let keyLen: long = strlen(key)
+            let sj: int = si - 1
+            while sj >= 0 {
+                let cur: string = addedList[sj]
+                if strlen(cur) >= keyLen { break }
+                addedList[sj + 1] = cur
+                sj = sj - 1
+            }
+            addedList[sj + 1] = key
+            si = si + 1
         }
 
         // Build id->token map (vocab + added).
@@ -279,7 +463,7 @@ object BpeTokenizer {
 
             cpToByte[cp] = bval
             let ee, wrote = utf8.Utf8.encode1(cp, tmp, 0L)
-            if ee != 0 { return 1, TokenizerBpe{} }
+            if ee != 0 { return TokenizerBpe{}, 1 }
             let s = tua_str_from_bytes_copy(tmp, 0L, wrote)
             let o = vocab[s]
             if o.isSome() {
@@ -294,106 +478,113 @@ object BpeTokenizer {
             vocab: vocab,
             idToToken: idToToken,
             added: added,
+            addedList: addedList,
             pairRank: pairRank,
             pairMergeId: pairMergeId,
             byteToId: byteToId,
             cpToByte: cpToByte,
         }
         let _ = mergeCount
-        return 0, out
+        return out, 0
     }
 
-    fn addedId(t: TokenizerBpe, s: string) -> int, long {
+    fn addedId(t: TokenizerBpe, s: string) -> long, int {
         let o = _mapGetOptStringLong(t.added, s)
-        if o.isNone() { return 2, 0L }
+        if o.isNone() { return 0L, 2 }
         let id: long = o.unwrap()
-        return 0, id
+        return id, 0
     }
 
-    fn encode(t: TokenizerBpe, s: string) -> int, long[] {
-        if s == null { return 1, null }
-        let se, parts0 = _splitGpt2Approx(s)
-        if se != 0 { return 1, null }
-        let parts: string[] = parts0
+    fn encode(t: TokenizerBpe, s: string) -> long[], int {
+        if s == null { return null, 1 }
 
+        let sb = bstd.Bytes.fromString(s)
+        let n = bstd.Bytes.len(sb)
         let out: long[] = {}
-        let pidx: int = 0
-        while pidx < parts.len() {
-            let part = parts[pidx]
-            let pb = bstd.Bytes.fromString(part)
-            let pn = bstd.Bytes.len(pb)
-            let ids: long[] = {}
-            let i: long = 0L
-            while i < pn {
-                let eb, v = bstd.Bytes.getU8(pb, i)
-                if eb != 0 { return 1, null }
-                let id: long = _byteToIdAt(t.byteToId, v)
-                if id < 0L { return 1, null }
-                ids.push(id)
-                i = i + 1L
-            }
 
-            // BPE merge on ids (pairRank/pairMergeId are local vars to avoid tuac indexing limitations).
-            let word: long[] = {}
-            let wi: int = 0
-            while wi < ids.len() {
-                word.push(ids[wi])
-                wi = wi + 1
-            }
-            while word.len() >= 2 {
-                let bestRank: long = 9223372036854775807L
-                let bestA: long = 0L
-                let bestB: long = 0L
+        // Cache struct fields into locals (tuac has limitations around indexing/calls on non-variables).
+        let addedList: string[] = t.addedList
+        let added: map<string, long> = t.added
 
-                let pi: int = 0
-                while pi + 1 < word.len() {
-                    let a = word[pi]
-                    let b = word[pi + 1]
-                    let key = _pairKey(a, b)
-                    let o = _mapGetOptLongLong(t.pairRank, key)
+        // Fast path: no added tokens.
+        if addedList == null || addedList.len() == 0 {
+            let seg0, e = _encodeSegmentBytes(t, sb, 0L, n)
+            if e != 0 { return null, 1 }
+            let seg: long[] = seg0
+            let si: int = 0
+            while si < seg.len() { out.push(seg[si]); si = si + 1 }
+            return out, 0
+        }
+
+        // Added token longest-match scan at UTF-8 boundaries.
+        let segStart: long = 0L
+        let i: long = 0L
+        while i < n {
+            let e0, cp, sz = utf8.Utf8.decode1(sb, i)
+            if e0 != 0 { return null, 1 }
+
+            // Only attempt matching where it can possibly start (most added tokens start with '<').
+            if cp == 60 {
+                let bestLen: long = 0L
+                let bestId: long = 0L
+
+                let li: int = 0
+                while li < addedList.len() {
+                    let key: string = addedList[li]
+                    let o = _mapGetOptStringLong(added, key)
                     if o.isSome() {
-                        let r: long = o.unwrap()
-                        if r < bestRank {
-                            bestRank = r
-                            bestA = a
-                            bestB = b
+                        let id: long = o.unwrap()
+                        let plen = strlen(key)
+                        if plen > 0L && (i + plen) <= n {
+                            let pA = tua_bytes_data_at(sb, i)
+                            let pB = tua_str_ptr(key)
+                            if pA != null && pB != null {
+                                if memcmp(pA, pB, plen) == 0 {
+                                    bestLen = plen
+                                    bestId = id
+                                    break // addedList is sorted by length desc
+                                }
+                            }
                         }
                     }
-                    pi = pi + 1
+                    li = li + 1
                 }
 
-                if bestRank == 9223372036854775807L { break }
-                let k2 = _pairKey(bestA, bestB)
-                let om = _mapGetOptLongLong(t.pairMergeId, k2)
-                if om.isNone() { break }
-                let mid: long = om.unwrap()
-
-                let nw: long[] = {}
-                let j: int = 0
-                while j < word.len() {
-                    if j + 1 < word.len() && word[j] == bestA && word[j + 1] == bestB {
-                        nw.push(mid)
-                        j = j + 2
-                    } else {
-                        nw.push(word[j])
-                        j = j + 1
-                    }
+                if bestLen > 0L {
+                    let seg0, eSeg = _encodeSegmentBytes(t, sb, segStart, i - segStart)
+                    if eSeg != 0 { return null, 1 }
+                    let seg: long[] = seg0
+                    let si: int = 0
+                    while si < seg.len() { out.push(seg[si]); si = si + 1 }
+                    out.push(bestId)
+                    i = i + bestLen
+                    segStart = i
+                    continue
                 }
-                word = nw
             }
 
-            let mi: int = 0
-            while mi < word.len() {
-                out.push(word[mi])
-                mi = mi + 1
-            }
-            pidx = pidx + 1
+            i = i + sz
         }
-        return 0, out
+
+        let tail0, eTail = _encodeSegmentBytes(t, sb, segStart, n - segStart)
+        if eTail != 0 { return null, 1 }
+        let tail: long[] = tail0
+        let ti: int = 0
+        while ti < tail.len() { out.push(tail[ti]); ti = ti + 1 }
+        return out, 0
     }
 
-    fn decode(t: TokenizerBpe, ids: long[]) -> int, string {
-        if ids == null { return 1, null }
+    fn encodeNoAdded(t: TokenizerBpe, s: string) -> long[], int {
+        if s == null { return null, 1 }
+        let sb = bstd.Bytes.fromString(s)
+        let n = bstd.Bytes.len(sb)
+        let out, e = _encodeSegmentBytes(t, sb, 0L, n)
+        if e != 0 { return null, 1 }
+        return out, 0
+    }
+
+    fn decode(t: TokenizerBpe, ids: long[]) -> string, int {
+        if ids == null { return null, 1 }
         // Allocate an upper bound (sum of token utf8 byte lengths).
         let cap: long = 0L
         let ii: int = 0
@@ -412,16 +603,16 @@ object BpeTokenizer {
         while jj < ids.len() {
             let id = ids[jj]
             let o = _mapGetOptLongString(t.idToToken, id)
-            if o.isNone() { return 1, null }
+            if o.isNone() { return null, 1 }
             let tok: string = o.unwrap()
             let tb = bstd.Bytes.fromString(tok)
             let tn = bstd.Bytes.len(tb)
             let i: long = 0L
             while i < tn {
                 let e, cp, sz = utf8.Utf8.decode1(tb, i)
-                if e != 0 { return 1, null }
+                if e != 0 { return null, 1 }
                 let ob = _mapGetOptIntInt(t.cpToByte, cp)
-                if ob.isNone() { return 1, null }
+                if ob.isNone() { return null, 1 }
                 let bv: int = ob.unwrap()
                 bstd.Bytes.setU8(buf, off, bv)
                 off = off + 1L
@@ -429,6 +620,6 @@ object BpeTokenizer {
             }
             jj = jj + 1
         }
-        return 0, tua_str_from_bytes_copy(buf, 0L, off)
+        return tua_str_from_bytes_copy(buf, 0L, off), 0
     }
 }

@@ -8,3 +8,7 @@ object C {
 
 
 extern fn atoi(s: string) int
+extern "C" {
+    fn atoi(s: string) int
+    fn  x(s: string) int
+}

@@ -9,16 +9,16 @@ fn main(args: string[]) -> int {
     if args.len() >= 3 { text = args[2] }
 
     let t0 = time.Time.monoNs()
-    let e0, tok = BpeTokenizer.loadFromTokenizerJson(path)
+    let tok, e0 = BpeTokenizer.loadFromTokenizerJson(path)
     let t1 = time.Time.monoNs()
     if e0 != 0 { println("load tokenizer failed err={}", e0); return 1 }
 
-    let e1, ids0 = BpeTokenizer.encode(tok, text)
+    let ids0, e1 = BpeTokenizer.encode(tok, text)
     let t2 = time.Time.monoNs()
     if e1 != 0 { println("encode failed err={}", e1); return 1 }
     let ids: long[] = ids0
 
-    let e2, out = BpeTokenizer.decode(tok, ids)
+    let out, e2 = BpeTokenizer.decode(tok, ids)
     let t3 = time.Time.monoNs()
     if e2 != 0 { println("decode failed err={}", e2); return 1 }
 

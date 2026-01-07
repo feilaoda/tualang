@@ -263,7 +263,13 @@
 - [ ] Tokenizer：先做正确性，再做性能
   - [x] BPE（v0）：加载 `tokenizer.json`（`vocab/merges/added_tokens`）+ 小型 fixture 的 encode/decode 冒烟测试
   - [ ] BPE（v1）：加载真实模型（Qwen3）的 `tokenizer.json` + 与参考实现对齐（分词/解码一致性）
+    - [x] added_tokens：Qwen3 special token 的 encode/decode 对齐（基础用例）
+    - [ ] pre_tokenizer regex：Unicode 类别（`\p{L}`/`\p{N}`/`\s`）完整对齐（可能需要 C 侧表或 ICU；先留接口）
   - [ ] BPE（perf）：减少分配/复制、预处理正则/分词、merge 循环优化、热点下沉到 C/Accelerate（预留后端）
+    - [x] merge 核心下沉到 C runtime（reference O(n^2)），避免 Tua 侧 O(n^2) 热循环
+    - [x] examples：`llm_tokenizer_qwen3_perf.tua`（tok/s 基准 + repeat 参数）
+    - [x] 进一步优化：减少 bytes->id per-byte 调用（bytes->ids 下沉到 C）
+    - [ ] 进一步优化：减少临时数组、cache 命中率统计/上限策略、merge heap/linked-list 优化
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
 说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。

@@ -3085,15 +3085,87 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
 
             int wantCount = expectedReturns ? expectedReturns->length : 0;
 
+            // Allow multi-return forwarding: `return f()` when current function expects multiple returns.
+            // Also allow `return f() ? { ... }` which drops trailing `err` and forwards remaining values.
+            int isForward = 0;
+            int isForwardGuard = 0;
+            CallExpr* fwdCallExpr = NULL;
+            List* fwdReturns = NULL;
+            FuncInfo* fwdFi = NULL;
+            FuncSigInfo* fwdFs = NULL;
+            if (wantCount > 1 && gotCount == 1) {
+                Expr* only = NULL;
+                if (r->values && r->values->length == 1) only = (Expr*)r->values->head->data;
+                else if (r->value) only = r->value;
+                only = unwrapGrouping(only);
+                if (only && only->type == EXPR_GUARD) {
+                    isForwardGuard = 1;
+                    only = unwrapGrouping(((GuardExpr*)only)->call);
+                }
+                if (only && only->type == EXPR_CALL) {
+                    CallExpr* c = (CallExpr*)only;
+                    List* callReturns = NULL;
+                    FuncInfo* callFi = NULL;
+                    FuncSigInfo* callFs = NULL;
+                    if (c->callee && c->callee->type == EXPR_VARIABLE) {
+                        VariableExpr* callee = (VariableExpr*)c->callee;
+                        FuncInfo* fi = scopeFindFunc(scope, &callee->name);
+                        if (fi && fi->returnTypes) {
+                            callReturns = fi->returnTypes;
+                            callFi = fi;
+                        } else {
+                            FuncSigInfo* fs = resolveImportedFuncSigFromCall(compiler, c);
+                            if (fs && fs->returnTypes) {
+                                callReturns = fs->returnTypes;
+                                callFs = fs;
+                            }
+                        }
+                    } else {
+                        FuncSigInfo* fs = resolveImportedFuncSigFromCall(compiler, c);
+                        if (fs && fs->returnTypes) {
+                            callReturns = fs->returnTypes;
+                            callFs = fs;
+                        }
+                    }
+                    if (callReturns) {
+                        int rc = callReturns->length;
+                        if (isForwardGuard) rc = rc - 1;
+                        if (rc == wantCount) {
+                            isForward = 1;
+                            fwdCallExpr = c;
+                            fwdReturns = callReturns;
+                            fwdFi = callFi;
+                            fwdFs = callFs;
+                        }
+                    }
+                }
+            }
+
             if (wantCount == 0 && gotCount > 0) {
                 analyzeErrorAt(compiler, modulePath, r->keyword.line, "cannot return a value from a void function");
             } else if (wantCount > 0 && gotCount == 0) {
                 analyzeErrorAt(compiler, modulePath, r->keyword.line, "missing return value");
-            } else if (wantCount > 0 && gotCount != wantCount) {
+            } else if (wantCount > 0 && !isForward && gotCount != wantCount) {
                 analyzeErrorAt(compiler, modulePath, r->keyword.line, "return value count mismatch");
             }
 
             if (gotCount > 0) {
+                if (isForward) {
+                    for (int i = 0; i < wantCount; i++) {
+                        AType* vt = atNew(AT_ANY);
+                        if (fwdReturns) {
+                            if (fwdFi) vt = inferCallReturnAt(compiler, fwdFi, fwdCallExpr, i);
+                            else vt = inferFuncSigReturnAt(compiler, fwdFs, fwdCallExpr, i);
+                        }
+                        if (expectedReturns && i < wantCount) {
+                            AType* want = (AType*)listGet(expectedReturns, i);
+                            if (want && !atAssignable(compiler, want, vt)) {
+                                analyzeErrorAt(compiler, modulePath, r->keyword.line, "return type mismatch");
+                            }
+                        }
+                    }
+                    break;
+                }
                 if (r->values) {
                     int idx = 0;
                     for (ListNode* n = r->values->head; n != NULL; n = n->next, idx++) {
@@ -3229,8 +3301,15 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             FuncInfo* callFi = NULL;
             FuncSigInfo* callFs = NULL;
             CallExpr* callExpr = NULL;
-            if (rhsExpr && rhsExpr->type == EXPR_CALL) {
-                CallExpr* c = (CallExpr*)rhsExpr;
+            int isGuard = 0;
+            Expr* callLike = rhsExpr;
+            if (callLike && callLike->type == EXPR_GUARD) {
+                isGuard = 1;
+                callLike = unwrapGrouping(((GuardExpr*)callLike)->call);
+            }
+
+            if (callLike && callLike->type == EXPR_CALL) {
+                CallExpr* c = (CallExpr*)callLike;
                 if (c->callee && c->callee->type == EXPR_VARIABLE) {
                     VariableExpr* callee = (VariableExpr*)c->callee;
                     FuncInfo* fi = scopeFindFunc(scope, &callee->name);
@@ -3260,6 +3339,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             if (d->isDeclaration && d->names) {
                 if (d->names->length > 1 && callReturns) {
                     int rc = callReturns->length;
+                    if (isGuard) rc = rc - 1;
                     if (rc != d->names->length) {
                         analyzeErrorAt(compiler, modulePath, d->keyword.line, "destructuring arity mismatch");
                     }
@@ -3276,9 +3356,13 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         if (t && t->kind == TYPE_REF) isRefBinding = 1;
                     }
                     AType* inferred = atNew(AT_ANY);
-                    if (callReturns && idx < callReturns->length) {
+                    if (callReturns) {
+                        int rc = callReturns->length;
+                        if (isGuard) rc = rc - 1;
+                        if (idx < rc) {
                         if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
                         else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
+                        }
                     } else if (d->names->length == 1) {
                         // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
                         inferred = rhs;
@@ -3299,6 +3383,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             } else if (!d->isDeclaration && d->names) {
                 if (d->names->length > 1 && callReturns) {
                     int rc = callReturns->length;
+                    if (isGuard) rc = rc - 1;
                     if (rc != d->names->length) {
                         Token* first = (Token*)listGet(d->names, 0);
                         int line = first ? first->line : 1;
@@ -3322,9 +3407,13 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         continue;
                     }
                     AType* inferred = rhs;
-                    if (callReturns && idx < callReturns->length) {
+                    if (callReturns) {
+                        int rc = callReturns->length;
+                        if (isGuard) rc = rc - 1;
+                        if (idx < rc) {
                         if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
                         else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
+                        }
                     }
                     if (vi && vi->type && !atAssignable(compiler, vi->type, inferred)) {
                         if (atIsOption(inferred) && !atIsOption(vi->type)) {

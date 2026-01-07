@@ -1,20 +1,20 @@
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 
 fn main() {
-    let e, tok = BpeTokenizer.loadFromTokenizerJson("tests/fixtures/tokenizer_small.json")
+    let tok, e = BpeTokenizer.loadFromTokenizerJson("tests/fixtures/tokenizer_small.json")
     assert(e == 0)
 
-    let ae, sid = BpeTokenizer.addedId(tok, "<s>")
+    let sid, ae = BpeTokenizer.addedId(tok, "<s>")
     assert(ae == 0)
     assert(sid == 3L)
 
-    let ee, ids0 = BpeTokenizer.encode(tok, "ab")
+    let ids0, ee = BpeTokenizer.encode(tok, "ab")
     assert(ee == 0)
     let ids: long[] = ids0
     assert(ids.len() == 1)
     assert(ids[0] == 2L)
 
-    let de, out = BpeTokenizer.decode(tok, ids)
+    let out, de = BpeTokenizer.decode(tok, ids)
     assert(de == 0)
     assert(out == "ab")
 }

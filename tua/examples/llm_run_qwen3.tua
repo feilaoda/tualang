@@ -15,10 +15,10 @@ fn main(args: string[]) -> int {
     let oe, opts = LlmArgs.parseArgv(args)
     if oe != 0 { println("bad args"); return 1 }
 
-    let te, tok = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
+    let tok, te = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
     if te != 0 { println("load tokenizer failed"); return 1 }
 
-    let ee, ids0 = BpeTokenizer.encode(tok, prompt)
+    let ids0, ee = BpeTokenizer.encode(tok, prompt)
     if ee != 0 { println("encode prompt failed"); return 1 }
     let ids: long[] = ids0
     if ids.len() == 0 { println("empty prompt ids"); return 1 }
@@ -30,7 +30,7 @@ fn main(args: string[]) -> int {
     if ge != 0 { println("run failed"); return 1 }
 
     let one: long[] = { nextId }
-    let de, out = BpeTokenizer.decode(tok, one)
+    let out, de = BpeTokenizer.decode(tok, one)
     if de != 0 { println("decode failed"); return 1 }
     println("prompt={}", prompt)
     println("gen_id={} gen_text={}", nextId, out)

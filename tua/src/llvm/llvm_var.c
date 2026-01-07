@@ -816,7 +816,32 @@ static LLVMTypeRef inferLLVMTypeFromInitializer(Compiler* compiler, Expr* initia
         }
     }
 
-    if (initializer->type != EXPR_LITERAL) return LLVMInt32TypeInContext(compiler->context);
+    // Fallback: use analyzer-inferred kind for expressions we don't have special cases for
+    // (notably binary expressions like `i + 1L`). Without this, we may allocate a slot as `i32`
+    // while later numeric-cast logic treats the variable as `i64`, leading to oversized stores
+    // and stack corruption under LLVM opaque pointers.
+    if (initializer->type != EXPR_LITERAL) {
+        TypeKind k = initializer->inferredType;
+        switch (k) {
+            case TYPE_BOOL:
+                return LLVMInt1TypeInContext(compiler->context);
+            case TYPE_INT:
+            case TYPE_U32:
+                return LLVMInt32TypeInContext(compiler->context);
+            case TYPE_LONG:
+            case TYPE_U64:
+                return LLVMInt64TypeInContext(compiler->context);
+            case TYPE_FLOAT:
+                return LLVMFloatTypeInContext(compiler->context);
+            case TYPE_DOUBLE:
+                return LLVMDoubleTypeInContext(compiler->context);
+            case TYPE_STRING:
+                return LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            default:
+                break;
+        }
+        return LLVMInt32TypeInContext(compiler->context);
+    }
 
     LiteralExpr* literal = (LiteralExpr*)initializer;
     switch (literal->value.type) {

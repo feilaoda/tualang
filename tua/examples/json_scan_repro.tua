@@ -1,0 +1,39 @@
+import "std/bytes" as bstd
+import "std/json" as j
+
+fn main(args: string[]) -> int {
+    if args.len() > 999999 { println("unused") }
+    // {"a":[1,2,{"b":3}],"version":"1.0","z":null}
+    let tmp = bstd.Bytes.new(128)
+    let cs:int[] = {
+        123,
+        34,97,34,58,91,49,44,50,44,123,34,98,34,58,51,125,93,44,
+        34,118,101,114,115,105,111,110,34,58,34,49,46,48,34,44,
+        34,122,34,58,110,117,108,108,
+        125
+    }
+    let i: long = 0L
+    while i < (long)cs.len() {
+        bstd.Bytes.setU8(tmp, i, cs[(int)i])
+        i = i + 1L
+    }
+    let b = bstd.Bytes.new((int)i)
+    bstd.Bytes.copy(b, 0L, tmp, 0L, i)
+
+    let e, s = j.Json.scanTopLevelString(b, "version")
+    println("scanTopLevelString version e={} s={}", e, s)
+    let e3, v = j.Json.scanTopLevelValue(b, "a")
+    println("scanTopLevelValue a e={} v={}", e3, v)
+    let e4, v4 = j.Json.scanTopLevelValue(b, "version")
+    println("scanTopLevelValue version e={} v={}", e4, v4)
+
+    let pe, pv = j.Json.parseBytesWithLimits(b, 0, 0L, 0L)
+    println("parseBytesWithLimits e={} v={}", pe, pv)
+
+    let b2 = bstd.Bytes.fromString("{\"version\":\"1.0\"}")
+    let e5, v5 = j.Json.scanTopLevelValue(b2, "version")
+    println("scanTopLevelValue (small) version e={} v={}", e5, v5)
+    let pe2, pv2 = j.Json.parseBytesWithLimits(b2, 0, 0L, 0L)
+    println("parseBytesWithLimits (small) e={} v={}", pe2, pv2)
+    return 0
+}

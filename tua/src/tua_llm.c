@@ -1,8 +1,10 @@
 #include "tua_llm.h"
 
+#include "tua_array.h"
 #include "tua_map.h"
 
 #include <math.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -204,3 +206,147 @@ tua_err_t tua_llm_argmax_f32(tua_bytes* x, int64_t x_off, int32_t n, int64_t* ou
     return TUA_OK;
 }
 
+static inline tua_value make_long_value_llm(int64_t x) {
+    tua_value v;
+    v.tag = 2; // TUA_VAL_LONG (must match src/tua_map.c)
+    v.payload = (uint64_t)x;
+    return v;
+}
+
+static inline int64_t value_to_i64_strict_llm(tua_value v) {
+    if (v.tag == 2) return (int64_t)v.payload;      // long
+    if (v.tag == 1) return (int64_t)(int32_t)v.payload; // int
+    return INT64_MIN;
+}
+
+static inline int map_get_i64(tua_map* m, int64_t key, int64_t* out) {
+    if (!m || !out) return 0;
+    int32_t ok = 0;
+    tua_value v = tua_map_get_with_ok(m, make_long_value_llm(key), &ok);
+    if (!ok) return 0;
+    int64_t x = value_to_i64_strict_llm(v);
+    if (x == INT64_MIN) return 0;
+    *out = x;
+    return 1;
+}
+
+static inline int64_t pair_key_i64(int64_t a, int64_t b) {
+    // Match Tua side `_pairKey(a, b)` semantics without signed left-shift UB.
+    uint64_t hi = ((uint64_t)(uint32_t)a) << 32;
+    uint64_t lo = (uint64_t)(uint32_t)b;
+    uint64_t k = hi | lo;
+    return (int64_t)k;
+}
+
+tua_array* tua_llm_bpe_merge_ids(tua_array* ids, tua_map* pairRank, tua_map* pairMergeId, int32_t* outErr) {
+    if (outErr) *outErr = 1;
+    if (!outErr) return NULL;
+    if (!ids || !pairRank || !pairMergeId) return NULL;
+    if (ids->elem_size != (int64_t)sizeof(int64_t)) return NULL;
+    if (ids->len < 0) return NULL;
+    if (ids->len > INT32_MAX) return NULL;
+    int32_t n = (int32_t)ids->len;
+    if (n == 0) {
+        *outErr = 0;
+        return tua_array_new(0, 0, (int64_t)sizeof(int64_t), -1);
+    }
+    if (!ids->data) return NULL;
+
+    int64_t* a = (int64_t*)malloc((size_t)n * sizeof(int64_t));
+    int64_t* b = (int64_t*)malloc((size_t)n * sizeof(int64_t));
+    if (!a || !b) tua_panic("out of memory");
+    const int64_t* in = (const int64_t*)ids->data;
+    memcpy(a, in, (size_t)n * sizeof(int64_t));
+    int32_t alen = n;
+
+    // Reference behavior: repeatedly pick the lowest-rank pair, then merge all its occurrences in one pass.
+    for (;;) {
+        if (alen < 2) break;
+        int64_t bestRank = INT64_MAX;
+        int64_t bestA = 0;
+        int64_t bestB = 0;
+        int found = 0;
+
+        for (int32_t i = 0; i + 1 < alen; i++) {
+            int64_t key = pair_key_i64(a[i], a[i + 1]);
+            int64_t rank = 0;
+            if (map_get_i64(pairRank, key, &rank)) {
+                if (rank < bestRank) {
+                    bestRank = rank;
+                    bestA = a[i];
+                    bestB = a[i + 1];
+                    found = 1;
+                }
+            }
+        }
+        if (!found) break;
+
+        int64_t key2 = pair_key_i64(bestA, bestB);
+        int64_t mid = 0;
+        if (!map_get_i64(pairMergeId, key2, &mid)) break;
+
+        int32_t blen = 0;
+        for (int32_t i = 0; i < alen; i++) {
+            if (i + 1 < alen && a[i] == bestA && a[i + 1] == bestB) {
+                b[blen++] = mid;
+                i++;
+            } else {
+                b[blen++] = a[i];
+            }
+        }
+
+        int64_t* tmp = a;
+        a = b;
+        b = tmp;
+        alen = blen;
+    }
+
+    tua_array* out = tua_array_new(0, alen, (int64_t)sizeof(int64_t), -1);
+    for (int32_t i = 0; i < alen; i++) {
+        tua_array_push(out, &a[i]);
+    }
+
+    free(a);
+    free(b);
+    *outErr = 0;
+    return out;
+}
+
+tua_array* tua_llm_bpe_bytes_to_ids(tua_bytes* b, int64_t off, int64_t len, tua_array* byteToId, int32_t* outErr) {
+    if (outErr) *outErr = 1;
+    if (!outErr) return NULL;
+    if (!b || !byteToId) return NULL;
+    if (off < 0 || len < 0) return NULL;
+    int64_t end = off + len;
+    if (end < off) return NULL;
+    if (end > tua_bytes_len(b)) return NULL;
+    const uint8_t* p = tua_bytes_data_at(b, off);
+    if (len > 0 && !p) return NULL;
+
+    if (byteToId->elem_size != (int64_t)sizeof(int64_t)) return NULL;
+    if (byteToId->len < 256) return NULL;
+    if (!byteToId->data) return NULL;
+    const int64_t* table = (const int64_t*)byteToId->data;
+
+    if (len > INT32_MAX) return NULL;
+    tua_array* out = tua_array_new(len, len, (int64_t)sizeof(int64_t), -1);
+    if (!out) tua_panic("out of memory");
+    int64_t* outv = (int64_t*)out->data;
+    if (len > 0 && !outv) {
+        tua_array_free(out);
+        return NULL;
+    }
+
+    for (int64_t i = 0; i < len; i++) {
+        uint8_t bb = p[i];
+        int64_t id = table[(int)bb];
+        if (id < 0) {
+            tua_array_free(out);
+            return NULL;
+        }
+        outv[i] = id;
+    }
+
+    *outErr = 0;
+    return out;
+}

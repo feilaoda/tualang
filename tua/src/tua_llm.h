@@ -2,7 +2,9 @@
 #define TUA_LLM_H
 
 #include "rt/rt_err.h"
+#include "tua_array.h"
 #include "tua_bytes.h"
+#include "tua_map.h"
 
 #include <stdint.h>
 
@@ -36,5 +38,11 @@ tua_err_t tua_llm_attn_decode_f32(tua_bytes* out, int64_t out_off,
 
 tua_err_t tua_llm_argmax_f32(tua_bytes* x, int64_t x_off, int32_t n, int64_t* out_index);
 
-#endif
+// BPE merge for tokenizer: merges a byte-level id sequence using `pairRank` and `pairMergeId`
+// maps generated from tokenizer.json merges. Returns a new `long[]` and writes outErr=0 on success.
+tua_array* tua_llm_bpe_merge_ids(tua_array* ids, tua_map* pairRank, tua_map* pairMergeId, int32_t* outErr);
+// Convert a byte slice to the initial byte-level BPE ids using `byteToId[0..255]`.
+// Returns `long[]` of length `len` and writes outErr=0 on success.
+tua_array* tua_llm_bpe_bytes_to_ids(tua_bytes* b, int64_t off, int64_t len, tua_array* byteToId, int32_t* outErr);
 
+#endif

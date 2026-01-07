@@ -210,6 +210,10 @@ char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len) {
     return out;
 }
 
+void* tua_str_ptr(const char* s) {
+    return (void*)s;
+}
+
 double tua_f32_from_u32_bits(uint32_t bits) {
     float f = 0.0f;
     memcpy(&f, &bits, sizeof(float));

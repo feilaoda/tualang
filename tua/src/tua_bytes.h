@@ -41,6 +41,8 @@ tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_
 // Allocates a NUL-terminated string by copying `b[off..off+len)`.
 // Note: if the byte range contains '\0', the resulting C-string will be truncated when used as `string`.
 char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len);
+// Returns the underlying C string pointer (for FFI helpers like memcmp).
+void* tua_str_ptr(const char* s);
 
 // Bit-cast helpers for binary formats.
 double tua_f32_from_u32_bits(uint32_t bits);

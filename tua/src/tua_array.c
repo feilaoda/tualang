@@ -61,6 +61,8 @@ int64_t tua_array_push(tua_array* a, const void* elem) {
     if (!a) tua_panic("null array");
     if (a->fixed_len >= 0) tua_panic("cannot push to fixed-length array");
     if (a->elem_size <= 0) tua_panic("invalid array element size");
+    // Defensive guard: element sizes this large are almost certainly memory corruption.
+    if (a->elem_size > (int64_t)(1024 * 1024)) tua_panic("invalid array element size (too large)");
     if (!elem && a->elem_size > 0) tua_panic("null element pointer");
 
     if (a->len < 0 || a->cap < 0) tua_panic("invalid array header");

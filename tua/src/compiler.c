@@ -15,6 +15,22 @@
 #define compilerDebug(...) debug(__VA_ARGS__)
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);
+static LLVMValueRef buildEntryAllocaForStmt(Compiler* compiler, LLVMTypeRef type, const char* name) {
+    if (!compiler || !compiler->current || !compiler->current->func) return NULL;
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(compiler->current->func);
+    if (!entry) return NULL;
+
+    LLVMBuilderRef tmp = LLVMCreateBuilderInContext(compiler->context);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first) {
+        LLVMPositionBuilderBefore(tmp, first);
+    } else {
+        LLVMPositionBuilderAtEnd(tmp, entry);
+    }
+    LLVMValueRef out = LLVMBuildAlloca(tmp, type, name);
+    LLVMDisposeBuilder(tmp);
+    return out;
+}
 
 typedef struct TailrecState {
     int enabled;
@@ -2233,14 +2249,14 @@ LLVMValueRef compileExpr(Compiler* compiler, Expr* expr) {
 LLVMValueRef compileExprMulti(Compiler* compiler, Expr* expr) {
     if (!compiler || !expr) return NULL;
 
-    // Multi-values only matter for direct call expressions.
+    // Multi-values only matter for direct call-like expressions.
     // Everything else keeps the default "first value" rule for nested calls.
     Expr* target = expr;
     if (target->type == EXPR_GROUPING) {
         target = ((GroupingExpr*)target)->expression;
         if (!target) return NULL;
     }
-    if (target->type != EXPR_CALL) {
+    if (target->type != EXPR_CALL && target->type != EXPR_GUARD) {
         return compileExpr(compiler, expr);
     }
 
@@ -3863,7 +3879,7 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
             LLVMTypeRef boxPtrType = isBoxed ? LLVMPointerType(targetType, 0) : NULL;
             LLVMValueRef slot = NULL;
             if (isBoxed) {
-                slot = LLVMBuildAlloca(compiler->builder, boxPtrType, varName);
+                slot = buildEntryAllocaForStmt(compiler, boxPtrType, varName);
                 LLVMValueRef mallocFn = LLVMGetNamedFunction(compiler->module, "malloc");
                 if (!mallocFn) {
                     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
@@ -3877,7 +3893,7 @@ void compileDestructureStmt(Compiler* compiler, DestructureStmt* stmt) {
                 if (v) LLVMBuildStore(compiler->builder, v, cell);
                 LLVMBuildStore(compiler->builder, cell, slot);
             } else {
-                slot = LLVMBuildAlloca(compiler->builder, targetType, varName);
+                slot = buildEntryAllocaForStmt(compiler, targetType, varName);
                 if (v) LLVMBuildStore(compiler->builder, v, slot);
             }
 
