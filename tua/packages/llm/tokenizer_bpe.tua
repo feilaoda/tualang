@@ -592,4 +592,67 @@ object BpeTokenizer {
         let n = bstd.Bytes.len(buf)
         return tua_str_from_bytes_copy(buf, 0L, n), 0
     }
+
+    // Pure-Tua decode (reference): ids -> token strings -> GPT2 byte-level inverse mapping -> UTF-8 bytes -> string.
+    // Returns (string, err). `err!=0` covers missing ids/tokens, invalid UTF-8, or missing cp->byte mapping.
+    fn decode1(t: TokenizerBpe, ids: long[]) -> string, int {
+        if ids == null { return null, 1 }
+
+        // Pass 1: compute output byte length (1 byte per code point in byte-level token string).
+        let outLen: long = 0L
+        let i: int = 0
+        while i < ids.len() {
+            let id: long = ids[i]
+            let oTok = _mapGetOptLongString(t.idToToken, id)
+            if oTok.isNone() { return null, 1 }
+            let tok: string = oTok.unwrap()
+
+            let tb: bytes = bstd.Bytes.fromString(tok)
+            let n = bstd.Bytes.len(tb)
+            let off: long = 0L
+            while off < n {
+                let ue, cp, sz = utf8.Utf8.decode1(tb, off)
+                if ue != 0 { return null, 1 }
+                if sz <= 0L { return null, 1 }
+                let ob = _mapGetOptIntInt(t.cpToByte, cp)
+                if ob.isNone() { return null, 1 }
+                outLen = outLen + 1L
+                off = off + sz
+            }
+            i = i + 1
+        }
+
+        let out: bytes = bstd.Bytes.newLongUninit(outLen)
+        if out == null && outLen != 0L { return null, 1 }
+
+        // Pass 2: fill output bytes.
+        let dst: long = 0L
+        i = 0
+        while i < ids.len() {
+            let id2: long = ids[i]
+            let oTok2 = _mapGetOptLongString(t.idToToken, id2)
+            if oTok2.isNone() { return null, 1 }
+            let tok2: string = oTok2.unwrap()
+
+            let tb2: bytes = bstd.Bytes.fromString(tok2)
+            let n2 = bstd.Bytes.len(tb2)
+            let off2: long = 0L
+            while off2 < n2 {
+                let ue2, cp2, sz2 = utf8.Utf8.decode1(tb2, off2)
+                if ue2 != 0 { return null, 1 }
+                if sz2 <= 0L { return null, 1 }
+                let ob2 = _mapGetOptIntInt(t.cpToByte, cp2)
+                if ob2.isNone() { return null, 1 }
+                let bval: int = ob2.unwrap()
+                let se = bstd.Bytes.setU8(out, dst, bval)
+                if se != 0 { return null, 1 }
+                dst = dst + 1L
+                off2 = off2 + sz2
+            }
+            i = i + 1
+        }
+
+        if dst != outLen { return null, 1 }
+        return tua_str_from_bytes_copy(out, 0L, outLen), 0
+    }
 }

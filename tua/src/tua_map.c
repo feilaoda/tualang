@@ -7,15 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum {
-    TUA_VAL_NIL = 0,
-    TUA_VAL_INT = 1,
-    TUA_VAL_LONG = 2,
-    TUA_VAL_DOUBLE = 3,
-    TUA_VAL_BOOL = 4,
-    TUA_VAL_STRING = 5,
-    TUA_VAL_PTR = 6
-};
+	// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
 
 typedef enum {
     KEY_EMPTY = 0,

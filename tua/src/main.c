@@ -1382,6 +1382,8 @@ static char* buildSharedFromArchive(Compiler* compiler, const char* archivePath)
     args[n++] = (char*)"clang";
 #if defined(__APPLE__)
     args[n++] = (char*)"-dynamiclib";
+    // Allow unresolved symbols in the plugin; they will be resolved against the host (tuac) at dlopen time.
+    args[n++] = (char*)"-Wl,-undefined,dynamic_lookup";
 #else
     args[n++] = (char*)"-shared";
 #endif
@@ -1438,6 +1440,43 @@ static char* buildSharedFromArchive(Compiler* compiler, const char* archivePath)
     if (stderrText) free(stderrText);
     return outPath;
 #endif
+}
+
+static int strHasSharedLibSuffix(const char* p) {
+    if (!p) return 0;
+#if defined(__APPLE__)
+    return endsWith(p, ".dylib");
+#else
+    return endsWith(p, ".so");
+#endif
+}
+
+static char* tryResolveLibFromSearchPaths(Compiler* compiler, const char* libName) {
+    if (!compiler || !libName || libName[0] == '\0') return NULL;
+    // Try: <dir>/lib<name>.(dylib|so|a)
+    for (ListNode* it = compiler->linkSearchPaths ? compiler->linkSearchPaths->head : NULL; it != NULL; it = it->next) {
+        const char* dir = (const char*)it->data;
+        if (!dir || dir[0] == '\0') continue;
+
+#if defined(__APPLE__)
+        const char* exts[] = { ".dylib", ".so", ".a" };
+#else
+        const char* exts[] = { ".so", ".a", ".dylib" };
+#endif
+        for (size_t ei = 0; ei < sizeof(exts) / sizeof(exts[0]); ei++) {
+            const char* ext = exts[ei];
+            int need = (int)strlen("lib") + (int)strlen(libName) + (int)strlen(ext);
+            char* base = (char*)malloc((size_t)need + 1);
+            sprintf(base, "lib%s%s", libName, ext);
+            char* cand = joinPath(dir, base);
+            free(base);
+            if (cand && fileExists(cand)) {
+                return cand;
+            }
+            free(cand);
+        }
+    }
+    return NULL;
 }
 
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
@@ -2400,7 +2439,53 @@ int main(int argc, char* argv[]) {
 
     // For JIT mode, allow loading external dynamic libraries to satisfy `extern fn` symbols.
 #if defined(__unix__) || defined(__APPLE__)
+    // Build the dlopen list:
+    // - explicit `--dlopen <path>`
+    // - plus (JIT only) inferred loads from `-L/-l/--link-arg <path>`
+    List* toLoad = listNew();
     for (ListNode* it = compiler.dlopenPaths ? compiler.dlopenPaths->head : NULL; it != NULL; it = it->next) {
+        listAppend(toLoad, it->data);
+    }
+    List* ownedLoadPaths = listNew();
+
+    // Convenience: when running in JIT mode (no `--output`), treat `-L/-l/--link-arg <path>` as load hints.
+    // This lets the same flags work for both AOT and JIT without requiring explicit `--dlopen`.
+    if (!compiler.outputPath) {
+        // `--link-arg <path/to/libfoo.(dylib|so|a)>`
+        for (ListNode* it = compiler.linkArgs ? compiler.linkArgs->head : NULL; it != NULL; it = it->next) {
+            const char* a = (const char*)it->data;
+            if (!a || a[0] == '\0') continue;
+            if (!(endsWith(a, ".a") || strHasSharedLibSuffix(a))) continue;
+            if (!fileExists(a)) continue;
+            listAppend(toLoad, (void*)a); // argv-backed
+        }
+
+        // `-l foo` (optionally with `-L <dir>`)
+        for (ListNode* it = compiler.linkLibs ? compiler.linkLibs->head : NULL; it != NULL; it = it->next) {
+            const char* lib = (const char*)it->data;
+            if (!lib || lib[0] == '\0') continue;
+            char* resolved = tryResolveLibFromSearchPaths(&compiler, lib);
+            if (resolved) {
+                listAppend(toLoad, resolved);
+                listAppend(ownedLoadPaths, resolved);
+                continue;
+            }
+
+            // Fall back to dlopen's default search with platform-specific naming.
+#if defined(__APPLE__)
+            const char* ext = ".dylib";
+#else
+            const char* ext = ".so";
+#endif
+            int need = (int)strlen("lib") + (int)strlen(lib) + (int)strlen(ext);
+            char* guess = (char*)malloc((size_t)need + 1);
+            sprintf(guess, "lib%s%s", lib, ext);
+            listAppend(toLoad, guess);
+            listAppend(ownedLoadPaths, guess);
+        }
+    }
+
+    for (ListNode* it = toLoad ? toLoad->head : NULL; it != NULL; it = it->next) {
         const char* p = (const char*)it->data;
         if (!p || p[0] == '\0') continue;
         const char* loadPath = p;
@@ -2424,6 +2509,12 @@ int main(int argc, char* argv[]) {
         }
         if (built) free(built);
     }
+
+    for (ListNode* it = ownedLoadPaths ? ownedLoadPaths->head : NULL; it != NULL; it = it->next) {
+        free(it->data);
+    }
+    if (ownedLoadPaths) listFree(ownedLoadPaths);
+    if (toLoad) listFree(toLoad);
 #endif
 
     initLLVM(&compiler);

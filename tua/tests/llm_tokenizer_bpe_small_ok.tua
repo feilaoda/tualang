@@ -17,4 +17,8 @@ fn main() {
     let out, de = BpeTokenizer.decode(tok, ids)
     assert(de == 0)
     assert(out == "ab")
+
+    let out2, de2 = BpeTokenizer.decode1(tok, ids)
+    assert(de2 == 0)
+    assert(out2 == "ab")
 }

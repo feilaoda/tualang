@@ -8,6 +8,62 @@ typedef struct tua_value {
     uint64_t payload;
 } tua_value;
 
+// Runtime value tags (ABI-stable for FFI helpers).
+// Keep in sync with `src/tua_map.c`.
+enum {
+    TUA_VAL_NIL = 0,
+    TUA_VAL_INT = 1,
+    TUA_VAL_LONG = 2,
+    TUA_VAL_DOUBLE = 3,
+    TUA_VAL_BOOL = 4,
+    TUA_VAL_STRING = 5,
+    TUA_VAL_PTR = 6
+};
+
+// Convenience constructors for external C libraries.
+static inline tua_value tua_value_nil(void) {
+    tua_value v;
+    v.tag = TUA_VAL_NIL;
+    v.payload = 0;
+    return v;
+}
+static inline tua_value tua_value_int(int32_t x) {
+    tua_value v;
+    v.tag = TUA_VAL_INT;
+    v.payload = (uint64_t)(uint32_t)x;
+    return v;
+}
+static inline tua_value tua_value_long(int64_t x) {
+    tua_value v;
+    v.tag = TUA_VAL_LONG;
+    v.payload = (uint64_t)x;
+    return v;
+}
+static inline tua_value tua_value_double_bits(uint64_t bits) {
+    tua_value v;
+    v.tag = TUA_VAL_DOUBLE;
+    v.payload = bits;
+    return v;
+}
+static inline tua_value tua_value_bool(int32_t b) {
+    tua_value v;
+    v.tag = TUA_VAL_BOOL;
+    v.payload = b ? 1u : 0u;
+    return v;
+}
+static inline tua_value tua_value_string(const char* s) {
+    tua_value v;
+    v.tag = TUA_VAL_STRING;
+    v.payload = (uint64_t)(uintptr_t)s;
+    return v;
+}
+static inline tua_value tua_value_ptr(const void* p) {
+    tua_value v;
+    v.tag = TUA_VAL_PTR;
+    v.payload = (uint64_t)(uintptr_t)p;
+    return v;
+}
+
 typedef struct tua_map tua_map;
 
 tua_map* tua_map_new(void);
