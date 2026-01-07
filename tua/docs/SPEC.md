@@ -744,10 +744,27 @@
 
 #### 11.3 跨 ABI 的所有权规则（Planned，先冻结最小集）
 - `extern fn` 的参数默认是“借用”（callee 不应释放传入的 `map/array/string/ptr`），除非该函数名/文档明确标注为“接管所有权”。
+- 术语约定（Frozen）：
+  - borrow（借用）：callee 仅在本次调用期间可读/可用；不得释放、不得把指针/句柄缓存到返回值/全局/异步回调
+  - own（拥有）：callee 取得释放责任；caller 在调用后不得再使用该对象（逻辑上 moved-from）
+  - retain（保留/逃逸）：callee 需要把借用对象保存到未来时，必须**显式复制/增加引用计数**，并在未来的完成/取消/错误路径对称释放
 - `bytes`/`Slice<T>`：
   - `bytes` 参数默认按借用传递（callee 不得释放；如需持有必须 clone/retain 并定义清晰释放约定）
   - `Slice<T>` 仅是视图（borrow）；callee 不得缓存其 `data` 指针到返回值/全局（否则会悬垂）
+- `map/array/bytes` 句柄类型（Frozen）：
+  - 句柄本身是“拥有型对象指针”（例如 `tua_map*`/`tua_array*`/`tua_bytes*`）；但传入 `extern fn` 时默认按 borrow 处理：callee 不得调用 `*_free`
+  - 若需要跨调用保存句柄：
+    - `array`：使用 `tua_array_clone` 拷贝出新的 owning 句柄
+    - `bytes`：当前建议用 `tua_bytes_from_copy` 拷贝出新的 owning 句柄（后续可补 `tua_bytes_clone`）
+    - `map`：当前无通用 clone API；如需保存应在 `std` 层定义明确的复制策略或改为传入“业务层快照结构”
+- `string`（Frozen，现状兼容）：
+  - `string` 对外是 `char*` 且默认按 borrow 处理：callee 仅可读取；不得写入、不得释放、不得保存到未来
+  - 若需要返回“拥有型字符串”，必须提供配套释放函数并在 `std` 层封装；在未冻结“真正 string 类型 + drop”之前，跨 ABI 建议优先返回 `bytes`/`Slice<byte>`（带长度）而不是裸 `char*`
 - 对于 `extern fn` 的 callback 参数：
   - 默认视为“借用回调值”；callee 不得直接 drop 参数本身
   - 若 callee 需要把回调保存到未来（escaping callback），必须显式 retain 一份，并在完成/取消/错误路径 release
+  - 回调 ABI（Frozen，现状以实现为准）：closure 目前对外等价于 `{ void* fn, void* env }`；若需要 retain，等价于对 `env` 调用 `tua_box_inc(env)`，release 等价 `tua_box_dec(env)`（见 `src/rt/rt_box.h` 与平台绑定实现）
+- 分配器域（Planned）：
+  - 跨 ABI 传递的“可释放内存”（例如 `extern fn` 返回的 buffer/string/数组指针）必须清晰标注“由谁释放、用哪个 free”
+  - 推荐统一使用 `tua_malloc/tua_free`（见 `src/rt/rt_alloc.h`）以便未来替换分配器；如使用系统 `malloc/free` 必须在函数名/文档中明确并提供对应释放函数
 - 由 `extern fn` 返回的指针/缓冲区必须提供配套释放函数（例如 `tua_free`、`tua_fs_string_array_free`），并在 `std` 层封装为更安全的 API（Planned：用 `bytes/string` 的 drop 消除用户手动释放）。

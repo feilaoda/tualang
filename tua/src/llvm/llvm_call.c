@@ -1727,6 +1727,27 @@ static LLVMValueRef getOrCreateTuaBytesSetU8(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_bytes_set_u8", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaBytesIsReadonly(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_is_readonly");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[1] = { bytesTy };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_is_readonly", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaBytesCopy(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_bytes_copy");
+    if (existing) return existing;
+    LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[5] = { bytesTy, i64, bytesTy, i64, i64 };
+    LLVMTypeRef fnType = LLVMFunctionType(i32, params, 5, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_copy", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaParseInt(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_parse_int");
     if (existing) return existing;
@@ -3317,7 +3338,11 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
         // Bytes built-in methods:
         // - `b.len() -> long`
         // - `b.get(i: long) -> byte` (panics on invalid)
+        // - `b.getU8(i: long) -> byte` (alias of get)
         // - `b.set(i: long, v: int) -> int` (returns err code)
+        // - `b.setU8(i: long, v: int) -> int` (alias of set)
+        // - `b.isReadonly() -> int`
+        // - `b.copy(dstOff: long, src: bytes, srcOff: long, n: long) -> int`
         // - `b.slice(off: long, n: long) -> Slice<byte>` (panics on invalid)
         if (recvVar.value && recvVar.isBytes) {
             LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
@@ -3353,9 +3378,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return out;
             }
 
-            if (tokenEquals(&get->name, "get")) {
+            if (tokenEquals(&get->name, "get") || tokenEquals(&get->name, "getU8")) {
                 if (got != 1) {
-                    emitDebug("bytes.get expects 1 argument\n");
+                    emitDebug("bytes.get/getU8 expects 1 argument\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
@@ -3396,9 +3421,9 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 return phi;
             }
 
-            if (tokenEquals(&get->name, "set")) {
+            if (tokenEquals(&get->name, "set") || tokenEquals(&get->name, "setU8")) {
                 if (got != 2) {
-                    emitDebug("bytes.set expects 2 arguments\n");
+                    emitDebug("bytes.set/setU8 expects 2 arguments\n");
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return NULL;
                 }
@@ -3416,6 +3441,46 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 LLVMValueRef err = LLVMBuildCall2(compiler->builder, fnType, fn, args3, 3, "bset");
                 if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                 return err;
+            }
+
+            if (tokenEquals(&get->name, "isReadonly")) {
+                if (got != 0) {
+                    emitDebug("bytes.isReadonly expects 0 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef fn = getOrCreateTuaBytesIsReadonly(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args1[1] = { bytesPtr };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args1, 1, "bro");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
+            if (tokenEquals(&get->name, "copy")) {
+                if (got != 4) {
+                    emitDebug("bytes.copy expects 4 arguments\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMValueRef dstOff = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                LLVMValueRef src = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                LLVMValueRef srcOff = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->data);
+                LLVMValueRef n = compileExpr(compiler, (Expr*)expr->arguments->head->next->next->next->data);
+                if (!dstOff || !src || !srcOff || !n) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                dstOff = castValueToType(compiler, dstOff, i64);
+                src = castValueToType(compiler, src, bytesTy);
+                srcOff = castValueToType(compiler, srcOff, i64);
+                n = castValueToType(compiler, n, i64);
+                LLVMValueRef fn = getOrCreateTuaBytesCopy(compiler);
+                LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+                LLVMValueRef args5[5] = { bytesPtr, dstOff, src, srcOff, n };
+                LLVMValueRef out = LLVMBuildCall2(compiler->builder, fnType, fn, args5, 5, "bcopy");
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
             }
 
             if (tokenEquals(&get->name, "slice")) {

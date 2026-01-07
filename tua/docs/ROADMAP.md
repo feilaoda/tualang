@@ -265,11 +265,19 @@
   - [ ] BPE（v1）：加载真实模型（Qwen3）的 `tokenizer.json` + 与参考实现对齐（分词/解码一致性）
     - [x] added_tokens：Qwen3 special token 的 encode/decode 对齐（基础用例）
     - [ ] pre_tokenizer regex：Unicode 类别（`\p{L}`/`\p{N}`/`\s`）完整对齐（可能需要 C 侧表或 ICU；先留接口）
+    - [ ] decoder/byte-fallback：对齐 HF ByteLevel 行为（unknown byte 的 `<0xXX>`/替代策略、以及 decode 的 byte->utf8 还原边界）
+    - [ ] normalizer（可选）：若 tokenizer.json 指定 NFC/NFKC/Lowercase 等，先做最小兼容（未指定则保持原样）
+    - [ ] 边界一致性：`encode(decode(ids))` 与 `decode(encode(text))` 在常见输入上稳定（含中文/emoji/混合标点/换行）
   - [ ] BPE（perf）：减少分配/复制、预处理正则/分词、merge 循环优化、热点下沉到 C/Accelerate（预留后端）
     - [x] merge 核心下沉到 C runtime（reference O(n^2)），避免 Tua 侧 O(n^2) 热循环
     - [x] examples：`llm_tokenizer_qwen3_perf.tua`（tok/s 基准 + repeat 参数）
     - [x] 进一步优化：减少 bytes->id per-byte 调用（bytes->ids 下沉到 C）
-    - [ ] 进一步优化：减少临时数组、cache 命中率统计/上限策略、merge heap/linked-list 优化
+    - [ ] 进一步优化：decode 热路径下沉到 C（ids->bytes），避免 Tua 侧 utf8 decode + map lookup + per-byte set
+    - [ ] 进一步优化：减少临时数组（spans/ids/word/out）、提供可复用 scratch（避免在每段/每 token 分配）
+    - [ ] 进一步优化：added_tokens 匹配加速（按首字节分桶/Trie；减少 `memcmp` 次数）
+    - [ ] 进一步优化：预处理 pre_tokenizer（把 Unicode 分类/扫描搬到 C；Tua 侧只拿 spans）
+    - [ ] 进一步优化：merge 数据结构优化（pairRank/pairMergeId 的 cache-friendly 表示；hash->sorted array / open-addressing）
+    - [ ] 观测与上限：统计 spans/merge 次数与峰值内存；提供参数限制（maxInputBytes/maxSpans/maxMerges）避免极端输入拖垮
 
 #### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
 说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。

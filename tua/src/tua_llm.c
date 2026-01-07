@@ -230,12 +230,159 @@ static inline int map_get_i64(tua_map* m, int64_t key, int64_t* out) {
     return 1;
 }
 
+static inline const char* value_to_cstr_strict_llm(tua_value v) {
+    if (v.tag == 5) return (const char*)(uintptr_t)v.payload; // TUA_VAL_STRING
+    return NULL;
+}
+
+static inline int map_get_cstr(tua_map* m, int64_t key, const char** out) {
+    if (!m || !out) return 0;
+    int32_t ok = 0;
+    tua_value v = tua_map_get_with_ok(m, make_long_value_llm(key), &ok);
+    if (!ok) return 0;
+    const char* s = value_to_cstr_strict_llm(v);
+    if (!s) return 0;
+    *out = s;
+    return 1;
+}
+
 static inline int64_t pair_key_i64(int64_t a, int64_t b) {
     // Match Tua side `_pairKey(a, b)` semantics without signed left-shift UB.
     uint64_t hi = ((uint64_t)(uint32_t)a) << 32;
     uint64_t lo = (uint64_t)(uint32_t)b;
     uint64_t k = hi | lo;
     return (int64_t)k;
+}
+
+static inline int32_t gpt2_bytes_to_unicode_inv(int32_t cp) {
+    // Inverse mapping for GPT-2 ByteLevel `bytes_to_unicode()`.
+    // Allowed bytes map to themselves; excluded bytes map to code points starting at 256.
+    if (cp >= 33 && cp <= 126) return cp;
+    if (cp >= 161 && cp <= 172) return cp;
+    if (cp >= 174 && cp <= 255) return cp;
+    if (cp >= 256 && cp <= 323) {
+        int32_t idx = cp - 256;
+        if (idx < 33) return idx; // 0..32
+        idx -= 33;
+        if (idx < 34) return 127 + idx; // 127..160
+        idx -= 34;
+        if (idx == 0) return 173;
+    }
+    return -1;
+}
+
+static int utf8_decode1_strict(const char* s, size_t* io, int32_t* outCp) {
+    if (!s || !io || !outCp) return 0;
+    size_t i = *io;
+    unsigned char c0 = (unsigned char)s[i];
+    if (c0 == 0) return 0;
+    if (c0 < 0x80) {
+        *outCp = (int32_t)c0;
+        *io = i + 1;
+        return 1;
+    }
+    unsigned char c1 = (unsigned char)s[i + 1];
+    if ((c0 & 0xE0) == 0xC0) {
+        if ((c1 & 0xC0) != 0x80) return 0;
+        int32_t cp = (int32_t)(((c0 & 0x1F) << 6) | (c1 & 0x3F));
+        if (cp < 0x80) return 0; // overlong
+        *outCp = cp;
+        *io = i + 2;
+        return 1;
+    }
+    unsigned char c2 = (unsigned char)s[i + 2];
+    if ((c0 & 0xF0) == 0xE0) {
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) return 0;
+        int32_t cp = (int32_t)(((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F));
+        if (cp < 0x800) return 0; // overlong
+        if (cp >= 0xD800 && cp <= 0xDFFF) return 0; // surrogate
+        *outCp = cp;
+        *io = i + 3;
+        return 1;
+    }
+    unsigned char c3 = (unsigned char)s[i + 3];
+    if ((c0 & 0xF8) == 0xF0) {
+        if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return 0;
+        int32_t cp = (int32_t)(((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F));
+        if (cp < 0x10000) return 0; // overlong
+        if (cp > 0x10FFFF) return 0;
+        *outCp = cp;
+        *io = i + 4;
+        return 1;
+    }
+    return 0;
+}
+
+tua_bytes* tua_llm_bpe_decode_ids_to_bytes(tua_array* ids, tua_map* idToToken, int32_t* outErr) {
+    if (outErr) *outErr = 1;
+    if (!outErr) return NULL;
+    if (!ids || !idToToken) return NULL;
+    if (ids->elem_size != (int64_t)sizeof(int64_t)) return NULL;
+    if (ids->len < 0) return NULL;
+    if (ids->len > INT32_MAX) return NULL;
+    if (ids->len > 0 && !ids->data) return NULL;
+
+    const int64_t* idp = (const int64_t*)ids->data;
+    int32_t n = (int32_t)ids->len;
+
+    // Pass 1: compute output byte length (1 byte per code point in byte-level token string).
+    int64_t outLen = 0;
+    for (int32_t i = 0; i < n; i++) {
+        const char* tok = NULL;
+        if (!map_get_cstr(idToToken, idp[i], &tok)) return NULL;
+        size_t j = 0;
+        while (tok[j] != '\0') {
+            int32_t cp = 0;
+            if (!utf8_decode1_strict(tok, &j, &cp)) return NULL;
+            if (gpt2_bytes_to_unicode_inv(cp) < 0) return NULL;
+            outLen++;
+        }
+    }
+
+    tua_bytes* out = tua_bytes_new_uninit(outLen);
+    if (!out && outLen == 0) {
+        *outErr = 0;
+        return tua_bytes_new_uninit(0);
+    }
+    if (!out) return NULL;
+    uint8_t* dst = tua_bytes_data(out);
+    if (!dst && outLen != 0) {
+        tua_bytes_free(out);
+        return NULL;
+    }
+
+    // Pass 2: fill output bytes.
+    int64_t off = 0;
+    for (int32_t i = 0; i < n; i++) {
+        const char* tok = NULL;
+        if (!map_get_cstr(idToToken, idp[i], &tok)) {
+            tua_bytes_free(out);
+            return NULL;
+        }
+        size_t j = 0;
+        while (tok[j] != '\0') {
+            int32_t cp = 0;
+            if (!utf8_decode1_strict(tok, &j, &cp)) {
+                tua_bytes_free(out);
+                return NULL;
+            }
+            int32_t b = gpt2_bytes_to_unicode_inv(cp);
+            if (b < 0) {
+                tua_bytes_free(out);
+                return NULL;
+            }
+            if (off < outLen) dst[off] = (uint8_t)b;
+            off++;
+        }
+    }
+    if (off != outLen) {
+        // Should not happen; keep safe.
+        tua_bytes_free(out);
+        return NULL;
+    }
+
+    *outErr = 0;
+    return out;
 }
 
 tua_array* tua_llm_bpe_merge_ids(tua_array* ids, tua_map* pairRank, tua_map* pairMergeId, int32_t* outErr) {

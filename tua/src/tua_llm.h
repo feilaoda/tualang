@@ -44,5 +44,8 @@ tua_array* tua_llm_bpe_merge_ids(tua_array* ids, tua_map* pairRank, tua_map* pai
 // Convert a byte slice to the initial byte-level BPE ids using `byteToId[0..255]`.
 // Returns `long[]` of length `len` and writes outErr=0 on success.
 tua_array* tua_llm_bpe_bytes_to_ids(tua_bytes* b, int64_t off, int64_t len, tua_array* byteToId, int32_t* outErr);
+// Decode BPE token ids back to UTF-8 bytes using the GPT-2 byte-level inverse mapping.
+// `idToToken` maps id -> token string (tokenizer.json vocab+added); returns a new `bytes` on success.
+tua_bytes* tua_llm_bpe_decode_ids_to_bytes(tua_array* ids, tua_map* idToToken, int32_t* outErr);
 
 #endif

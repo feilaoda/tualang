@@ -11,6 +11,7 @@ extern fn memcmp(a: ptr, b: ptr, n: long) int
 
 extern fn tua_llm_bpe_merge_ids(ids: long[], pairRank: map<long, long>, pairMergeId: map<long, long>, outErr: &int) -> long[]
 extern fn tua_llm_bpe_bytes_to_ids(b: bytes, off: long, len: long, byteToId: long[], outErr: &int) -> long[]
+extern fn tua_llm_bpe_decode_ids_to_bytes(ids: long[], idToToken: map<long, string>, outErr: &int) -> bytes
 
 extern fn tua_json_parse_key_path_bpe_merges_pair_maps(b: bytes, path: string, vocab: map, outRank: &map, outMergeId: &map, outCount: &long) int
 
@@ -585,41 +586,10 @@ object BpeTokenizer {
 
     fn decode(t: TokenizerBpe, ids: long[]) -> string, int {
         if ids == null { return null, 1 }
-        // Allocate an upper bound (sum of token utf8 byte lengths).
-        let cap: long = 0L
-        let ii: int = 0
-        while ii < ids.len() {
-            let id = ids[ii]
-            let o = _mapGetOptLongString(t.idToToken, id)
-            if o.isSome() {
-                cap = cap + strlen(o.unwrap())
-            }
-            ii = ii + 1
-        }
-        let buf = bstd.Bytes.newLong(cap)
-        let off: long = 0L
-
-        let jj: int = 0
-        while jj < ids.len() {
-            let id = ids[jj]
-            let o = _mapGetOptLongString(t.idToToken, id)
-            if o.isNone() { return null, 1 }
-            let tok: string = o.unwrap()
-            let tb = bstd.Bytes.fromString(tok)
-            let tn = bstd.Bytes.len(tb)
-            let i: long = 0L
-            while i < tn {
-                let e, cp, sz = utf8.Utf8.decode1(tb, i)
-                if e != 0 { return null, 1 }
-                let ob = _mapGetOptIntInt(t.cpToByte, cp)
-                if ob.isNone() { return null, 1 }
-                let bv: int = ob.unwrap()
-                bstd.Bytes.setU8(buf, off, bv)
-                off = off + 1L
-                i = i + sz
-            }
-            jj = jj + 1
-        }
-        return tua_str_from_bytes_copy(buf, 0L, off), 0
+        let de: int = 0
+        let buf = tua_llm_bpe_decode_ids_to_bytes(ids, t.idToToken, &de)
+        if de != 0 || buf == null { return null, 1 }
+        let n = bstd.Bytes.len(buf)
+        return tua_str_from_bytes_copy(buf, 0L, n), 0
     }
 }
