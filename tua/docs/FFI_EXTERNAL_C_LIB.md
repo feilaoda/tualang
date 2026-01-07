@@ -14,6 +14,12 @@
 - `#include "tua_map.h"`
 - `#include "tua_bytes.h"`
 
+如果你希望脚本/构建系统自动发现头文件目录，可以用 `tuac` 查询：
+
+- `./bin/tuac --print-ffi-include-dir`（输出 `src` 目录）
+- `./bin/tuac --print-ffi-cflags`（输出 `-I...`）
+- `./bin/tuac --print-ffi-ldflags`（可选：构建可 `dlopen` 的 shared lib 时需要的链接参数；macOS 下会输出 `-Wl,-undefined,dynamic_lookup`）
+
 也可以通过环境变量覆盖：
 
 - `TUA_SRC_DIR=/path/to/tua/src`

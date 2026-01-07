@@ -8,6 +8,13 @@ export TUA_STDLIB_DIR="$ROOT/std"
 
 make tuac >/dev/null
 
+# If any tests request external libraries via `// tuac: ...`, build them once up-front.
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+  if [[ ! -f "$ROOT/build/clib/libtuaextbpe.a" ]]; then
+    ./tools/build_clib.sh tuaextbpe examples/ffi_tuaext_bpe_decode.c >/dev/null
+  fi
+fi
+
 fail=0
 total=0
 skip=0

@@ -1479,6 +1479,16 @@ static char* tryResolveLibFromSearchPaths(Compiler* compiler, const char* libNam
     return NULL;
 }
 
+static int moduleUsesTuaLlm(LLVMModuleRef module) {
+    if (!module) return 0;
+    for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn != NULL; fn = LLVMGetNextFunction(fn)) {
+        const char* name = LLVMGetValueName(fn);
+        if (!name || name[0] == '\0') continue;
+        if (strncmp(name, "tua_llm_", 8) == 0) return 1;
+    }
+    return 0;
+}
+
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
     if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
 
@@ -1520,7 +1530,9 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     char* arrC = joinPath(srcDir, "tua_array.c");
     char* bytesC = joinPath(srcDir, "tua_bytes.c");
     char* jsonC = joinPath(srcDir, "tua_json.c");
+    char* llmC = joinPath(srcDir, "tua_llm.c");
     char* rtArchive = findRuntimeArchivePath(argv0);
+    int needLlm = moduleUsesTuaLlm(module);
 
     // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC> <bytesC> <jsonC>
     const char* clangExe = "clang";
@@ -1536,7 +1548,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     int linkLibCount = compiler->linkLibs ? compiler->linkLibs->length : 0;
     int linkArgCount = compiler->linkArgs ? compiler->linkArgs->length : 0;
 
-    int cap = 34 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
+    int cap = 36 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
     char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
 
@@ -1552,6 +1564,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     args[n++] = arrC;
     if (bytesC && fileExists(bytesC)) args[n++] = bytesC;
     if (jsonC && fileExists(jsonC)) args[n++] = jsonC;
+    if (needLlm && llmC && fileExists(llmC)) args[n++] = llmC;
     if (rtArchive) args[n++] = rtArchive;
 
     // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
@@ -1575,6 +1588,11 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         args[n++] = (char*)lib;
     }
 
+#if !defined(__APPLE__)
+    // `tua_llm.c` uses libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
+    if (needLlm) args[n++] = (char*)"-lm";
+#endif
+
     args[n++] = NULL;
     char* stderrText = NULL;
     int status = spawnAndWaitCaptureStderr(clangExe, args, &stderrText);
@@ -1584,6 +1602,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     free(arrC);
     free(bytesC);
     free(jsonC);
+    free(llmC);
     free(rtArchive);
     free(srcDir);
     free(args);
@@ -2202,6 +2221,9 @@ int main(int argc, char* argv[]) {
     int stackFixedArrays = 0;
     int emitLoc = 1;
     int checkExtern = 0;
+    int printFfiIncludeDir = 0;
+    int printFfiCflags = 0;
+    int printFfiLdflags = 0;
     int runArgc = 0;
     char** runArgv = NULL;
 
@@ -2216,8 +2238,20 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
             return 1;
+        }
+        if (strcmp(a, "--print-ffi-include-dir") == 0) {
+            printFfiIncludeDir = 1;
+            continue;
+        }
+        if (strcmp(a, "--print-ffi-cflags") == 0) {
+            printFfiCflags = 1;
+            continue;
+        }
+        if (strcmp(a, "--print-ffi-ldflags") == 0) {
+            printFfiLdflags = 1;
+            continue;
         }
         if (strncmp(a, "--llvm-O", 8) == 0) {
             const char* v = a + 8;
@@ -2422,8 +2456,40 @@ int main(int argc, char* argv[]) {
         srcPath = a;
     }
 
+    if (printFfiIncludeDir || printFfiCflags || printFfiLdflags) {
+        if (srcPath) {
+            fprintf(stderr, "error: --print-ffi-* flags cannot be combined with a source file\n");
+            return 1;
+        }
+        char* srcDir = findRuntimeSrcDir(argv[0]);
+        if (!srcDir) {
+            fprintf(stderr, "error: cannot locate runtime sources (expected ./src/tua_map.c and ./src/tua_array.c)\n");
+            return 1;
+        }
+        int printed = 0;
+        if (printFfiIncludeDir) {
+            printf("%s", srcDir);
+            printed = 1;
+        }
+        if (printFfiCflags) {
+            if (printed) putchar('\n');
+            printf("-I%s", srcDir);
+            printed = 1;
+        }
+        if (printFfiLdflags) {
+            if (printed) putchar('\n');
+#if defined(__APPLE__)
+            // Useful when building a plugin .dylib that references symbols provided by the host (tuac).
+            printf("-Wl,-undefined,dynamic_lookup");
+#endif
+        }
+        putchar('\n');
+        free(srcDir);
+        return 0;
+    }
+
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
         return 1;
     }
     compiler.llvmOptLevel = optLevel;

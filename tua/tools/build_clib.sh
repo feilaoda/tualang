@@ -2,7 +2,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TUA_SRC_DIR="${TUA_SRC_DIR:-"$ROOT/src"}"
+if [[ -z "${TUA_SRC_DIR:-}" ]]; then
+  # Prefer asking `tuac` where its runtime headers live (works even if the repo is relocated).
+  if [[ -x "$ROOT/bin/tuac" ]]; then
+    TUA_SRC_DIR="$("$ROOT/bin/tuac" --print-ffi-include-dir 2>/dev/null || true)"
+  fi
+  if [[ -z "${TUA_SRC_DIR:-}" ]]; then
+    TUA_SRC_DIR="$ROOT/src"
+  fi
+fi
 
 if [[ $# -lt 2 ]]; then
   echo "Usage: $0 <libname> <src1.c> [src2.c ...]" >&2
@@ -40,4 +48,3 @@ done
 
 ar rcs "$LIB_PATH" "${objs[@]}"
 echo "$LIB_PATH"
-
