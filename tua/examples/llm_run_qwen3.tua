@@ -1,8 +1,15 @@
-import "std/strconv" as conv
+import "std/time" as time
+import "std/term" as term
+import "std/utf8" as u
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 import Qwen3Chat from "../packages/llm/qwen3_chat"
 import Qwen3, Qwen3State, Qwen3Infer from "../packages/llm/qwen3"
 import LlmArgs from "../packages/llm/options"
+
+private fn _emptyLongArray() -> long[] {
+    let out: long[] = {}
+    return out
+}
 
 fn main(args: string[]) -> int {
     let modelDir = "examples/models/qwen3-0.6b"
@@ -42,13 +49,44 @@ fn main(args: string[]) -> int {
         if ie2 == 0 { stopIds.push(eot) }
     }
 
-    let ge, gen = Qwen3Infer.generateWithStops(st, ids, opts, stopIds)
-    if ge != 0 { println("run failed"); return 1 }
-    let genIds: long[] = gen
-
-    let out, de = BpeTokenizer.decode(tok, genIds)
-    if de != 0 { println("decode failed"); return 1 }
     println("prompt={}", prompt)
-    println("gen_tokens={} gen_text={}", genIds.len(), out)
+    print("gen_text=")
+    let _ = term.Stdout.flush()
+
+    // Stream tokens to stdout as they are generated.
+    let banIds: long[] = {}
+    let ge, g = Qwen3Infer.genStopsInit(st, ids, opts, stopIds, banIds, 0)
+    if ge != 0 { println("run failed"); return 1 }
+    let start = time.Time.monoNs()
+    let chunk: long[] = _emptyLongArray()
+    while true {
+        let se, nextId, done = Qwen3Infer.genStopsNext(st, g, opts)
+        if se != 0 { println("\nrun failed"); return 1 }
+        if done != 0 { break }
+        chunk.push(nextId)
+        if chunk.len() >= 8 {
+            let text, de = BpeTokenizer.decode(tok, chunk)
+            if de != 0 { println("\ndecode failed"); return 1 }
+            print("{}", u.Utf8.lossyString(text))
+            let _ = term.Stdout.flush()
+            chunk = _emptyLongArray()
+        }
+    }
+    if chunk.len() > 0 {
+        let text2, de2 = BpeTokenizer.decode(tok, chunk)
+        if de2 != 0 { println("\ndecode failed"); return 1 }
+        print("{}", u.Utf8.lossyString(text2))
+        let _ = term.Stdout.flush()
+    }
+    let end = time.Time.monoNs()
+    println("")
+
+    let dt: long = end - start
+    let secs: double = (double)dt / 1000000000.0
+    let tokps: double = 0.0
+    let genOut: long[] = g.out
+    let genTokens: int = genOut.len()
+    if secs > 0.0 { tokps = (double)genTokens / secs }
+    println("gen_tokens={} tok/s={}", genTokens, tokps)
     return 0
 }

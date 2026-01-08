@@ -29,3 +29,7 @@ tua_err_t tua_io_readline_alloc(char** out_data, int32_t* out_len) {
     return TUA_OK;
 }
 
+tua_err_t tua_io_flush_stdout(void) {
+    fflush(stdout);
+    return TUA_OK;
+}

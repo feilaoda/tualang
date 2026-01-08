@@ -1,6 +1,7 @@
 import "std/rt" as rt
 
 extern fn tua_io_readline_alloc(outData: &string, outLen: &int) int
+extern fn tua_io_flush_stdout() int
 
 object Stdin {
     // Reads one line from stdin. On EOF: returns (0, null, 0).
@@ -13,3 +14,8 @@ object Stdin {
     }
 }
 
+object Stdout {
+    fn flush() -> int {
+        return tua_io_flush_stdout()
+    }
+}

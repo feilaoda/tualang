@@ -11,5 +11,7 @@
 // On success: `*out_data` must be freed via `tua_free` and `*out_len` is set (bytes excluding trailing NUL).
 tua_err_t tua_io_readline_alloc(char** out_data, int32_t* out_len);
 
-#endif
+// Flush stdout (useful for streaming output).
+tua_err_t tua_io_flush_stdout(void);
 
+#endif

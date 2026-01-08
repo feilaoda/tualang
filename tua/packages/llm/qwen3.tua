@@ -868,7 +868,182 @@ private fn _argmaxLogits(let s: Qwen3State) -> int, long {
     return 0, out
 }
 
+// Streaming generator state for stop-based generation.
+struct Qwen3GenStops {
+    ctx: long[]
+    out: long[]
+    stopIds: long[]
+    banIds: long[]
+    minTokensBeforeStop: int
+    maxNewTokens: int
+    t: int
+    rng: long
+    done: int
+}
+
 object Qwen3Infer {
+    // Initialize a streaming stop-based generator.
+    // - Stops on EOS or any `stopIds` (excluded from output).
+    // - If `minTokensBeforeStop>0`, bans EOS and stop ids early to avoid empty outputs.
+    // - `banIds` are always banned (useful for keeping chat outputs clean).
+    fn genStopsInit(let s: Qwen3State, promptIds: long[], opts: LlmOptions, stopIds: long[], banIds: long[], minTokensBeforeStop: int) -> int, Qwen3GenStops {
+        let z = Qwen3GenStops{ ctx: null, out: null, stopIds: null, banIds: null, minTokensBeforeStop: 0, maxNewTokens: 0, t: 0, rng: 0L, done: 0 }
+        let maxNew: int = opts.maxNewTokens
+        if maxNew < 0 { return 1, z }
+
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, z }
+
+        let rng: long = opts.seed
+        if rng == 0L {
+            rng = time.Time.realNs()
+            if rng == 0L { rng = -7046029254386353131L }
+        }
+
+        let minStop: int = minTokensBeforeStop
+        if minStop < 0 { minStop = 0 }
+
+        let outArr: long[] = {}
+        let stopArr: long[] = stopIds
+        if stopArr == null { stopArr = {} }
+        let banArr: long[] = banIds
+        if banArr == null { banArr = {} }
+
+        let out = Qwen3GenStops{
+            ctx: ctx0,
+            out: outArr,
+            stopIds: stopArr,
+            banIds: banArr,
+            minTokensBeforeStop: minStop,
+            maxNewTokens: maxNew,
+            t: 0,
+            rng: rng,
+            done: 0,
+        }
+        return 0, out
+    }
+
+    // Generate the next token for a `Qwen3GenStops` stream.
+    // Returns (err, tokenId, done). When `done!=0`, `tokenId` is unspecified and no token was appended.
+    fn genStopsNext(let s: Qwen3State, let g: Qwen3GenStops, opts: LlmOptions) -> int, long, int {
+        if g.done != 0 { return 0, 0L, 1 }
+        if g.t >= g.maxNewTokens { g.done = 1; return 0, 0L, 1 }
+
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let vocab: int = cfg.vocab
+        let logits: bytes = s.logits
+        // Cache fields into locals (tuac limitation: indexing/address-of only works on variables).
+        let ctx: long[] = g.ctx
+        let out: long[] = g.out
+        let stopIds: long[] = g.stopIds
+        let banIds: long[] = g.banIds
+
+        if _logits(s) != 0 { return 3, 0L, 0 }
+        if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
+            let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
+        }
+        if opts.noRepeatNgram > 1 {
+            let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, vocab, ctx, opts.noRepeatNgram)
+        }
+
+        if banIds != null {
+            let bi: int = 0
+            while bi < banIds.len() {
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, banIds[bi])
+                bi = bi + 1
+            }
+        }
+
+        let hasStops: bool = stopIds.len() > 0
+        if g.t < g.minTokensBeforeStop {
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eos)
+            if hasStops {
+                let si0: int = 0
+                while si0 < stopIds.len() {
+                    let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, stopIds[si0])
+                    si0 = si0 + 1
+                }
+            }
+        }
+
+        let nextId: long = 0L
+        let tries: int = 0
+        let rng: long = g.rng
+        while tries < 8 {
+            if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
+                let ae, id = _argmaxLogits(s)
+                if ae != 0 { return 3, 0L, 0 }
+                nextId = id
+            } else {
+                let outIdx: long = 0L
+                let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                if se != 0 { return 3, 0L, 0 }
+                nextId = outIdx
+            }
+
+            if g.t < g.minTokensBeforeStop {
+                if nextId == eos {
+                    let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, nextId)
+                    tries = tries + 1
+                    continue
+                }
+                if hasStops {
+                    let si1: int = 0
+                    let isStop: int = 0
+                    while si1 < stopIds.len() {
+                        if nextId == stopIds[si1] { isStop = 1; break }
+                        si1 = si1 + 1
+                    }
+                    if isStop != 0 {
+                        let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, nextId)
+                        tries = tries + 1
+                        continue
+                    }
+                }
+            }
+            break
+        }
+        g.rng = rng
+
+        if nextId == eos { g.done = 1; return 0, 0L, 1 }
+        if hasStops {
+            let si: int = 0
+            while si < stopIds.len() {
+                if nextId == stopIds[si] { g.done = 1; return 0, 0L, 1 }
+                si = si + 1
+            }
+        }
+
+        out.push(nextId)
+        ctx.push(nextId)
+        g.out = out
+        g.ctx = ctx
+
+        let e2 = _forwardToken(s, nextId)
+        if e2 == 2 {
+            let maxSeq: int = s.kvMaxSeq
+            if maxSeq <= 1 { return 4, 0L, 0 }
+            let replay: int = maxSeq - 1
+            let start: int = ctx.len() - replay
+            if start < 0 { start = 0 }
+            _clearKv(s)
+            let j: int = start
+            while j < ctx.len() - 1 {
+                let re = _forwardToken(s, ctx[j])
+                if re != 0 { return 4, 0L, 0 }
+                j = j + 1
+            }
+            let re2 = _forwardToken(s, nextId)
+            if re2 != 0 { return 4, 0L, 0 }
+        } else if e2 != 0 {
+            return 4, 0L, 0
+        }
+
+        g.t = g.t + 1
+        return 0, nextId, 0
+    }
+
     fn prefill(let s: Qwen3State, promptIds: long[]) -> int {
         let e, _ = _prefillAndGetCtx(s, promptIds)
         if e != 0 { return e }
