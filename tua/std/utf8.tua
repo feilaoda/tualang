@@ -1,5 +1,7 @@
 import "std/bytes" as bstd
 
+extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
+
 private fn _imod(a: int, b: int) -> int {
     return a - (a / b) * b
 }
@@ -178,5 +180,37 @@ object Utf8 {
         bstd.Bytes.setU8(dst, off + 3L, b3)
         return 0, 4L
     }
-}
 
+    // Convert possibly-invalid UTF-8 bytes into a valid UTF-8 `string` by replacing invalid sequences with U+FFFD.
+    fn lossyString(s: string) -> string {
+        if s == null { return null }
+        let src: bytes = bstd.Bytes.fromString(s)
+        if Utf8.isValid(src) { return s }
+
+        let n: long = bstd.Bytes.len(src)
+        let dst: bytes = bstd.Bytes.newLong(n * 3L)
+        let di: long = 0L
+        let i: long = 0L
+        while i < n {
+            let e, _cp, sz = Utf8.decode1(src, i)
+            if e == 0 {
+                let _ = bstd.Bytes.copy(dst, di, src, i, sz)
+                di = di + sz
+                i = i + sz
+                continue
+            }
+            // U+FFFD (replacement character) => EF BF BD
+            let ee, wrote = Utf8.encode1(65533, dst, di)
+            if ee != 0 || wrote != 3L {
+                // Fallback to ASCII '?' if encoding fails for any reason.
+                bstd.Bytes.setU8(dst, di, 63)
+                di = di + 1L
+                i = i + 1L
+                continue
+            }
+            di = di + wrote
+            i = i + 1L
+        }
+        return tua_str_from_bytes_copy(dst, 0L, di)
+    }
+}

@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <Accelerate/Accelerate.h>
+#endif
+
 static int check_f32_span(tua_bytes* b, int64_t off, int64_t n_floats) {
     if (!b) return 0;
     if (off < 0 || n_floats < 0) return 0;
@@ -20,6 +24,123 @@ static int check_f32_span(tua_bytes* b, int64_t off, int64_t n_floats) {
 
 static inline float* f32p(tua_bytes* b, int64_t off) {
     return (float*)tua_bytes_data_at(b, off);
+}
+
+tua_err_t tua_llm_gemv_f32(tua_bytes* y, int64_t y_off,
+                          tua_bytes* a, int64_t a_off,
+                          tua_bytes* x, int64_t x_off,
+                          int32_t m, int32_t n) {
+    if (m <= 0 || n <= 0) return TUA_E_INVALID;
+    int64_t mn = (int64_t)m * (int64_t)n;
+    if (mn <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(a, a_off, mn)) return TUA_E_INVALID;
+    if (!check_f32_span(x, x_off, n)) return TUA_E_INVALID;
+    if (!check_f32_span(y, y_off, m)) return TUA_E_INVALID;
+
+    const float* A = (const float*)tua_bytes_data_at(a, a_off);
+    const float* X = (const float*)tua_bytes_data_at(x, x_off);
+    float* Y = (float*)tua_bytes_data_at(y, y_off);
+    if (!A || !X || !Y) return TUA_E_INVALID;
+
+#if defined(__APPLE__)
+    // Chunk into smaller row blocks; avoids pathological cases and keeps stack usage modest.
+    const int32_t block = 4096;
+    for (int32_t row = 0; row < m; row += block) {
+        int32_t mb = m - row;
+        if (mb > block) mb = block;
+        const float* Ab = A + (int64_t)row * (int64_t)n;
+        float* Yb = Y + row;
+        // Treat `X` as an [n,1] matrix and `Yb` as [mb,1] (row-major).
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mb, 1, n, 1.0f, Ab, n, X, 1, 0.0f, Yb, 1);
+    }
+    return TUA_OK;
+#else
+    for (int32_t i = 0; i < m; i++) {
+        const float* row = A + (int64_t)i * (int64_t)n;
+        double sum = 0.0;
+        for (int32_t j = 0; j < n; j++) sum += (double)row[j] * (double)X[j];
+        Y[i] = (float)sum;
+    }
+    return TUA_OK;
+#endif
+}
+
+tua_err_t tua_llm_repetition_penalty_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                        tua_array* ids, int32_t last_n, float penalty) {
+    if (penalty <= 1.0f) return TUA_OK;
+    if (n <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(logits, logits_off, n)) return TUA_E_INVALID;
+    if (!ids) return TUA_E_INVALID;
+    if (ids->elem_size != (int64_t)sizeof(int64_t)) return TUA_E_INVALID;
+    if (ids->len <= 0 || !ids->data) return TUA_OK;
+    if (last_n <= 0) return TUA_OK;
+
+    float* L = (float*)tua_bytes_data_at(logits, logits_off);
+    if (!L) return TUA_E_INVALID;
+
+    int64_t len = ids->len;
+    int64_t start = len - (int64_t)last_n;
+    if (start < 0) start = 0;
+    int64_t* p = (int64_t*)ids->data;
+
+    for (int64_t i = start; i < len; i++) {
+        int64_t tok = p[i];
+        if (tok < 0 || tok >= (int64_t)n) continue;
+        // De-dup within the window to avoid over-penalizing repeated tokens.
+        int dup = 0;
+        for (int64_t j = start; j < i; j++) {
+            if (p[j] == tok) { dup = 1; break; }
+        }
+        if (dup) continue;
+
+        float v = L[tok];
+        L[tok] = (v > 0.0f) ? (v / penalty) : (v * penalty);
+    }
+    return TUA_OK;
+}
+
+tua_err_t tua_llm_no_repeat_ngram_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                     tua_array* ids, int32_t ngram) {
+    if (ngram <= 1) return TUA_OK;
+    if (ngram > 16) return TUA_E_INVALID; // guard against abuse
+    if (n <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(logits, logits_off, n)) return TUA_E_INVALID;
+    if (!ids) return TUA_E_INVALID;
+    if (ids->elem_size != (int64_t)sizeof(int64_t)) return TUA_E_INVALID;
+    if (ids->len <= 0 || !ids->data) return TUA_OK;
+    if (ids->len < (int64_t)(ngram - 1)) return TUA_OK;
+
+    float* L = (float*)tua_bytes_data_at(logits, logits_off);
+    if (!L) return TUA_E_INVALID;
+
+    int64_t* p = (int64_t*)ids->data;
+    int64_t len = ids->len;
+    int32_t prefix_len = ngram - 1;
+    int64_t prefix_start = len - prefix_len;
+
+    // For each prior n-gram that shares the same (ngram-1) prefix as the current suffix,
+    // ban its next token.
+    for (int64_t i = 0; i + (int64_t)ngram <= len; i++) {
+        int match = 1;
+        for (int32_t j = 0; j < prefix_len; j++) {
+            if (p[i + j] != p[prefix_start + j]) { match = 0; break; }
+        }
+        if (!match) continue;
+        int64_t tok = p[i + prefix_len];
+        if (tok < 0 || tok >= (int64_t)n) continue;
+        L[tok] = -INFINITY;
+    }
+    return TUA_OK;
+}
+
+tua_err_t tua_llm_logit_ban_id_f32(tua_bytes* logits, int64_t logits_off, int32_t n, int64_t id) {
+    if (n <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(logits, logits_off, n)) return TUA_E_INVALID;
+    if (id < 0 || id >= (int64_t)n) return TUA_OK;
+    float* L = (float*)tua_bytes_data_at(logits, logits_off);
+    if (!L) return TUA_E_INVALID;
+    L[id] = -INFINITY;
+    return TUA_OK;
 }
 
 tua_err_t tua_llm_add_inplace_f32(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_t src_off, int64_t n) {
@@ -204,6 +325,180 @@ tua_err_t tua_llm_argmax_f32(tua_bytes* x, int64_t x_off, int32_t n, int64_t* ou
     }
     *out_index = (int64_t)best_i;
     return TUA_OK;
+}
+
+static inline uint64_t xorshift64star(uint64_t* state) {
+    uint64_t x = state ? *state : 0;
+    if (x == 0) x = 0x9e3779b97f4a7c15ULL;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    return x * 2685821657736338717ULL;
+}
+
+static inline double u01_from_u64(uint64_t x) {
+    // Convert to [0,1) with 53 bits of precision.
+    return (double)(x >> 11) * (1.0 / 9007199254740992.0);
+}
+
+static tua_err_t sample_topk_topp_from_ptr(const float* logits, int32_t n,
+                                           int32_t top_k, float top_p, float temperature,
+                                           uint64_t* rng_state, int64_t* out_index) {
+    if (!out_index) return TUA_E_INVALID;
+    if (n <= 0) return TUA_E_INVALID;
+    if (!logits) return TUA_E_INVALID;
+
+    if (temperature <= 0.0f) {
+        int32_t best_i = 0;
+        float best_v = logits[0];
+        for (int32_t i = 1; i < n; i++) {
+            float a = logits[i];
+            if (a > best_v) {
+                best_v = a;
+                best_i = i;
+            }
+        }
+        *out_index = (int64_t)best_i;
+        return TUA_OK;
+    }
+
+    int32_t k = top_k;
+    if (k <= 0 || k > n) k = n;
+    if (k <= 0) k = 1;
+
+    int32_t* ids = (int32_t*)malloc(sizeof(int32_t) * (size_t)k);
+    float* vals = (float*)malloc(sizeof(float) * (size_t)k);
+    float* probs = (float*)malloc(sizeof(float) * (size_t)k);
+    if (!ids || !vals || !probs) {
+        free(ids);
+        free(vals);
+        free(probs);
+        return TUA_E_NOMEM;
+    }
+
+    // Initialize with the first k entries.
+    int32_t min_idx = 0;
+    float min_v = logits[0];
+    for (int32_t i = 0; i < k; i++) {
+        ids[i] = i;
+        vals[i] = logits[i];
+        if (i == 0 || vals[i] < min_v) {
+            min_v = vals[i];
+            min_idx = i;
+        }
+    }
+
+    // Keep top-k by logit.
+    for (int32_t i = k; i < n; i++) {
+        float v = logits[i];
+        if (v <= min_v) continue;
+        ids[min_idx] = i;
+        vals[min_idx] = v;
+        // Recompute min.
+        min_idx = 0;
+        min_v = vals[0];
+        for (int32_t j = 1; j < k; j++) {
+            if (vals[j] < min_v) {
+                min_v = vals[j];
+                min_idx = j;
+            }
+        }
+    }
+
+    // Sort descending by logit (insertion sort; k is small).
+    for (int32_t i = 1; i < k; i++) {
+        float v = vals[i];
+        int32_t id = ids[i];
+        int32_t j = i - 1;
+        while (j >= 0 && vals[j] < v) {
+            vals[j + 1] = vals[j];
+            ids[j + 1] = ids[j];
+            j--;
+        }
+        vals[j + 1] = v;
+        ids[j + 1] = id;
+    }
+
+    float maxv = vals[0] / temperature;
+    for (int32_t i = 1; i < k; i++) {
+        float sv = vals[i] / temperature;
+        if (sv > maxv) maxv = sv;
+    }
+
+    float sum = 0.0f;
+    for (int32_t i = 0; i < k; i++) {
+        float sv = vals[i] / temperature;
+        float e = expf(sv - maxv);
+        probs[i] = e;
+        sum += e;
+    }
+    if (sum <= 0.0f) sum = 1.0f;
+
+    // Optional nucleus cutoff.
+    int32_t use_k = k;
+    if (top_p > 0.0f && top_p < 1.0f) {
+        float acc = 0.0f;
+        use_k = 0;
+        for (int32_t i = 0; i < k; i++) {
+            float p = probs[i] / sum;
+            acc += p;
+            use_k++;
+            if (acc >= top_p) break;
+        }
+        if (use_k < 1) use_k = 1;
+    }
+
+    // Renormalize over the kept set and sample.
+    float sum2 = 0.0f;
+    for (int32_t i = 0; i < use_k; i++) sum2 += probs[i];
+    if (sum2 <= 0.0f) sum2 = 1.0f;
+
+    uint64_t rnd = xorshift64star(rng_state);
+    double u = u01_from_u64(rnd);
+    double r = u * (double)sum2;
+    float c = 0.0f;
+    int32_t pick = use_k - 1;
+    for (int32_t i = 0; i < use_k; i++) {
+        c += probs[i];
+        if ((double)c >= r) {
+            pick = i;
+            break;
+        }
+    }
+    *out_index = (int64_t)ids[pick];
+
+    free(ids);
+    free(vals);
+    free(probs);
+    return TUA_OK;
+}
+
+tua_err_t tua_llm_sample_topk_topp_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                      int32_t top_k, float top_p, float temperature,
+                                      int64_t* rng_state, int64_t* out_index) {
+    if (!rng_state) return TUA_E_INVALID;
+    if (!check_f32_span(logits, logits_off, n)) return TUA_E_INVALID;
+    const float* v = f32p(logits, logits_off);
+    uint64_t st = (uint64_t)(*rng_state);
+    tua_err_t e = sample_topk_topp_from_ptr(v, n, top_k, top_p, temperature, &st, out_index);
+    *rng_state = (int64_t)st;
+    return e;
+}
+
+tua_err_t tua_llm_sample_topk_topp_f32_arr(tua_array* logits_f32,
+                                          int32_t top_k, float top_p, float temperature,
+                                          int64_t* rng_state, int64_t* out_index) {
+    if (!rng_state) return TUA_E_INVALID;
+    if (!logits_f32 || logits_f32->elem_size != (int64_t)sizeof(float)) return TUA_E_INVALID;
+    if (logits_f32->len <= 0) return TUA_E_INVALID;
+    if (!logits_f32->data) return TUA_E_INVALID;
+    int32_t n = (int32_t)logits_f32->len;
+    const float* v = (const float*)logits_f32->data;
+    uint64_t st = (uint64_t)(*rng_state);
+    tua_err_t e = sample_topk_topp_from_ptr(v, n, top_k, top_p, temperature, &st, out_index);
+    *rng_state = (int64_t)st;
+    return e;
 }
 
 static inline tua_value make_long_value_llm(int64_t x) {

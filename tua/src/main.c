@@ -1549,6 +1549,10 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     int linkArgCount = compiler->linkArgs ? compiler->linkArgs->length : 0;
 
     int cap = 36 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
+#if defined(__APPLE__)
+    // Framework links (e.g. Accelerate) are appended conditionally.
+    if (needLlm) cap += 2;
+#endif
     char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
 
@@ -1587,6 +1591,14 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         args[n++] = (char*)"-l";
         args[n++] = (char*)lib;
     }
+
+#if defined(__APPLE__)
+    // `tua_llm.c` uses Accelerate (CBLAS) on macOS.
+    if (needLlm) {
+        args[n++] = (char*)"-framework";
+        args[n++] = (char*)"Accelerate";
+    }
+#endif
 
 #if !defined(__APPLE__)
     // `tua_llm.c` uses libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
@@ -2505,6 +2517,18 @@ int main(int argc, char* argv[]) {
 
     // For JIT mode, allow loading external dynamic libraries to satisfy `extern fn` symbols.
 #if defined(__unix__) || defined(__APPLE__)
+#if defined(__APPLE__)
+    // Ensure Accelerate is loaded in the host process so `extern fn cblas_*` can resolve in JIT mode.
+    // (AOT uses `-framework Accelerate` above.)
+    {
+        const char* accel = "/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate";
+        void* h = dlopen(accel, RTLD_NOW | RTLD_GLOBAL);
+        if (!h) {
+            // Keep going: programs that don't use cblas_* shouldn't fail just because this dlopen failed.
+            fprintf(stderr, "warning: dlopen failed for %s: %s\n", accel, dlerror());
+        }
+    }
+#endif
     // Build the dlopen list:
     // - explicit `--dlopen <path>`
     // - plus (JIT only) inferred loads from `-L/-l/--link-arg <path>`

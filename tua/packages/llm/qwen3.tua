@@ -4,12 +4,11 @@ import "std/strconv" as conv
 import "std/time" as time
 
 import SafeTensors, SafeDtype, SafeTensorsFile from "./safetensors"
-import OpTranspose from "./ops"
+import OpsBackend, OpTranspose from "./ops"
 import AccelerateOps from "./ops_accelerate"
 import LlmOptions from "./options"
 
 extern fn sqrtf(x: float) float
-extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
 extern fn tua_bytes_bf16_to_f32(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
 extern fn tua_llm_add_inplace_f32(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int
 extern fn tua_llm_rmsnorm_f32(out: bytes, outOff: long, x: bytes, xOff: long, w: bytes, wOff: long, n: int, eps: float) int
@@ -17,7 +16,12 @@ extern fn tua_llm_qk_rmsnorm_inplace_f32(x: bytes, xOff: long, nHeads: int, head
 extern fn tua_llm_silu_mul_f32(out: bytes, outOff: long, gate: bytes, gateOff: long, up: bytes, upOff: long, n: long) int
 extern fn tua_llm_rope_inplace_f32(x: bytes, xOff: long, nHeads: int, headDim: int, pos: int, theta: float) int
 extern fn tua_llm_attn_decode_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
+extern fn tua_llm_gemv_f32(y: bytes, yOff: long, a: bytes, aOff: long, x: bytes, xOff: long, m: int, n: int) int
+extern fn tua_llm_repetition_penalty_f32(logits: bytes, logitsOff: long, n: int, ids: long[], lastN: int, penalty: float) int
+extern fn tua_llm_no_repeat_ngram_f32(logits: bytes, logitsOff: long, n: int, ids: long[], ngram: int) int
+extern fn tua_llm_logit_ban_id_f32(logits: bytes, logitsOff: long, n: int, id: long) int
 extern fn tua_llm_argmax_f32(x: bytes, xOff: long, n: int, outIndex: &long) int
+extern fn tua_llm_sample_topk_topp_f32(logits: bytes, logitsOff: long, n: int, topK: int, topP: float, temperature: float, rngState: &long, outIndex: &long) int
 
 struct Qwen3Config {
     hidden: int
@@ -134,7 +138,7 @@ private fn _f32Bytes(n: long) -> bytes { return bstd.Bytes.newLong(n * 4L) }
 
 struct Qwen3State {
     cfg: Qwen3Config
-    be: AccelerateOps
+    be: OpsBackend
     pos: int
 
     // Weights (float32 arena + offsets).
@@ -266,6 +270,7 @@ object Qwen3 {
         let offEmbed: long = 0L
         let offLm: long = 0L
         let offNorm: long = 0L
+        let lmIsTied: int = 0
         let layerOffs: long[] = {}
 
         cur = _align(cur, 64L)
@@ -275,12 +280,18 @@ object Qwen3 {
         if e1 != 0 { return 100 + e1, z }
         cur = cur + nEmbed * 4L
 
-        cur = _align(cur, 64L)
-        offLm = cur
+        // Some checkpoints tie `lm_head.weight` with `model.embed_tokens.weight` and omit `lm_head.weight`.
         let e2, tmpOff2, nLm = _tensorNumelBF16(st, "lm_head.weight")
         let _ = tmpOff2
-        if e2 != 0 { return 200 + e2, z }
-        cur = cur + nLm * 4L
+        if e2 == 1 {
+            lmIsTied = 1
+            offLm = offEmbed
+        } else {
+            if e2 != 0 { return 200 + e2, z }
+            cur = _align(cur, 64L)
+            offLm = cur
+            cur = cur + nLm * 4L
+        }
 
         cur = _align(cur, 64L)
         offNorm = cur
@@ -378,9 +389,11 @@ object Qwen3 {
         let ce, tmpNum = _convertTensorBF16ToF32(st, base, "model.embed_tokens.weight", arena, offEmbed)
         let _ = tmpNum
         if ce != 0 { return 500 + ce, z }
-        let ce2, tmpNum2 = _convertTensorBF16ToF32(st, base, "lm_head.weight", arena, offLm)
-        let _ = tmpNum2
-        if ce2 != 0 { return 600 + ce2, z }
+        if lmIsTied == 0 {
+            let ce2, tmpNum2 = _convertTensorBF16ToF32(st, base, "lm_head.weight", arena, offLm)
+            let _ = tmpNum2
+            if ce2 != 0 { return 600 + ce2, z }
+        }
         let ce3, tmpNum3 = _convertTensorBF16ToF32(st, base, "model.norm.weight", arena, offNorm)
         let _ = tmpNum3
         if ce3 != 0 { return 700 + ce3, z }
@@ -462,6 +475,171 @@ object Qwen3 {
         return 0, out
     }
 
+    private fn _loadWeightMap(modelDir: string) -> int, map {
+        if modelDir == null { return 1, null }
+        let e0, b = bstd.Bytes.mmapFile(modelDir + "/model.safetensors.index.json")
+        if e0 != 0 { return 2, null }
+        let pe, rootAny = j.Json.parseBytes(b)
+        if pe != 0 || rootAny == null { return 3, null }
+        let root: map = rootAny
+        let opt = root["weight_map"]
+        if opt.isNone() { return 4, null }
+        let wmAny: any = opt.unwrap()
+        if wmAny == null { return 4, null }
+        let wm: map = wmAny
+        return 0, wm
+    }
+
+    private fn _weightFileFor(weightMap: map, tensor: string) -> int, string {
+        if weightMap == null || tensor == null { return 1, null }
+        let wm: map = weightMap
+        let opt = wm[tensor]
+        if opt.isNone() { return 2, null }
+        let vAny: any = opt.unwrap()
+        if vAny == null { return 2, null }
+        let v: string = vAny
+        return 0, v
+    }
+
+    private fn _tensorNumelBF16Sharded(modelDir: string, weightMap: map, name: string) -> int, long {
+        // Returns (err, numel)
+        if modelDir == null || name == null { return 1, 0L }
+        let fe, rel = Qwen3._weightFileFor(weightMap, name)
+        if fe != 0 { return 2, 0L }
+        let e0, st = SafeTensors.parseMmap(modelDir + "/" + rel)
+        if e0 != 0 { return 10 + e0, 0L }
+        let te, dataOff, numel = _tensorNumelBF16(st, name)
+        let _ = dataOff
+        if te != 0 { return 20 + te, 0L }
+        return 0, numel
+    }
+
+    private fn _convertBF16ToF32FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int {
+        if modelDir == null || name == null { return 1 }
+        let fe, rel = Qwen3._weightFileFor(weightMap, name)
+        if fe != 0 { return 2 }
+        let e0, st = SafeTensors.parseMmap(modelDir + "/" + rel)
+        if e0 != 0 { return 10 + e0 }
+        let base: long = 8L + st.headerLen
+        let ce, tmpNum = _convertTensorBF16ToF32(st, base, name, arena, dstOff)
+        let _ = tmpNum
+        if ce != 0 { return 20 + ce }
+        return 0
+    }
+
+    fn loadWeightsF32Auto(modelDir: string, cfg: Qwen3Config) -> int, Qwen3Weights {
+        if modelDir == null { return 1, Qwen3Weights{} }
+        let eSingle, wSingle = loadWeightsF32(modelDir + "/model.safetensors", cfg)
+        if eSingle == 0 { return 0, move wSingle }
+
+        // Sharded safetensors: use the index + per-shard files.
+        let we, weightMap = Qwen3._loadWeightMap(modelDir)
+        if we != 0 { return eSingle, Qwen3Weights{} }
+
+        // Pass 1: size.
+        let cur: long = 0L
+        let offEmbed: long = 0L
+        let offLm: long = 0L
+        let offNorm: long = 0L
+        let lmIsTied: int = 0
+        let layerOffs: long[] = {}
+
+        cur = _align(cur, 64L)
+        offEmbed = cur
+        let e1, nEmbed = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, "model.embed_tokens.weight")
+        if e1 != 0 { return 200 + e1, Qwen3Weights{} }
+        cur = cur + nEmbed * 4L
+
+        let e2, nLm = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, "lm_head.weight")
+        if e2 != 0 {
+            // Missing lm_head in sharded checkpoint: assume tied embeddings.
+            lmIsTied = 1
+            offLm = offEmbed
+        } else {
+            cur = _align(cur, 64L)
+            offLm = cur
+            cur = cur + nLm * 4L
+        }
+
+        cur = _align(cur, 64L)
+        offNorm = cur
+        let e3, nNorm = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, "model.norm.weight")
+        if e3 != 0 { return 300 + e3, Qwen3Weights{} }
+        cur = cur + nNorm * 4L
+
+        let li: int = 0
+        while li < cfg.layers {
+            let pre = _layerPrefix(li)
+            let names: string[] = {
+                pre + "input_layernorm.weight",
+                pre + "post_attention_layernorm.weight",
+                pre + "self_attn.q_norm.weight",
+                pre + "self_attn.k_norm.weight",
+                pre + "self_attn.q_proj.weight",
+                pre + "self_attn.k_proj.weight",
+                pre + "self_attn.v_proj.weight",
+                pre + "self_attn.o_proj.weight",
+                pre + "mlp.gate_proj.weight",
+                pre + "mlp.up_proj.weight",
+                pre + "mlp.down_proj.weight",
+            }
+            let ni: int = 0
+            while ni < names.len() {
+                cur = _align(cur, 64L)
+                layerOffs.push(cur)
+                let ee, nn = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, names[ni])
+                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, Qwen3Weights{} }
+                cur = cur + nn * 4L
+                ni = ni + 1
+            }
+            li = li + 1
+        }
+
+        let arena = bstd.Bytes.newLongUninit(cur)
+        if arena == null { return 5, Qwen3Weights{} }
+
+        // Pass 2: convert.
+        let ce = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
+        if ce != 0 { return 500 + ce, Qwen3Weights{} }
+        if lmIsTied == 0 {
+            let ce2 = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
+            if ce2 != 0 { return 600 + ce2, Qwen3Weights{} }
+        }
+        let ce3 = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
+        if ce3 != 0 { return 700 + ce3, Qwen3Weights{} }
+
+        let idx: int = 0
+        li = 0
+        while li < cfg.layers {
+            let pre = _layerPrefix(li)
+            let names: string[] = {
+                pre + "input_layernorm.weight",
+                pre + "post_attention_layernorm.weight",
+                pre + "self_attn.q_norm.weight",
+                pre + "self_attn.k_norm.weight",
+                pre + "self_attn.q_proj.weight",
+                pre + "self_attn.k_proj.weight",
+                pre + "self_attn.v_proj.weight",
+                pre + "self_attn.o_proj.weight",
+                pre + "mlp.gate_proj.weight",
+                pre + "mlp.up_proj.weight",
+                pre + "mlp.down_proj.weight",
+            }
+            let ni: int = 0
+            while ni < names.len() {
+                let dstOff = layerOffs[idx]
+                let ee = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, names[ni], arena, dstOff)
+                if ee != 0 { return 2000 + idx * 4 + ee, Qwen3Weights{} }
+                idx = idx + 1
+                ni = ni + 1
+            }
+            li = li + 1
+        }
+
+        let out = Qwen3Weights{ arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        return 0, out
+    }
+
     fn newScratch(cfg: Qwen3Config, maxSeq: int) -> Qwen3Scratch {
         let hidden: long = (long)cfg.hidden
         let qdim: long = (long)cfg.heads * (long)cfg.headDim
@@ -504,7 +682,7 @@ object Qwen3 {
         let ce, cfg = Qwen3.loadConfig(modelDir + "/config.json")
         if ce != 0 { return 1, z }
 
-        let we, w = Qwen3.loadWeightsF32(modelDir + "/model.safetensors", cfg)
+        let we, w = Qwen3.loadWeightsF32Auto(modelDir, cfg)
         if we != 0 { return 1, z }
 
         let maxSeq = _maxSeq(cfg, opts)
@@ -525,8 +703,9 @@ object Qwen3 {
 
         let scratch: Qwen3Scratch = Qwen3.newScratch(cfg, kvMaxSeq)
 
-        let be: AccelerateOps = AccelerateOps()
-        be.setThreads(opts.threads)
+        let beImpl: AccelerateOps = AccelerateOps()
+        beImpl.setThreads(opts.threads)
+        let be: OpsBackend = beImpl
 
         let out = Qwen3State{
             cfg: cfg,
@@ -564,14 +743,8 @@ private fn _embedRowBytes(cfg: Qwen3Config, id: long) -> long {
     return id * (long)cfg.hidden * 4L
 }
 
-private fn _gemv(be: AccelerateOps, m: int, n: int, a: bytes, aOff: long, x: bytes, xOff: long, y: bytes, yOff: long) -> int {
-    let aPtr = tua_bytes_data_at(a, aOff)
-    let xPtr = tua_bytes_data_at(x, xOff)
-    let yPtr = tua_bytes_data_at(y, yOff)
-    if aPtr == null { return 1 }
-    if xPtr == null { return 1 }
-    if yPtr == null { return 1 }
-    return be.gemvF32((int)OpTranspose.none, m, n, 1.0, aPtr, n, xPtr, 1, 0.0, yPtr, 1)
+private fn _gemv(m: int, n: int, a: bytes, aOff: long, x: bytes, xOff: long, y: bytes, yOff: long) -> int {
+    return tua_llm_gemv_f32(y, yOff, a, aOff, x, xOff, m, n)
 }
 
 private fn _rmsnorm(out: bytes, x: bytes, w: bytes, wOff: long, n: int, eps: float) -> int {
@@ -596,8 +769,6 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
     let maxSeq: int = s.kvMaxSeq
     if pos >= maxSeq { return 2 }
 
-    let be: AccelerateOps = s.be
-
     let eoff = s.wOffEmbed + _embedRowBytes(cfg, id)
     bstd.Bytes.copy(s.x, 0L, s.wArena, eoff, _f32(cfg.hidden))
 
@@ -614,9 +785,9 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let qOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qProj)
         let kOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.kProj)
         let vOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.vProj)
-        if _gemv(be, qdim, cfg.hidden, s.wArena, qOff, s.x1, 0L, s.q, 0L) != 0 { return 1 }
-        if _gemv(be, kvdim, cfg.hidden, s.wArena, kOff, s.x1, 0L, s.k, 0L) != 0 { return 1 }
-        if _gemv(be, kvdim, cfg.hidden, s.wArena, vOff, s.x1, 0L, s.v, 0L) != 0 { return 1 }
+        if _gemv(qdim, cfg.hidden, s.wArena, qOff, s.x1, 0L, s.q, 0L) != 0 { return 1 }
+        if _gemv(kvdim, cfg.hidden, s.wArena, kOff, s.x1, 0L, s.k, 0L) != 0 { return 1 }
+        if _gemv(kvdim, cfg.hidden, s.wArena, vOff, s.x1, 0L, s.v, 0L) != 0 { return 1 }
 
         let qnOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qNorm)
         let knOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.kNorm)
@@ -637,7 +808,7 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         if ae != 0 { return 1 }
 
         let oOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.oProj)
-        if _gemv(be, cfg.hidden, qdim, s.wArena, oOff, s.attn, 0L, s.x2, 0L) != 0 { return 1 }
+        if _gemv(cfg.hidden, qdim, s.wArena, oOff, s.attn, 0L, s.x2, 0L) != 0 { return 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
         let postNormOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.postNorm)
@@ -646,10 +817,10 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let gateOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.gateProj)
         let upOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.upProj)
         let downOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.downProj)
-        if _gemv(be, cfg.intermediate, cfg.hidden, s.wArena, gateOff, s.x1, 0L, s.gate, 0L) != 0 { return 1 }
-        if _gemv(be, cfg.intermediate, cfg.hidden, s.wArena, upOff, s.x1, 0L, s.up, 0L) != 0 { return 1 }
+        if _gemv(cfg.intermediate, cfg.hidden, s.wArena, gateOff, s.x1, 0L, s.gate, 0L) != 0 { return 1 }
+        if _gemv(cfg.intermediate, cfg.hidden, s.wArena, upOff, s.x1, 0L, s.up, 0L) != 0 { return 1 }
         if tua_llm_silu_mul_f32(s.inter, 0L, s.gate, 0L, s.up, 0L, (long)cfg.intermediate) != 0 { return 1 }
-        if _gemv(be, cfg.hidden, cfg.intermediate, s.wArena, downOff, s.inter, 0L, s.x2, 0L) != 0 { return 1 }
+        if _gemv(cfg.hidden, cfg.intermediate, s.wArena, downOff, s.inter, 0L, s.x2, 0L) != 0 { return 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
         layer = layer + 1
@@ -659,10 +830,33 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
     return 0
 }
 
+private fn _prefillAndGetCtx(let s: Qwen3State, promptIds: long[]) -> int, long[] {
+    if promptIds == null { return 1, null }
+    if promptIds.len() == 0 { return 1, null }
+    if s.kvMaxSeq <= 0 { return 1, null }
+
+    let start: int = 0
+    if promptIds.len() > s.kvMaxSeq {
+        start = promptIds.len() - s.kvMaxSeq
+    }
+
+    _clearKv(s)
+    let ctx: long[] = {}
+    let i: int = start
+    while i < promptIds.len() {
+        let id: long = promptIds[i]
+        let e = _forwardToken(s, id)
+        if e != 0 { return 2, null }
+        ctx.push(id)
+        i = i + 1
+    }
+    return 0, ctx
+}
+
 private fn _logits(let s: Qwen3State) -> int {
     let cfg: Qwen3Config = s.cfg
     if _rmsnorm(s.x1, s.x, s.wArena, s.wOffNorm, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
-    if _gemv(s.be, cfg.vocab, cfg.hidden, s.wArena, s.wOffLmHead, s.x1, 0L, s.logits, 0L) != 0 { return 1 }
+    if _gemv(cfg.vocab, cfg.hidden, s.wArena, s.wOffLmHead, s.x1, 0L, s.logits, 0L) != 0 { return 1 }
     return 0
 }
 
@@ -672,6 +866,496 @@ private fn _argmaxLogits(let s: Qwen3State) -> int, long {
     let e = tua_llm_argmax_f32(s.logits, 0L, cfg.vocab, &out)
     if e != 0 { return 1, 0L }
     return 0, out
+}
+
+object Qwen3Infer {
+    fn prefill(let s: Qwen3State, promptIds: long[]) -> int {
+        let e, _ = _prefillAndGetCtx(s, promptIds)
+        if e != 0 { return e }
+        return 0
+    }
+
+    // Compute next-token logits and return argmax id (does not advance KV).
+    fn nextTokenArgmax(let s: Qwen3State) -> int, long {
+        if _logits(s) != 0 { return 1, 0L }
+        return _argmaxLogits(s)
+    }
+
+    // Generate one assistant turn for Qwen-style chat prompts.
+    // - Expects `promptIds` to already include `<|im_start|>assistant\n` (and optional empty think block).
+    // - Stops on `<|im_end|>` (cfg.eos) after at least one non-control token.
+    // - Bans control tokens like `<|im_start|>` to keep output clean.
+    fn generateChatTurn(let s: Qwen3State, promptIds: long[], opts: LlmOptions) -> int, long[] {
+        let maxNew: int = opts.maxNewTokens
+        if maxNew < 0 { return 1, null }
+
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, null }
+        let ctx: long[] = ctx0
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let vocab: int = cfg.vocab
+        let logits: bytes = s.logits
+
+        let rng: long = opts.seed
+        if rng == 0L {
+            rng = time.Time.realNs()
+            if rng == 0L { rng = -7046029254386353131L }
+        }
+
+        // Qwen3 tokenizer added token ids (from tokenizer_config.json).
+        let eot: long = 151643L // <|endoftext|>
+        let imStart: long = 151644L // <|im_start|>
+        let think: long = 151667L // <think>
+        let endThink: long = 151668L // </think>
+
+        // We do not support tools or multimodal tokens yet; ban them to keep generation clean.
+        let objRefStart: long = 151646L
+        let objRefEnd: long = 151647L
+        let boxStart: long = 151648L
+        let boxEnd: long = 151649L
+        let quadStart: long = 151650L
+        let quadEnd: long = 151651L
+        let visionStart: long = 151652L
+        let visionEnd: long = 151653L
+        let visionPad: long = 151654L
+        let imagePad: long = 151655L
+        let videoPad: long = 151656L
+        let toolCall: long = 151657L
+        let toolCallEnd: long = 151658L
+        let fimPrefix: long = 151659L
+        let fimMiddle: long = 151660L
+        let fimSuffix: long = 151661L
+        let fimPad: long = 151662L
+        let repoName: long = 151663L
+        let fileSep: long = 151664L
+        let toolResp: long = 151665L
+        let toolRespEnd: long = 151666L
+
+        let out: long[] = {}
+        let t: int = 0
+        let seenContent: int = 0
+        while t < maxNew {
+            if _logits(s) != 0 { return 3, null }
+            if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
+                let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
+            }
+            if opts.noRepeatNgram > 1 {
+                let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, vocab, ctx, opts.noRepeatNgram)
+            }
+
+            // Ban control tokens from being generated as content.
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, imStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eot)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, objRefStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, objRefEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, boxStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, boxEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, quadStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, quadEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, visionStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, visionEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, visionPad)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, imagePad)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, videoPad)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolCall)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolCallEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolResp)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolRespEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, fimPrefix)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, fimMiddle)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, fimSuffix)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, fimPad)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, repoName)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, fileSep)
+            if opts.enableThinking == 0 {
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, think)
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, endThink)
+            }
+
+            // Avoid immediately ending the turn before any content.
+            if t < 4 && seenContent == 0 {
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eos)
+            }
+
+            let nextId: long = 0L
+            let tries: int = 0
+            while tries < 4 {
+                if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
+                    let ae, id = _argmaxLogits(s)
+                    if ae != 0 { return 3, null }
+                    nextId = id
+                } else {
+                    let outIdx: long = 0L
+                    let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                    if se != 0 { return 3, null }
+                    nextId = outIdx
+                }
+
+                if nextId == eos && seenContent == 0 {
+                    let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eos)
+                    tries = tries + 1
+                    continue
+                }
+                break
+            }
+
+            if nextId == eos { break }
+
+            out.push(nextId)
+            ctx.push(nextId)
+            if nextId != imStart && nextId != eot && nextId != think && nextId != endThink {
+                seenContent = 1
+            }
+
+            let e2 = _forwardToken(s, nextId)
+            if e2 == 2 {
+                let maxSeq: int = s.kvMaxSeq
+                if maxSeq <= 1 { return 4, null }
+                let replay: int = maxSeq - 1
+                let start: int = ctx.len() - replay
+                if start < 0 { start = 0 }
+                _clearKv(s)
+                let j: int = start
+                while j < ctx.len() - 1 {
+                    let re = _forwardToken(s, ctx[j])
+                    if re != 0 { return 4, null }
+                    j = j + 1
+                }
+                let re2 = _forwardToken(s, nextId)
+                if re2 != 0 { return 4, null }
+            } else if e2 != 0 {
+                return 4, null
+            }
+
+            t = t + 1
+        }
+        return 0, out
+    }
+
+    // Deterministic generation: argmax for up to `maxNewTokens`, stopping on EOS.
+    fn generateArgmax(let s: Qwen3State, promptIds: long[], maxNewTokens: int) -> int, long[] {
+        if maxNewTokens < 0 { return 1, null }
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, null }
+        let ctx: long[] = ctx0
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let logits: bytes = s.logits
+
+        let out: long[] = {}
+        let t: int = 0
+        while t < maxNewTokens {
+            if _logits(s) != 0 { return 3, null }
+            // Default repetition penalty to reduce loopy greedy outputs.
+            let _ = tua_llm_repetition_penalty_f32(logits, 0L, cfg.vocab, ctx, 64, 1.1)
+            let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, cfg.vocab, ctx, 3)
+            let ae, nextId = _argmaxLogits(s)
+            if ae != 0 { return 3, null }
+            out.push(nextId)
+            ctx.push(nextId)
+            if nextId == eos { break }
+
+            let e2 = _forwardToken(s, nextId)
+            if e2 == 2 {
+                let maxSeq: int = s.kvMaxSeq
+                if maxSeq <= 1 { return 4, null }
+                let replay: int = maxSeq - 1
+                let start: int = ctx.len() - replay
+                if start < 0 { start = 0 }
+                _clearKv(s)
+                let j: int = start
+                while j < ctx.len() - 1 {
+                    let re = _forwardToken(s, ctx[j])
+                    if re != 0 { return 4, null }
+                    j = j + 1
+                }
+                let re2 = _forwardToken(s, nextId)
+                if re2 != 0 { return 4, null }
+            } else if e2 != 0 {
+                return 4, null
+            }
+            t = t + 1
+        }
+        return 0, out
+    }
+
+    // Sampling-based generation.
+    fn generate(let s: Qwen3State, promptIds: long[], opts: LlmOptions) -> int, long[] {
+        let maxNew: int = opts.maxNewTokens
+        if maxNew < 0 { return 1, null }
+
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, null }
+        let ctx: long[] = ctx0
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let vocab: int = cfg.vocab
+        let logits: bytes = s.logits
+
+        let rng: long = opts.seed
+        if rng == 0L {
+            rng = time.Time.realNs()
+            if rng == 0L { rng = -7046029254386353131L }
+        }
+
+        let out: long[] = {}
+        let t: int = 0
+        while t < maxNew {
+            if _logits(s) != 0 { return 3, null }
+            if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
+                let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
+            }
+            if opts.noRepeatNgram > 1 {
+                let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, vocab, ctx, opts.noRepeatNgram)
+            }
+            let nextId: long = 0L
+            if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
+                let ae, id = _argmaxLogits(s)
+                if ae != 0 { return 3, null }
+                nextId = id
+            } else {
+                let outIdx: long = 0L
+                let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                if se != 0 { return 3, null }
+                nextId = outIdx
+            }
+
+            out.push(nextId)
+            ctx.push(nextId)
+            if nextId == eos { break }
+
+            let e2 = _forwardToken(s, nextId)
+            if e2 == 2 {
+                let maxSeq: int = s.kvMaxSeq
+                if maxSeq <= 1 { return 4, null }
+                let replay: int = maxSeq - 1
+                let start: int = ctx.len() - replay
+                if start < 0 { start = 0 }
+                _clearKv(s)
+                let j: int = start
+                while j < ctx.len() - 1 {
+                    let re = _forwardToken(s, ctx[j])
+                    if re != 0 { return 4, null }
+                    j = j + 1
+                }
+                let re2 = _forwardToken(s, nextId)
+                if re2 != 0 { return 4, null }
+            } else if e2 != 0 {
+                return 4, null
+            }
+            t = t + 1
+        }
+        return 0, out
+    }
+
+    fn generateWithStops(let s: Qwen3State, promptIds: long[], opts: LlmOptions, stopIds: long[]) -> int, long[] {
+        if stopIds == null || stopIds.len() == 0 {
+            return Qwen3Infer.generate(s, promptIds, opts)
+        }
+
+        let maxNew: int = opts.maxNewTokens
+        if maxNew < 0 { return 1, null }
+
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, null }
+        let ctx: long[] = ctx0
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let vocab: int = cfg.vocab
+        let logits: bytes = s.logits
+
+        let rng: long = opts.seed
+        if rng == 0L {
+            rng = time.Time.realNs()
+            if rng == 0L { rng = -7046029254386353131L }
+        }
+
+        let out: long[] = {}
+        let t: int = 0
+        while t < maxNew {
+            if _logits(s) != 0 { return 3, null }
+            if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
+                let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
+            }
+            if opts.noRepeatNgram > 1 {
+                let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, vocab, ctx, opts.noRepeatNgram)
+            }
+            let nextId: long = 0L
+            if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
+                let ae, id = _argmaxLogits(s)
+                if ae != 0 { return 3, null }
+                nextId = id
+            } else {
+                let outIdx: long = 0L
+                let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                if se != 0 { return 3, null }
+                nextId = outIdx
+            }
+
+            if nextId == eos { break }
+            let si: int = 0
+            while si < stopIds.len() {
+                if nextId == stopIds[si] { return 0, out }
+                si = si + 1
+            }
+
+            out.push(nextId)
+            ctx.push(nextId)
+
+            let e2 = _forwardToken(s, nextId)
+            if e2 == 2 {
+                let maxSeq: int = s.kvMaxSeq
+                if maxSeq <= 1 { return 4, null }
+                let replay: int = maxSeq - 1
+                let start: int = ctx.len() - replay
+                if start < 0 { start = 0 }
+                _clearKv(s)
+                let j: int = start
+                while j < ctx.len() - 1 {
+                    let re = _forwardToken(s, ctx[j])
+                    if re != 0 { return 4, null }
+                    j = j + 1
+                }
+                let re2 = _forwardToken(s, nextId)
+                if re2 != 0 { return 4, null }
+            } else if e2 != 0 {
+                return 4, null
+            }
+            t = t + 1
+        }
+        return 0, out
+    }
+
+    // Like `generateWithStops`, but prevents "empty/too-short" answers by banning EOS and stop ids
+    // for the first `minTokensBeforeStop` generated tokens.
+    fn generateWithStopsNoEarlyStop(let s: Qwen3State, promptIds: long[], opts: LlmOptions, stopIds: long[], minTokensBeforeStop: int) -> int, long[] {
+        if stopIds == null || stopIds.len() == 0 {
+            return Qwen3Infer.generate(s, promptIds, opts)
+        }
+        let minStop: int = minTokensBeforeStop
+        if minStop < 0 { minStop = 0 }
+
+        let maxNew: int = opts.maxNewTokens
+        if maxNew < 0 { return 1, null }
+
+        let pe, ctx0 = _prefillAndGetCtx(s, promptIds)
+        if pe != 0 { return 2, null }
+        let ctx: long[] = ctx0
+        let cfg: Qwen3Config = s.cfg
+        let eos: long = cfg.eos
+        let vocab: int = cfg.vocab
+        let logits: bytes = s.logits
+
+        let rng: long = opts.seed
+        if rng == 0L {
+            rng = time.Time.realNs()
+            if rng == 0L { rng = -7046029254386353131L }
+        }
+
+        // Ban Qwen control/tool tokens to keep raw mode cleaner.
+        let eot: long = 151643L // <|endoftext|>
+        let imStart: long = 151644L // <|im_start|>
+        let toolCall: long = 151657L
+        let toolCallEnd: long = 151658L
+        let toolResp: long = 151665L
+        let toolRespEnd: long = 151666L
+
+        let out: long[] = {}
+        let t: int = 0
+        while t < maxNew {
+            if _logits(s) != 0 { return 3, null }
+            if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
+                let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
+            }
+            if opts.noRepeatNgram > 1 {
+                let _ = tua_llm_no_repeat_ngram_f32(logits, 0L, vocab, ctx, opts.noRepeatNgram)
+            }
+
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, imStart)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolCall)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolCallEnd)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolResp)
+            let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, toolRespEnd)
+
+            if t < minStop {
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eos)
+                let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, eot)
+                let si0: int = 0
+                while si0 < stopIds.len() {
+                    let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, stopIds[si0])
+                    si0 = si0 + 1
+                }
+            }
+
+            let nextId: long = 0L
+            let tries: int = 0
+            while tries < 8 {
+                if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
+                    let ae, id = _argmaxLogits(s)
+                    if ae != 0 { return 3, null }
+                    nextId = id
+                } else {
+                    let outIdx: long = 0L
+                    let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                    if se != 0 { return 3, null }
+                    nextId = outIdx
+                }
+
+                if t < minStop {
+                    if nextId == eos || nextId == eot {
+                        let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, nextId)
+                        tries = tries + 1
+                        continue
+                    }
+                    let si1: int = 0
+                    let isStop: int = 0
+                    while si1 < stopIds.len() {
+                        if nextId == stopIds[si1] { isStop = 1; break }
+                        si1 = si1 + 1
+                    }
+                    if isStop != 0 {
+                        let _ = tua_llm_logit_ban_id_f32(logits, 0L, vocab, nextId)
+                        tries = tries + 1
+                        continue
+                    }
+                }
+                break
+            }
+
+            if nextId == eos { break }
+            let si: int = 0
+            while si < stopIds.len() {
+                if nextId == stopIds[si] { return 0, out }
+                si = si + 1
+            }
+
+            out.push(nextId)
+            ctx.push(nextId)
+
+            let e2 = _forwardToken(s, nextId)
+            if e2 == 2 {
+                let maxSeq: int = s.kvMaxSeq
+                if maxSeq <= 1 { return 4, null }
+                let replay: int = maxSeq - 1
+                let start: int = ctx.len() - replay
+                if start < 0 { start = 0 }
+                _clearKv(s)
+                let j: int = start
+                while j < ctx.len() - 1 {
+                    let re = _forwardToken(s, ctx[j])
+                    if re != 0 { return 4, null }
+                    j = j + 1
+                }
+                let re2 = _forwardToken(s, nextId)
+                if re2 != 0 { return 4, null }
+            } else if e2 != 0 {
+                return 4, null
+            }
+            t = t + 1
+        }
+        return 0, out
+    }
 }
 
 object Qwen3Bench {

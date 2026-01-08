@@ -12,3 +12,5 @@ extern fn tua_llm_rope_inplace_f32(x: bytes, xOff: long, nHeads: int, headDim: i
 extern fn tua_llm_attn_decode_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
 
 extern fn tua_llm_argmax_f32(x: bytes, xOff: long, n: int, outIndex: &long) int
+
+extern fn tua_llm_sample_topk_topp_f32(logits: bytes, logitsOff: long, n: int, topK: int, topP: float, temperature: float, rngState: &long, outIndex: &long) int

@@ -1,6 +1,7 @@
 import "std/strconv" as conv
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
-import Qwen3, Qwen3State, Qwen3Bench from "../packages/llm/qwen3"
+import Qwen3Chat from "../packages/llm/qwen3_chat"
+import Qwen3, Qwen3State, Qwen3Infer from "../packages/llm/qwen3"
 import LlmArgs from "../packages/llm/options"
 
 fn main(args: string[]) -> int {
@@ -8,7 +9,8 @@ fn main(args: string[]) -> int {
     let prompt = "Hello, world!"
 
     // Args:
-    //   examples/llm_run_qwen3.tua [modelDir] [prompt] [--threads N] [--kv-mib M] [--kv-max-seq N]
+    //   examples/llm_run_qwen3.tua [modelDir] [prompt] [--threads N] [--kv-mib M] [--kv-max-seq N] [--max-new-tokens N]
+    //     [--temp X] [--top-k N] [--top-p X] [--repeat-penalty X] [--repeat-last-n N] [--no-repeat-ngram N] [--seed N] [--greedy]
     if args.len() >= 2 { modelDir = args[1] }
     if args.len() >= 3 { prompt = args[2] }
 
@@ -18,7 +20,12 @@ fn main(args: string[]) -> int {
     let tok, te = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
     if te != 0 { println("load tokenizer failed"); return 1 }
 
-    let ids0, ee = BpeTokenizer.encode(tok, prompt)
+    let inputText: string = prompt
+    if opts.chat != 0 {
+        inputText = Qwen3Chat.single(prompt, opts.enableThinking != 0)
+    }
+
+    let ids0, ee = BpeTokenizer.encode(tok, inputText)
     if ee != 0 { println("encode prompt failed"); return 1 }
     let ids: long[] = ids0
     if ids.len() == 0 { println("empty prompt ids"); return 1 }
@@ -26,13 +33,22 @@ fn main(args: string[]) -> int {
     let me, st = Qwen3.loadState(modelDir, opts)
     if me != 0 { println("load model failed"); return 1 }
 
-    let ge, nextId = Qwen3Bench.prefillAndDecode1(st, ids)
-    if ge != 0 { println("run failed"); return 1 }
+    let stopIds: long[] = {}
+    if opts.chat != 0 {
+        // For chat, stop when the chat ends.
+        let imEnd, ie = BpeTokenizer.addedId(tok, "<|im_end|>")
+        if ie == 0 { stopIds.push(imEnd) }
+        let eot, ie2 = BpeTokenizer.addedId(tok, "<|endoftext|>")
+        if ie2 == 0 { stopIds.push(eot) }
+    }
 
-    let one: long[] = { nextId }
-    let out, de = BpeTokenizer.decode(tok, one)
+    let ge, gen = Qwen3Infer.generateWithStops(st, ids, opts, stopIds)
+    if ge != 0 { println("run failed"); return 1 }
+    let genIds: long[] = gen
+
+    let out, de = BpeTokenizer.decode(tok, genIds)
     if de != 0 { println("decode failed"); return 1 }
     println("prompt={}", prompt)
-    println("gen_id={} gen_text={}", nextId, out)
+    println("gen_tokens={} gen_text={}", genIds.len(), out)
     return 0
 }

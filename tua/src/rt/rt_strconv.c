@@ -3,7 +3,9 @@
 #include "rt/rt_alloc.h"
 
 #include <inttypes.h>
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 char* tua_int_to_string_alloc(int32_t v) {
@@ -17,3 +19,23 @@ char* tua_int_to_string_alloc(int32_t v) {
     return out;
 }
 
+int32_t tua_parse_double(const char* s, double* out) {
+    if (!out) return 0;
+    *out = 0.0;
+    if (!s) return 0;
+
+    const unsigned char* p = (const unsigned char*)s;
+    while (*p && isspace(*p)) p++;
+    if (!*p) return 0;
+
+    char* endp = NULL;
+    double v = strtod((const char*)p, &endp);
+    if (!endp || endp == (char*)p) return 0;
+
+    const unsigned char* q = (const unsigned char*)endp;
+    while (*q && isspace(*q)) q++;
+    if (*q) return 0;
+
+    *out = v;
+    return 1;
+}

@@ -21,6 +21,30 @@ tua_err_t tua_llm_silu_mul_f32(tua_bytes* out, int64_t out_off, tua_bytes* gate,
 tua_err_t tua_llm_rope_inplace_f32(tua_bytes* x, int64_t x_off, int32_t n_heads, int32_t head_dim,
                                   int32_t pos, float theta);
 
+// Matrix-vector multiply for float32 buffers stored in `bytes`.
+// A is row-major [m,n] contiguous; x is [n]; y is [m].
+// Offsets are in bytes.
+tua_err_t tua_llm_gemv_f32(tua_bytes* y, int64_t y_off,
+                          tua_bytes* a, int64_t a_off,
+                          tua_bytes* x, int64_t x_off,
+                          int32_t m, int32_t n);
+
+// Apply GPT-style repetition penalty in-place to logits:
+// for each unique token id in the last `last_n` ids, adjust:
+//   if logit > 0: logit /= penalty
+//   else:         logit *= penalty
+// `penalty <= 1` disables (no-op).
+tua_err_t tua_llm_repetition_penalty_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                        tua_array* ids, int32_t last_n, float penalty);
+
+// Apply no-repeat n-gram blocking by setting logits for disallowed next tokens to -INFINITY.
+// If `ngram <= 1`, does nothing.
+tua_err_t tua_llm_no_repeat_ngram_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                     tua_array* ids, int32_t ngram);
+
+// Sets a single logit to -INFINITY (best-effort; ignores out-of-range ids).
+tua_err_t tua_llm_logit_ban_id_f32(tua_bytes* logits, int64_t logits_off, int32_t n, int64_t id);
+
 // Attention for a single token (decode step). KV must be float32 and stored in a contiguous layout:
 // kv[K] layout: k_base + layer*layer_bytes + t*token_bytes + kv_head*head_dim*4
 // kv[V] layout: v_base + layer*layer_bytes + t*token_bytes + kv_head*head_dim*4
@@ -37,6 +61,18 @@ tua_err_t tua_llm_attn_decode_f32(tua_bytes* out, int64_t out_off,
                                  tua_bytes* scratch, int64_t scratch_off, int64_t scratch_floats);
 
 tua_err_t tua_llm_argmax_f32(tua_bytes* x, int64_t x_off, int32_t n, int64_t* out_index);
+
+// Sampling helpers (for text generation).
+// - `top_k <= 0` means "no top-k filter" (use full vocab or top-p only).
+// - `top_p <= 0` or `top_p > 1` means "no top-p filter".
+// - `temperature <= 0` means greedy argmax.
+// RNG state is mutated in-place; pass a non-zero seed for determinism.
+tua_err_t tua_llm_sample_topk_topp_f32(tua_bytes* logits, int64_t logits_off, int32_t n,
+                                      int32_t top_k, float top_p, float temperature,
+                                      int64_t* rng_state, int64_t* out_index);
+tua_err_t tua_llm_sample_topk_topp_f32_arr(tua_array* logits_f32,
+                                          int32_t top_k, float top_p, float temperature,
+                                          int64_t* rng_state, int64_t* out_index);
 
 // BPE merge for tokenizer: merges a byte-level id sequence using `pairRank` and `pairMergeId`
 // maps generated from tokenizer.json merges. Returns a new `long[]` and writes outErr=0 on success.

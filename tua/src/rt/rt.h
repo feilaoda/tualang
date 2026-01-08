@@ -10,6 +10,7 @@
 #include "rt/rt_err.h"
 #include "rt/rt_fs.h"
 #include "rt/rt_handle.h"
+#include "rt/rt_io.h"
 #include "rt/rt_platform.h"
 #include "rt/rt_fs_async.h"
 #include "rt/rt_loop.h"

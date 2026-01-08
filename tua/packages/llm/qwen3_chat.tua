@@ -1,0 +1,41 @@
+// Minimal Qwen3 chat template helpers.
+// Based on `examples/models/qwen3-0.6b/tokenizer_config.json` (chat_template).
+
+object Qwen3Chat {
+    fn singleWithSystem(systemContent: string, userContent: string, enableThinking: bool) -> string {
+        let out: string = ""
+        if systemContent != null {
+            out = out + "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
+        }
+        out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
+        out = out + "<|im_start|>assistant\n"
+        // Match official template behavior: when enable_thinking=false, insert an empty <think> block.
+        if !enableThinking {
+            out = out + "<think>\n\n</think>\n\n"
+        }
+        return out
+    }
+
+    fn single(userContent: string, enableThinking: bool) -> string {
+        return Qwen3Chat.singleWithSystem(null, userContent, enableThinking)
+    }
+
+    fn systemTurn(systemContent: string) -> string {
+        if systemContent == null { return "" }
+        return "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
+    }
+
+    fn userTurn(userContent: string, enableThinking: bool) -> string {
+        let out: string = ""
+        out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
+        out = out + "<|im_start|>assistant\n"
+        if !enableThinking {
+            out = out + "<think>\n\n</think>\n\n"
+        }
+        return out
+    }
+
+    fn assistantClose() -> string {
+        return "<|im_end|>\n"
+    }
+}
