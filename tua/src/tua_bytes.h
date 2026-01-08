@@ -52,6 +52,9 @@ double tua_f64_from_u64_bits(uint64_t bits);
 // `src_off`/`dst_off` are in bytes. `n` is number of elements.
 // Returns TUA_E_ACCESS if dst is readonly; TUA_E_INVALID on bounds/NULL.
 tua_err_t tua_bytes_bf16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
+tua_err_t tua_bytes_f16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
+tua_err_t tua_bytes_f32_to_bf16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
+tua_err_t tua_bytes_f32_to_f16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
 
 void tua_bytes_free(tua_bytes* b);
 

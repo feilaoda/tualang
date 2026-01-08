@@ -11,6 +11,40 @@
 // Elementwise kernels on contiguous float32 buffers stored in `bytes`.
 // All offsets are in bytes; counts are in elements (float32).
 
+// Configure maximum thread usage for underlying math kernels (best-effort).
+// - `n<=0` means "runtime default".
+tua_err_t tua_llm_set_threads(int32_t n);
+
+// GEMV with BF16 weights and F32 activations:
+// y[m] = A[m,n] (bf16) * x[n] (f32), output y is f32.
+tua_err_t tua_llm_gemv_bf16_f32(tua_bytes* y, int64_t y_off,
+                               tua_bytes* a, int64_t a_off,
+                               tua_bytes* x, int64_t x_off,
+                               int32_t m, int32_t n);
+
+// GEMV with FP16 weights and F32 activations:
+// y[m] = A[m,n] (fp16) * x[n] (f32), output y is f32.
+tua_err_t tua_llm_gemv_f16_f32(tua_bytes* y, int64_t y_off,
+                              tua_bytes* a, int64_t a_off,
+                              tua_bytes* x, int64_t x_off,
+                              int32_t m, int32_t n);
+
+// RMSNorm with BF16 weights and F32 activations.
+tua_err_t tua_llm_rmsnorm_f32_bf16w(tua_bytes* out, int64_t out_off, tua_bytes* x, int64_t x_off,
+                                   tua_bytes* w_bf16, int64_t w_off, int32_t n, float eps);
+
+// RMSNorm with FP16 weights and F32 activations.
+tua_err_t tua_llm_rmsnorm_f32_f16w(tua_bytes* out, int64_t out_off, tua_bytes* x, int64_t x_off,
+                                  tua_bytes* w_f16, int64_t w_off, int32_t n, float eps);
+
+// Per-head RMSNorm for Q/K with BF16 weight (length head_dim).
+tua_err_t tua_llm_qk_rmsnorm_inplace_f32_bf16w(tua_bytes* x, int64_t x_off, int32_t n_heads, int32_t head_dim,
+                                              tua_bytes* w_bf16, int64_t w_off, float eps);
+
+// Per-head RMSNorm for Q/K with FP16 weight (length head_dim).
+tua_err_t tua_llm_qk_rmsnorm_inplace_f32_f16w(tua_bytes* x, int64_t x_off, int32_t n_heads, int32_t head_dim,
+                                             tua_bytes* w_f16, int64_t w_off, float eps);
+
 tua_err_t tua_llm_add_inplace_f32(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_t src_off, int64_t n);
 tua_err_t tua_llm_rmsnorm_f32(tua_bytes* out, int64_t out_off, tua_bytes* x, int64_t x_off,
                               tua_bytes* w, int64_t w_off, int32_t n, float eps);
@@ -59,6 +93,28 @@ tua_err_t tua_llm_attn_decode_f32(tua_bytes* out, int64_t out_off,
                                  int32_t n_heads, int32_t n_kv_heads, int32_t head_dim,
                                  float scale,
                                  tua_bytes* scratch, int64_t scratch_off, int64_t scratch_floats);
+
+// Attention decode with BF16 KV cache:
+// - q/out are float32, KV is BF16.
+tua_err_t tua_llm_attn_decode_kv_bf16_f32(tua_bytes* out, int64_t out_off,
+                                         tua_bytes* q, int64_t q_off,
+                                         tua_bytes* kv, int64_t k_base, int64_t v_base,
+                                         int64_t layer_bytes, int64_t token_bytes,
+                                         int32_t layer, int32_t pos,
+                                         int32_t n_heads, int32_t n_kv_heads, int32_t head_dim,
+                                         float scale,
+                                         tua_bytes* scratch, int64_t scratch_off, int64_t scratch_floats);
+
+// Attention decode with FP16 KV cache:
+// - q/out are float32, KV is float16.
+tua_err_t tua_llm_attn_decode_kv_f16_f32(tua_bytes* out, int64_t out_off,
+                                        tua_bytes* q, int64_t q_off,
+                                        tua_bytes* kv, int64_t k_base, int64_t v_base,
+                                        int64_t layer_bytes, int64_t token_bytes,
+                                        int32_t layer, int32_t pos,
+                                        int32_t n_heads, int32_t n_kv_heads, int32_t head_dim,
+                                        float scale,
+                                        tua_bytes* scratch, int64_t scratch_off, int64_t scratch_floats);
 
 tua_err_t tua_llm_argmax_f32(tua_bytes* x, int64_t x_off, int32_t n, int64_t* out_index);
 

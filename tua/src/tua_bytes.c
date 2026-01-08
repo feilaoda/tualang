@@ -254,6 +254,153 @@ tua_err_t tua_bytes_bf16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst,
     return TUA_OK;
 }
 
+static inline float tua_f16_to_f32(uint16_t h) {
+    uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t exp = (h >> 10) & 0x1fu;
+    uint32_t mant = (uint32_t)(h & 0x03ffu);
+    uint32_t out;
+    if (exp == 0) {
+        if (mant == 0) {
+            out = sign;
+        } else {
+            // Subnormal: normalize mantissa.
+            exp = 1;
+            while ((mant & 0x0400u) == 0) {
+                mant <<= 1;
+                exp--;
+            }
+            mant &= 0x03ffu;
+            uint32_t exp32 = (exp + (127 - 15)) & 0xffu;
+            out = sign | (exp32 << 23) | (mant << 13);
+        }
+    } else if (exp == 31) {
+        // Inf/NaN.
+        out = sign | 0x7f800000u | (mant << 13);
+    } else {
+        uint32_t exp32 = (exp + (127 - 15)) & 0xffu;
+        out = sign | (exp32 << 23) | (mant << 13);
+    }
+    float f;
+    memcpy(&f, &out, sizeof(f));
+    return f;
+}
+
+tua_err_t tua_bytes_f16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n) {
+    if (!src || !dst) return TUA_E_INVALID;
+    if (dst->readonly) return TUA_E_ACCESS;
+    if (n < 0) return TUA_E_INVALID;
+    if (n == 0) return TUA_OK;
+    if (!src->data || !dst->data) return TUA_E_INVALID;
+    if (src_off < 0 || dst_off < 0) return TUA_E_INVALID;
+    if (src_off > src->len || dst_off > dst->len) return TUA_E_INVALID;
+
+    const int64_t src_bytes = n * 2;
+    const int64_t dst_bytes = n * 4;
+    if (src_bytes < 0 || dst_bytes < 0) return TUA_E_INVALID;
+    if (src_off + src_bytes > src->len) return TUA_E_INVALID;
+    if (dst_off + dst_bytes > dst->len) return TUA_E_INVALID;
+
+    const uint16_t* s = (const uint16_t*)(src->data + src_off);
+    float* d = (float*)(dst->data + dst_off);
+    for (int64_t i = 0; i < n; i++) d[i] = tua_f16_to_f32(s[i]);
+    return TUA_OK;
+}
+
+static inline uint16_t tua_f32_to_bf16(float f) {
+    uint32_t u = 0;
+    memcpy(&u, &f, sizeof(u));
+    // Round-to-nearest-even on the truncated bits.
+    uint32_t lsb = (u >> 16) & 1u;
+    uint32_t rounding_bias = 0x7fffu + lsb;
+    u += rounding_bias;
+    return (uint16_t)(u >> 16);
+}
+
+static inline uint16_t tua_f32_to_f16(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+
+    uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((x >> 23) & 0xffu) - 127 + 15;
+    uint32_t mant = x & 0x7fffffu;
+
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign; // underflow to zero
+        // subnormal
+        mant |= 0x800000u;
+        int32_t shift = 14 - exp;
+        uint32_t half = mant >> shift;
+        // round
+        uint32_t rem = mant & ((1u << shift) - 1u);
+        uint32_t mid = 1u << (shift - 1);
+        if (rem > mid || (rem == mid && (half & 1u))) half++;
+        return (uint16_t)(sign | half);
+    }
+    if (exp >= 31) {
+        // inf / NaN
+        if (mant == 0) return (uint16_t)(sign | 0x7c00u);
+        uint16_t nan = (uint16_t)(sign | 0x7c00u | (mant >> 13));
+        if ((nan & 0x03ffu) == 0) nan |= 1u;
+        return nan;
+    }
+
+    // normalized
+    uint32_t half_mant = mant >> 13;
+    uint32_t rem = mant & 0x1fffu;
+    uint32_t mid = 0x1000u;
+    if (rem > mid || (rem == mid && (half_mant & 1u))) {
+        half_mant++;
+        if (half_mant == 0x400u) { // mant overflow
+            half_mant = 0;
+            exp++;
+            if (exp >= 31) return (uint16_t)(sign | 0x7c00u);
+        }
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | (half_mant & 0x3ffu));
+}
+
+tua_err_t tua_bytes_f32_to_bf16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n) {
+    if (!src || !dst) return TUA_E_INVALID;
+    if (dst->readonly) return TUA_E_ACCESS;
+    if (n < 0) return TUA_E_INVALID;
+    if (n == 0) return TUA_OK;
+    if (!src->data || !dst->data) return TUA_E_INVALID;
+    if (src_off < 0 || dst_off < 0) return TUA_E_INVALID;
+    if (src_off > src->len || dst_off > dst->len) return TUA_E_INVALID;
+
+    const int64_t src_bytes = n * 4;
+    const int64_t dst_bytes = n * 2;
+    if (src_bytes < 0 || dst_bytes < 0) return TUA_E_INVALID;
+    if (src_off + src_bytes > src->len) return TUA_E_INVALID;
+    if (dst_off + dst_bytes > dst->len) return TUA_E_INVALID;
+
+    const float* s = (const float*)(src->data + src_off);
+    uint16_t* d = (uint16_t*)(dst->data + dst_off);
+    for (int64_t i = 0; i < n; i++) d[i] = tua_f32_to_bf16(s[i]);
+    return TUA_OK;
+}
+
+tua_err_t tua_bytes_f32_to_f16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n) {
+    if (!src || !dst) return TUA_E_INVALID;
+    if (dst->readonly) return TUA_E_ACCESS;
+    if (n < 0) return TUA_E_INVALID;
+    if (n == 0) return TUA_OK;
+    if (!src->data || !dst->data) return TUA_E_INVALID;
+    if (src_off < 0 || dst_off < 0) return TUA_E_INVALID;
+    if (src_off > src->len || dst_off > dst->len) return TUA_E_INVALID;
+
+    const int64_t src_bytes = n * 4;
+    const int64_t dst_bytes = n * 2;
+    if (src_bytes < 0 || dst_bytes < 0) return TUA_E_INVALID;
+    if (src_off + src_bytes > src->len) return TUA_E_INVALID;
+    if (dst_off + dst_bytes > dst->len) return TUA_E_INVALID;
+
+    const float* s = (const float*)(src->data + src_off);
+    uint16_t* d = (uint16_t*)(dst->data + dst_off);
+    for (int64_t i = 0; i < n; i++) d[i] = tua_f32_to_f16(s[i]);
+    return TUA_OK;
+}
+
 void tua_bytes_free(tua_bytes* b) {
     if (!b) return;
     if (b->drop_fn) {

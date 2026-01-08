@@ -4,6 +4,8 @@ fn main(args: string[]) -> int {
     let e, opt = o.LlmArgs.parseArgv(args)
     assert(e == 0)
     assert(opt.threads == 0)
+    assert(opt.weightsDtype == 0)
+    assert(opt.kvDtype == 0)
     assert(opt.kvMaxBytes == 0L)
     assert(opt.maxNewTokens == 1)
     assert(opt.topK == 20)

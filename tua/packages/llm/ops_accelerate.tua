@@ -15,6 +15,8 @@ extern fn cblas_sgemm(order: int, transA: int, transB: int, m: int, n: int, k: i
 
 extern fn cblas_sgemv(order: int, transA: int, m: int, n: int, alpha: float, a: ptr, lda: int, x: ptr, incx: int, beta: float, y: ptr, incy: int)
 
+extern fn tua_llm_set_threads(n: int) int
+
 struct AccelerateOps {}
 
 private fn _toCblasTranspose(t: int) int {
@@ -24,8 +26,7 @@ private fn _toCblasTranspose(t: int) int {
 
 impl AccelerateOps {
     fn setThreads(n: int) int {
-        let _ = n
-        return 0
+        return tua_llm_set_threads(n)
     }
 
     fn gemmF32(transA: int, transB: int, m: int, n: int, k: int, alpha: float, a: ptr, lda: int, b: ptr, ldb: int, beta: float, c: ptr, ldc: int) int {

@@ -1484,10 +1484,10 @@ static Stmt* parseForStatement(Parser* parser) {
             stmt->body = body;
             return (Stmt*)stmt;
         } 
-        // else if (check(parser, TOKEN_COLON)) {
-        //     // Case: for i:int=0; i<10; i++ {}
-        //     initializer = parseVarDeclaration(parser, true);
-        // } 
+        else if (check(parser, TOKEN_COLON)) {
+            // Case: for i:int=0; i<10; i++ {}
+            initializer = parseVarDeclaration(parser, true);
+        }
         else if (check(parser, TOKEN_ASSIGN)) {
             // Case: for i=0; i<10; i++ {}
             advance(parser); // consume '='

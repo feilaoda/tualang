@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export TUA_STDLIB_DIR="$ROOT/std"
+export TMPDIR="$ROOT/build/tmp"
+mkdir -p "$TMPDIR"
 
 make tuac >/dev/null
 
