@@ -20,5 +20,6 @@ fn main(args: string[]) -> int {
     assert(opt.seed == 0L)
     assert(opt.chat == 1)
     assert(opt.enableThinking == 1)
+    assert(opt.profile == 0)
     return 0
 }

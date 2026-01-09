@@ -20,6 +20,7 @@ struct LlmOptions {
     seed: long
     chat: int
     enableThinking: int
+    profile: int
 }
 
 object LlmArgs {
@@ -27,7 +28,7 @@ object LlmArgs {
         // Default sampling follows Qwen3 README recommendations (non-thinking mode):
         // Temperature=0.7, TopP=0.8, TopK=20. Seed=0 means auto-seed.
         // Repetition penalty helps avoid loopy outputs (especially in greedy mode).
-        return LlmOptions{ threads: 0, weightsDtype: 0, kvDtype: 0, kvMaxBytes: 0L, kvMaxSeq: 0, maxNewTokens: 1, temperature: 0.7, topK: 20, topP: 0.8, repeatPenalty: 1.1, repeatLastN: 64, noRepeatNgram: 3, seed: 0L, chat: 1, enableThinking: 1 }
+        return LlmOptions{ threads: 0, weightsDtype: 0, kvDtype: 0, kvMaxBytes: 0L, kvMaxSeq: 0, maxNewTokens: 1, temperature: 0.7, topK: 20, topP: 0.8, repeatPenalty: 1.1, repeatLastN: 64, noRepeatNgram: 3, seed: 0L, chat: 1, enableThinking: 1, profile: 0 }
     }
 
     fn parseArgv(argv: string[]) -> int, LlmOptions {
@@ -198,6 +199,11 @@ object LlmArgs {
                 out.temperature = 0.0
                 out.topK = 1
                 out.topP = 0.0
+                i = i + 1
+                continue
+            }
+            if a == "--profile" {
+                out.profile = 1
                 i = i + 1
                 continue
             }

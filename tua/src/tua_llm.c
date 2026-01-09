@@ -42,13 +42,42 @@ tua_err_t tua_llm_set_threads(int32_t n) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%d", (int)n);
         setenv("VECLIB_MAXIMUM_THREADS", buf, 1);
-        setenv("VECLIB_MINIMUM_THREADS", buf, 1);
+        // Let Accelerate pick fewer threads for tiny kernels to avoid overhead.
+        setenv("VECLIB_MINIMUM_THREADS", "1", 1);
         setenv("BLAS_NUM_THREADS", buf, 1);
         setenv("OMP_NUM_THREADS", buf, 1);
     }
 #endif
     return TUA_OK;
 }
+
+#if defined(__APPLE__)
+// BNNS filter creation can be very expensive (especially on x86_64). Default to:
+// - enabled on Apple Silicon (arm64)
+// - disabled on Intel (x86_64)
+// Override with: TUA_LLM_BNNS=0/1
+static pthread_once_t g_bnns_enabled_once = PTHREAD_ONCE_INIT;
+static int g_bnns_enabled = 0;
+
+static void bnns_enabled_init(void) {
+    const char* e = getenv("TUA_LLM_BNNS");
+    if (e && e[0]) {
+        // Treat any non-zero number as "enabled".
+        g_bnns_enabled = (atoi(e) != 0);
+        return;
+    }
+#if defined(__aarch64__) || defined(__arm64__)
+    g_bnns_enabled = 1;
+#else
+    g_bnns_enabled = 0;
+#endif
+}
+
+static int bnns_enabled(void) {
+    pthread_once(&g_bnns_enabled_once, bnns_enabled_init);
+    return g_bnns_enabled;
+}
+#endif
 
 static int check_f32_span(tua_bytes* b, int64_t off, int64_t n_floats) {
     if (!b) return 0;
@@ -250,6 +279,7 @@ static uint64_t bnns_fc_hash(const void* w, int32_t m, int32_t n, uint32_t wtype
 }
 
 static BNNSFilter bnns_fc_create(const void* w, int32_t m, int32_t n, BNNSDataType wtype) {
+    if (!bnns_enabled()) return NULL;
     BNNSLayerParametersFullyConnected lp;
     memset(&lp, 0, sizeof(lp));
 
@@ -285,6 +315,7 @@ static BNNSFilter bnns_fc_create(const void* w, int32_t m, int32_t n, BNNSDataTy
 }
 
 static BNNSFilter bnns_fc_get(const void* w, int32_t m, int32_t n, BNNSDataType wtype) {
+    if (!bnns_enabled()) return NULL;
     if (!w || m <= 0 || n <= 0) return NULL;
     pthread_mutex_lock(&g_bnns_fc_mu);
     if (g_bnns_fc_cap == 0) {
@@ -481,8 +512,8 @@ tua_err_t tua_llm_gemv_bf16_f32(tua_bytes* y, int64_t y_off,
     BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeBFloat16);
     if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
 
-    // Use Accelerate for the math and pay only the BF16->F32 conversion cost.
-    // This is significantly faster than scalar dot-products on non-ARM builds.
+    // Convert blocks to f32 then use a BLAS path that avoids RowMajor overhead by treating the row-major
+    // buffer as a ColMajor matrix with transposed dims (see `tua_llm_gemv_f32`).
     int32_t block = 256;
     if (n <= 1024) block = 1024;
     if (block > m) block = m;
@@ -497,7 +528,7 @@ tua_err_t tua_llm_gemv_bf16_f32(tua_bytes* y, int64_t y_off,
             bf16_to_f32_buf(Ab + (int64_t)r * (int64_t)n, tmp + (int64_t)r * (int64_t)n, n);
         }
         float* Yb = Y + row;
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mb, 1, n, 1.0f, tmp, n, X, 1, 0.0f, Yb, 1);
+        cblas_sgemv(CblasColMajor, CblasTrans, n, mb, 1.0f, tmp, n, X, 1, 0.0f, Yb, 1);
     }
     return TUA_OK;
 #else
@@ -564,7 +595,7 @@ tua_err_t tua_llm_gemv_f16_f32(tua_bytes* y, int64_t y_off,
             f16_to_f32_buf(Ab + (int64_t)r * (int64_t)n, tmp + (int64_t)r * (int64_t)n, n);
         }
         float* Yb = Y + row;
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mb, 1, n, 1.0f, tmp, n, X, 1, 0.0f, Yb, 1);
+        cblas_sgemv(CblasColMajor, CblasTrans, n, mb, 1.0f, tmp, n, X, 1, 0.0f, Yb, 1);
     }
     return TUA_OK;
 #else
@@ -678,17 +709,14 @@ tua_err_t tua_llm_gemv_f32(tua_bytes* y, int64_t y_off,
     if (!A || !X || !Y) return TUA_E_INVALID;
 
 #if defined(__APPLE__)
-    // Chunk into row blocks to avoid extreme edge cases, but keep the block large to reduce per-call overhead
-    // (important for the huge vocab projection GEMV).
-    const int32_t block = (m >= 65536) ? 65536 : m;
-    for (int32_t row = 0; row < m; row += block) {
-        int32_t mb = m - row;
-        if (mb > block) mb = block;
-        const float* Ab = A + (int64_t)row * (int64_t)n;
-        float* Yb = Y + row;
-        // Treat `X` as an [n,1] matrix and `Yb` as [mb,1] (row-major).
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mb, 1, n, 1.0f, Ab, n, X, 1, 0.0f, Yb, 1);
-    }
+    BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeFloat32);
+    if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
+
+    // On Apple, RowMajor paths can be significantly slower due to internal packing/transposes.
+    // Treat the row-major [m,n] buffer as a ColMajor [n,m] matrix and compute:
+    //   Y = (A_colmajor)^T * X
+    // which is equivalent to Y = A_rowmajor * X.
+    cblas_sgemv(CblasColMajor, CblasTrans, n, m, 1.0f, A, n, X, 1, 0.0f, Y, 1);
     return TUA_OK;
 #else
     for (int32_t i = 0; i < m; i++) {
@@ -837,6 +865,24 @@ tua_err_t tua_llm_silu_mul_f32(tua_bytes* out, int64_t out_off, tua_bytes* gate,
     float* y = f32p(out, out_off);
     const float* g = f32p(gate, gate_off);
     const float* u = f32p(up, up_off);
+    for (int64_t i = 0; i < n; i++) {
+        float x = g[i];
+        float s = 1.0f / (1.0f + expf(-x));
+        y[i] = (x * s) * u[i];
+    }
+    return TUA_OK;
+}
+
+tua_err_t tua_llm_silu_mul2_f32(tua_bytes* out, int64_t out_off,
+                               tua_bytes* gate_up, int64_t gate_off, int64_t up_off,
+                               int64_t n) {
+    if (n < 0) return TUA_E_INVALID;
+    if (!check_f32_span(out, out_off, n) || !check_f32_span(gate_up, gate_off, n) || !check_f32_span(gate_up, up_off, n)) {
+        return TUA_E_INVALID;
+    }
+    float* y = f32p(out, out_off);
+    const float* g = f32p(gate_up, gate_off);
+    const float* u = f32p(gate_up, up_off);
     for (int64_t i = 0; i < n; i++) {
         float x = g[i];
         float s = 1.0f / (1.0f + expf(-x));

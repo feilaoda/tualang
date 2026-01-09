@@ -6,6 +6,7 @@ fn main() {
     let opt: LlmOptions = opt0
     opt.weightsDtype = 1
     opt.kvMaxSeq = 8
+    opt.profile = 1
 
     let e, st = Qwen3.loadState("tests/fixtures/qwen3_tied_lm", opt)
     assert(e == 0)

@@ -52,6 +52,9 @@ tua_err_t tua_llm_qk_rmsnorm_inplace_f32(tua_bytes* x, int64_t x_off, int32_t n_
                                         tua_bytes* w, int64_t w_off, float eps);
 tua_err_t tua_llm_silu_mul_f32(tua_bytes* out, int64_t out_off, tua_bytes* gate, int64_t gate_off,
                               tua_bytes* up, int64_t up_off, int64_t n);
+tua_err_t tua_llm_silu_mul2_f32(tua_bytes* out, int64_t out_off,
+                               tua_bytes* gate_up, int64_t gate_off, int64_t up_off,
+                               int64_t n);
 tua_err_t tua_llm_rope_inplace_f32(tua_bytes* x, int64_t x_off, int32_t n_heads, int32_t head_dim,
                                   int32_t pos, float theta);
 

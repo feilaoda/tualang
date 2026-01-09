@@ -21,6 +21,7 @@ extern fn tua_llm_qk_rmsnorm_inplace_f32(x: bytes, xOff: long, nHeads: int, head
 extern fn tua_llm_qk_rmsnorm_inplace_f32_bf16w(x: bytes, xOff: long, nHeads: int, headDim: int, w: bytes, wOff: long, eps: float) int
 extern fn tua_llm_qk_rmsnorm_inplace_f32_f16w(x: bytes, xOff: long, nHeads: int, headDim: int, w: bytes, wOff: long, eps: float) int
 extern fn tua_llm_silu_mul_f32(out: bytes, outOff: long, gate: bytes, gateOff: long, up: bytes, upOff: long, n: long) int
+extern fn tua_llm_silu_mul2_f32(out: bytes, outOff: long, gateUp: bytes, gateOff: long, upOff: long, n: long) int
 extern fn tua_llm_rope_inplace_f32(x: bytes, xOff: long, nHeads: int, headDim: int, pos: int, theta: float) int
 extern fn tua_llm_attn_decode_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
 extern fn tua_llm_attn_decode_kv_bf16_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
@@ -62,21 +63,21 @@ private fn _scanBool(b: bytes, path: string) -> int, int {
 
 // object Qwen3 is declared below, after weight/scratch structs and helpers.
 
-// Weights are stored as a single float32 arena; each tensor is a byte offset into the arena.
-// Per-layer offsets are packed as layerOffs[layer*11 + kind].
+// Weights are stored as a single arena (dtype depends on load mode); each tensor is a byte offset into the arena.
+// Per-layer offsets are packed as layerOffs[layer*LayerW._count + kind].
 private enum LayerW {
     inNorm = 0,
     postNorm = 1,
     qNorm = 2,
     kNorm = 3,
-    qProj = 4,
-    kProj = 5,
-    vProj = 6,
-    oProj = 7,
-    gateProj = 8,
-    upProj = 9,
-    downProj = 10,
-    _count = 11,
+    // Fused projections:
+    // - qkvProj: [qdim + 2*kvdim, hidden]
+    // - gateUpProj: [2*intermediate, hidden]
+    qkvProj = 4,
+    oProj = 5,
+    gateUpProj = 6,
+    downProj = 7,
+    _count = 8,
 }
 
 struct Qwen3Weights {
@@ -163,18 +164,87 @@ struct Qwen3Scratch {
     x: bytes
     x1: bytes
     x2: bytes
-    q: bytes
-    k: bytes
-    v: bytes
+    qkv: bytes
     attn: bytes
-    gate: bytes
-    up: bytes
+    gateUp: bytes
     inter: bytes
     logits: bytes
     scores: bytes
 }
 
 private fn _f32Bytes(n: long) -> bytes { return bstd.Bytes.newLong(n * 4L) }
+
+struct Qwen3Profile {
+    enabled: int
+
+    // Token counts (note: decodeTokens counts newly generated tokens only).
+    prefillTokens: int
+    decodeTokens: int
+    replayTokens: int
+
+    // High-level timing buckets (nanoseconds).
+    nsPrefillForward: long
+    nsDecodeForward: long
+    nsReplayForward: long
+    nsLogits: long
+    nsPenalty: long
+    nsSample: long
+
+    // Sub-buckets (nanoseconds).
+    nsEmbed: long
+    nsInNorm: long
+    nsQkv: long
+    nsQkNorm: long
+    nsRope: long
+    nsKvStore: long
+    nsAttn: long
+    nsO: long
+    nsPostNorm: long
+    nsGateUp: long
+    nsSiluMul: long
+    nsDown: long
+    nsFinalNorm: long
+    nsLmHead: long
+    nsArgmax: long
+    nsSampleTop: long
+
+    // Call counts.
+    cQkv: int
+    cO: int
+    cGateUp: int
+    cDown: int
+    cLmHead: int
+}
+
+object Qwen3Profile {
+    fn dump(p: Qwen3Profile) {
+        if p.enabled != 0 {
+            let prefillMs: double = (double)p.nsPrefillForward / 1000000.0
+            let decodeMs: double = (double)p.nsDecodeForward / 1000000.0
+            let replayMs: double = (double)p.nsReplayForward / 1000000.0
+            let logitsMs: double = (double)p.nsLogits / 1000000.0
+            let penaltyMs: double = (double)p.nsPenalty / 1000000.0
+            let sampleMs: double = (double)p.nsSample / 1000000.0
+            let qkvMs: double = (double)p.nsQkv / 1000000.0
+            let oMs: double = (double)p.nsO / 1000000.0
+            let gateUpMs: double = (double)p.nsGateUp / 1000000.0
+            let downMs: double = (double)p.nsDown / 1000000.0
+            let lmHeadMs: double = (double)p.nsLmHead / 1000000.0
+            let attnMs: double = (double)p.nsAttn / 1000000.0
+            let kvStoreMs: double = (double)p.nsKvStore / 1000000.0
+            let embedMs: double = (double)p.nsEmbed / 1000000.0
+            let argmaxMs: double = (double)p.nsArgmax / 1000000.0
+            let sampleTopMs: double = (double)p.nsSampleTop / 1000000.0
+
+            println("profile: prefillTok={} decodeTok={} replayTok={}", p.prefillTokens, p.decodeTokens, p.replayTokens)
+            println("profile: prefill_forward_ms={} decode_forward_ms={} replay_forward_ms={}", prefillMs, decodeMs, replayMs)
+            println("profile: logits_ms={} penalty_ms={} sample_ms={}", logitsMs, penaltyMs, sampleMs)
+            println("profile: gemv_ms qkv={} o={} gateUp={} down={} lm_head={}", qkvMs, oMs, gateUpMs, downMs, lmHeadMs)
+            println("profile: attn_ms={} kv_store_ms={} embed_ms={}", attnMs, kvStoreMs, embedMs)
+            println("profile: argmax_ms={} sample_top_ms={}", argmaxMs, sampleTopMs)
+        }
+    }
+}
 
 struct Qwen3State {
     cfg: Qwen3Config
@@ -202,15 +272,14 @@ struct Qwen3State {
     x: bytes
     x1: bytes
     x2: bytes
-    q: bytes
-    k: bytes
-    v: bytes
+    qkv: bytes
     attn: bytes
-    gate: bytes
-    up: bytes
+    gateUp: bytes
     inter: bytes
     logits: bytes
     scores: bytes
+
+    prof: Qwen3Profile
 }
 
 private fn _minInt(a: int, b: int) -> int { if a < b { return a } return b }
@@ -348,6 +417,7 @@ object Qwen3 {
         while li < cfg.layers {
             let pre = _layerPrefix(li)
 
+            // inNorm
             cur = _align(cur, 64L)
             layerOffs.push(cur)
             let e0, tmpOff0, n0 = _tensorNumelBF16(st, pre + "input_layernorm.weight")
@@ -355,6 +425,7 @@ object Qwen3 {
             if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, z }
             cur = cur + n0 * 4L
 
+            // postNorm
             cur = _align(cur, 64L)
             layerOffs.push(cur)
             let e1b, tmpOff1b, n1b = _tensorNumelBF16(st, pre + "post_attention_layernorm.weight")
@@ -362,6 +433,7 @@ object Qwen3 {
             if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, z }
             cur = cur + n1b * 4L
 
+            // qNorm/kNorm
             cur = _align(cur, 64L)
             layerOffs.push(cur)
             let e2b, tmpOff2b, n2b = _tensorNumelBF16(st, pre + "self_attn.q_norm.weight")
@@ -376,54 +448,40 @@ object Qwen3 {
             if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, z }
             cur = cur + n3b * 4L
 
+            // Fused QKV projection.
+            let eq, _, nq = _tensorNumelBF16(st, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, z }
+            let ek, _, nk = _tensorNumelBF16(st, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, z }
+            let ev, _, nv = _tensorNumelBF16(st, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, z }
             cur = _align(cur, 64L)
             layerOffs.push(cur)
-            let e4b, tmpOff4b, n4b = _tensorNumelBF16(st, pre + "self_attn.q_proj.weight")
-            let _ = tmpOff4b
-            if e4b != 0 { return 1000 + li * 64 + 4 * 4 + e4b, z }
-            cur = cur + n4b * 4L
+            cur = cur + (nq + nk + nv) * 4L
 
+            // oProj
             cur = _align(cur, 64L)
             layerOffs.push(cur)
-            let e5b, tmpOff5b, n5b = _tensorNumelBF16(st, pre + "self_attn.k_proj.weight")
-            let _ = tmpOff5b
-            if e5b != 0 { return 1000 + li * 64 + 5 * 4 + e5b, z }
-            cur = cur + n5b * 4L
-
-            cur = _align(cur, 64L)
-            layerOffs.push(cur)
-            let e6b, tmpOff6b, n6b = _tensorNumelBF16(st, pre + "self_attn.v_proj.weight")
-            let _ = tmpOff6b
-            if e6b != 0 { return 1000 + li * 64 + 6 * 4 + e6b, z }
-            cur = cur + n6b * 4L
-
-            cur = _align(cur, 64L)
-            layerOffs.push(cur)
-            let e7b, tmpOff7b, n7b = _tensorNumelBF16(st, pre + "self_attn.o_proj.weight")
-            let _ = tmpOff7b
+            let e7b, _, n7b = _tensorNumelBF16(st, pre + "self_attn.o_proj.weight")
             if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, z }
             cur = cur + n7b * 4L
 
+            // Fused gate+up projection.
+            let eg, _, ng = _tensorNumelBF16(st, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, z }
+            let eu, _, nu = _tensorNumelBF16(st, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, z }
             cur = _align(cur, 64L)
             layerOffs.push(cur)
-            let e8b, tmpOff8b, n8b = _tensorNumelBF16(st, pre + "mlp.gate_proj.weight")
-            let _ = tmpOff8b
-            if e8b != 0 { return 1000 + li * 64 + 8 * 4 + e8b, z }
-            cur = cur + n8b * 4L
+            cur = cur + (ng + nu) * 4L
 
+            // downProj
             cur = _align(cur, 64L)
             layerOffs.push(cur)
-            let e9b, tmpOff9b, n9b = _tensorNumelBF16(st, pre + "mlp.up_proj.weight")
-            let _ = tmpOff9b
-            if e9b != 0 { return 1000 + li * 64 + 9 * 4 + e9b, z }
-            cur = cur + n9b * 4L
-
-            cur = _align(cur, 64L)
-            layerOffs.push(cur)
-            let e10b, tmpOff10b, n10b = _tensorNumelBF16(st, pre + "mlp.down_proj.weight")
-            let _ = tmpOff10b
+            let e10b, _, n10b = _tensorNumelBF16(st, pre + "mlp.down_proj.weight")
             if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, z }
             cur = cur + n10b * 4L
+
             li = li + 1
         }
 
@@ -447,71 +505,60 @@ object Qwen3 {
         while li < cfg.layers {
             let pre = _layerPrefix(li)
 
+            // inNorm/postNorm/qNorm/kNorm
             let dstOff0 = layerOffs[idx]
-            let e0c, tmpNum0 = _convertTensorBF16ToF32(st, base, pre + "input_layernorm.weight", arena, dstOff0)
-            let _ = tmpNum0
+            let e0c, _ = _convertTensorBF16ToF32(st, base, pre + "input_layernorm.weight", arena, dstOff0)
             if e0c != 0 { return 2000 + idx * 4 + e0c, z }
             idx = idx + 1
 
             let dstOff1 = layerOffs[idx]
-            let e1c, tmpNum1 = _convertTensorBF16ToF32(st, base, pre + "post_attention_layernorm.weight", arena, dstOff1)
-            let _ = tmpNum1
+            let e1c, _ = _convertTensorBF16ToF32(st, base, pre + "post_attention_layernorm.weight", arena, dstOff1)
             if e1c != 0 { return 2000 + idx * 4 + e1c, z }
             idx = idx + 1
 
             let dstOff2 = layerOffs[idx]
-            let e2c, tmpNum2 = _convertTensorBF16ToF32(st, base, pre + "self_attn.q_norm.weight", arena, dstOff2)
-            let _ = tmpNum2
+            let e2c, _ = _convertTensorBF16ToF32(st, base, pre + "self_attn.q_norm.weight", arena, dstOff2)
             if e2c != 0 { return 2000 + idx * 4 + e2c, z }
             idx = idx + 1
 
             let dstOff3 = layerOffs[idx]
-            let e3c, tmpNum3 = _convertTensorBF16ToF32(st, base, pre + "self_attn.k_norm.weight", arena, dstOff3)
-            let _ = tmpNum3
+            let e3c, _ = _convertTensorBF16ToF32(st, base, pre + "self_attn.k_norm.weight", arena, dstOff3)
             if e3c != 0 { return 2000 + idx * 4 + e3c, z }
             idx = idx + 1
 
-            let dstOff4 = layerOffs[idx]
-            let e4c, tmpNum4 = _convertTensorBF16ToF32(st, base, pre + "self_attn.q_proj.weight", arena, dstOff4)
-            let _ = tmpNum4
+            // qkvProj (fused)
+            let dstQkv = layerOffs[idx]
+            let e4c, nQ = _convertTensorBF16ToF32(st, base, pre + "self_attn.q_proj.weight", arena, dstQkv)
             if e4c != 0 { return 2000 + idx * 4 + e4c, z }
-            idx = idx + 1
-
-            let dstOff5 = layerOffs[idx]
-            let e5c, tmpNum5 = _convertTensorBF16ToF32(st, base, pre + "self_attn.k_proj.weight", arena, dstOff5)
-            let _ = tmpNum5
+            let kDst: long = dstQkv + nQ * 4L
+            let e5c, nK = _convertTensorBF16ToF32(st, base, pre + "self_attn.k_proj.weight", arena, kDst)
             if e5c != 0 { return 2000 + idx * 4 + e5c, z }
-            idx = idx + 1
-
-            let dstOff6 = layerOffs[idx]
-            let e6c, tmpNum6 = _convertTensorBF16ToF32(st, base, pre + "self_attn.v_proj.weight", arena, dstOff6)
-            let _ = tmpNum6
+            let vDst: long = kDst + nK * 4L
+            let e6c, _ = _convertTensorBF16ToF32(st, base, pre + "self_attn.v_proj.weight", arena, vDst)
             if e6c != 0 { return 2000 + idx * 4 + e6c, z }
             idx = idx + 1
 
-            let dstOff7 = layerOffs[idx]
-            let e7c, tmpNum7 = _convertTensorBF16ToF32(st, base, pre + "self_attn.o_proj.weight", arena, dstOff7)
-            let _ = tmpNum7
+            // oProj
+            let dstO = layerOffs[idx]
+            let e7c, _ = _convertTensorBF16ToF32(st, base, pre + "self_attn.o_proj.weight", arena, dstO)
             if e7c != 0 { return 2000 + idx * 4 + e7c, z }
             idx = idx + 1
 
-            let dstOff8 = layerOffs[idx]
-            let e8c, tmpNum8 = _convertTensorBF16ToF32(st, base, pre + "mlp.gate_proj.weight", arena, dstOff8)
-            let _ = tmpNum8
+            // gateUpProj (fused)
+            let dstGateUp = layerOffs[idx]
+            let e8c, nGate = _convertTensorBF16ToF32(st, base, pre + "mlp.gate_proj.weight", arena, dstGateUp)
             if e8c != 0 { return 2000 + idx * 4 + e8c, z }
-            idx = idx + 1
-
-            let dstOff9 = layerOffs[idx]
-            let e9c, tmpNum9 = _convertTensorBF16ToF32(st, base, pre + "mlp.up_proj.weight", arena, dstOff9)
-            let _ = tmpNum9
+            let upDst: long = dstGateUp + nGate * 4L
+            let e9c, _ = _convertTensorBF16ToF32(st, base, pre + "mlp.up_proj.weight", arena, upDst)
             if e9c != 0 { return 2000 + idx * 4 + e9c, z }
             idx = idx + 1
 
-            let dstOff10 = layerOffs[idx]
-            let e10c, tmpNum10 = _convertTensorBF16ToF32(st, base, pre + "mlp.down_proj.weight", arena, dstOff10)
-            let _ = tmpNum10
+            // downProj
+            let dstDown = layerOffs[idx]
+            let e10c, _ = _convertTensorBF16ToF32(st, base, pre + "mlp.down_proj.weight", arena, dstDown)
             if e10c != 0 { return 2000 + idx * 4 + e10c, z }
             idx = idx + 1
+
             li = li + 1
         }
 
@@ -519,22 +566,22 @@ object Qwen3 {
         return 0, out
     }
 
-    private fn _copyTensorBF16(st: SafeTensorsFile, base: long, name: string, arena: bytes, dstOff: long) -> int {
+    private fn _copyTensorBF16(st: SafeTensorsFile, base: long, name: string, arena: bytes, dstOff: long) -> int, long {
         let te, dataOff, numel = _tensorNumelBF16(st, name)
-        if te != 0 { return te }
+        if te != 0 { return te, 0L }
         let nbytes: long = numel * 2L
         let ce = bstd.Bytes.copy(arena, dstOff, st.data, base + dataOff, nbytes)
-        if ce != 0 { return 4 }
-        return 0
+        if ce != 0 { return 4, 0L }
+        return 0, numel
     }
 
-    private fn _copyTensorF16(st: SafeTensorsFile, base: long, name: string, arena: bytes, dstOff: long) -> int {
+    private fn _copyTensorF16(st: SafeTensorsFile, base: long, name: string, arena: bytes, dstOff: long) -> int, long {
         let te, dataOff, numel = _tensorNumelF16(st, name)
-        if te != 0 { return te }
+        if te != 0 { return te, 0L }
         let nbytes: long = numel * 2L
         let ce = bstd.Bytes.copy(arena, dstOff, st.data, base + dataOff, nbytes)
-        if ce != 0 { return 4 }
-        return 0
+        if ce != 0 { return 4, 0L }
+        return 0, numel
     }
 
     fn loadWeightsBF16(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
@@ -579,28 +626,66 @@ object Qwen3 {
         let li: int = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                cur = _align(cur, 64L)
-                layerOffs.push(cur)
-                let ee, _, nn = _tensorNumelBF16(st, names[ni])
-                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, z }
-                cur = cur + nn * 2L
-                ni = ni + 1
-            }
+
+            // inNorm/postNorm/qNorm/kNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e0, _, n0 = _tensorNumelBF16(st, pre + "input_layernorm.weight")
+            if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, z }
+            cur = cur + n0 * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e1b, _, n1b = _tensorNumelBF16(st, pre + "post_attention_layernorm.weight")
+            if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, z }
+            cur = cur + n1b * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e2b, _, n2b = _tensorNumelBF16(st, pre + "self_attn.q_norm.weight")
+            if e2b != 0 { return 1000 + li * 64 + 2 * 4 + e2b, z }
+            cur = cur + n2b * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e3b, _, n3b = _tensorNumelBF16(st, pre + "self_attn.k_norm.weight")
+            if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, z }
+            cur = cur + n3b * 2L
+
+            // qkvProj (fused)
+            let eq, _, nq = _tensorNumelBF16(st, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, z }
+            let ek, _, nk = _tensorNumelBF16(st, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, z }
+            let ev, _, nv = _tensorNumelBF16(st, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, z }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (nq + nk + nv) * 2L
+
+            // oProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e7b, _, n7b = _tensorNumelBF16(st, pre + "self_attn.o_proj.weight")
+            if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, z }
+            cur = cur + n7b * 2L
+
+            // gateUpProj (fused)
+            let eg, _, ng = _tensorNumelBF16(st, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, z }
+            let eu, _, nu = _tensorNumelBF16(st, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, z }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (ng + nu) * 2L
+
+            // downProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e10b, _, n10b = _tensorNumelBF16(st, pre + "mlp.down_proj.weight")
+            if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, z }
+            cur = cur + n10b * 2L
+
             li = li + 1
         }
 
@@ -608,40 +693,69 @@ object Qwen3 {
         if arena == null { return 5, z }
 
         // Pass 2: copy bf16 bytes.
-        let ce = Qwen3._copyTensorBF16(st, base, "model.embed_tokens.weight", arena, offEmbed)
+        let ce, _ = Qwen3._copyTensorBF16(st, base, "model.embed_tokens.weight", arena, offEmbed)
         if ce != 0 { return 500 + ce, z }
         if lmIsTied == 0 {
-            let ce2 = Qwen3._copyTensorBF16(st, base, "lm_head.weight", arena, offLm)
+            let ce2, _ = Qwen3._copyTensorBF16(st, base, "lm_head.weight", arena, offLm)
             if ce2 != 0 { return 600 + ce2, z }
         }
-        let ce3 = Qwen3._copyTensorBF16(st, base, "model.norm.weight", arena, offNorm)
+        let ce3, _ = Qwen3._copyTensorBF16(st, base, "model.norm.weight", arena, offNorm)
         if ce3 != 0 { return 700 + ce3, z }
 
         let idx: int = 0
         li = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                let dstOff = layerOffs[idx]
-                let ee = Qwen3._copyTensorBF16(st, base, names[ni], arena, dstOff)
-                if ee != 0 { return 2000 + idx * 4 + ee, z }
-                idx = idx + 1
-                ni = ni + 1
-            }
+
+            let dstOff0 = layerOffs[idx]
+            let e0c, _ = Qwen3._copyTensorBF16(st, base, pre + "input_layernorm.weight", arena, dstOff0)
+            if e0c != 0 { return 2000 + idx * 4 + e0c, z }
+            idx = idx + 1
+
+            let dstOff1 = layerOffs[idx]
+            let e1c, _ = Qwen3._copyTensorBF16(st, base, pre + "post_attention_layernorm.weight", arena, dstOff1)
+            if e1c != 0 { return 2000 + idx * 4 + e1c, z }
+            idx = idx + 1
+
+            let dstOff2 = layerOffs[idx]
+            let e2c, _ = Qwen3._copyTensorBF16(st, base, pre + "self_attn.q_norm.weight", arena, dstOff2)
+            if e2c != 0 { return 2000 + idx * 4 + e2c, z }
+            idx = idx + 1
+
+            let dstOff3 = layerOffs[idx]
+            let e3c, _ = Qwen3._copyTensorBF16(st, base, pre + "self_attn.k_norm.weight", arena, dstOff3)
+            if e3c != 0 { return 2000 + idx * 4 + e3c, z }
+            idx = idx + 1
+
+            let dstQkv = layerOffs[idx]
+            let eq, nq = Qwen3._copyTensorBF16(st, base, pre + "self_attn.q_proj.weight", arena, dstQkv)
+            if eq != 0 { return 2000 + idx * 4 + eq, z }
+            let kDst: long = dstQkv + nq * 2L
+            let ek, nk = Qwen3._copyTensorBF16(st, base, pre + "self_attn.k_proj.weight", arena, kDst)
+            if ek != 0 { return 2000 + idx * 4 + ek, z }
+            let vDst: long = kDst + nk * 2L
+            let ev, _ = Qwen3._copyTensorBF16(st, base, pre + "self_attn.v_proj.weight", arena, vDst)
+            if ev != 0 { return 2000 + idx * 4 + ev, z }
+            idx = idx + 1
+
+            let dstO = layerOffs[idx]
+            let eo, _ = Qwen3._copyTensorBF16(st, base, pre + "self_attn.o_proj.weight", arena, dstO)
+            if eo != 0 { return 2000 + idx * 4 + eo, z }
+            idx = idx + 1
+
+            let dstGateUp = layerOffs[idx]
+            let eg, ng = Qwen3._copyTensorBF16(st, base, pre + "mlp.gate_proj.weight", arena, dstGateUp)
+            if eg != 0 { return 2000 + idx * 4 + eg, z }
+            let upDst: long = dstGateUp + ng * 2L
+            let eu, _ = Qwen3._copyTensorBF16(st, base, pre + "mlp.up_proj.weight", arena, upDst)
+            if eu != 0 { return 2000 + idx * 4 + eu, z }
+            idx = idx + 1
+
+            let dstDown = layerOffs[idx]
+            let ed, _ = Qwen3._copyTensorBF16(st, base, pre + "mlp.down_proj.weight", arena, dstDown)
+            if ed != 0 { return 2000 + idx * 4 + ed, z }
+            idx = idx + 1
+
             li = li + 1
         }
 
@@ -691,28 +805,68 @@ object Qwen3 {
         let li: int = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                cur = _align(cur, 64L)
-                layerOffs.push(cur)
-                let ee, _, nn = _tensorNumelF16(st, names[ni])
-                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, z }
-                cur = cur + nn * 2L
-                ni = ni + 1
-            }
+
+            // inNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e0, _, n0 = _tensorNumelF16(st, pre + "input_layernorm.weight")
+            if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, z }
+            cur = cur + n0 * 2L
+
+            // postNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e1b, _, n1b = _tensorNumelF16(st, pre + "post_attention_layernorm.weight")
+            if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, z }
+            cur = cur + n1b * 2L
+
+            // qNorm/kNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e2b, _, n2b = _tensorNumelF16(st, pre + "self_attn.q_norm.weight")
+            if e2b != 0 { return 1000 + li * 64 + 2 * 4 + e2b, z }
+            cur = cur + n2b * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e3b, _, n3b = _tensorNumelF16(st, pre + "self_attn.k_norm.weight")
+            if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, z }
+            cur = cur + n3b * 2L
+
+            // qkvProj (fused)
+            let eq, _, nq = _tensorNumelF16(st, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, z }
+            let ek, _, nk = _tensorNumelF16(st, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, z }
+            let ev, _, nv = _tensorNumelF16(st, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, z }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (nq + nk + nv) * 2L
+
+            // oProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e7b, _, n7b = _tensorNumelF16(st, pre + "self_attn.o_proj.weight")
+            if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, z }
+            cur = cur + n7b * 2L
+
+            // gateUpProj (fused)
+            let eg, _, ng = _tensorNumelF16(st, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, z }
+            let eu, _, nu = _tensorNumelF16(st, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, z }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (ng + nu) * 2L
+
+            // downProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e10b, _, n10b = _tensorNumelF16(st, pre + "mlp.down_proj.weight")
+            if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, z }
+            cur = cur + n10b * 2L
+
             li = li + 1
         }
 
@@ -720,40 +874,69 @@ object Qwen3 {
         if arena == null { return 5, z }
 
         // Pass 2: copy fp16 bytes.
-        let ce = Qwen3._copyTensorF16(st, base, "model.embed_tokens.weight", arena, offEmbed)
+        let ce, _ = Qwen3._copyTensorF16(st, base, "model.embed_tokens.weight", arena, offEmbed)
         if ce != 0 { return 500 + ce, z }
         if lmIsTied == 0 {
-            let ce2 = Qwen3._copyTensorF16(st, base, "lm_head.weight", arena, offLm)
+            let ce2, _ = Qwen3._copyTensorF16(st, base, "lm_head.weight", arena, offLm)
             if ce2 != 0 { return 600 + ce2, z }
         }
-        let ce3 = Qwen3._copyTensorF16(st, base, "model.norm.weight", arena, offNorm)
+        let ce3, _ = Qwen3._copyTensorF16(st, base, "model.norm.weight", arena, offNorm)
         if ce3 != 0 { return 700 + ce3, z }
 
         let idx: int = 0
         li = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                let dstOff = layerOffs[idx]
-                let ee = Qwen3._copyTensorF16(st, base, names[ni], arena, dstOff)
-                if ee != 0 { return 2000 + idx * 4 + ee, z }
-                idx = idx + 1
-                ni = ni + 1
-            }
+
+            let dstOff0 = layerOffs[idx]
+            let e0c, _ = Qwen3._copyTensorF16(st, base, pre + "input_layernorm.weight", arena, dstOff0)
+            if e0c != 0 { return 2000 + idx * 4 + e0c, z }
+            idx = idx + 1
+
+            let dstOff1 = layerOffs[idx]
+            let e1c, _ = Qwen3._copyTensorF16(st, base, pre + "post_attention_layernorm.weight", arena, dstOff1)
+            if e1c != 0 { return 2000 + idx * 4 + e1c, z }
+            idx = idx + 1
+
+            let dstOff2 = layerOffs[idx]
+            let e2c, _ = Qwen3._copyTensorF16(st, base, pre + "self_attn.q_norm.weight", arena, dstOff2)
+            if e2c != 0 { return 2000 + idx * 4 + e2c, z }
+            idx = idx + 1
+
+            let dstOff3 = layerOffs[idx]
+            let e3c, _ = Qwen3._copyTensorF16(st, base, pre + "self_attn.k_norm.weight", arena, dstOff3)
+            if e3c != 0 { return 2000 + idx * 4 + e3c, z }
+            idx = idx + 1
+
+            let dstQkv = layerOffs[idx]
+            let eq, nq = Qwen3._copyTensorF16(st, base, pre + "self_attn.q_proj.weight", arena, dstQkv)
+            if eq != 0 { return 2000 + idx * 4 + eq, z }
+            let kDst: long = dstQkv + nq * 2L
+            let ek, nk = Qwen3._copyTensorF16(st, base, pre + "self_attn.k_proj.weight", arena, kDst)
+            if ek != 0 { return 2000 + idx * 4 + ek, z }
+            let vDst: long = kDst + nk * 2L
+            let ev, _ = Qwen3._copyTensorF16(st, base, pre + "self_attn.v_proj.weight", arena, vDst)
+            if ev != 0 { return 2000 + idx * 4 + ev, z }
+            idx = idx + 1
+
+            let dstO = layerOffs[idx]
+            let eo, _ = Qwen3._copyTensorF16(st, base, pre + "self_attn.o_proj.weight", arena, dstO)
+            if eo != 0 { return 2000 + idx * 4 + eo, z }
+            idx = idx + 1
+
+            let dstGateUp = layerOffs[idx]
+            let eg, ng = Qwen3._copyTensorF16(st, base, pre + "mlp.gate_proj.weight", arena, dstGateUp)
+            if eg != 0 { return 2000 + idx * 4 + eg, z }
+            let upDst: long = dstGateUp + ng * 2L
+            let eu, _ = Qwen3._copyTensorF16(st, base, pre + "mlp.up_proj.weight", arena, upDst)
+            if eu != 0 { return 2000 + idx * 4 + eu, z }
+            idx = idx + 1
+
+            let dstDown = layerOffs[idx]
+            let ed, _ = Qwen3._copyTensorF16(st, base, pre + "mlp.down_proj.weight", arena, dstDown)
+            if ed != 0 { return 2000 + idx * 4 + ed, z }
+            idx = idx + 1
+
             li = li + 1
         }
 
@@ -813,17 +996,16 @@ object Qwen3 {
         return 0, numel
     }
 
-    private fn _convertBF16ToF32FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int {
+    private fn _convertBF16ToF32FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int, long {
         if modelDir == null || name == null { return 1 }
         let fe, rel = Qwen3._weightFileFor(weightMap, name)
-        if fe != 0 { return 2 }
+        if fe != 0 { return 2, 0L }
         let e0, st = SafeTensors.parseMmap(modelDir + "/" + rel)
-        if e0 != 0 { return 10 + e0 }
+        if e0 != 0 { return 10 + e0, 0L }
         let base: long = 8L + st.headerLen
-        let ce, tmpNum = _convertTensorBF16ToF32(st, base, name, arena, dstOff)
-        let _ = tmpNum
-        if ce != 0 { return 20 + ce }
-        return 0
+        let ce, numel = _convertTensorBF16ToF32(st, base, name, arena, dstOff)
+        if ce != 0 { return 20 + ce, 0L }
+        return 0, numel
     }
 
     fn loadWeightsF32Auto(modelDir: string, cfg: Qwen3Config) -> int, Qwen3Weights {
@@ -870,28 +1052,68 @@ object Qwen3 {
         let li: int = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                cur = _align(cur, 64L)
-                layerOffs.push(cur)
-                let ee, nn = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, names[ni])
-                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, Qwen3Weights{} }
-                cur = cur + nn * 4L
-                ni = ni + 1
-            }
+
+            // inNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e0, n0 = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "input_layernorm.weight")
+            if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, Qwen3Weights{} }
+            cur = cur + n0 * 4L
+
+            // postNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e1b, n1b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "post_attention_layernorm.weight")
+            if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, Qwen3Weights{} }
+            cur = cur + n1b * 4L
+
+            // qNorm/kNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e2b, n2b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.q_norm.weight")
+            if e2b != 0 { return 1000 + li * 64 + 2 * 4 + e2b, Qwen3Weights{} }
+            cur = cur + n2b * 4L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e3b, n3b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.k_norm.weight")
+            if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, Qwen3Weights{} }
+            cur = cur + n3b * 4L
+
+            // qkvProj (fused)
+            let eq, nq = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, Qwen3Weights{} }
+            let ek, nk = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, Qwen3Weights{} }
+            let ev, nv = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (nq + nk + nv) * 4L
+
+            // oProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e7b, n7b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.o_proj.weight")
+            if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, Qwen3Weights{} }
+            cur = cur + n7b * 4L
+
+            // gateUpProj (fused)
+            let eg, ng = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, Qwen3Weights{} }
+            let eu, nu = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (ng + nu) * 4L
+
+            // downProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e10b, n10b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.down_proj.weight")
+            if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, Qwen3Weights{} }
+            cur = cur + n10b * 4L
+
             li = li + 1
         }
 
@@ -899,40 +1121,69 @@ object Qwen3 {
         if arena == null { return 5, Qwen3Weights{} }
 
         // Pass 2: convert.
-        let ce = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
+        let ce, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
         if ce != 0 { return 500 + ce, Qwen3Weights{} }
         if lmIsTied == 0 {
-            let ce2 = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
+            let ce2, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
             if ce2 != 0 { return 600 + ce2, Qwen3Weights{} }
         }
-        let ce3 = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
+        let ce3, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
         if ce3 != 0 { return 700 + ce3, Qwen3Weights{} }
 
         let idx: int = 0
         li = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                let dstOff = layerOffs[idx]
-                let ee = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, names[ni], arena, dstOff)
-                if ee != 0 { return 2000 + idx * 4 + ee, Qwen3Weights{} }
-                idx = idx + 1
-                ni = ni + 1
-            }
+
+            let dstOff0 = layerOffs[idx]
+            let e0c, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "input_layernorm.weight", arena, dstOff0)
+            if e0c != 0 { return 2000 + idx * 4 + e0c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff1 = layerOffs[idx]
+            let e1c, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "post_attention_layernorm.weight", arena, dstOff1)
+            if e1c != 0 { return 2000 + idx * 4 + e1c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff2 = layerOffs[idx]
+            let e2c, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.q_norm.weight", arena, dstOff2)
+            if e2c != 0 { return 2000 + idx * 4 + e2c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff3 = layerOffs[idx]
+            let e3c, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.k_norm.weight", arena, dstOff3)
+            if e3c != 0 { return 2000 + idx * 4 + e3c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstQkv = layerOffs[idx]
+            let eq, nQ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.q_proj.weight", arena, dstQkv)
+            if eq != 0 { return 2000 + idx * 4 + eq, Qwen3Weights{} }
+            let kDst: long = dstQkv + nQ * 4L
+            let ek, nK = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.k_proj.weight", arena, kDst)
+            if ek != 0 { return 2000 + idx * 4 + ek, Qwen3Weights{} }
+            let vDst: long = kDst + nK * 4L
+            let ev, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.v_proj.weight", arena, vDst)
+            if ev != 0 { return 2000 + idx * 4 + ev, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstO = layerOffs[idx]
+            let eo, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "self_attn.o_proj.weight", arena, dstO)
+            if eo != 0 { return 2000 + idx * 4 + eo, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstGateUp = layerOffs[idx]
+            let eg, nGate = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "mlp.gate_proj.weight", arena, dstGateUp)
+            if eg != 0 { return 2000 + idx * 4 + eg, Qwen3Weights{} }
+            let upDst: long = dstGateUp + nGate * 4L
+            let eu, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "mlp.up_proj.weight", arena, upDst)
+            if eu != 0 { return 2000 + idx * 4 + eu, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstDown = layerOffs[idx]
+            let ed, _ = Qwen3._convertBF16ToF32FromSharded(modelDir, weightMap, pre + "mlp.down_proj.weight", arena, dstDown)
+            if ed != 0 { return 2000 + idx * 4 + ed, Qwen3Weights{} }
+            idx = idx + 1
+
             li = li + 1
         }
 
@@ -940,28 +1191,28 @@ object Qwen3 {
         return 0, out
     }
 
-    private fn _copyBF16FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int {
-        if modelDir == null || name == null { return 1 }
+    private fn _copyBF16FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int, long {
+        if modelDir == null || name == null { return 1, 0L }
         let fe, rel = Qwen3._weightFileFor(weightMap, name)
-        if fe != 0 { return 2 }
+        if fe != 0 { return 2, 0L }
         let e0, st = SafeTensors.parseMmap(modelDir + "/" + rel)
-        if e0 != 0 { return 10 + e0 }
+        if e0 != 0 { return 10 + e0, 0L }
         let base: long = 8L + st.headerLen
-        let ce = Qwen3._copyTensorBF16(st, base, name, arena, dstOff)
-        if ce != 0 { return 20 + ce }
-        return 0
+        let ce, numel = Qwen3._copyTensorBF16(st, base, name, arena, dstOff)
+        if ce != 0 { return 20 + ce, 0L }
+        return 0, numel
     }
 
-    private fn _copyF16FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int {
-        if modelDir == null || name == null { return 1 }
+    private fn _copyF16FromSharded(modelDir: string, weightMap: map, name: string, arena: bytes, dstOff: long) -> int, long {
+        if modelDir == null || name == null { return 1, 0L }
         let fe, rel = Qwen3._weightFileFor(weightMap, name)
-        if fe != 0 { return 2 }
+        if fe != 0 { return 2, 0L }
         let e0, st = SafeTensors.parseMmap(modelDir + "/" + rel)
-        if e0 != 0 { return 10 + e0 }
+        if e0 != 0 { return 10 + e0, 0L }
         let base: long = 8L + st.headerLen
-        let ce = Qwen3._copyTensorF16(st, base, name, arena, dstOff)
-        if ce != 0 { return 20 + ce }
-        return 0
+        let ce, numel = Qwen3._copyTensorF16(st, base, name, arena, dstOff)
+        if ce != 0 { return 20 + ce, 0L }
+        return 0, numel
     }
 
     fn loadWeightsBF16Auto(modelDir: string, cfg: Qwen3Config) -> int, Qwen3Weights {
@@ -1007,28 +1258,68 @@ object Qwen3 {
         let li: int = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                cur = _align(cur, 64L)
-                layerOffs.push(cur)
-                let ee, nn = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, names[ni])
-                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, Qwen3Weights{} }
-                cur = cur + nn * 2L
-                ni = ni + 1
-            }
+
+            // inNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e0, n0 = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "input_layernorm.weight")
+            if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, Qwen3Weights{} }
+            cur = cur + n0 * 2L
+
+            // postNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e1b, n1b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "post_attention_layernorm.weight")
+            if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, Qwen3Weights{} }
+            cur = cur + n1b * 2L
+
+            // qNorm/kNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e2b, n2b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.q_norm.weight")
+            if e2b != 0 { return 1000 + li * 64 + 2 * 4 + e2b, Qwen3Weights{} }
+            cur = cur + n2b * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e3b, n3b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.k_norm.weight")
+            if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, Qwen3Weights{} }
+            cur = cur + n3b * 2L
+
+            // qkvProj (fused)
+            let eq, nq = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, Qwen3Weights{} }
+            let ek, nk = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, Qwen3Weights{} }
+            let ev, nv = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (nq + nk + nv) * 2L
+
+            // oProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e7b, n7b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "self_attn.o_proj.weight")
+            if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, Qwen3Weights{} }
+            cur = cur + n7b * 2L
+
+            // gateUpProj (fused)
+            let eg, ng = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, Qwen3Weights{} }
+            let eu, nu = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (ng + nu) * 2L
+
+            // downProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e10b, n10b = Qwen3._tensorNumelBF16Sharded(modelDir, weightMap, pre + "mlp.down_proj.weight")
+            if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, Qwen3Weights{} }
+            cur = cur + n10b * 2L
+
             li = li + 1
         }
 
@@ -1036,40 +1327,69 @@ object Qwen3 {
         if arena == null { return 5, Qwen3Weights{} }
 
         // Pass 2: copy bf16 bytes.
-        let ce = Qwen3._copyBF16FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
+        let ce, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
         if ce != 0 { return 500 + ce, Qwen3Weights{} }
         if lmIsTied == 0 {
-            let ce2 = Qwen3._copyBF16FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
+            let ce2, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
             if ce2 != 0 { return 600 + ce2, Qwen3Weights{} }
         }
-        let ce3 = Qwen3._copyBF16FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
+        let ce3, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
         if ce3 != 0 { return 700 + ce3, Qwen3Weights{} }
 
         let idx: int = 0
         li = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                let dstOff = layerOffs[idx]
-                let ee = Qwen3._copyBF16FromSharded(modelDir, weightMap, names[ni], arena, dstOff)
-                if ee != 0 { return 2000 + idx * 4 + ee, Qwen3Weights{} }
-                idx = idx + 1
-                ni = ni + 1
-            }
+
+            let dstOff0 = layerOffs[idx]
+            let e0c, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "input_layernorm.weight", arena, dstOff0)
+            if e0c != 0 { return 2000 + idx * 4 + e0c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff1 = layerOffs[idx]
+            let e1c, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "post_attention_layernorm.weight", arena, dstOff1)
+            if e1c != 0 { return 2000 + idx * 4 + e1c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff2 = layerOffs[idx]
+            let e2c, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.q_norm.weight", arena, dstOff2)
+            if e2c != 0 { return 2000 + idx * 4 + e2c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff3 = layerOffs[idx]
+            let e3c, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.k_norm.weight", arena, dstOff3)
+            if e3c != 0 { return 2000 + idx * 4 + e3c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstQkv = layerOffs[idx]
+            let eq, nQ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.q_proj.weight", arena, dstQkv)
+            if eq != 0 { return 2000 + idx * 4 + eq, Qwen3Weights{} }
+            let kDst: long = dstQkv + nQ * 2L
+            let ek, nK = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.k_proj.weight", arena, kDst)
+            if ek != 0 { return 2000 + idx * 4 + ek, Qwen3Weights{} }
+            let vDst: long = kDst + nK * 2L
+            let ev, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.v_proj.weight", arena, vDst)
+            if ev != 0 { return 2000 + idx * 4 + ev, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstO = layerOffs[idx]
+            let eo, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "self_attn.o_proj.weight", arena, dstO)
+            if eo != 0 { return 2000 + idx * 4 + eo, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstGateUp = layerOffs[idx]
+            let eg, nGate = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "mlp.gate_proj.weight", arena, dstGateUp)
+            if eg != 0 { return 2000 + idx * 4 + eg, Qwen3Weights{} }
+            let upDst: long = dstGateUp + nGate * 2L
+            let eu, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "mlp.up_proj.weight", arena, upDst)
+            if eu != 0 { return 2000 + idx * 4 + eu, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstDown = layerOffs[idx]
+            let ed, _ = Qwen3._copyBF16FromSharded(modelDir, weightMap, pre + "mlp.down_proj.weight", arena, dstDown)
+            if ed != 0 { return 2000 + idx * 4 + ed, Qwen3Weights{} }
+            idx = idx + 1
+
             li = li + 1
         }
 
@@ -1120,28 +1440,68 @@ object Qwen3 {
         let li: int = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                cur = _align(cur, 64L)
-                layerOffs.push(cur)
-                let ee, nn = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, names[ni])
-                if ee != 0 { return 1000 + li * 64 + ni * 4 + ee, Qwen3Weights{} }
-                cur = cur + nn * 2L
-                ni = ni + 1
-            }
+
+            // inNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e0, n0 = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "input_layernorm.weight")
+            if e0 != 0 { return 1000 + li * 64 + 0 * 4 + e0, Qwen3Weights{} }
+            cur = cur + n0 * 2L
+
+            // postNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e1b, n1b = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "post_attention_layernorm.weight")
+            if e1b != 0 { return 1000 + li * 64 + 1 * 4 + e1b, Qwen3Weights{} }
+            cur = cur + n1b * 2L
+
+            // qNorm/kNorm
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e2b, n2b = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.q_norm.weight")
+            if e2b != 0 { return 1000 + li * 64 + 2 * 4 + e2b, Qwen3Weights{} }
+            cur = cur + n2b * 2L
+
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e3b, n3b = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.k_norm.weight")
+            if e3b != 0 { return 1000 + li * 64 + 3 * 4 + e3b, Qwen3Weights{} }
+            cur = cur + n3b * 2L
+
+            // qkvProj (fused)
+            let eq, nq = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.q_proj.weight")
+            if eq != 0 { return 1000 + li * 64 + 4 * 4 + eq, Qwen3Weights{} }
+            let ek, nk = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.k_proj.weight")
+            if ek != 0 { return 1000 + li * 64 + 5 * 4 + ek, Qwen3Weights{} }
+            let ev, nv = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.v_proj.weight")
+            if ev != 0 { return 1000 + li * 64 + 6 * 4 + ev, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (nq + nk + nv) * 2L
+
+            // oProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e7b, n7b = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "self_attn.o_proj.weight")
+            if e7b != 0 { return 1000 + li * 64 + 7 * 4 + e7b, Qwen3Weights{} }
+            cur = cur + n7b * 2L
+
+            // gateUpProj (fused)
+            let eg, ng = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "mlp.gate_proj.weight")
+            if eg != 0 { return 1000 + li * 64 + 8 * 4 + eg, Qwen3Weights{} }
+            let eu, nu = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "mlp.up_proj.weight")
+            if eu != 0 { return 1000 + li * 64 + 9 * 4 + eu, Qwen3Weights{} }
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            cur = cur + (ng + nu) * 2L
+
+            // downProj
+            cur = _align(cur, 64L)
+            layerOffs.push(cur)
+            let e10b, n10b = Qwen3._tensorNumelF16Sharded(modelDir, weightMap, pre + "mlp.down_proj.weight")
+            if e10b != 0 { return 1000 + li * 64 + 10 * 4 + e10b, Qwen3Weights{} }
+            cur = cur + n10b * 2L
+
             li = li + 1
         }
 
@@ -1149,40 +1509,69 @@ object Qwen3 {
         if arena == null { return 5, Qwen3Weights{} }
 
         // Pass 2: copy fp16 bytes.
-        let ce = Qwen3._copyF16FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
+        let ce, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, "model.embed_tokens.weight", arena, offEmbed)
         if ce != 0 { return 500 + ce, Qwen3Weights{} }
         if lmIsTied == 0 {
-            let ce2 = Qwen3._copyF16FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
+            let ce2, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, "lm_head.weight", arena, offLm)
             if ce2 != 0 { return 600 + ce2, Qwen3Weights{} }
         }
-        let ce3 = Qwen3._copyF16FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
+        let ce3, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, "model.norm.weight", arena, offNorm)
         if ce3 != 0 { return 700 + ce3, Qwen3Weights{} }
 
         let idx: int = 0
         li = 0
         while li < cfg.layers {
             let pre = _layerPrefix(li)
-            let names: string[] = {
-                pre + "input_layernorm.weight",
-                pre + "post_attention_layernorm.weight",
-                pre + "self_attn.q_norm.weight",
-                pre + "self_attn.k_norm.weight",
-                pre + "self_attn.q_proj.weight",
-                pre + "self_attn.k_proj.weight",
-                pre + "self_attn.v_proj.weight",
-                pre + "self_attn.o_proj.weight",
-                pre + "mlp.gate_proj.weight",
-                pre + "mlp.up_proj.weight",
-                pre + "mlp.down_proj.weight",
-            }
-            let ni: int = 0
-            while ni < names.len() {
-                let dstOff = layerOffs[idx]
-                let ee = Qwen3._copyF16FromSharded(modelDir, weightMap, names[ni], arena, dstOff)
-                if ee != 0 { return 2000 + idx * 4 + ee, Qwen3Weights{} }
-                idx = idx + 1
-                ni = ni + 1
-            }
+
+            let dstOff0 = layerOffs[idx]
+            let e0c, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "input_layernorm.weight", arena, dstOff0)
+            if e0c != 0 { return 2000 + idx * 4 + e0c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff1 = layerOffs[idx]
+            let e1c, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "post_attention_layernorm.weight", arena, dstOff1)
+            if e1c != 0 { return 2000 + idx * 4 + e1c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff2 = layerOffs[idx]
+            let e2c, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.q_norm.weight", arena, dstOff2)
+            if e2c != 0 { return 2000 + idx * 4 + e2c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstOff3 = layerOffs[idx]
+            let e3c, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.k_norm.weight", arena, dstOff3)
+            if e3c != 0 { return 2000 + idx * 4 + e3c, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstQkv = layerOffs[idx]
+            let eq, nQ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.q_proj.weight", arena, dstQkv)
+            if eq != 0 { return 2000 + idx * 4 + eq, Qwen3Weights{} }
+            let kDst: long = dstQkv + nQ * 2L
+            let ek, nK = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.k_proj.weight", arena, kDst)
+            if ek != 0 { return 2000 + idx * 4 + ek, Qwen3Weights{} }
+            let vDst: long = kDst + nK * 2L
+            let ev, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.v_proj.weight", arena, vDst)
+            if ev != 0 { return 2000 + idx * 4 + ev, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstO = layerOffs[idx]
+            let eo, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "self_attn.o_proj.weight", arena, dstO)
+            if eo != 0 { return 2000 + idx * 4 + eo, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstGateUp = layerOffs[idx]
+            let eg, nGate = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "mlp.gate_proj.weight", arena, dstGateUp)
+            if eg != 0 { return 2000 + idx * 4 + eg, Qwen3Weights{} }
+            let upDst: long = dstGateUp + nGate * 2L
+            let eu, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "mlp.up_proj.weight", arena, upDst)
+            if eu != 0 { return 2000 + idx * 4 + eu, Qwen3Weights{} }
+            idx = idx + 1
+
+            let dstDown = layerOffs[idx]
+            let ed, _ = Qwen3._copyF16FromSharded(modelDir, weightMap, pre + "mlp.down_proj.weight", arena, dstDown)
+            if ed != 0 { return 2000 + idx * 4 + ed, Qwen3Weights{} }
+            idx = idx + 1
+
             li = li + 1
         }
 
@@ -1206,7 +1595,9 @@ object Qwen3 {
         let kvdim: long = (long)cfg.kvHeads * (long)cfg.headDim
         let inter: long = (long)cfg.intermediate
         let vocab: long = (long)cfg.vocab
-        return Qwen3Scratch{ x: _f32Bytes(hidden), x1: _f32Bytes(hidden), x2: _f32Bytes(hidden), q: _f32Bytes(qdim), k: _f32Bytes(kvdim), v: _f32Bytes(kvdim), attn: _f32Bytes(qdim), gate: _f32Bytes(inter), up: _f32Bytes(inter), inter: _f32Bytes(inter), logits: _f32Bytes(vocab), scores: _f32Bytes((long)maxSeq) }
+        let qkvdim: long = qdim + 2L * kvdim
+        let gateUpDim: long = 2L * inter
+        return Qwen3Scratch{ x: _f32Bytes(hidden), x1: _f32Bytes(hidden), x2: _f32Bytes(hidden), qkv: _f32Bytes(qkvdim), attn: _f32Bytes(qdim), gateUp: _f32Bytes(gateUpDim), inter: _f32Bytes(inter), logits: _f32Bytes(vocab), scores: _f32Bytes((long)maxSeq) }
     }
 
     fn loadState(modelDir: string, opts: LlmOptions) -> int, Qwen3State {
@@ -1230,15 +1621,13 @@ object Qwen3 {
             x: null,
             x1: null,
             x2: null,
-            q: null,
-            k: null,
-            v: null,
+            qkv: null,
             attn: null,
-            gate: null,
-            up: null,
+            gateUp: null,
             inter: null,
             logits: null,
             scores: null,
+            prof: Qwen3Profile{},
         }
 
         let ce, cfg = Qwen3.loadConfig(modelDir + "/config.json")
@@ -1291,15 +1680,17 @@ object Qwen3 {
             x: scratch.x,
             x1: scratch.x1,
             x2: scratch.x2,
-            q: scratch.q,
-            k: scratch.k,
-            v: scratch.v,
+            qkv: scratch.qkv,
             attn: scratch.attn,
-            gate: scratch.gate,
-            up: scratch.up,
+            gateUp: scratch.gateUp,
             inter: scratch.inter,
             logits: scratch.logits,
             scores: scratch.scores,
+            prof: Qwen3Profile{ enabled: opts.profile, prefillTokens: 0, decodeTokens: 0, replayTokens: 0,
+                nsPrefillForward: 0L, nsDecodeForward: 0L, nsReplayForward: 0L, nsLogits: 0L, nsPenalty: 0L, nsSample: 0L,
+                nsEmbed: 0L, nsInNorm: 0L, nsQkv: 0L, nsQkNorm: 0L, nsRope: 0L, nsKvStore: 0L, nsAttn: 0L, nsO: 0L,
+                nsPostNorm: 0L, nsGateUp: 0L, nsSiluMul: 0L, nsDown: 0L, nsFinalNorm: 0L, nsLmHead: 0L, nsArgmax: 0L, nsSampleTop: 0L,
+                cQkv: 0, cO: 0, cGateUp: 0, cDown: 0, cLmHead: 0 },
         }
         return 0, out
     }
@@ -1347,6 +1738,10 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
     let maxSeq: int = s.kvMaxSeq
     if pos >= maxSeq { return 2 }
 
+    let prof: Qwen3Profile = s.prof
+
+    let tEmbed: long = 0L
+    if prof.enabled != 0 { tEmbed = time.Time.monoNs() }
     if s.wDtype == 1 || s.wDtype == 2 {
         let rowBytes: long = id * (long)cfg.hidden * 2L
         let eoff = s.wOffEmbed + rowBytes
@@ -1359,6 +1754,7 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let eoff = s.wOffEmbed + _embedRowBytes(cfg, id)
         bstd.Bytes.copy(s.x, 0L, s.wArena, eoff, _f32(cfg.hidden))
     }
+    if prof.enabled != 0 { prof.nsEmbed = prof.nsEmbed + (time.Time.monoNs() - tEmbed) }
 
     let hidden: long = (long)cfg.hidden
     let qdim: int = cfg.heads * cfg.headDim
@@ -1368,76 +1764,112 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
     let layer: int = 0
     while layer < cfg.layers {
         let inNormOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.inNorm)
+        let tInNorm: long = 0L
+        if prof.enabled != 0 { tInNorm = time.Time.monoNs() }
         if _rmsnorm(s, s.x1, s.x, inNormOff, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsInNorm = prof.nsInNorm + (time.Time.monoNs() - tInNorm) }
 
-        let qOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qProj)
-        let kOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.kProj)
-        let vOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.vProj)
-        if _gemv(s, qdim, cfg.hidden, qOff, s.x1, 0L, s.q, 0L) != 0 { return 1 }
-        if _gemv(s, kvdim, cfg.hidden, kOff, s.x1, 0L, s.k, 0L) != 0 { return 1 }
-        if _gemv(s, kvdim, cfg.hidden, vOff, s.x1, 0L, s.v, 0L) != 0 { return 1 }
+        let qkvOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qkvProj)
+        let tQkv: long = 0L
+        if prof.enabled != 0 { tQkv = time.Time.monoNs() }
+        let qkvdim: int = qdim + 2 * kvdim
+        if _gemv(s, qkvdim, cfg.hidden, qkvOff, s.x1, 0L, s.qkv, 0L) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsQkv = prof.nsQkv + (time.Time.monoNs() - tQkv); prof.cQkv = prof.cQkv + 1 }
+
+        let qOffF32: long = 0L
+        let kOffF32: long = (long)qdim * 4L
+        let vOffF32: long = ((long)qdim + (long)kvdim) * 4L
 
         let qnOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qNorm)
         let knOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.kNorm)
+        let tQkNorm: long = 0L
+        if prof.enabled != 0 { tQkNorm = time.Time.monoNs() }
         if s.wDtype == 1 {
-            if tua_llm_qk_rmsnorm_inplace_f32_bf16w(s.q, 0L, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
-            if tua_llm_qk_rmsnorm_inplace_f32_bf16w(s.k, 0L, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32_bf16w(s.qkv, qOffF32, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32_bf16w(s.qkv, kOffF32, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
         } else if s.wDtype == 2 {
-            if tua_llm_qk_rmsnorm_inplace_f32_f16w(s.q, 0L, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
-            if tua_llm_qk_rmsnorm_inplace_f32_f16w(s.k, 0L, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32_f16w(s.qkv, qOffF32, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32_f16w(s.qkv, kOffF32, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
         } else {
-            if tua_llm_qk_rmsnorm_inplace_f32(s.q, 0L, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
-            if tua_llm_qk_rmsnorm_inplace_f32(s.k, 0L, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32(s.qkv, qOffF32, cfg.heads, cfg.headDim, s.wArena, qnOff, cfg.rmsEps) != 0 { return 1 }
+            if tua_llm_qk_rmsnorm_inplace_f32(s.qkv, kOffF32, cfg.kvHeads, cfg.headDim, s.wArena, knOff, cfg.rmsEps) != 0 { return 1 }
         }
+        if prof.enabled != 0 { prof.nsQkNorm = prof.nsQkNorm + (time.Time.monoNs() - tQkNorm) }
 
-        if tua_llm_rope_inplace_f32(s.q, 0L, cfg.heads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
-        if tua_llm_rope_inplace_f32(s.k, 0L, cfg.kvHeads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
+        let tRope: long = 0L
+        if prof.enabled != 0 { tRope = time.Time.monoNs() }
+        if tua_llm_rope_inplace_f32(s.qkv, qOffF32, cfg.heads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
+        if tua_llm_rope_inplace_f32(s.qkv, kOffF32, cfg.kvHeads, cfg.headDim, pos, cfg.ropeTheta) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsRope = prof.nsRope + (time.Time.monoNs() - tRope) }
 
         let tokBytes: long = s.kvTokenBytes
         let layerBytes: long = s.kvLayerBytes
         let kdst: long = s.kvKBase + (long)layer * layerBytes + (long)pos * tokBytes
         let vdst: long = s.kvVBase + (long)layer * layerBytes + (long)pos * tokBytes
+        let tKvStore: long = 0L
+        if prof.enabled != 0 { tKvStore = time.Time.monoNs() }
         if s.kvDtype == 1 {
-            if tua_bytes_f32_to_bf16(s.k, 0L, s.kvBuf, kdst, (long)kvdim) != 0 { return 1 }
-            if tua_bytes_f32_to_bf16(s.v, 0L, s.kvBuf, vdst, (long)kvdim) != 0 { return 1 }
+            if tua_bytes_f32_to_bf16(s.qkv, kOffF32, s.kvBuf, kdst, (long)kvdim) != 0 { return 1 }
+            if tua_bytes_f32_to_bf16(s.qkv, vOffF32, s.kvBuf, vdst, (long)kvdim) != 0 { return 1 }
         } else if s.kvDtype == 2 {
-            if tua_bytes_f32_to_f16(s.k, 0L, s.kvBuf, kdst, (long)kvdim) != 0 { return 1 }
-            if tua_bytes_f32_to_f16(s.v, 0L, s.kvBuf, vdst, (long)kvdim) != 0 { return 1 }
+            if tua_bytes_f32_to_f16(s.qkv, kOffF32, s.kvBuf, kdst, (long)kvdim) != 0 { return 1 }
+            if tua_bytes_f32_to_f16(s.qkv, vOffF32, s.kvBuf, vdst, (long)kvdim) != 0 { return 1 }
         } else {
-            bstd.Bytes.copy(s.kvBuf, kdst, s.k, 0L, tokBytes)
-            bstd.Bytes.copy(s.kvBuf, vdst, s.v, 0L, tokBytes)
+            bstd.Bytes.copy(s.kvBuf, kdst, s.qkv, kOffF32, tokBytes)
+            bstd.Bytes.copy(s.kvBuf, vdst, s.qkv, vOffF32, tokBytes)
         }
+        if prof.enabled != 0 { prof.nsKvStore = prof.nsKvStore + (time.Time.monoNs() - tKvStore) }
 
         let ae: int = 0
+        let tAttn: long = 0L
+        if prof.enabled != 0 { tAttn = time.Time.monoNs() }
         if s.kvDtype == 1 {
-            ae = tua_llm_attn_decode_kv_bf16_f32(s.attn, 0L, s.q, 0L, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
+            ae = tua_llm_attn_decode_kv_bf16_f32(s.attn, 0L, s.qkv, qOffF32, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
         } else if s.kvDtype == 2 {
-            ae = tua_llm_attn_decode_kv_f16_f32(s.attn, 0L, s.q, 0L, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
+            ae = tua_llm_attn_decode_kv_f16_f32(s.attn, 0L, s.qkv, qOffF32, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
         } else {
-            ae = tua_llm_attn_decode_f32(s.attn, 0L, s.q, 0L, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
+            ae = tua_llm_attn_decode_f32(s.attn, 0L, s.qkv, qOffF32, s.kvBuf, s.kvKBase, s.kvVBase, s.kvLayerBytes, s.kvTokenBytes, layer, pos, cfg.heads, cfg.kvHeads, cfg.headDim, scale, s.scores, 0L, (long)maxSeq)
         }
+        if prof.enabled != 0 { prof.nsAttn = prof.nsAttn + (time.Time.monoNs() - tAttn) }
         if ae != 0 { return 1 }
 
         let oOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.oProj)
+        let tO: long = 0L
+        if prof.enabled != 0 { tO = time.Time.monoNs() }
         if _gemv(s, cfg.hidden, qdim, oOff, s.attn, 0L, s.x2, 0L) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsO = prof.nsO + (time.Time.monoNs() - tO); prof.cO = prof.cO + 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
         let postNormOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.postNorm)
+        let tPostNorm: long = 0L
+        if prof.enabled != 0 { tPostNorm = time.Time.monoNs() }
         if _rmsnorm(s, s.x1, s.x, postNormOff, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsPostNorm = prof.nsPostNorm + (time.Time.monoNs() - tPostNorm) }
 
-        let gateOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.gateProj)
-        let upOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.upProj)
         let downOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.downProj)
-        if _gemv(s, cfg.intermediate, cfg.hidden, gateOff, s.x1, 0L, s.gate, 0L) != 0 { return 1 }
-        if _gemv(s, cfg.intermediate, cfg.hidden, upOff, s.x1, 0L, s.up, 0L) != 0 { return 1 }
-        if tua_llm_silu_mul_f32(s.inter, 0L, s.gate, 0L, s.up, 0L, (long)cfg.intermediate) != 0 { return 1 }
+        let gateUpOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.gateUpProj)
+        let tGateUp: long = 0L
+        if prof.enabled != 0 { tGateUp = time.Time.monoNs() }
+        let gateUpDim: int = 2 * cfg.intermediate
+        if _gemv(s, gateUpDim, cfg.hidden, gateUpOff, s.x1, 0L, s.gateUp, 0L) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsGateUp = prof.nsGateUp + (time.Time.monoNs() - tGateUp); prof.cGateUp = prof.cGateUp + 1 }
+        let tSilu: long = 0L
+        if prof.enabled != 0 { tSilu = time.Time.monoNs() }
+        let upOffF32: long = (long)cfg.intermediate * 4L
+        if tua_llm_silu_mul2_f32(s.inter, 0L, s.gateUp, 0L, upOffF32, (long)cfg.intermediate) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsSiluMul = prof.nsSiluMul + (time.Time.monoNs() - tSilu) }
+
+        let tDown: long = 0L
+        if prof.enabled != 0 { tDown = time.Time.monoNs() }
         if _gemv(s, cfg.hidden, cfg.intermediate, downOff, s.inter, 0L, s.x2, 0L) != 0 { return 1 }
+        if prof.enabled != 0 { prof.nsDown = prof.nsDown + (time.Time.monoNs() - tDown); prof.cDown = prof.cDown + 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
         layer = layer + 1
     }
 
     s.pos = pos + 1
+    s.prof = prof
     return 0
 }
 
@@ -1453,6 +1885,9 @@ private fn _prefillAndGetCtx(let s: Qwen3State, promptIds: long[]) -> int, long[
 
     _clearKv(s)
     let ctx: long[] = {}
+    let prof: Qwen3Profile = s.prof
+    let tPrefill: long = 0L
+    if prof.enabled != 0 { tPrefill = time.Time.monoNs() }
     let i: int = start
     while i < promptIds.len() {
         let id: long = promptIds[i]
@@ -1461,20 +1896,41 @@ private fn _prefillAndGetCtx(let s: Qwen3State, promptIds: long[]) -> int, long[
         ctx.push(id)
         i = i + 1
     }
+    if prof.enabled != 0 {
+        prof.prefillTokens = prof.prefillTokens + ctx.len()
+        prof.nsPrefillForward = prof.nsPrefillForward + (time.Time.monoNs() - tPrefill)
+        s.prof = prof
+    }
     return 0, ctx
 }
 
 private fn _logits(let s: Qwen3State) -> int {
     let cfg: Qwen3Config = s.cfg
+    let prof: Qwen3Profile = s.prof
+    let tAll: long = 0L
+    if prof.enabled != 0 { tAll = time.Time.monoNs() }
+    let tNorm: long = 0L
+    if prof.enabled != 0 { tNorm = time.Time.monoNs() }
     if _rmsnorm(s, s.x1, s.x, s.wOffNorm, cfg.hidden, cfg.rmsEps) != 0 { return 1 }
+    if prof.enabled != 0 { prof.nsFinalNorm = prof.nsFinalNorm + (time.Time.monoNs() - tNorm) }
+
+    let tLm: long = 0L
+    if prof.enabled != 0 { tLm = time.Time.monoNs() }
     if _gemv(s, cfg.vocab, cfg.hidden, s.wOffLmHead, s.x1, 0L, s.logits, 0L) != 0 { return 1 }
+    if prof.enabled != 0 { prof.nsLmHead = prof.nsLmHead + (time.Time.monoNs() - tLm); prof.cLmHead = prof.cLmHead + 1 }
+
+    if prof.enabled != 0 { prof.nsLogits = prof.nsLogits + (time.Time.monoNs() - tAll); s.prof = prof }
     return 0
 }
 
 private fn _argmaxLogits(let s: Qwen3State) -> int, long {
     let out: long = 0L
     let cfg: Qwen3Config = s.cfg
+    let prof: Qwen3Profile = s.prof
+    let t0: long = 0L
+    if prof.enabled != 0 { t0 = time.Time.monoNs() }
     let e = tua_llm_argmax_f32(s.logits, 0L, cfg.vocab, &out)
+    if prof.enabled != 0 { prof.nsArgmax = prof.nsArgmax + (time.Time.monoNs() - t0); s.prof = prof }
     if e != 0 { return 1, 0L }
     return 0, out
 }
@@ -1551,6 +2007,10 @@ object Qwen3Infer {
         let banIds: long[] = g.banIds
 
         if _logits(s) != 0 { return 3, 0L, 0 }
+        let p0: Qwen3Profile = s.prof
+        let profOn: int = p0.enabled
+        let tPenalty: long = 0L
+        if profOn != 0 { tPenalty = time.Time.monoNs() }
         if opts.repeatPenalty > 1.0 && opts.repeatLastN > 0 {
             let _ = tua_llm_repetition_penalty_f32(logits, 0L, vocab, ctx, opts.repeatLastN, opts.repeatPenalty)
         }
@@ -1577,10 +2037,17 @@ object Qwen3Infer {
                 }
             }
         }
+        if profOn != 0 {
+            let p1: Qwen3Profile = s.prof
+            p1.nsPenalty = p1.nsPenalty + (time.Time.monoNs() - tPenalty)
+            s.prof = p1
+        }
 
         let nextId: long = 0L
         let tries: int = 0
         let rng: long = g.rng
+        let tSample: long = 0L
+        if profOn != 0 { tSample = time.Time.monoNs() }
         while tries < 8 {
             if opts.temperature <= 0.0 || opts.topK == 1 || (opts.topK <= 0 && opts.topP <= 0.0) {
                 let ae, id = _argmaxLogits(s)
@@ -1588,7 +2055,14 @@ object Qwen3Infer {
                 nextId = id
             } else {
                 let outIdx: long = 0L
+                let tTop: long = 0L
+                if profOn != 0 { tTop = time.Time.monoNs() }
                 let se = tua_llm_sample_topk_topp_f32(logits, 0L, vocab, opts.topK, opts.topP, opts.temperature, &rng, &outIdx)
+                if profOn != 0 {
+                    let pTop: Qwen3Profile = s.prof
+                    pTop.nsSampleTop = pTop.nsSampleTop + (time.Time.monoNs() - tTop)
+                    s.prof = pTop
+                }
                 if se != 0 { return 3, 0L, 0 }
                 nextId = outIdx
             }
@@ -1616,6 +2090,11 @@ object Qwen3Infer {
             break
         }
         g.rng = rng
+        if profOn != 0 {
+            let p2: Qwen3Profile = s.prof
+            p2.nsSample = p2.nsSample + (time.Time.monoNs() - tSample)
+            s.prof = p2
+        }
 
         if nextId == eos { g.done = 1; return 0, 0L, 1 }
         if hasStops {
@@ -1631,7 +2110,10 @@ object Qwen3Infer {
         g.out = out
         g.ctx = ctx
 
-        let e2 = _forwardToken(s, nextId)
+        let e2: int = 0
+        let tFwd: long = 0L
+        if profOn != 0 { tFwd = time.Time.monoNs() }
+        e2 = _forwardToken(s, nextId)
         if e2 == 2 {
             let maxSeq: int = s.kvMaxSeq
             if maxSeq <= 1 { return 4, 0L, 0 }
@@ -1641,14 +2123,35 @@ object Qwen3Infer {
             _clearKv(s)
             let j: int = start
             while j < ctx.len() - 1 {
+                let tReplay: long = 0L
+                if profOn != 0 { tReplay = time.Time.monoNs() }
                 let re = _forwardToken(s, ctx[j])
                 if re != 0 { return 4, 0L, 0 }
+                if profOn != 0 {
+                    let pr: Qwen3Profile = s.prof
+                    pr.replayTokens = pr.replayTokens + 1
+                    pr.nsReplayForward = pr.nsReplayForward + (time.Time.monoNs() - tReplay)
+                    s.prof = pr
+                }
                 j = j + 1
             }
+            let tFwd2: long = 0L
+            if profOn != 0 { tFwd2 = time.Time.monoNs() }
             let re2 = _forwardToken(s, nextId)
             if re2 != 0 { return 4, 0L, 0 }
+            if profOn != 0 {
+                let pd: Qwen3Profile = s.prof
+                pd.decodeTokens = pd.decodeTokens + 1
+                pd.nsDecodeForward = pd.nsDecodeForward + (time.Time.monoNs() - tFwd2)
+                s.prof = pd
+            }
         } else if e2 != 0 {
             return 4, 0L, 0
+        } else if profOn != 0 {
+            let pd2: Qwen3Profile = s.prof
+            pd2.decodeTokens = pd2.decodeTokens + 1
+            pd2.nsDecodeForward = pd2.nsDecodeForward + (time.Time.monoNs() - tFwd)
+            s.prof = pd2
         }
 
         g.t = g.t + 1

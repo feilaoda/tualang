@@ -3,7 +3,7 @@ import "std/term" as term
 import "std/utf8" as u
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 import Qwen3Chat from "../packages/llm/qwen3_chat"
-import Qwen3, Qwen3State, Qwen3Infer from "../packages/llm/qwen3"
+import Qwen3, Qwen3State, Qwen3Infer, Qwen3Profile from "../packages/llm/qwen3"
 import LlmArgs from "../packages/llm/options"
 
 private fn _emptyLongArray() -> long[] {
@@ -88,5 +88,8 @@ fn main(args: string[]) -> int {
     let genTokens: int = genOut.len()
     if secs > 0.0 { tokps = (double)genTokens / secs }
     println("gen_tokens={} tok/s={}", genTokens, tokps)
+    if opts.profile != 0 {
+        Qwen3Profile.dump(st.prof)
+    }
     return 0
 }
