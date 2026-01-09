@@ -1,4 +1,4 @@
-// tuac: -L build/clib -l tuaextbpe
+// tuac: -L build/clib -l tuallm -l tuajson -l tuaextbpe
 
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 import BpeTokenizerExt from "../packages/llm/tokenizer_bpe_ext"
@@ -21,4 +21,3 @@ fn main() {
     assert(e3 == 0)
     assert(s2 == s0)
 }
-

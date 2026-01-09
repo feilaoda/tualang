@@ -48,6 +48,10 @@ ANTLR 语法回归（只做 parse，不做编译/运行）：
 - 在仓库内直接运行 `./bin/tuac` 会自动找到 `./std`
 - 如果单独拷贝了 `tuac`，需要设置：`export TUA_STDLIB_DIR=/path/to/std`
 
+包搜索路径（用于 `import "json"` / `import "packages/json"` 这类“非相对导入”的查找）：
+- 设置：`export TUA_PACKAGE_DIR=/path/to/packages`（可用 `:` 分隔多个目录）
+- 查找规则：会尝试 `<root>/<raw>.tua`，以及按最后一段名兜底 `<root>/<name>/<name>.tua`（例如 `import "json"` => `.../json/json.tua`）
+
 ## 语法速览（以实现为准）
 
 ### 变量与绑定

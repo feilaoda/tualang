@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as j
+import "json" as j
 
 fn main(args: string[]) -> int {
     let path = "examples/models/qwen3-0.6b/tokenizer.json"
@@ -13,4 +13,3 @@ fn main(args: string[]) -> int {
     println("tokenizer version={}", v)
     return 0
 }
-

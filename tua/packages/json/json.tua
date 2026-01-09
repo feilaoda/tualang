@@ -3,14 +3,6 @@ import "std/utf8" as utf8
 
 extern fn tua_map_new() -> map
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
-extern fn tua_json_scan_top_level_string(b: bytes, key: string, out: &string) int
-extern fn tua_json_scan_top_level_long(b: bytes, key: string, out: &long) int
-extern fn tua_json_scan_top_level_bool(b: bytes, key: string, out: &int) int
-extern fn tua_json_scan_key_path_string(b: bytes, path: string, out: &string) int
-extern fn tua_json_scan_key_path_long(b: bytes, path: string, out: &long) int
-extern fn tua_json_scan_key_path_bool(b: bytes, path: string, out: &int) int
-extern fn tua_json_parse_key_path_string_long_map(b: bytes, path: string, out: &map) int
-extern fn tua_json_parse_key_path_string_array(b: bytes, path: string, outErr: &int) -> string[]
 
 private fn _isWs(c: int) -> bool {
     return c == 32 || c == 10 || c == 13 || c == 9
@@ -778,6 +770,252 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
     return 1, pos
 }
 
+private fn _parseStrictLongAt(b: bytes, pos: long, n: long) -> int, long, long {
+    let se, p0 = _skipWs(b, pos, n)
+    if se != 0 { return 1, 0L, pos }
+    if p0 >= n { return 1, 0L, pos }
+
+    let p = p0
+    let e0, c0 = bstd.Bytes.getU8(b, p)
+    if e0 != 0 { return 1, 0L, pos }
+    let sign: long = 1L
+    if c0 == 45 {
+        sign = -1L
+        p = p + 1L
+        if p >= n { return 1, 0L, pos }
+    }
+
+    let e1, d0 = bstd.Bytes.getU8(b, p)
+    if e1 != 0 { return 1, 0L, pos }
+    if !_isDigit(d0) { return 1, 0L, pos }
+
+    let v: long = 0L
+    while true {
+        if p >= n { break }
+        let ed, d = bstd.Bytes.getU8(b, p)
+        if ed != 0 { return 1, 0L, pos }
+        if !_isDigit(d) { break }
+        v = (v * 10L) + (long)(d - 48)
+        p = p + 1L
+    }
+
+    if p < n {
+        let ee2, nxt = bstd.Bytes.getU8(b, p)
+        if ee2 != 0 { return 1, 0L, pos }
+        if nxt == 46 || nxt == 101 || nxt == 69 { return 1, 0L, pos }
+    }
+    return 0, v * sign, p
+}
+
+private fn _parseStrictBoolAt(b: bytes, pos: long, n: long) -> int, bool, long {
+    let se, p = _skipWs(b, pos, n)
+    if se != 0 { return 1, false, pos }
+    if p >= n { return 1, false, pos }
+
+    let e0, c0 = bstd.Bytes.getU8(b, p)
+    if e0 != 0 { return 1, false, pos }
+    if c0 == 116 { // true
+        let lit:int[] = {116,114,117,101}
+        let el, after = _skipLiteral(b, p, n, lit)
+        if el != 0 { return 1, false, pos }
+        return 0, true, after
+    }
+    if c0 == 102 { // false
+        let lit:int[] = {102,97,108,115,101}
+        let el, after = _skipLiteral(b, p, n, lit)
+        if el != 0 { return 1, false, pos }
+        return 0, false, after
+    }
+    return 1, false, pos
+}
+
+private fn _splitPathSegments(path: string) -> int, string[] {
+    let pb = bstd.Bytes.fromString(path)
+    let n = bstd.Bytes.len(pb)
+    if n <= 0L { return 1, null }
+
+    let parts: string[] = {}
+    let start: long = 0L
+    let i: long = 0L
+    while true {
+        if i >= n { break }
+        let e, c = bstd.Bytes.getU8(pb, i)
+        if e != 0 { return 1, null }
+        if c == 46 { // '.'
+            if i == start { return 1, null }
+            let seg = tua_str_from_bytes_copy(pb, start, i - start)
+            parts.push(seg)
+            start = i + 1L
+        }
+        i = i + 1L
+    }
+    if start >= n { return 1, null }
+    let last = tua_str_from_bytes_copy(pb, start, n - start)
+    parts.push(last)
+    return 0, parts
+}
+
+private fn _scanObjectValuePos(b: bytes, objPos: long, n: long, key: string) -> int, long {
+    let se, i = _skipWs(b, objPos, n)
+    if se != 0 { return 1, 0L }
+    if i >= n { return 1, 0L }
+    let eo, c = bstd.Bytes.getU8(b, i)
+    if eo != 0 || c != 123 { return 1, 0L } // '{'
+
+    let at = i + 1L
+    let se2, j = _skipWs(b, at, n)
+    if se2 != 0 { return 1, 0L }
+    if j < n {
+        let ee, cc = bstd.Bytes.getU8(b, j)
+        if ee != 0 { return 1, 0L }
+        if cc == 125 { return 2, 0L } // empty object
+    }
+    at = j
+    while true {
+        let se3, kpos = _skipWs(b, at, n)
+        if se3 != 0 { return 1, 0L }
+        let ke, k, afterKey = _parseString(b, kpos, n)
+        if ke != 0 { return 1, 0L }
+        let se4, afterWs = _skipWs(b, afterKey, n)
+        if se4 != 0 { return 1, 0L }
+        if afterWs >= n { return 1, 0L }
+        let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+        if ec2 != 0 || colon != 58 { return 1, 0L }
+
+        let se5, vpos = _skipWs(b, afterWs + 1L, n)
+        if se5 != 0 { return 1, 0L }
+        if vpos >= n { return 1, 0L }
+
+        if k == key { return 0, vpos }
+
+        let ve, afterVal = _skipValue(b, vpos, n)
+        if ve != 0 { return 1, 0L }
+
+        let se6, afterWs2 = _skipWs(b, afterVal, n)
+        if se6 != 0 { return 1, 0L }
+        if afterWs2 >= n { return 1, 0L }
+        let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+        if ec3 != 0 { return 1, 0L }
+        if sep == 44 { at = afterWs2 + 1L; continue }
+        if sep == 125 { break }
+        return 1, 0L
+    }
+    return 2, 0L
+}
+
+private fn _scanKeyPathValuePos(b: bytes, path: string, n: long) -> int, long {
+    let pe, partsAny = _splitPathSegments(path)
+    if pe != 0 { return 1, 0L }
+    let parts: string[] = partsAny
+    if parts == null || parts.len() <= 0 { return 1, 0L }
+
+    let se, root = _skipWs(b, 0L, n)
+    if se != 0 { return 1, 0L }
+    if root >= n { return 1, 0L }
+    let er, rc = bstd.Bytes.getU8(b, root)
+    if er != 0 || rc != 123 { return 1, 0L } // '{'
+
+    let objPos = root
+    let i: int = 0
+    while true {
+        if i >= parts.len() { break }
+        let key = parts[i]
+        let fe, vpos = _scanObjectValuePos(b, objPos, n, key)
+        if fe != 0 { return fe, 0L }
+        if i == parts.len() - 1 { return 0, vpos }
+
+        let se2, nextPos = _skipWs(b, vpos, n)
+        if se2 != 0 { return 1, 0L }
+        if nextPos >= n { return 1, 0L }
+        let eo, c = bstd.Bytes.getU8(b, nextPos)
+        if eo != 0 { return 1, 0L }
+        if c != 123 { return 1, 0L } // type mismatch (expected object)
+        objPos = nextPos
+        i = i + 1
+    }
+    return 1, 0L
+}
+
+private fn _parseStringLongMapAt(b: bytes, pos: long, n: long) -> int, map, long {
+    let se, i = _skipWs(b, pos, n)
+    if se != 0 { return 1, null, pos }
+    if i >= n { return 1, null, pos }
+    let eo, c = bstd.Bytes.getU8(b, i)
+    if eo != 0 || c != 123 { return 1, null, pos } // '{'
+
+    let obj: map = tua_map_new()
+    let at = i + 1L
+    let se2, j = _skipWs(b, at, n)
+    if se2 != 0 { return 1, null, pos }
+    if j < n {
+        let ee, cc = bstd.Bytes.getU8(b, j)
+        if ee != 0 { return 1, null, pos }
+        if cc == 125 { return 0, obj, j + 1L } // empty object
+    }
+    at = j
+    while true {
+        let se3, kpos = _skipWs(b, at, n)
+        if se3 != 0 { return 1, null, pos }
+        let ke, key, afterKey = _parseString(b, kpos, n)
+        if ke != 0 { return 1, null, pos }
+        let se4, afterWs = _skipWs(b, afterKey, n)
+        if se4 != 0 { return 1, null, pos }
+        if afterWs >= n { return 1, null, pos }
+        let ec2, colon = bstd.Bytes.getU8(b, afterWs)
+        if ec2 != 0 || colon != 58 { return 1, null, pos }
+
+        let ve, v, afterVal = _parseStrictLongAt(b, afterWs + 1L, n)
+        if ve != 0 { return 1, null, pos }
+        obj[key] = v
+
+        let se5, afterWs2 = _skipWs(b, afterVal, n)
+        if se5 != 0 { return 1, null, pos }
+        if afterWs2 >= n { return 1, null, pos }
+        let ec3, sep = bstd.Bytes.getU8(b, afterWs2)
+        if ec3 != 0 { return 1, null, pos }
+        if sep == 44 { at = afterWs2 + 1L; continue }
+        if sep == 125 { return 0, obj, afterWs2 + 1L }
+        return 1, null, pos
+    }
+    return 1, null, pos
+}
+
+private fn _parseStringArrayAt(b: bytes, pos: long, n: long) -> int, string[], long {
+    let se, i = _skipWs(b, pos, n)
+    if se != 0 { return 1, null, pos }
+    if i >= n { return 1, null, pos }
+    let eo, c = bstd.Bytes.getU8(b, i)
+    if eo != 0 || c != 91 { return 1, null, pos } // '['
+
+    let arr: string[] = {}
+    let at = i + 1L
+    let se2, j = _skipWs(b, at, n)
+    if se2 != 0 { return 1, null, pos }
+    if j < n {
+        let ee, cc = bstd.Bytes.getU8(b, j)
+        if ee != 0 { return 1, null, pos }
+        if cc == 93 { return 0, arr, j + 1L } // empty array
+    }
+    at = j
+    while true {
+        let se3, vpos = _skipWs(b, at, n)
+        if se3 != 0 { return 1, null, pos }
+        let ve, v, afterVal = _parseString(b, vpos, n)
+        if ve != 0 { return 1, null, pos }
+        arr.push(v)
+
+        let se4, afterWs = _skipWs(b, afterVal, n)
+        if se4 != 0 { return 1, null, pos }
+        if afterWs >= n { return 1, null, pos }
+        let ec2, sep = bstd.Bytes.getU8(b, afterWs)
+        if ec2 != 0 { return 1, null, pos }
+        if sep == 44 { at = afterWs + 1L; continue }
+        if sep == 93 { return 0, arr, afterWs + 1L }
+        return 1, null, pos
+    }
+    return 1, null, pos
+}
+
 object Json {
     fn parseBytes(b: bytes) -> int, any {
         if b == null { return 1, null }
@@ -865,11 +1103,6 @@ object Json {
     // - 1, null on parse error
     fn scanTopLevelString(b: bytes, key: string) -> int, string {
         if b == null || key == null { return 1, null }
-
-        let out: string = null
-        let ce = tua_json_scan_top_level_string(b, key, &out)
-        if ce == 0 { return 0, out }
-        if ce == 2 { return 2, null }
 
         let n = bstd.Bytes.len(b)
         let se, i = _skipWs(b, 0L, n)
@@ -981,11 +1214,6 @@ object Json {
     fn scanTopLevelLong(b: bytes, key: string) -> int, long {
         if b == null || key == null { return 1, 0L }
 
-        let out: long = 0L
-        let ce = tua_json_scan_top_level_long(b, key, &out)
-        if ce == 0 { return 0, out }
-        if ce == 2 { return 2, 0L }
-
         let n = bstd.Bytes.len(b)
         let se, i = _skipWs(b, 0L, n)
         if se != 0 { return 1, 0L }
@@ -1069,11 +1297,6 @@ object Json {
     fn scanTopLevelBool(b: bytes, key: string) -> int, bool {
         if b == null || key == null { return 1, false }
 
-        let outI: int = 0
-        let ce = tua_json_scan_top_level_bool(b, key, &outI)
-        if ce == 0 { return 0, outI != 0 }
-        if ce == 2 { return 2, false }
-
         let n = bstd.Bytes.len(b)
         let se, i = _skipWs(b, 0L, n)
         if se != 0 { return 1, false }
@@ -1141,54 +1364,66 @@ object Json {
     // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
     fn scanKeyPathString(b: bytes, path: string) -> int, string {
         if b == null || path == null { return 1, null }
-        let out: string = null
-        let ce = tua_json_scan_key_path_string(b, path, &out)
-        if ce == 0 { return 0, out }
-        if ce == 2 { return 2, null }
-        return 1, null
+        let n = bstd.Bytes.len(b)
+        let e, vpos = _scanKeyPathValuePos(b, path, n)
+        if e == 2 { return 2, null }
+        if e != 0 { return 1, null }
+        let se, p = _skipWs(b, vpos, n)
+        if se != 0 { return 1, null }
+        let pe, s, _ = _parseString(b, p, n)
+        if pe != 0 { return 1, null }
+        return 0, s
     }
 
     // Scan a nested JSON object by dotted key path (e.g. "a.b.c") and return the integer value (no fraction/exponent).
     // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
     fn scanKeyPathLong(b: bytes, path: string) -> int, long {
         if b == null || path == null { return 1, 0L }
-        let out: long = 0L
-        let ce = tua_json_scan_key_path_long(b, path, &out)
-        if ce == 0 { return 0, out }
-        if ce == 2 { return 2, 0L }
-        return 1, 0L
+        let n = bstd.Bytes.len(b)
+        let e, vpos = _scanKeyPathValuePos(b, path, n)
+        if e == 2 { return 2, 0L }
+        if e != 0 { return 1, 0L }
+        let pe, v, _ = _parseStrictLongAt(b, vpos, n)
+        if pe != 0 { return 1, 0L }
+        return 0, v
     }
 
     // Scan a nested JSON object by dotted key path (e.g. "a.b.c") and return the boolean value.
     // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
     fn scanKeyPathBool(b: bytes, path: string) -> int, bool {
         if b == null || path == null { return 1, false }
-        let outI: int = 0
-        let ce = tua_json_scan_key_path_bool(b, path, &outI)
-        if ce == 0 { return 0, outI != 0 }
-        if ce == 2 { return 2, false }
-        return 1, false
+        let n = bstd.Bytes.len(b)
+        let e, vpos = _scanKeyPathValuePos(b, path, n)
+        if e == 2 { return 2, false }
+        if e != 0 { return 1, false }
+        let pe, v, _ = _parseStrictBoolAt(b, vpos, n)
+        if pe != 0 { return 1, false }
+        return 0, v
     }
 
     // Parse a nested JSON object by dotted key path (e.g. "a.b.c") into a `map<string,long>`.
     // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
     fn parseKeyPathStringLongMap(b: bytes, path: string) -> int, map {
         if b == null || path == null { return 1, null }
-        let out: map = null
-        let e = tua_json_parse_key_path_string_long_map(b, path, &out)
-        if e == 0 { return 0, out }
+        let n = bstd.Bytes.len(b)
+        let e, vpos = _scanKeyPathValuePos(b, path, n)
         if e == 2 { return 2, null }
-        return 1, null
+        if e != 0 { return 1, null }
+        let pe, m, _ = _parseStringLongMapAt(b, vpos, n)
+        if pe != 0 { return 1, null }
+        return 0, m
     }
 
     // Parse a nested JSON string array by dotted key path (e.g. "a.b.c") into `string[]`.
     // Error codes: 0 ok, 1 parse error/type mismatch, 2 not found.
     fn parseKeyPathStringArray(b: bytes, path: string) -> int, string[] {
         if b == null || path == null { return 1, null }
-        let e: int = 0
-        let arr = tua_json_parse_key_path_string_array(b, path, &e)
-        if e == 0 { return 0, arr }
+        let n = bstd.Bytes.len(b)
+        let e, vpos = _scanKeyPathValuePos(b, path, n)
         if e == 2 { return 2, null }
-        return 1, null
+        if e != 0 { return 1, null }
+        let pe, arr, _ = _parseStringArrayAt(b, vpos, n)
+        if pe != 0 { return 1, null }
+        return 0, arr
     }
 }

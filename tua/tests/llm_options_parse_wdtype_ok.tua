@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm
+
 import "../packages/llm/options" as o
 
 fn main() {

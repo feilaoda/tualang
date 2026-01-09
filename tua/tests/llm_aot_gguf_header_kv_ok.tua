@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm
+
 import "std/bytes" as bstd
 import "../packages/llm/gguf" as g
 

@@ -68,6 +68,7 @@ typedef struct ModuleSystem {
     List* order;   // List<ModuleInfo*>
     int hadError;  // import/load-time errors
     char* stdDir;  // absolute path to `std/` directory (may be NULL)
+    List* packageDirs; // List<char*> absolute package search roots (may be NULL)
 } ModuleSystem;
 
 typedef struct ExternDecl {
@@ -531,6 +532,38 @@ static char* discoverStdDir(const char* argv0) {
     return out;
 }
 
+static List* discoverPackageDirs(void) {
+    const char* env = getenv("TUA_PACKAGE_DIR");
+    if (!env || env[0] == '\0') return NULL;
+
+    List* out = listNew();
+    if (!out) return NULL;
+
+    char* copy = dupCStringN(env, (int)strlen(env));
+    if (!copy) return out;
+
+#if defined(_WIN32)
+    const char* sep = ";";
+#else
+    const char* sep = ":";
+#endif
+    char* save = NULL;
+    for (char* dir = strtok_r(copy, sep, &save); dir != NULL; dir = strtok_r(NULL, sep, &save)) {
+        if (!dir || dir[0] == '\0') continue;
+        if (!pathIsDir(dir)) continue;
+        char* abs = canonicalizePath(dir);
+        if (!abs) continue;
+        listAppend(out, abs);
+    }
+    free(copy);
+
+    if (out->length == 0) {
+        listFree(out);
+        return NULL;
+    }
+    return out;
+}
+
 static VariableRef* findCurrentVarByName(Compiler* compiler, const char* name) {
     if (!compiler || !name) return NULL;
     if (!compiler->current || !compiler->current->variables) return NULL;
@@ -674,16 +707,91 @@ static int isStdImportPath(const char* raw) {
     return raw && strncmp(raw, "std/", 4) == 0;
 }
 
+static int fileExists(const char* path);
+
+static int isRelativeImportPath(const char* raw) {
+    if (!raw) return 0;
+    return (raw[0] == '.' && raw[1] == '/') || (raw[0] == '.' && raw[1] == '.' && raw[2] == '/');
+}
+
+static const char* lastImportSegment(const char* raw) {
+    if (!raw) return NULL;
+    const char* last = raw;
+    for (const char* p = raw; *p; p++) {
+        if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    if (!last || last[0] == '\0') return NULL;
+    return last;
+}
+
+static char* tryResolveFromPackageDirs(ModuleSystem* sys, const char* raw) {
+    if (!sys || !sys->packageDirs || !raw || raw[0] == '\0') return NULL;
+    const char* base = lastImportSegment(raw);
+    for (ListNode* it = sys->packageDirs->head; it != NULL; it = it->next) {
+        const char* root = (const char*)it->data;
+        if (!root || root[0] == '\0') continue;
+        char* cand = ensureTuaExt(joinPath(root, raw));
+        if (cand && fileExists(cand)) {
+            return cand;
+        }
+        free(cand);
+
+        // Fallback: <name>/<name>.tua where <name> is the last import segment.
+        // Example: import "json" => <pkgRoot>/json/json.tua
+        // Example: import "packages/json" with TUA_PACKAGE_DIR=./packages => <pkgRoot>/json/json.tua
+        if (base) {
+            int baseLen = (int)strlen(base);
+            if (baseLen >= 4 && memcmp(base + baseLen - 4, ".tua", 4) == 0) {
+                baseLen -= 4;
+            }
+            if (baseLen <= 0) continue;
+
+            char* baseClean = dupCStringN(base, baseLen);
+            if (!baseClean) continue;
+
+            char* dir = joinPath(root, baseClean);
+            char* leaf = joinPath(dir, baseClean);
+            free(baseClean);
+            free(dir);
+
+            // `ensureTuaExt` takes ownership of `leaf` and may return it unchanged.
+            char* cand2 = ensureTuaExt(leaf);
+            if (cand2 && fileExists(cand2)) {
+                return cand2;
+            }
+            free(cand2);
+        }
+    }
+    return NULL;
+}
+
 static char* resolveImportPath(ModuleSystem* sys, ModuleInfo* module, const char* raw, Token pathTok) {
     if (!raw) return NULL;
     if (isStdImportPath(raw)) {
-        if (!sys || !sys->stdDir) {
-            moduleImportErrorAt(sys, module ? module->path : NULL, pathTok.line, pathTok.col,
-                                "cannot resolve std import \"%s\" (set TUA_STDLIB_DIR or place std/ next to tuac)", raw);
-            return NULL;
+        // First: stdlib dir (`TUA_STDLIB_DIR` or `<root>/std`).
+        if (sys && sys->stdDir) {
+            char* p = ensureTuaExt(joinPath(sys->stdDir, raw + 4));
+            if (p && fileExists(p)) return p;
+            free(p);
         }
-        return ensureTuaExt(joinPath(sys->stdDir, raw + 4));
+
+        // Second: package search roots (`TUA_PACKAGE_DIR`) which contain paths like `std/json.tua`.
+        char* fromPkg = tryResolveFromPackageDirs(sys, raw);
+        if (fromPkg) return fromPkg;
+
+        moduleImportErrorAt(sys, module ? module->path : NULL, pathTok.line, pathTok.col,
+                            "cannot resolve std import \"%s\" (set TUA_STDLIB_DIR and/or TUA_PACKAGE_DIR)", raw);
+        return NULL;
     }
+
+    // Relative imports are always anchored at the current module dir.
+    if (isRelativeImportPath(raw)) {
+        return ensureTuaExt(joinPath(module->dir, raw));
+    }
+
+    // Package imports: search roots first, then fall back to relative resolution for backward compatibility.
+    char* fromPkg = tryResolveFromPackageDirs(sys, raw);
+    if (fromPkg) return fromPkg;
     return ensureTuaExt(joinPath(module->dir, raw));
 }
 
@@ -1256,8 +1364,8 @@ static char* resolveExecutablePath(const char* argv0) {
 }
 
 static char* findRuntimeSrcDir(const char* argv0) {
-    // Prefer current working directory layout: ./src/tua_map.c
-    if (fileExists("src/tua_map.c") && fileExists("src/tua_array.c")) {
+    // Prefer current working directory layout: ./src/*.h
+    if (fileExists("src/tua_map.h") && fileExists("src/tua_array.h")) {
         return dupCStringN("src", 3);
     }
 
@@ -1282,11 +1390,11 @@ static char* findRuntimeSrcDir(const char* argv0) {
 
         char* srcDir = joinPath(root, "src");
         free(root);
-        char* mapC = joinPath(srcDir, "tua_map.c");
-        char* arrC = joinPath(srcDir, "tua_array.c");
-        int ok = fileExists(mapC) && fileExists(arrC);
-        free(mapC);
-        free(arrC);
+        char* mapH = joinPath(srcDir, "tua_map.h");
+        char* arrH = joinPath(srcDir, "tua_array.h");
+        int ok = fileExists(mapH) && fileExists(arrH);
+        free(mapH);
+        free(arrH);
         if (ok) return srcDir;
         free(srcDir);
     }
@@ -1564,18 +1672,11 @@ static int moduleUsesTuaLlm(LLVMModuleRef module) {
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
     if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
 
-    char* srcDir = findRuntimeSrcDir(argv0);
-    if (!srcDir) {
-        fprintf(stderr, "error: cannot locate runtime sources (expected ./src/tua_map.c and ./src/tua_array.c)\n");
-        return 1;
-    }
-
-    // Emit module as a native object file via LLVM, then link it with the runtime C sources.
+    // Emit module as a native object file via LLVM, then link it with the runtime archive.
     char objTemplate[] = "/tmp/tuac_obj_XXXXXX";
     int fd = mkstemp(objTemplate);
     if (fd < 0) {
         fprintf(stderr, "error: mkstemp failed: %s\n", strerror(errno));
-        free(srcDir);
         return 1;
     }
     close(fd);
@@ -1585,7 +1686,6 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     LLVMTargetMachineRef tm = createHostTargetMachine(compiler->llvmOptLevel);
     if (!tm) {
         fprintf(stderr, "error: failed to create host target machine for codegen\n");
-        free(srcDir);
         return 1;
     }
     if (LLVMTargetMachineEmitToFile(tm, module, objTemplate, LLVMObjectFile, &error) != 0) {
@@ -1593,21 +1693,19 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         if (error) LLVMDisposeMessage(error);
         LLVMDisposeTargetMachine(tm);
         unlink(objTemplate);
-        free(srcDir);
         return 1;
     }
     LLVMDisposeTargetMachine(tm);
 
-    char* mapC = joinPath(srcDir, "tua_map.c");
-    char* arrC = joinPath(srcDir, "tua_array.c");
-    char* bytesC = joinPath(srcDir, "tua_bytes.c");
-    char* jsonC = joinPath(srcDir, "tua_json.c");
-    char* llmC = joinPath(srcDir, "tua_llm.c");
-    char* llmQ4C = joinPath(srcDir, "tua_llm_q4.c");
     char* rtArchive = findRuntimeArchivePath(argv0);
+    if (!rtArchive) {
+        fprintf(stderr, "error: cannot locate runtime archive (expected bin/libtuart.a)\n");
+        unlink(objTemplate);
+        return 1;
+    }
     int needLlm = moduleUsesTuaLlm(module);
 
-    // Link: clang -O* -I<srcDir> -o <out> <obj> <mapC> <arrC> <bytesC> <jsonC>
+    // Link: clang -O* -o <out> <obj> <rtArchive> ...
     const char* clangExe = "clang";
     const char* optFlag = "-O0";
     switch (compiler->llvmOptLevel) {
@@ -1640,11 +1738,9 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 
     args[n++] = (char*)clangExe;
     args[n++] = (char*)optFlag;
-    args[n++] = (char*)"-I";
-    args[n++] = srcDir;
 #if defined(TUA_LLM_USE_GGML)
     if (needLlm) {
-        // Ensure `tua_llm_q4.c` compiles with the same backend as the host compiler build.
+        // Propagate ggml search paths to AOT builds when linking LLM kernels.
         args[n++] = (char*)"-DTUA_LLM_USE_GGML=1";
         ggmlInc = findGgmlIncludeDir();
         if (ggmlInc) {
@@ -1666,13 +1762,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     args[n++] = (char*)outPath;
     args[n++] = (char*)"-pthread";
     args[n++] = objTemplate;
-    args[n++] = mapC;
-    args[n++] = arrC;
-    if (bytesC && fileExists(bytesC)) args[n++] = bytesC;
-    if (jsonC && fileExists(jsonC)) args[n++] = jsonC;
-    if (needLlm && llmC && fileExists(llmC)) args[n++] = llmC;
-    if (needLlm && llmQ4C && fileExists(llmQ4C)) args[n++] = llmQ4C;
-    if (rtArchive) args[n++] = rtArchive;
+    args[n++] = rtArchive;
 
     // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
     for (ListNode* it = compiler->linkArgs ? compiler->linkArgs->head : NULL; it != NULL; it = it->next) {
@@ -1696,7 +1786,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     }
 
 #if defined(__APPLE__)
-    // `tua_llm.c` uses Accelerate (CBLAS) on macOS.
+    // LLM kernels may use Accelerate (CBLAS) on macOS.
     if (needLlm) {
         args[n++] = (char*)"-framework";
         args[n++] = (char*)"Accelerate";
@@ -1705,7 +1795,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 
 #if defined(TUA_LLM_USE_GGML)
     if (needLlm) {
-        // `tua_llm_q4.c` uses ggml-cpu for Q4_K/Q6_K vec_dot kernels.
+        // LLM kernels may use ggml-cpu for Q4_K/Q6_K vec_dot kernels.
         args[n++] = (char*)"-l";
         args[n++] = (char*)"ggml-base";
         args[n++] = (char*)"-l";
@@ -1714,7 +1804,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 #endif
 
 #if !defined(__APPLE__)
-    // `tua_llm.c` uses libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
+    // LLM kernels use libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
     if (needLlm) args[n++] = (char*)"-lm";
 #endif
 
@@ -1723,14 +1813,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     int status = spawnAndWaitCaptureStderr(clangExe, args, &stderrText);
 
     unlink(objTemplate);
-    free(mapC);
-    free(arrC);
-    free(bytesC);
-    free(jsonC);
-    free(llmC);
-    free(llmQ4C);
     free(rtArchive);
-    free(srcDir);
     free(args);
 #if defined(TUA_LLM_USE_GGML)
     if (ggmlInc) free(ggmlInc);
@@ -2594,7 +2677,7 @@ int main(int argc, char* argv[]) {
         }
         char* srcDir = findRuntimeSrcDir(argv[0]);
         if (!srcDir) {
-            fprintf(stderr, "error: cannot locate runtime sources (expected ./src/tua_map.c and ./src/tua_array.c)\n");
+            fprintf(stderr, "error: cannot locate runtime headers (expected ./src/tua_map.h and ./src/tua_array.h)\n");
             return 1;
         }
         int printed = 0;
@@ -2733,6 +2816,7 @@ int main(int argc, char* argv[]) {
     sys.order = listNew();
     sys.hadError = 0;
     sys.stdDir = discoverStdDir(argv[0]);
+    sys.packageDirs = discoverPackageDirs();
 
     char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
     ModuleInfo* entryModule = moduleLoad(&sys, entryPath);

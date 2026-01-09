@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm -l tuajson
+
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 
 fn main() {

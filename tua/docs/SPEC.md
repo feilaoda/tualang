@@ -606,12 +606,12 @@
     - `Slice<T>.len/get/set`（`set` 仅标量元素；`Slice<byte>` 写回通过 `tua_bytes_set_u8` 返回 err）
     - `Slice<T>` 当前按 **move-only** 处理（避免隐式 copy 导致 borrow 生命周期变长且难以静态追踪）
 
-#### 9.2.4 `std/utf8` 与 `std/json`（Status: Implemented v0）
+#### 9.2.4 `std/utf8` 与 `json`（Status: Implemented v0）
 - `std/utf8`：
   - `Utf8.isValid(b: bytes) -> bool`
   - `Utf8.decode1(b: bytes, off: long) -> int, int, long`（err, codepoint, sizeBytes）
   - `Utf8.isBoundary/clampBoundaryBefore/clampBoundaryAfter`（文本切片安全边界）
-- `std/json`：
+- `json`（包模块，位于 `packages/json/json.tua`，推荐 `import "json"`）：
   - `Json.parse(s: string) -> int, any`
   - `Json.parseBytes(b: bytes) -> int, any`
   - 产出：`map` / `any[]` / `string` / `long` / `double` / `bool` / `null`

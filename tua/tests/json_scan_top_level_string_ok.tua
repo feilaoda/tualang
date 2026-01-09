@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as j
+import "json" as j
 
 private fn _mk() -> bytes {
     // {"a":[1,2,{"b":3}],"version":"1.0","z":null}

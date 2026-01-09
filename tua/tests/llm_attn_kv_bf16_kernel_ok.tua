@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm
+
 import "std/bytes" as bstd
 import SafeTensors from "../packages/llm/safetensors"
 
@@ -101,4 +103,3 @@ fn main() {
     assert(tua_bytes_f32_to_bf16(outB, 0L, outBbf16, 0L, (long)headDim) == 0)
     assert(_u8eq(outFbf16, outBbf16))
 }
-

@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm
+
 import Qwen3, Qwen3Infer from "../packages/llm/qwen3"
 import LlmArgs, LlmOptions from "../packages/llm/options"
 

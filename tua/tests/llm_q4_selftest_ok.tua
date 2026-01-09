@@ -1,3 +1,5 @@
+// tuac: -L build/clib -l tuallm
+
 extern fn tua_llm_q4_0_selftest() int
 
 fn main(args: string[]) -> int {

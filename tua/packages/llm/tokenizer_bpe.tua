@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as json
+import "json" as json
 import "std/utf8" as utf8
 
 import Gguf from "./gguf"

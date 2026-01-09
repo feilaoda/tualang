@@ -1,6 +1,6 @@
 import "std/bytes" as bstd
 import "std/fs" as fs
-import "std/json" as json
+import "json" as json
 import "std/rt" as rt
 
 fn main() {

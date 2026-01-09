@@ -2,6 +2,11 @@
 
 目标：把性能关键逻辑写在独立的 C 库里，通过 `extern fn` 在 Tua 中调用；同时 C 代码可以 `#include` Tua 运行时的头文件（`src/*.h`），但不需要把 C 源码合进 `tuac`/运行时实现里。
 
+仓库内置的“可选 C 内核”也遵循这个约定：
+
+- `packages/clib/llm/*`：LLM kernels（导出 `tua_llm_*`），构建：`./tools/build_tuallm_clib.sh`，使用：`-L build/clib -l tuallm`
+- `packages/clib/json/*`：JSON scan/parse helpers（导出 `tua_json_*`），构建：`./tools/build_tuajson_clib.sh`，使用：`-L build/clib -l tuajson`
+
 ## 1) 编译 C 静态库（推荐）
 
 仓库已提供脚本 `tools/build_clib.sh`，用于把一个或多个 `.c` 编译为 `lib<name>.a`：

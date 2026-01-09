@@ -1,4 +1,4 @@
-// Low-level LLM kernels (C runtime). Keep call sites stable so we can swap implementations later.
+// Low-level LLM kernels (external C library: `tuallm`). Keep call sites stable so we can swap implementations later.
 
 extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
 extern fn tua_bytes_bf16_to_f32(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int

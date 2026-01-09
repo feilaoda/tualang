@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as json
+import "json" as json
 
 private fn _mk(cs: int[]) -> bytes {
     let tmp = bstd.Bytes.new(256)

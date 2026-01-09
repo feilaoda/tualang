@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export TUA_STDLIB_DIR="$ROOT/std"
+export TUA_PACKAGE_DIR="${TUA_PACKAGE_DIR:-$ROOT/packages}"
 export TMPDIR="$ROOT/build/tmp"
 mkdir -p "$TMPDIR"
 
@@ -14,6 +15,18 @@ make tuac >/dev/null
 if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuaextbpe.a" ]]; then
     ./tools/build_clib.sh tuaextbpe examples/ffi_tuaext_bpe_decode.c >/dev/null
+  fi
+fi
+
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+  if [[ ! -f "$ROOT/build/clib/libtuallm.a" ]]; then
+    ./tools/build_clib.sh tuallm packages/clib/llm/tua_llm.c packages/clib/llm/tua_llm_q4.c >/dev/null
+  fi
+fi
+
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+  if [[ ! -f "$ROOT/build/clib/libtuajson.a" ]]; then
+    ./tools/build_clib.sh tuajson packages/clib/json/tua_json.c >/dev/null
   fi
 fi
 

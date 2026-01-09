@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as j
+import "json" as j
 
 private fn _mk() -> bytes {
     // {"a":1,"b":true,"c":false,"d":[1,2,3]}
@@ -39,4 +39,3 @@ fn main() {
     let _ = miss
     assert(e3 == 2)
 }
-

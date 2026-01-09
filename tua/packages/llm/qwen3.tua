@@ -1,5 +1,5 @@
 import "std/bytes" as bstd
-import "std/json" as j
+import "json" as j
 import "std/strconv" as conv
 import "std/time" as time
 
