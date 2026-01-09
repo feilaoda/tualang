@@ -14,6 +14,8 @@
 // Configure maximum thread usage for underlying math kernels (best-effort).
 // - `n<=0` means "runtime default".
 tua_err_t tua_llm_set_threads(int32_t n);
+// Returns the current configured thread count (0 means "runtime default").
+int32_t tua_llm_get_threads(void);
 
 // GEMV with BF16 weights and F32 activations:
 // y[m] = A[m,n] (bf16) * x[n] (f32), output y is f32.
@@ -65,6 +67,19 @@ tua_err_t tua_llm_gemv_f32(tua_bytes* y, int64_t y_off,
                           tua_bytes* a, int64_t a_off,
                           tua_bytes* x, int64_t x_off,
                           int32_t m, int32_t n);
+
+// Q4_0 helpers and GEMV:
+tua_err_t tua_llm_q4_0_pack_bf16(tua_bytes* dst, int64_t dst_off,
+                                tua_bytes* src, int64_t src_off,
+                                int32_t m, int32_t n);
+tua_err_t tua_llm_q4_0_get_row_f32(tua_bytes* out, int64_t out_off,
+                                  tua_bytes* a, int64_t a_off,
+                                  int64_t row, int32_t n);
+tua_err_t tua_llm_gemv_q4_0_f32(tua_bytes* y, int64_t y_off,
+                               tua_bytes* a, int64_t a_off,
+                               tua_bytes* x, int64_t x_off,
+                               int32_t m, int32_t n);
+int32_t tua_llm_q4_0_selftest(void);
 
 // Apply GPT-style repetition penalty in-place to logits:
 // for each unique token id in the last `last_n` ids, adjust:

@@ -18,7 +18,8 @@ PROMPT="${PROMPT:-Hello}"
 THREADS="${THREADS:-8}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-64}"
 KV_MAX_SEQ="${KV_MAX_SEQ:-256}"
+WEIGHTS="${WEIGHTS:---w-bf16}"
 
-echo "TUA_LLM_BNNS=0 ./bin/tuac --perf examples/llm_run_qwen3.tua $MODEL_DIR $PROMPT --raw --no-thinking --greedy --threads $THREADS --max-new-tokens $MAX_NEW_TOKENS --kv-max-seq $KV_MAX_SEQ --profile --w-bf16"
+echo "TUA_LLM_BNNS=0 ./bin/tuac --perf examples/llm_run_qwen3.tua $MODEL_DIR $PROMPT --raw --no-thinking --greedy --threads $THREADS --max-new-tokens $MAX_NEW_TOKENS --kv-max-seq $KV_MAX_SEQ --profile $WEIGHTS"
 
-TUA_LLM_BNNS=1 ./bin/tuac --perf examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" --raw --no-thinking --greedy --threads "$THREADS" --max-new-tokens "$MAX_NEW_TOKENS" --kv-max-seq "$KV_MAX_SEQ" --profile --w-bf16
+TUA_LLM_BNNS=0 ./bin/tuac --perf examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" --raw --no-thinking --greedy --threads "$THREADS" --max-new-tokens "$MAX_NEW_TOKENS" --kv-max-seq "$KV_MAX_SEQ" --profile $WEIGHTS

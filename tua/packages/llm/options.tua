@@ -3,7 +3,9 @@ import "std/strconv" as conv
 struct LlmOptions {
     threads: int
     // 0 = load weights as f32 (convert BF16/F16 -> F32),
-    // 1 = keep weights as BF16, 2 = keep weights as FP16.
+    // 1 = keep weights as BF16, 2 = keep weights as FP16,
+    // 3 = quantize weights to Q4_0 (from BF16),
+    // 4 = quantize weights to Q4_K (from BF16).
     weightsDtype: int
     // KV cache dtype:
     // 0 = F32 KV (default), 1 = BF16 KV, 2 = FP16 KV.
@@ -59,6 +61,16 @@ object LlmArgs {
             }
             if a == "--w-fp16" || a == "--weights-fp16" {
                 out.weightsDtype = 2
+                i = i + 1
+                continue
+            }
+            if a == "--w-q4" || a == "--weights-q4" || a == "--w-q4_0" || a == "--weights-q4_0" {
+                out.weightsDtype = 3
+                i = i + 1
+                continue
+            }
+            if a == "--w-q4km" || a == "--weights-q4km" || a == "--w-q4_k" || a == "--weights-q4_k" || a == "--w-q4_k_m" || a == "--weights-q4_k_m" {
+                out.weightsDtype = 4
                 i = i + 1
                 continue
             }

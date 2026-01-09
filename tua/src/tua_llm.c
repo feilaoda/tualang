@@ -20,6 +20,10 @@
 #include <arm_neon.h>
 #endif
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 static int32_t g_tua_llm_threads = 0;
 
 static int32_t clamp_threads(int32_t n) {
@@ -31,6 +35,55 @@ static int32_t clamp_threads(int32_t n) {
     if (n > 256) n = 256;
     return n;
 }
+
+#if defined(__APPLE__)
+// Micro-benchmark / debugging knob:
+// - TUA_LLM_FAKE_GEMV=1 replaces GEMV results with zeros.
+// This is useful to estimate non-GEMV overhead (Tua VM, attention, sampling, etc).
+static pthread_once_t g_fake_gemv_once = PTHREAD_ONCE_INIT;
+static int g_fake_gemv_enabled = 0;
+
+static void fake_gemv_init(void) {
+    const char* e = getenv("TUA_LLM_FAKE_GEMV");
+    g_fake_gemv_enabled = (e && e[0] && atoi(e) != 0);
+}
+
+static int fake_gemv_enabled(void) {
+    pthread_once(&g_fake_gemv_once, fake_gemv_init);
+    return g_fake_gemv_enabled;
+}
+
+typedef enum {
+    GEMV_BACKEND_AUTO = 0,
+    GEMV_BACKEND_BNNS = 1,
+    GEMV_BACKEND_SIMD = 2,
+    GEMV_BACKEND_BLAS = 3,
+    // Reserved for future Metal backend selection.
+    GEMV_BACKEND_METAL = 4,
+} tua_llm_gemv_backend_t;
+
+static pthread_once_t g_gemv_backend_once = PTHREAD_ONCE_INIT;
+static tua_llm_gemv_backend_t g_gemv_backend = GEMV_BACKEND_AUTO;
+
+static void gemv_backend_init(void) {
+    const char* e = getenv("TUA_LLM_GEMV_BACKEND");
+    if (!e || !e[0]) {
+        g_gemv_backend = GEMV_BACKEND_AUTO;
+        return;
+    }
+    if (strcmp(e, "auto") == 0) g_gemv_backend = GEMV_BACKEND_AUTO;
+    else if (strcmp(e, "bnns") == 0) g_gemv_backend = GEMV_BACKEND_BNNS;
+    else if (strcmp(e, "simd") == 0) g_gemv_backend = GEMV_BACKEND_SIMD;
+    else if (strcmp(e, "blas") == 0) g_gemv_backend = GEMV_BACKEND_BLAS;
+    else if (strcmp(e, "metal") == 0) g_gemv_backend = GEMV_BACKEND_METAL;
+    else g_gemv_backend = GEMV_BACKEND_AUTO;
+}
+
+static tua_llm_gemv_backend_t gemv_backend(void) {
+    pthread_once(&g_gemv_backend_once, gemv_backend_init);
+    return g_gemv_backend;
+}
+#endif
 
 tua_err_t tua_llm_set_threads(int32_t n) {
     if (n < 0) n = 0;
@@ -49,6 +102,10 @@ tua_err_t tua_llm_set_threads(int32_t n) {
     }
 #endif
     return TUA_OK;
+}
+
+int32_t tua_llm_get_threads(void) {
+    return g_tua_llm_threads;
 }
 
 #if defined(__APPLE__)
@@ -492,6 +549,298 @@ static float* bf16_scratch_ensure(int64_t need_floats) {
 }
 #endif
 
+#if defined(__APPLE__)
+static void bf16_gemv_range_scalar(const uint16_t* A, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1) {
+    for (int32_t row = row0; row < row1; row++) {
+        const uint16_t* w = A + (int64_t)row * (int64_t)n;
+        double acc = 0.0;
+        for (int32_t i = 0; i < n; i++) acc += (double)bf16_to_f32(w[i]) * (double)X[i];
+        Y[row] = (float)acc;
+    }
+}
+
+static void f16_gemv_range_scalar(const uint16_t* A, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1) {
+    for (int32_t row = row0; row < row1; row++) {
+        const uint16_t* w = A + (int64_t)row * (int64_t)n;
+        double acc = 0.0;
+        for (int32_t i = 0; i < n; i++) acc += (double)f16_to_f32(w[i]) * (double)X[i];
+        Y[row] = (float)acc;
+    }
+}
+
+#if defined(__x86_64__)
+static inline void cpuid_leaf(uint32_t leaf, uint32_t subleaf, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d) {
+    uint32_t eax = leaf, ebx = 0, ecx = subleaf, edx = 0;
+    __asm__ __volatile__("cpuid"
+                         : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx)
+                         :
+                         : "cc");
+    *a = eax;
+    *b = ebx;
+    *c = ecx;
+    *d = edx;
+}
+
+static inline uint64_t xgetbv_u32(uint32_t xcr) {
+    uint32_t eax = 0, edx = 0;
+    __asm__ __volatile__(".byte 0x0f, 0x01, 0xd0" : "=a"(eax), "=d"(edx) : "c"(xcr) : "cc");
+    return ((uint64_t)edx << 32) | (uint64_t)eax;
+}
+
+static int cpu_os_supports_avx_state(void) {
+    uint32_t a, b, c, d;
+    cpuid_leaf(1, 0, &a, &b, &c, &d);
+    int osxsave = (c & (1u << 27)) != 0;
+    int avx = (c & (1u << 28)) != 0;
+    if (!osxsave || !avx) return 0;
+    uint64_t xcr0 = xgetbv_u32(0);
+    // XMM (bit 1) and YMM (bit 2) state enabled by OS.
+    return ((xcr0 & 0x6u) == 0x6u);
+}
+
+static int cpu_has_fma(void) {
+    uint32_t a, b, c, d;
+    cpuid_leaf(1, 0, &a, &b, &c, &d);
+    return cpu_os_supports_avx_state() && ((c & (1u << 12)) != 0);
+}
+
+static int cpu_has_avx2(void) {
+    if (!cpu_os_supports_avx_state()) return 0;
+    uint32_t a, b, c, d;
+    cpuid_leaf(7, 0, &a, &b, &c, &d);
+    // CPUID.07H:EBX.AVX2[bit 5]
+    return (b & (1u << 5)) != 0;
+}
+
+static int cpu_has_f16c(void) {
+    uint32_t a, b, c, d;
+    cpuid_leaf(1, 0, &a, &b, &c, &d);
+    // CPUID.01H:ECX.F16C[bit 29]
+    return cpu_os_supports_avx_state() && ((c & (1u << 29)) != 0);
+}
+
+__attribute__((target("avx2,fma")))
+static void bf16_gemv_range_avx2(const uint16_t* A, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1) {
+    int32_t n8 = n & ~7;
+    for (int32_t row = row0; row < row1; row++) {
+        const uint16_t* w = A + (int64_t)row * (int64_t)n;
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        int32_t i = 0;
+        for (; i + 16 <= n8; i += 16) {
+            __m128i hw0 = _mm_loadu_si128((const __m128i*)(w + i));
+            __m256i ew0 = _mm256_cvtepu16_epi32(hw0);
+            ew0 = _mm256_slli_epi32(ew0, 16);
+            __m256 wf0 = _mm256_castsi256_ps(ew0);
+            __m256 x0 = _mm256_loadu_ps(X + i);
+            acc0 = _mm256_fmadd_ps(wf0, x0, acc0);
+
+            __m128i hw1 = _mm_loadu_si128((const __m128i*)(w + i + 8));
+            __m256i ew1 = _mm256_cvtepu16_epi32(hw1);
+            ew1 = _mm256_slli_epi32(ew1, 16);
+            __m256 wf1 = _mm256_castsi256_ps(ew1);
+            __m256 x1 = _mm256_loadu_ps(X + i + 8);
+            acc1 = _mm256_fmadd_ps(wf1, x1, acc1);
+        }
+        for (; i < n8; i += 8) {
+            __m128i hw = _mm_loadu_si128((const __m128i*)(w + i));
+            __m256i ew = _mm256_cvtepu16_epi32(hw);
+            ew = _mm256_slli_epi32(ew, 16);
+            __m256 wf = _mm256_castsi256_ps(ew);
+            __m256 x = _mm256_loadu_ps(X + i);
+            acc0 = _mm256_fmadd_ps(wf, x, acc0);
+        }
+        float tmp[8];
+        _mm256_storeu_ps(tmp, _mm256_add_ps(acc0, acc1));
+        float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] + tmp[7];
+        for (; i < n; i++) sum += bf16_to_f32(w[i]) * X[i];
+        Y[row] = sum;
+    }
+}
+
+__attribute__((target("avx2,fma,f16c")))
+static void f16_gemv_range_avx2_f16c(const uint16_t* A, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1) {
+    int32_t n8 = n & ~7;
+    for (int32_t row = row0; row < row1; row++) {
+        const uint16_t* w = A + (int64_t)row * (int64_t)n;
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        int32_t i = 0;
+        for (; i + 16 <= n8; i += 16) {
+            __m128i hw0 = _mm_loadu_si128((const __m128i*)(w + i));
+            __m256 wf0 = _mm256_cvtph_ps(hw0);
+            __m256 x0 = _mm256_loadu_ps(X + i);
+            acc0 = _mm256_fmadd_ps(wf0, x0, acc0);
+
+            __m128i hw1 = _mm_loadu_si128((const __m128i*)(w + i + 8));
+            __m256 wf1 = _mm256_cvtph_ps(hw1);
+            __m256 x1 = _mm256_loadu_ps(X + i + 8);
+            acc1 = _mm256_fmadd_ps(wf1, x1, acc1);
+        }
+        for (; i < n8; i += 8) {
+            __m128i hw = _mm_loadu_si128((const __m128i*)(w + i));
+            __m256 wf = _mm256_cvtph_ps(hw);
+            __m256 x = _mm256_loadu_ps(X + i);
+            acc0 = _mm256_fmadd_ps(wf, x, acc0);
+        }
+        float tmp[8];
+        _mm256_storeu_ps(tmp, _mm256_add_ps(acc0, acc1));
+        float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] + tmp[7];
+        for (; i < n; i++) sum += f16_to_f32(w[i]) * X[i];
+        Y[row] = sum;
+    }
+}
+#endif
+
+typedef void (*half_gemv_range_fn)(const uint16_t* A, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1);
+
+static half_gemv_range_fn bf16_gemv_range_fn(void) {
+#if defined(__x86_64__)
+    if (cpu_has_avx2() && cpu_has_fma()) return bf16_gemv_range_avx2;
+#endif
+    return bf16_gemv_range_scalar;
+}
+
+static half_gemv_range_fn f16_gemv_range_fn(void) {
+#if defined(__x86_64__)
+    if (cpu_has_avx2() && cpu_has_fma() && cpu_has_f16c()) return f16_gemv_range_avx2_f16c;
+#endif
+    return f16_gemv_range_scalar;
+}
+
+typedef struct {
+    pthread_t* threads;
+    int32_t nthreads;
+    pthread_mutex_t mu;
+    pthread_cond_t cv_job;
+    pthread_cond_t cv_done;
+    const uint16_t* A;
+    const float* X;
+    float* Y;
+    int32_t m;
+    int32_t n;
+    half_gemv_range_fn fn;
+    uint64_t job_id;
+    int32_t working;
+    int stop;
+} half_pool_t;
+
+static half_pool_t g_half_pool = {0};
+
+typedef struct {
+    int32_t tid;
+} half_worker_arg_t;
+
+static void half_pool_destroy(void) {
+    if (!g_half_pool.threads) return;
+    pthread_mutex_lock(&g_half_pool.mu);
+    g_half_pool.stop = 1;
+    g_half_pool.job_id++;
+    pthread_cond_broadcast(&g_half_pool.cv_job);
+    pthread_mutex_unlock(&g_half_pool.mu);
+    for (int32_t i = 0; i < g_half_pool.nthreads; i++) pthread_join(g_half_pool.threads[i], NULL);
+    free(g_half_pool.threads);
+    g_half_pool.threads = NULL;
+    g_half_pool.nthreads = 0;
+    pthread_mutex_destroy(&g_half_pool.mu);
+    pthread_cond_destroy(&g_half_pool.cv_job);
+    pthread_cond_destroy(&g_half_pool.cv_done);
+    g_half_pool.stop = 0;
+}
+
+static void* half_worker_main(void* p) {
+    half_worker_arg_t* arg = (half_worker_arg_t*)p;
+    int32_t tid = arg->tid;
+    free(arg);
+
+    pthread_mutex_lock(&g_half_pool.mu);
+    // Start from 0 so late-starting workers still pick up the current job_id.
+    uint64_t seen = 0;
+    for (;;) {
+        while (!g_half_pool.stop && g_half_pool.job_id == seen) pthread_cond_wait(&g_half_pool.cv_job, &g_half_pool.mu);
+        if (g_half_pool.stop) break;
+        seen = g_half_pool.job_id;
+
+        const uint16_t* A = g_half_pool.A;
+        const float* X = g_half_pool.X;
+        float* Y = g_half_pool.Y;
+        int32_t m = g_half_pool.m;
+        int32_t n = g_half_pool.n;
+        half_gemv_range_fn fn = g_half_pool.fn;
+
+        int32_t nt = g_half_pool.nthreads;
+        int32_t chunk = (m + nt - 1) / nt;
+        int32_t row0 = tid * chunk;
+        int32_t row1 = row0 + chunk;
+        if (row1 > m) row1 = m;
+
+        pthread_mutex_unlock(&g_half_pool.mu);
+        if (row0 < row1) fn(A, X, Y, n, row0, row1);
+        pthread_mutex_lock(&g_half_pool.mu);
+
+        g_half_pool.working--;
+        if (g_half_pool.working == 0) pthread_cond_signal(&g_half_pool.cv_done);
+    }
+    pthread_mutex_unlock(&g_half_pool.mu);
+    return NULL;
+}
+
+static void half_pool_ensure(int32_t threads) {
+    if (threads < 1) threads = 1;
+    if (threads > 256) threads = 256;
+    if (g_half_pool.nthreads == threads && g_half_pool.threads) return;
+    half_pool_destroy();
+
+    g_half_pool.threads = (pthread_t*)calloc((size_t)threads, sizeof(pthread_t));
+    if (!g_half_pool.threads) return;
+    g_half_pool.nthreads = threads;
+    pthread_mutex_init(&g_half_pool.mu, NULL);
+    pthread_cond_init(&g_half_pool.cv_job, NULL);
+    pthread_cond_init(&g_half_pool.cv_done, NULL);
+    g_half_pool.stop = 0;
+    g_half_pool.job_id = 0;
+
+    for (int32_t i = 0; i < threads; i++) {
+        half_worker_arg_t* arg = (half_worker_arg_t*)malloc(sizeof(*arg));
+        if (!arg) {
+            half_pool_destroy();
+            return;
+        }
+        arg->tid = i;
+        if (pthread_create(&g_half_pool.threads[i], NULL, half_worker_main, arg) != 0) {
+            free(arg);
+            half_pool_destroy();
+            return;
+        }
+    }
+}
+
+static void half_gemv_mt(const uint16_t* A, const float* X, float* Y, int32_t m, int32_t n, half_gemv_range_fn fn) {
+    int32_t threads = clamp_threads(g_tua_llm_threads);
+    if (threads <= 1 || m < 512) {
+        fn(A, X, Y, n, 0, m);
+        return;
+    }
+    half_pool_ensure(threads);
+    if (!g_half_pool.threads || g_half_pool.nthreads <= 1) {
+        fn(A, X, Y, n, 0, m);
+        return;
+    }
+    pthread_mutex_lock(&g_half_pool.mu);
+    g_half_pool.A = A;
+    g_half_pool.X = X;
+    g_half_pool.Y = Y;
+    g_half_pool.m = m;
+    g_half_pool.n = n;
+    g_half_pool.fn = fn;
+    g_half_pool.working = g_half_pool.nthreads;
+    g_half_pool.job_id++;
+    pthread_cond_broadcast(&g_half_pool.cv_job);
+    while (g_half_pool.working > 0) pthread_cond_wait(&g_half_pool.cv_done, &g_half_pool.mu);
+    pthread_mutex_unlock(&g_half_pool.mu);
+}
+#endif
+
 tua_err_t tua_llm_gemv_bf16_f32(tua_bytes* y, int64_t y_off,
                                tua_bytes* a, int64_t a_off,
                                tua_bytes* x, int64_t x_off,
@@ -509,8 +858,22 @@ tua_err_t tua_llm_gemv_bf16_f32(tua_bytes* y, int64_t y_off,
     if (!A || !X || !Y) return TUA_E_INVALID;
 
 #if defined(__APPLE__)
-    BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeBFloat16);
-    if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
+    if (fake_gemv_enabled()) {
+        memset(Y, 0, (size_t)m * sizeof(float));
+        return TUA_OK;
+    }
+
+    tua_llm_gemv_backend_t be = gemv_backend();
+    if (be == GEMV_BACKEND_BNNS || be == GEMV_BACKEND_AUTO) {
+        BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeBFloat16);
+        if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
+        if (be == GEMV_BACKEND_BNNS) return TUA_E_INVALID;
+    }
+
+    if (be == GEMV_BACKEND_SIMD || be == GEMV_BACKEND_AUTO || be == GEMV_BACKEND_METAL) {
+        half_gemv_mt(A, X, Y, m, n, bf16_gemv_range_fn());
+        return TUA_OK;
+    }
 
     // Convert blocks to f32 then use a BLAS path that avoids RowMajor overhead by treating the row-major
     // buffer as a ColMajor matrix with transposed dims (see `tua_llm_gemv_f32`).
@@ -578,8 +941,22 @@ tua_err_t tua_llm_gemv_f16_f32(tua_bytes* y, int64_t y_off,
     if (!A || !X || !Y) return TUA_E_INVALID;
 
 #if defined(__APPLE__)
-    BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeFloat16);
-    if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
+    if (fake_gemv_enabled()) {
+        memset(Y, 0, (size_t)m * sizeof(float));
+        return TUA_OK;
+    }
+
+    tua_llm_gemv_backend_t be = gemv_backend();
+    if (be == GEMV_BACKEND_BNNS || be == GEMV_BACKEND_AUTO) {
+        BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeFloat16);
+        if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
+        if (be == GEMV_BACKEND_BNNS) return TUA_E_INVALID;
+    }
+
+    if (be == GEMV_BACKEND_SIMD || be == GEMV_BACKEND_AUTO || be == GEMV_BACKEND_METAL) {
+        half_gemv_mt(A, X, Y, m, n, f16_gemv_range_fn());
+        return TUA_OK;
+    }
 
     int32_t block = 256;
     if (n <= 1024) block = 1024;
@@ -709,6 +1086,11 @@ tua_err_t tua_llm_gemv_f32(tua_bytes* y, int64_t y_off,
     if (!A || !X || !Y) return TUA_E_INVALID;
 
 #if defined(__APPLE__)
+    if (fake_gemv_enabled()) {
+        memset(Y, 0, (size_t)m * sizeof(float));
+        return TUA_OK;
+    }
+
     BNNSFilter f = bnns_fc_get(A, m, n, BNNSDataTypeFloat32);
     if (f && BNNSFilterApply(f, X, Y) == 0) return TUA_OK;
 
