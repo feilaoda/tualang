@@ -124,7 +124,7 @@ private fn _findPlainStopTok(tok: TokenizerBpe, ids: long[]) -> int {
             let n: long = bstd.Bytes.len(bb)
             let off: long = 0L
             while off < n {
-                let be, bv = bstd.Bytes.getU8(bb, off)
+                let bv, be = bstd.Bytes.getU8(bb, off)
                 if be != 0 { break }
                 let bval: long = (long)bv
                 ringB[head] = bval

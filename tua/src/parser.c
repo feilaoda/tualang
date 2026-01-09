@@ -1179,6 +1179,28 @@ static Stmt* parseStatement(Parser* parser) {
         // skip statement separators (explicit ';' or newline)
     }
 
+    // Contextual `unsafe { ... }` block:
+    // `unsafe` is not a reserved keyword; it is parsed as a special statement only when
+    // it appears in statement position and is immediately followed by a `{ ... }` block.
+    if (check(parser, TOKEN_IDENTIFIER) &&
+        parser->current.length == 6 &&
+        memcmp(parser->current.start, "unsafe", 6) == 0) {
+        Parser snap = *parser;
+        Lexer lexSnap = *parser->lexer;
+        advance(parser); // consume `unsafe`
+        if (match(parser, TOKEN_LBRACE)) {
+            Stmt* body = parseBlockStatement(parser); // `{` already consumed
+            UnsafeStmt* us = malloc(sizeof(UnsafeStmt));
+            us->base.type = STMT_UNSAFE;
+            us->body = body;
+            parserDebugEnd("parseStatement");
+            return (Stmt*)us;
+        }
+        // Not an unsafe block; restore and continue parsing normally.
+        *parser = snap;
+        *parser->lexer = lexSnap;
+    }
+
     // Lua-style label: ::name::
     if (match(parser, TOKEN_COLON)) {
         consume(parser, TOKEN_COLON, "Expect ':' in label syntax '::name::'");

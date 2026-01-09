@@ -488,6 +488,24 @@ static LLVMValueRef getOrCreateTuaStrConcat(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_str_concat", fnType);
 }
 
+// Allocas inserted into non-entry blocks grow the stack dynamically when the block is executed in a loop.
+// For temporaries used by expressions (e.g. map index ok flags), always allocate in the function entry block.
+static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef ty, const char* name) {
+    if (!compiler || !ty) return NULL;
+    if (!compiler->current || !compiler->current->func) {
+        return LLVMBuildAlloca(compiler->builder, ty, name ? name : "");
+    }
+    LLVMValueRef fn = compiler->current->func;
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+    LLVMValueRef firstInst = LLVMGetFirstInstruction(entry);
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(compiler->context);
+    if (firstInst) LLVMPositionBuilderBefore(b, firstInst);
+    else LLVMPositionBuilderAtEnd(b, entry);
+    LLVMValueRef slot = LLVMBuildAlloca(b, ty, name ? name : "");
+    LLVMDisposeBuilder(b);
+    return slot;
+}
+
 enum {
     TUA_VAL_NIL = 0,
     TUA_VAL_INT = 1,
@@ -2530,7 +2548,7 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
 
         // Fast path: stack-backed fixed arrays.
         if (compiler->stackFixedArrays && recvVar.isStackArray && recvVar.stackArrayData && recvVar.arrayFixedLen >= 0) {
-            if (!compiler->uncheckedIndex) {
+            if (!compilerUncheckedIndex(compiler)) {
                 LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)recvVar.arrayFixedLen, 1);
                 LLVMValueRef oob = NULL;
                 if (idxUnsigned) {
@@ -2561,7 +2579,7 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
         }
 
         // Unchecked mode: no null/oob checks (UB on invalid access).
-        if (compiler->uncheckedIndex) {
+        if (compilerUncheckedIndex(compiler)) {
             LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
             if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
             LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, obj, 2, "datap");
@@ -2668,7 +2686,7 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
         }
     }
 
-    LLVMValueRef okPtr = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
+    LLVMValueRef okPtr = buildEntryAlloca(compiler, LLVMInt32TypeInContext(compiler->context), "mokptr");
     LLVMValueRef getFn = getOrCreateTuaMapGetWithOk(compiler);
     LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
     LLVMValueRef args3[3] = { obj, key, okPtr };
@@ -2821,7 +2839,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
         } else {
             // Array: do not auto-init.
             // In unchecked mode and for stack-backed fixed arrays, skip null checks (UB if invalid).
-            if (!compiler->uncheckedIndex && !(compiler->stackFixedArrays && var.isStackArray)) {
+            if (!compilerUncheckedIndex(compiler) && !(compiler->stackFixedArrays && var.isStackArray)) {
                 LLVMValueRef fn = compiler->current->func;
                 LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "arr.set.ok");
                 LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "arr.set.null");
@@ -2867,7 +2885,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
 
         // Fast path: stack-backed fixed arrays.
         if (compiler->stackFixedArrays && targetVar.isStackArray && targetVar.stackArrayData && targetVar.arrayFixedLen >= 0) {
-            if (!compiler->uncheckedIndex) {
+            if (!compilerUncheckedIndex(compiler)) {
                 LLVMValueRef lenV = LLVMConstInt(i64, (uint64_t)targetVar.arrayFixedLen, 1);
                 LLVMValueRef oob = NULL;
                 if (idxUnsigned) {
@@ -2901,7 +2919,7 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
         }
 
         // Unchecked mode: no bounds checks (UB on invalid access).
-        if (compiler->uncheckedIndex) {
+        if (compilerUncheckedIndex(compiler)) {
             LLVMTypeRef arrStruct = LLVMGetTypeByName2(context, "tua_array");
             if (!arrStruct) arrStruct = LLVMGetElementType(arrType);
             LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(builder, arrStruct, objVal, 2, "datap");
@@ -3943,6 +3961,18 @@ LLVMValueRef emitCastExpr(Compiler* compiler, CastExpr* expr) {
     if (!expr->isChecked) {
         TypeKind srcKind = expr->value ? expr->value->inferredType : TYPE_ANY;
         TypeKind dstKind = expr->targetType ? expr->targetType->kind : TYPE_ANY;
+        if (srcKind == TYPE_BOOL && (typeKindIsInt(dstKind) || typeKindIsFloat(dstKind))) {
+            LLVMTypeRef dstTy = llvmNumericTypeFromKind(compiler, dstKind);
+            if (!dstTy) {
+                compilerErrorAt(compiler, expr->base.token.line, "invalid cast target");
+                return v;
+            }
+            LLVMTypeKind dk = LLVMGetTypeKind(dstTy);
+            if (dk == LLVMIntegerTypeKind) {
+                return LLVMBuildZExt(compiler->builder, v, dstTy, "b2i");
+            }
+            return LLVMBuildUIToFP(compiler->builder, v, dstTy, "b2f");
+        }
         if ((typeKindIsInt(dstKind) || typeKindIsFloat(dstKind) || typeKindIsFp8(dstKind)) &&
             (typeKindIsInt(srcKind) || typeKindIsFloat(srcKind) || typeKindIsFp8(srcKind))) {
             LLVMValueRef out = castNumericToKind(compiler, v, srcKind, dstKind);

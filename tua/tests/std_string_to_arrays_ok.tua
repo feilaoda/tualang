@@ -5,7 +5,7 @@ fn main() {
     let s = "A"
     let b: bytes = s.toBytes()
     assert(bstd.Bytes.len(b) == 1L)
-    let e0, v0 = bstd.Bytes.getU8(b, 0L)
+    let v0, e0 = bstd.Bytes.getU8(b, 0L)
     assert(e0 == 0)
     assert(v0 == 65)
 

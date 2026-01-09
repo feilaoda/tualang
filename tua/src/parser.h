@@ -71,7 +71,8 @@ typedef enum {
     STMT_DESTRUCTURE,
     STMT_IMPL,
     STMT_TRAIT,
-    STMT_TRAIT_IMPL
+    STMT_TRAIT_IMPL,
+    STMT_UNSAFE
 } StmtType;
 
 
@@ -377,6 +378,11 @@ typedef struct BlockStmt {
     Stmt base;
     List* statements;
 } BlockStmt;
+
+typedef struct {
+    Stmt base;
+    Stmt* body; // typically a BlockStmt; compiled with unsafe operations enabled
+} UnsafeStmt;
 
 typedef struct {
     Stmt base;

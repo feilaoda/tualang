@@ -1223,7 +1223,7 @@ int executeModule(LLVMModuleRef module, int argc, char** argv) {
     return result;
 }
 
-static LLVMTargetMachineRef createHostTargetMachine(int optLevel) {
+static LLVMTargetMachineRef createHostTargetMachine(Compiler* compiler, int optLevel) {
     char* triple = LLVMGetDefaultTargetTriple();
     LLVMTargetRef target = NULL;
     char* err = NULL;
@@ -1242,11 +1242,17 @@ static LLVMTargetMachineRef createHostTargetMachine(int optLevel) {
         case 2: cg = LLVMCodeGenLevelDefault; break;
         default: cg = LLVMCodeGenLevelAggressive; break;
     }
+
+    const char* cpu = "generic";
+    const char* features = "";
+    if (compiler && compiler->llvmCpu && compiler->llvmCpu[0] != '\0') cpu = compiler->llvmCpu;
+    if (compiler && compiler->llvmFeatures && compiler->llvmFeatures[0] != '\0') features = compiler->llvmFeatures;
+
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
         target,
         triple,
-        "generic",
-        "",
+        cpu,
+        features,
         cg,
         LLVMRelocDefault,
         LLVMCodeModelDefault
@@ -1683,7 +1689,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     unlink(objTemplate);
 
     char* error = NULL;
-    LLVMTargetMachineRef tm = createHostTargetMachine(compiler->llvmOptLevel);
+    LLVMTargetMachineRef tm = createHostTargetMachine(compiler, compiler->llvmOptLevel);
     if (!tm) {
         fprintf(stderr, "error: failed to create host target machine for codegen\n");
         return 1;
@@ -1915,7 +1921,7 @@ int endLLVM(Compiler* compiler, const char* argv0) {
 
     LLVMTargetMachineRef tm = NULL;
     if (compiler && (compiler->llvmOptLevel > 0 || compiler->outputPath)) {
-        tm = createHostTargetMachine(compiler->llvmOptLevel);
+        tm = createHostTargetMachine(compiler, compiler->llvmOptLevel);
         if (tm) {
             char* triple = LLVMGetDefaultTargetTriple();
             LLVMSetTarget(module, triple);
@@ -2431,6 +2437,8 @@ int main(int argc, char* argv[]) {
     const char* srcPath = NULL;
     const char* outPath = NULL;
     const char* entryRaw = NULL;
+    const char* llvmCpu = NULL;
+    const char* llvmFeatures = NULL;
     int uncheckedIndex = 0;
     int stackFixedArrays = 0;
     int emitLoc = 1;
@@ -2452,7 +2460,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strcmp(a, "--print-ffi-include-dir") == 0) {
@@ -2476,6 +2484,59 @@ int main(int argc, char* argv[]) {
             }
             fprintf(stderr, "Invalid flag: %s (expected --llvm-O0..--llvm-O3)\n", a);
             return 1;
+        }
+        if (strncmp(a, "--llvm-cpu=", 10) == 0) {
+            const char* v = a + 10;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            llvmCpu = v;
+            continue;
+        }
+        if (strcmp(a, "--llvm-cpu") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            llvmCpu = v;
+            continue;
+        }
+        if (strncmp(a, "--llvm-features=", 15) == 0) {
+            const char* v = a + 15;
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            llvmFeatures = v;
+            continue;
+        }
+        if (strcmp(a, "--llvm-features") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!v || v[0] == '\0') {
+                fprintf(stderr, "Invalid value for %s\n", a);
+                return 1;
+            }
+            llvmFeatures = v;
+            continue;
+        }
+        if (strcmp(a, "--llvm-native") == 0) {
+            char* cpuMsg = LLVMGetHostCPUName();
+            char* featMsg = LLVMGetHostCPUFeatures();
+            if (cpuMsg && cpuMsg[0] != '\0') llvmCpu = dupCStringN(cpuMsg, (int)strlen(cpuMsg));
+            if (featMsg && featMsg[0] != '\0') llvmFeatures = dupCStringN(featMsg, (int)strlen(featMsg));
+            if (cpuMsg) LLVMDisposeMessage(cpuMsg);
+            if (featMsg) LLVMDisposeMessage(featMsg);
+            continue;
         }
         if (strcmp(a, "--unchecked-index") == 0) {
             uncheckedIndex = 1;
@@ -2703,10 +2764,12 @@ int main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
         return 1;
     }
     compiler.llvmOptLevel = optLevel;
+    compiler.llvmCpu = llvmCpu;
+    compiler.llvmFeatures = llvmFeatures;
     compiler.outputPath = outPath;
     compiler.uncheckedIndex = uncheckedIndex;
     compiler.stackFixedArrays = stackFixedArrays;

@@ -36,6 +36,20 @@ static int exprIsVarArg(Expr* e) {
     return a->type == EXPR_VARIABLE;
 }
 
+static int endsWithRawN(const char* s, int len, const char* suffix) {
+    if (!s || !suffix) return 0;
+    int n = len > 0 ? len : (int)strlen(s);
+    int m = (int)strlen(suffix);
+    if (n < m) return 0;
+    return memcmp(s + (n - m), suffix, (size_t)m) == 0;
+}
+
+static int aliasIsStdBytesModule(SymbolAlias* a) {
+    if (!a || !a->qualified || a->qualifiedLen <= 0) return 0;
+    // Module prefix is a sanitized absolute path; for stdlib bytes this suffix is stable.
+    return endsWithRawN(a->qualified, a->qualifiedLen, "_std_bytes_tua");
+}
+
 static void dropTemporaryClosureArgs(Compiler* compiler, List* argList, LLVMValueRef* args, unsigned argsStartIndex) {
     if (!compiler || !argList || !args) return;
     LLVMTypeRef closureTy = compilerGetClosureType(compiler);
@@ -3297,6 +3311,53 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 VariableExpr* ns = (VariableExpr*)inner->object;
                 SymbolAlias* a = compilerFindAlias(compiler, ns->name.start, ns->name.length);
                 if (a && a->kind == ALIAS_MODULE) {
+                    // Fast path: in `unsafe { ... }` (or `--unchecked-index`), lower `std/bytes.Bytes.getU8(b, i)`
+                    // into an inline load returning `(value, 0)` (UB on null/oob).
+                    if (!hasTypeArgs &&
+                        compilerUncheckedIndex(compiler) &&
+                        aliasIsStdBytesModule(a) &&
+                        inner->name.length == 5 && memcmp(inner->name.start, "Bytes", 5) == 0 &&
+                        get->name.length == 5 && memcmp(get->name.start, "getU8", 5) == 0) {
+                        unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+                        if (got == 2) {
+                            LLVMContextRef ctx = compiler->context;
+                            LLVMTypeRef bytesTy = compilerGetBytesType(compiler);
+                            LLVMTypeRef bytesStruct = LLVMGetTypeByName2(ctx, "tua_bytes");
+                            if (!bytesStruct) bytesStruct = LLVMGetElementType(bytesTy);
+                            LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+                            LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+                            LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
+                            LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+
+                            LLVMValueRef bArg = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                            LLVMValueRef iArg = compileExpr(compiler, (Expr*)expr->arguments->head->next->data);
+                            if (bArg && iArg) {
+                                LLVMValueRef bPtr = castValueToType(compiler, bArg, bytesTy);
+                                LLVMValueRef idx = castValueToType(compiler, iArg, i64);
+
+                                LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(compiler->builder, bytesStruct, bPtr, 2, "bdatap");
+                                LLVMValueRef data = LLVMBuildLoad2(compiler->builder, i8ptr, dataPtrPtr, "bdata");
+                                LLVMValueRef ep = LLVMBuildGEP2(compiler->builder, i8, data, &idx, 1, "ep");
+                                LLVMValueRef v8 = LLVMBuildLoad2(compiler->builder, i8, ep, "bv");
+                                LLVMValueRef v32 = LLVMBuildZExt(compiler->builder, v8, i32, "bv32");
+
+                                LLVMValueRef err0 = LLVMConstInt(i32, 0, 0);
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                if (compiler && compiler->wantMultiValue) {
+                                    LLVMTypeRef fields[2] = { i32, i32 };
+                                    LLVMTypeRef retTy = LLVMStructTypeInContext(ctx, fields, 2, 0);
+                                    LLVMValueRef out = LLVMGetUndef(retTy);
+                                    out = LLVMBuildInsertValue(compiler->builder, out, v32, 0, "mv0");
+                                    out = LLVMBuildInsertValue(compiler->builder, out, err0, 1, "mv1");
+                                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                    return out;
+                                }
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return v32;
+                            }
+                        }
+                    }
+
                     int ql1 = 0;
                     char* q1 = mangleRawAndToken(a->qualified, a->qualifiedLen, &inner->name, &ql1);
                     int ql2 = 0;
@@ -4184,6 +4245,20 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return NULL;
                 }
                 idx = castValueToType(compiler, idx, i64);
+
+                // Unchecked mode: inline load (UB on null/oob).
+                if (compilerUncheckedIndex(compiler)) {
+                    LLVMTypeRef bytesStruct = LLVMGetTypeByName2(compiler->context, "tua_bytes");
+                    if (!bytesStruct) bytesStruct = LLVMGetElementType(bytesTy);
+                    LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+                    LLVMValueRef dataPtrPtr = LLVMBuildStructGEP2(compiler->builder, bytesStruct, bytesPtr, 2, "bdatap");
+                    LLVMValueRef data = LLVMBuildLoad2(compiler->builder, i8ptr, dataPtrPtr, "bdata");
+                    LLVMValueRef ep = LLVMBuildGEP2(compiler->builder, i8, data, &idx, 1, "ep");
+                    LLVMValueRef v8 = LLVMBuildLoad2(compiler->builder, i8, ep, "bv");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return v8;
+                }
+
                 LLVMValueRef outSlot = LLVMBuildAlloca(compiler->builder, i32, "bout");
                 LLVMValueRef fn = getOrCreateTuaBytesGetU8(compiler);
                 LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
@@ -4394,6 +4469,17 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return NULL;
                 }
                 idx = castValueToType(compiler, idx, i64);
+
+                // Unchecked mode: no bounds checks (UB on invalid access).
+                if (compilerUncheckedIndex(compiler)) {
+                    LLVMTypeRef elemPtrTy = LLVMPointerType(elemTy, 0);
+                    LLVMValueRef typed = castValueToType(compiler, data, elemPtrTy);
+                    LLVMValueRef ptr = LLVMBuildGEP2(compiler->builder, elemTy, typed, &idx, 1, "ep");
+                    LLVMValueRef val = LLVMBuildLoad2(compiler->builder, elemTy, ptr, "sv");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return val;
+                }
+
                 LLVMValueRef zero = LLVMConstInt(i64, 0, 0);
                 LLVMValueRef neg = LLVMBuildICmp(compiler->builder, LLVMIntSLT, idx, zero, "idxneg");
                 LLVMValueRef ge = LLVMBuildICmp(compiler->builder, LLVMIntSGE, idx, len, "idxge");

@@ -30,7 +30,7 @@ fn main(args: string[]) -> int {
     let sum: long = 0L
     let i: long = 0L
     while i < bigLen {
-        let e, v = bstd.Bytes.getU8(big, i)
+        let v, e = bstd.Bytes.getU8(big, i)
         if e != 0 { println("getU8 failed"); return 1 }
         sum = sum + (long)v
         i = i + 1L
@@ -39,4 +39,3 @@ fn main(args: string[]) -> int {
     println("bytes={} repeat={} sum={} dtMs={}", bigLen, repeat, sum, (t1 - t0) / 1000000L)
     return 0
 }
-

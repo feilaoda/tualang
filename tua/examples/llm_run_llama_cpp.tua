@@ -72,9 +72,9 @@ private fn _firstPromptArg(argv: string[]) -> string {
     while i < argv.len() {
         let a = argv[i]
         if a != null {
-            let bs = bstd.Bytes.fromString(a)
-            if bs != null && bstd.Bytes.len(bs) > 0L {
-                let e0, b0 = bstd.Bytes.getU8(bs, 0L)
+                let bs = bstd.Bytes.fromString(a)
+                if bs != null && bstd.Bytes.len(bs) > 0L {
+                let b0, e0 = bstd.Bytes.getU8(bs, 0L)
                 if e0 == 0 && b0 != 45 { // '-'
                     return a
                 }

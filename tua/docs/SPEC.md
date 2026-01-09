@@ -206,7 +206,10 @@
   - 错误码返回约定（Frozen）：
     - 当函数需要通过返回值携带错误码时，**错误码必须放在最后一个返回值**，且类型为 `int`
     - 约定：`err == 0` 表示成功；`err != 0` 表示失败（具体错误含义由函数约定/文档说明）
+    - 返回顺序采用 Go 风格：`(out1, out2, ..., err)`；调用侧推荐写法：`let out, err = f(...)`
     - 示例：`fn readFile(path:string) -> string, int`
+    - 标准库遵循该约定的例子：`std/bytes.Bytes.getU8(b: bytes, idx: long) -> int, int`（返回的 u8 以 `int` 表示；`err` 为最后一个 `int`）
+    - 兼容性说明：历史 API 可能仍使用 `err` 作为第一个返回值，后续会逐步迁移到“`err` 最后”以统一与 Guard Block 语义
   - Guard Block（`? { ... }`，Status: Implemented）：
     - 语法：`callExpr ? { ... }`（仅允许对函数/方法调用使用）
     - 要求：`callExpr` 必须是**多返回**（返回值个数 >= 2），且最后一个返回类型必须为 `int`（错误码）

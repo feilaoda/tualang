@@ -124,6 +124,8 @@ void initCompiler(Compiler* compiler) {
     compiler->expectedArrayFixedLen = -1;
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
+    compiler->llvmCpu = NULL;
+    compiler->llvmFeatures = NULL;
     compiler->outputPath = NULL;
     compiler->linkSearchPaths = listNew();
     compiler->linkLibs = listNew();
@@ -135,6 +137,7 @@ void initCompiler(Compiler* compiler) {
     compiler->uncheckedIndex = 0;
     compiler->stackFixedArrays = 0;
     compiler->emitLoc = 1;
+    compiler->unsafeDepth = 0;
     compiler->genericInstStack = listNew();
     
     // Debug information
@@ -485,6 +488,15 @@ LLVMTypeRef compilerGetBytesType(Compiler* compiler) {
     if (compiler->bytesType) return compiler->bytesType;
     LLVMTypeRef t = LLVMGetTypeByName2(compiler->context, "tua_bytes");
     if (!t) t = LLVMStructCreateNamed(compiler->context, "tua_bytes");
+    // Layout must match `struct tua_bytes` in runtime (`src/tua_bytes.c`).
+    if (LLVMIsOpaqueStruct(t)) {
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        // { i64 len, i64 cap, i8* data, i32 readonly, i32 pad, i8* drop_ctx, i8* drop_fn }
+        LLVMTypeRef fields[7] = { i64, i64, i8ptr, i32, i32, i8ptr, i8ptr };
+        LLVMStructSetBody(t, fields, 7, 0);
+    }
     compiler->bytesType = LLVMPointerType(t, 0);
     return compiler->bytesType;
 }
@@ -2358,6 +2370,10 @@ static int stmtHasLambdaLiteral(Stmt* s) {
             }
             return 0;
         }
+        case STMT_UNSAFE: {
+            UnsafeStmt* u = (UnsafeStmt*)s;
+            return stmtHasLambdaLiteral(u ? u->body : NULL);
+        }
         case STMT_IF: {
             IfStmt* i = (IfStmt*)s;
             return exprHasLambdaLiteral(i->condition) || stmtHasLambdaLiteral(i->thenBranch) || stmtHasLambdaLiteral(i->elseBranch);
@@ -2419,6 +2435,11 @@ static void collectTopLevelLambdasStmt(List* lambdas, Stmt* s) {
             for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
                 collectTopLevelLambdasStmt(lambdas, (Stmt*)n->data);
             }
+            break;
+        }
+        case STMT_UNSAFE: {
+            UnsafeStmt* u = (UnsafeStmt*)s;
+            collectTopLevelLambdasStmt(lambdas, u ? u->body : NULL);
             break;
         }
         case STMT_IF: {
@@ -2686,6 +2707,14 @@ void compileStmt(Compiler* compiler, Stmt* stmt) {
         case STMT_BLOCK:
             compileBlockStmt(compiler, (BlockStmt*)stmt);
             break;
+        case STMT_UNSAFE: {
+            UnsafeStmt* u = (UnsafeStmt*)stmt;
+            int saved = compiler ? compiler->unsafeDepth : 0;
+            if (compiler) compiler->unsafeDepth++;
+            if (u && u->body) compileStmt(compiler, u->body);
+            if (compiler) compiler->unsafeDepth = saved;
+            break;
+        }
         case STMT_RETURN:
             compileReturnStmt(compiler, (ReturnStmt*)stmt);
             break;

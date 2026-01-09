@@ -2180,7 +2180,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
             AType* dst = atFromAstType(c->targetType);
 
             // First version: only numeric casts are supported.
-            if (!atIsAny(src) && !atIsNumeric(src)) {
+            if (!atIsAny(src) && !(atIsNumeric(src) || atIsBool(src))) {
                 analyzeErrorAt(compiler, modulePath, c->base.token.line, "`as` only supports numeric casts for now");
                 return inferReturn(expr, atNew(AT_ANY));
             }
@@ -3043,6 +3043,14 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             analyzeBlock(compiler, scope, b->statements, modulePath, expectedReturns);
             break;
         }
+        case STMT_UNSAFE: {
+            UnsafeStmt* u = (UnsafeStmt*)stmt;
+            int saved = compiler ? compiler->unsafeDepth : 0;
+            if (compiler) compiler->unsafeDepth++;
+            analyzeStmt(compiler, scope, u->body, modulePath, expectedReturns);
+            if (compiler) compiler->unsafeDepth = saved;
+            break;
+        }
         case STMT_IF: {
             IfStmt* i = (IfStmt*)stmt;
             inferExpr(compiler, scope, i->condition, modulePath);
@@ -3540,6 +3548,11 @@ static void scanReturnRefKindInStmt(FuncStmt* fn, Stmt* stmt, int* ioKind, int* 
                 scanReturnRefKindInStmt(fn, (Stmt*)n->data, ioKind, ioSeen, ioUnknown);
                 if (*ioUnknown) return;
             }
+            return;
+        }
+        case STMT_UNSAFE: {
+            UnsafeStmt* u = (UnsafeStmt*)stmt;
+            if (u && u->body) scanReturnRefKindInStmt(fn, u->body, ioKind, ioSeen, ioUnknown);
             return;
         }
         case STMT_IF: {

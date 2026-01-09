@@ -109,6 +109,11 @@ typedef struct Compiler{
     // LLVM optimization level for the generated module (0-3). Default: 0 (no extra passes).
     int llvmOptLevel;
 
+    // LLVM target machine tuning (affects both optimization and AOT codegen).
+    // When NULL, defaults to a conservative target ("generic" CPU, no extra features).
+    const char* llvmCpu;
+    const char* llvmFeatures;
+
     // When set, compile to native executable at this path instead of running via JIT.
     const char* outputPath;
 
@@ -133,10 +138,15 @@ typedef struct Compiler{
     int uncheckedIndex;      // when true, array indexing skips null/oob checks (UB on invalid access)
     int stackFixedArrays;    // when true, eligible local T[N] use stack storage
     int emitLoc;             // when true, emit `tua_set_loc` calls for runtime error reporting
+    int unsafeDepth;         // >0 when compiling inside `unsafe { ... }` blocks
 
     // Generic diagnostics: instantiation backtrace for monomorphization errors.
     List* genericInstStack; // List<GenericInstFrame*>
 } Compiler;
+
+static inline int compilerUncheckedIndex(Compiler* compiler) {
+    return compiler && (compiler->uncheckedIndex || compiler->unsafeDepth > 0);
+}
 
 // Returns true if the current function should box the local binding `name` (escape analysis).
 int compilerShouldBoxLocal(Compiler* compiler, const char* name, int nameLen);

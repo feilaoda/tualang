@@ -17,14 +17,14 @@ object Utf8 {
         if off < 0L { return 1, 0, 0L }
         if off >= n { return 1, 0, 0L }
 
-        let e0, b0 = bstd.Bytes.getU8(b, off)
+        let b0, e0 = bstd.Bytes.getU8(b, off)
         if e0 != 0 { return 1, 0, 0L }
         if b0 < 128 { return 0, b0, 1L }
 
         // 2-byte: 110xxxxx 10xxxxxx (0xC2..0xDF)
         if b0 >= 194 && b0 <= 223 {
             if off + 1L >= n { return 1, 0, 0L }
-            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            let b1, e1 = bstd.Bytes.getU8(b, off + 1L)
             if e1 != 0 { return 1, 0, 0L }
             if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
             let cp: int = (b0 - 192) * 64 + (b1 - 128)
@@ -34,9 +34,9 @@ object Utf8 {
         // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx (0xE0..0xEF)
         if b0 >= 224 && b0 <= 239 {
             if off + 2L >= n { return 1, 0, 0L }
-            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            let b1, e1 = bstd.Bytes.getU8(b, off + 1L)
             if e1 != 0 { return 1, 0, 0L }
-            let e2, b2 = bstd.Bytes.getU8(b, off + 2L)
+            let b2, e2 = bstd.Bytes.getU8(b, off + 2L)
             if e2 != 0 { return 1, 0, 0L }
             if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
             if b2 < 128 || b2 >= 192 { return 1, 0, 0L }
@@ -54,11 +54,11 @@ object Utf8 {
         // 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx (0xF0..0xF4)
         if b0 >= 240 && b0 <= 244 {
             if off + 3L >= n { return 1, 0, 0L }
-            let e1, b1 = bstd.Bytes.getU8(b, off + 1L)
+            let b1, e1 = bstd.Bytes.getU8(b, off + 1L)
             if e1 != 0 { return 1, 0, 0L }
-            let e2, b2 = bstd.Bytes.getU8(b, off + 2L)
+            let b2, e2 = bstd.Bytes.getU8(b, off + 2L)
             if e2 != 0 { return 1, 0, 0L }
-            let e3, b3 = bstd.Bytes.getU8(b, off + 3L)
+            let b3, e3 = bstd.Bytes.getU8(b, off + 3L)
             if e3 != 0 { return 1, 0, 0L }
             if b1 < 128 || b1 >= 192 { return 1, 0, 0L }
             if b2 < 128 || b2 >= 192 { return 1, 0, 0L }
@@ -98,7 +98,7 @@ object Utf8 {
         if off == 0L { return true }
         if off == n { return true }
         if off > n { return false }
-        let e, v = bstd.Bytes.getU8(b, off)
+        let v, e = bstd.Bytes.getU8(b, off)
         if e != 0 { return false }
         if v >= 128 && v < 192 { return false }
         return true

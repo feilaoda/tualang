@@ -71,7 +71,7 @@ impl Cursor {
 
     fn readU8() -> int, int {
         if this.remaining() <= 0L { return 1, 0 }
-        let e, v = bstd.Bytes.getU8(data, pos)
+        let v, e = bstd.Bytes.getU8(data, pos)
         if e != 0 { return e, 0 }
         pos = pos + 1L
         return 0, v
@@ -204,7 +204,7 @@ impl BufReader {
             if fe != 0 { return fe, 0 }
             if this.available() <= 0L { return 1, 0 }
         }
-        let e, v = bstd.Bytes.getU8(buf, start)
+        let v, e = bstd.Bytes.getU8(buf, start)
         if e != 0 { return e, 0 }
         start = start + 1L
         return 0, v

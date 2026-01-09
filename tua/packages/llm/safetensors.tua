@@ -48,7 +48,7 @@ private fn _skipWs(b: bytes, pos: long, n: long) -> int, long {
     let i = pos
     while true {
         if i >= n { break }
-        let e, c = bstd.Bytes.getU8(b, i)
+        let c, e = bstd.Bytes.getU8(b, i)
         if e != 0 { return 1, pos }
         if !_isWs(c) { break }
         i = i + 1L
@@ -58,7 +58,7 @@ private fn _skipWs(b: bytes, pos: long, n: long) -> int, long {
 
 private fn _expectByte(b: bytes, pos: long, n: long, want: int) -> int, long {
     if pos >= n { return 1, pos }
-    let e, c = bstd.Bytes.getU8(b, pos)
+    let c, e = bstd.Bytes.getU8(b, pos)
     if e != 0 { return 1, pos }
     if c != want { return 1, pos }
     return 0, pos + 1L
@@ -67,7 +67,7 @@ private fn _expectByte(b: bytes, pos: long, n: long, want: int) -> int, long {
 private fn _scanStringEnd(b: bytes, pos: long, n: long) -> int, long, bool {
     // pos points at '"'
     if pos >= n { return 1, pos, false }
-    let e0, q = bstd.Bytes.getU8(b, pos)
+    let q, e0 = bstd.Bytes.getU8(b, pos)
     if e0 != 0 { return 1, pos, false }
     if q != 34 { return 1, pos, false }
 
@@ -75,7 +75,7 @@ private fn _scanStringEnd(b: bytes, pos: long, n: long) -> int, long, bool {
     let hasEsc = false
     while true {
         if i >= n { break }
-        let ei, c = bstd.Bytes.getU8(b, i)
+        let c, ei = bstd.Bytes.getU8(b, i)
         if ei != 0 { return 1, pos, false }
         if c == 92 { // '\\'
             hasEsc = true
@@ -108,7 +108,7 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
     let i = rawOff
     while true {
         if i >= end { break }
-        let ei, c = bstd.Bytes.getU8(b, i)
+        let c, ei = bstd.Bytes.getU8(b, i)
         if ei != 0 { return 1, null, pos }
         if c != 92 {
             bstd.Bytes.setU8(tmp, outLen, c)
@@ -117,7 +117,7 @@ private fn _parseString(b: bytes, pos: long, n: long) -> int, string, long {
             continue
         }
         if i + 1L >= end { return 1, null, pos }
-        let ee, esc = bstd.Bytes.getU8(b, i + 1L)
+        let esc, ee = bstd.Bytes.getU8(b, i + 1L)
         if ee != 0 { return 1, null, pos }
         if esc == 34 { bstd.Bytes.setU8(tmp, outLen, 34); outLen = outLen + 1L; i = i + 2L; continue } // \"
         if esc == 92 { bstd.Bytes.setU8(tmp, outLen, 92); outLen = outLen + 1L; i = i + 2L; continue } // \\
@@ -145,19 +145,19 @@ private fn _isDigit(c: int) -> bool { return c >= 48 && c <= 57 }
 private fn _parseInt(b: bytes, pos: long, n: long) -> int, long, long {
     let i = pos
     if i >= n { return 1, 0L, pos }
-    let e0, c0 = bstd.Bytes.getU8(b, i)
+    let c0, e0 = bstd.Bytes.getU8(b, i)
     if e0 != 0 { return 1, 0L, pos }
     let sign: long = 1L
     if c0 == 45 { sign = -1L; i = i + 1L }
     if i >= n { return 1, 0L, pos }
-    let e1, c1 = bstd.Bytes.getU8(b, i)
+    let c1, e1 = bstd.Bytes.getU8(b, i)
     if e1 != 0 { return 1, 0L, pos }
     if !_isDigit(c1) { return 1, 0L, pos }
 
     let v: long = 0L
     while true {
         if i >= n { break }
-        let ei, c = bstd.Bytes.getU8(b, i)
+        let c, ei = bstd.Bytes.getU8(b, i)
         if ei != 0 { return 1, 0L, pos }
         if !_isDigit(c) { break }
         v = (v * 10L) + (long)(c - 48)
@@ -172,7 +172,7 @@ private fn _skipLiteral(b: bytes, pos: long, n: long, lit: int[]) -> int, long {
         if i >= (long)lit.len() { break }
         let p = pos + i
         if p >= n { return 1, pos }
-        let e, c = bstd.Bytes.getU8(b, p)
+        let c, e = bstd.Bytes.getU8(b, p)
         if e != 0 { return 1, pos }
         if c != lit[(int)i] { return 1, pos }
         i = i + 1L
@@ -184,7 +184,7 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
     let e0, i0 = _skipWs(b, pos, n)
     if e0 != 0 { return 1, pos }
     if i0 >= n { return 1, pos }
-    let ec, c = bstd.Bytes.getU8(b, i0)
+    let c, ec = bstd.Bytes.getU8(b, i0)
     if ec != 0 { return 1, pos }
 
     if c == 34 {
@@ -218,7 +218,7 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
             let ew, p = _skipWs(b, i, n)
             if ew != 0 { return 1, pos }
             if p >= n { return 1, pos }
-            let ek, kch = bstd.Bytes.getU8(b, p)
+            let kch, ek = bstd.Bytes.getU8(b, p)
             if ek != 0 { return 1, pos }
             if kch == 125 { return 0, p + 1L } // '}'
             // key
@@ -234,7 +234,7 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
             let ew3, p6 = _skipWs(b, p5, n)
             if ew3 != 0 { return 1, pos }
             if p6 >= n { return 1, pos }
-            let ed, d = bstd.Bytes.getU8(b, p6)
+            let d, ed = bstd.Bytes.getU8(b, p6)
             if ed != 0 { return 1, pos }
             if d == 44 { i = p6 + 1L; continue } // ','
             if d == 125 { return 0, p6 + 1L } // '}'
@@ -248,7 +248,7 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
             let ew, p = _skipWs(b, i, n)
             if ew != 0 { return 1, pos }
             if p >= n { return 1, pos }
-            let ek, ch = bstd.Bytes.getU8(b, p)
+            let ch, ek = bstd.Bytes.getU8(b, p)
             if ek != 0 { return 1, pos }
             if ch == 93 { return 0, p + 1L } // ']'
             let ev, p2 = _skipValue(b, p, n)
@@ -256,7 +256,7 @@ private fn _skipValue(b: bytes, pos: long, n: long) -> int, long {
             let ew2, p3 = _skipWs(b, p2, n)
             if ew2 != 0 { return 1, pos }
             if p3 >= n { return 1, pos }
-            let ed, d = bstd.Bytes.getU8(b, p3)
+            let d, ed = bstd.Bytes.getU8(b, p3)
             if ed != 0 { return 1, pos }
             if d == 44 { i = p3 + 1L; continue } // ','
             if d == 93 { return 0, p3 + 1L } // ']'
@@ -284,7 +284,7 @@ private fn _parseShapeArray(b: bytes, pos: long, n: long) -> int, int, long, lon
         let ew, p = _skipWs(b, i, n)
         if ew != 0 { return 1, 0, 0L, 0L, 0L, 0L, pos }
         if p >= n { return 1, 0, 0L, 0L, 0L, 0L, pos }
-        let ec, ch = bstd.Bytes.getU8(b, p)
+        let ch, ec = bstd.Bytes.getU8(b, p)
         if ec != 0 { return 1, 0, 0L, 0L, 0L, 0L, pos }
         if ch == 93 { // ']'
             if ndim == 0 { return 1, 0, 0L, 0L, 0L, 0L, pos }
@@ -302,7 +302,7 @@ private fn _parseShapeArray(b: bytes, pos: long, n: long) -> int, int, long, lon
         let ew2, p3 = _skipWs(b, p2, n)
         if ew2 != 0 { return 1, 0, 0L, 0L, 0L, 0L, pos }
         if p3 >= n { return 1, 0, 0L, 0L, 0L, 0L, pos }
-        let ed, d = bstd.Bytes.getU8(b, p3)
+        let d, ed = bstd.Bytes.getU8(b, p3)
         if ed != 0 { return 1, 0, 0L, 0L, 0L, 0L, pos }
         if d == 44 { i = p3 + 1L; continue } // ','
         if d == 93 { return 0, ndim, d0, d1, d2, d3, p3 + 1L } // ']'
@@ -365,7 +365,7 @@ object SafeTensors {
             let ew, p2 = _skipWs(hdr, p, hn)
             if ew != 0 { return 1, out }
             if p2 >= hn { return 1, out }
-            let ec, ch = bstd.Bytes.getU8(hdr, p2)
+            let ch, ec = bstd.Bytes.getU8(hdr, p2)
             if ec != 0 { return 1, out }
             if ch == 125 { break } // '}'
 
@@ -401,7 +401,7 @@ object SafeTensors {
                     let ewk, q2 = _skipWs(hdr, q, hn)
                     if ewk != 0 { return 1, out }
                     if q2 >= hn { return 1, out }
-                    let ecc, c2 = bstd.Bytes.getU8(hdr, q2)
+                    let c2, ecc = bstd.Bytes.getU8(hdr, q2)
                     if ecc != 0 { return 1, out }
                     if c2 == 125 { q = q2 + 1L; break } // '}'
 
@@ -443,7 +443,7 @@ object SafeTensors {
                     let ewk3, q7 = _skipWs(hdr, q, hn)
                     if ewk3 != 0 { return 1, out }
                     if q7 >= hn { return 1, out }
-                    let edelim, delim = bstd.Bytes.getU8(hdr, q7)
+                    let delim, edelim = bstd.Bytes.getU8(hdr, q7)
                     if edelim != 0 { return 1, out }
                     if delim == 44 { q = q7 + 1L; continue } // ','
                     if delim == 125 { q = q7 + 1L; break } // '}'
@@ -473,7 +473,7 @@ object SafeTensors {
             let ew4, p7 = _skipWs(hdr, p, hn)
             if ew4 != 0 { return 1, out }
             if p7 >= hn { return 1, out }
-            let edelim, delim = bstd.Bytes.getU8(hdr, p7)
+            let delim, edelim = bstd.Bytes.getU8(hdr, p7)
             if edelim != 0 { return 1, out }
             if delim == 44 { p = p7 + 1L; continue } // ','
             if delim == 125 { p = p7; continue } // outer while will break

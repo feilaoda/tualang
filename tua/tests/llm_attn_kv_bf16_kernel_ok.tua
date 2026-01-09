@@ -14,8 +14,8 @@ private fn _u8eq(a: bytes, b: bytes) -> bool {
     if n != bstd.Bytes.len(b) { return false }
     let i: long = 0L
     while i < n {
-        let e0, x = bstd.Bytes.getU8(a, i)
-        let e1, y = bstd.Bytes.getU8(b, i)
+        let x, e0 = bstd.Bytes.getU8(a, i)
+        let y, e1 = bstd.Bytes.getU8(b, i)
         if e0 != 0 || e1 != 0 { return false }
         if x != y { return false }
         i = i + 1L
