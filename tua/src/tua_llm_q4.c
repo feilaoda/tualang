@@ -8,12 +8,52 @@
 
 #include <pthread.h>
 
+#if defined(TUA_LLM_USE_GGML)
+#include <ggml.h>
+#include <ggml-cpu.h>
+#endif
+
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif
 
 // This module is intentionally self-contained so we can later swap the GEMV backend
 // (e.g. route to Metal) without mixing quantization details into the core runtime.
+
+// Provided by `src/tua_map.c`.
+void tua_panic(const char* msg);
+
+#if defined(TUA_LLM_USE_GGML)
+static pthread_once_t tua_llm_ggml_once = PTHREAD_ONCE_INIT;
+
+static void tua_llm_ggml_init_once(void) {
+    ggml_cpu_init();
+}
+
+static inline void tua_llm_ggml_ensure_init(void) {
+    pthread_once(&tua_llm_ggml_once, tua_llm_ggml_init_once);
+}
+
+typedef struct {
+    void* buf;
+    int64_t cap;
+} tua_tls_buf;
+
+static __thread tua_tls_buf tua_llm_tls_tmp = { NULL, 0 };
+
+static void* tua_tls_get_bytes(int64_t n) {
+    if (n <= 0) return NULL;
+    if (n <= tua_llm_tls_tmp.cap && tua_llm_tls_tmp.buf) return tua_llm_tls_tmp.buf;
+    int64_t new_cap = tua_llm_tls_tmp.cap > 0 ? tua_llm_tls_tmp.cap : 0;
+    if (new_cap < 1024) new_cap = 1024;
+    while (new_cap < n) new_cap *= 2;
+    void* p = realloc(tua_llm_tls_tmp.buf, (size_t)new_cap);
+    if (!p) tua_panic("out of memory");
+    tua_llm_tls_tmp.buf = p;
+    tua_llm_tls_tmp.cap = new_cap;
+    return p;
+}
+#endif
 
 typedef struct __attribute__((packed)) {
     uint16_t d;      // fp16 scale
@@ -26,6 +66,13 @@ typedef struct __attribute__((packed)) {
     uint8_t scales[12];  // 16 packed 6-bit values: [8 scales][8 mins]
     uint8_t qs[128];     // 256 x uint4, packed (low/high nibble)
 } q4_k_block_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t ql[128];     // low 4 bits for 256 values
+    uint8_t qh[64];      // high 2 bits for 256 values
+    int8_t scales[16];   // 16 group scales (16 values each)
+    uint16_t d;          // fp16 base scale
+} q6_k_block_t;
 
 static inline int check_f32_span(tua_bytes* b, int64_t off, int64_t n_floats) {
     if (!b) return 0;
@@ -134,35 +181,35 @@ static inline int8_t sext6(uint8_t u6) {
     return (u6 & 0x20) ? (int8_t)(u6 | 0xC0) : (int8_t)u6;
 }
 
-static void pack_u6_16(uint8_t out[12], const uint8_t vals[16]) {
-    memset(out, 0, 12);
-    uint32_t acc = 0;
-    int32_t acc_bits = 0;
-    int32_t oi = 0;
-    for (int32_t i = 0; i < 16; i++) {
-        acc |= (uint32_t)(vals[i] & 0x3fu) << acc_bits;
-        acc_bits += 6;
-        while (acc_bits >= 8) {
-            out[oi++] = (uint8_t)(acc & 0xffu);
-            acc >>= 8;
-            acc_bits -= 8;
-        }
+// GGML Q4_K packs 8 scales (u6) and 8 mins (s6) into 12 bytes, interleaved per pair of subgroups:
+//   for subgroup pairs (0,1), (2,3), (4,5), (6,7):
+//     [s0][s1][m0][m1] as 4x6-bit values packed into 3 bytes (LSB-first bitstream).
+static inline void q4k_pack_scales_mins(uint8_t out[12], const uint8_t sc_u6[8], const uint8_t mn_u6[8]) {
+    for (int32_t p = 0; p < 4; p++) {
+        uint8_t s0 = sc_u6[2 * p + 0] & 0x3f;
+        uint8_t s1 = sc_u6[2 * p + 1] & 0x3f;
+        uint8_t m0 = mn_u6[2 * p + 0] & 0x3f;
+        uint8_t m1 = mn_u6[2 * p + 1] & 0x3f;
+        out[3 * p + 0] = (uint8_t)((s0 & 0x3f) | ((s1 & 0x03) << 6));
+        out[3 * p + 1] = (uint8_t)(((s1 >> 2) & 0x0f) | ((m0 & 0x0f) << 4));
+        out[3 * p + 2] = (uint8_t)(((m0 >> 4) & 0x03) | ((m1 & 0x3f) << 2));
     }
-    if (oi < 12) out[oi] = (uint8_t)(acc & 0xffu);
 }
 
-static void unpack_u6_16(const uint8_t in[12], uint8_t vals[16]) {
-    uint32_t acc = 0;
-    int32_t acc_bits = 0;
-    int32_t vi = 0;
-    for (int32_t i = 0; i < 12; i++) {
-        acc |= (uint32_t)in[i] << acc_bits;
-        acc_bits += 8;
-        while (acc_bits >= 6 && vi < 16) {
-            vals[vi++] = (uint8_t)(acc & 0x3fu);
-            acc >>= 6;
-            acc_bits -= 6;
-        }
+static inline void q4k_get_scale_min_u6(const uint8_t scales[12], int32_t g, uint8_t* out_sc, uint8_t* out_mn) {
+    // g in [0..7]
+    int32_t p = g >> 1; // pair index
+    const uint8_t b0 = scales[3 * p + 0];
+    const uint8_t b1 = scales[3 * p + 1];
+    const uint8_t b2 = scales[3 * p + 2];
+    if ((g & 1) == 0) {
+        // even: scale=s0, min=m0
+        if (out_sc) *out_sc = (uint8_t)(b0 & 0x3f);
+        if (out_mn) *out_mn = (uint8_t)((b1 >> 4) | ((b2 & 0x03) << 4));
+    } else {
+        // odd: scale=s1, min=m1
+        if (out_sc) *out_sc = (uint8_t)((b0 >> 6) | ((b1 & 0x0f) << 2));
+        if (out_mn) *out_mn = (uint8_t)(b2 >> 2);
     }
 }
 
@@ -216,6 +263,33 @@ int64_t tua_llm_q4_k_mat_bytes(int32_t m, int32_t n) {
     return rowb * (int64_t)m;
 }
 
+// =========================
+// Q6_K helpers
+// =========================
+
+static inline int32_t q6k_get_q(const q6_k_block_t* b, int32_t i) {
+    // i in [0..255]
+    uint8_t ql = b->ql[i >> 1];
+    uint8_t lo = (i & 1) ? (ql >> 4) : (ql & 0x0f);
+    uint8_t qh = b->qh[i >> 2];
+    uint8_t hi = (qh >> (2 * (i & 3))) & 0x03;
+    return (int32_t)(lo | (hi << 4));
+}
+
+int64_t tua_llm_q6_k_row_bytes(int32_t n) {
+    if (n <= 0) return 0;
+    if ((n & 255) != 0) return 0;
+    int32_t nb = n / 256;
+    return (int64_t)nb * 210;
+}
+
+int64_t tua_llm_q6_k_mat_bytes(int32_t m, int32_t n) {
+    if (m <= 0 || n <= 0) return 0;
+    int64_t rowb = tua_llm_q6_k_row_bytes(n);
+    if (rowb <= 0) return 0;
+    return rowb * (int64_t)m;
+}
+
 static void q4_k_pack_block(const uint16_t* src_bf16, q4_k_block_t* dst) {
     // 8 subgroups x 32 values each = 256
     float scales[8];
@@ -232,6 +306,9 @@ static void q4_k_pack_block(const uint16_t* src_bf16, q4_k_block_t* dst) {
         mins[g] = (isfinite(mn) ? mn : 0.0f);
         float span = mx - mn;
         scales[g] = (span > 0.0f) ? (span / 15.0f) : 0.0f;
+        // GGML's Q4_K dequant uses: v = mn + sc * (q - 8), with q in [0..15].
+        // Store mn as an 8-step offset so that (mn - 8*sc) approximates the true subgroup minimum.
+        mins[g] = mins[g] + 8.0f * scales[g];
     }
 
     float max_scale = 0.0f;
@@ -247,38 +324,39 @@ static void q4_k_pack_block(const uint16_t* src_bf16, q4_k_block_t* dst) {
     dst->d = f32_to_f16_bits(d);
     dst->dmin = f32_to_f16_bits(dmin);
 
-    uint8_t packed[16];
+    uint8_t sc_u6[8];
+    uint8_t mn_u6[8];
     for (int32_t g = 0; g < 8; g++) {
         int32_t sc = 0;
         if (d > 0.0f) sc = (int32_t)lrintf(scales[g] / d);
         if (sc < 0) sc = 0;
         if (sc > 63) sc = 63;
-        packed[g] = (uint8_t)sc;
+        sc_u6[g] = (uint8_t)sc;
 
         int32_t mn = 0;
         if (dmin > 0.0f) mn = (int32_t)lrintf(mins[g] / dmin);
         if (mn < -32) mn = -32;
         if (mn > 31) mn = 31;
-        packed[8 + g] = (uint8_t)(mn & 0x3f);
+        mn_u6[g] = (uint8_t)(mn & 0x3f);
     }
-    pack_u6_16(dst->scales, packed);
+    q4k_pack_scales_mins(dst->scales, sc_u6, mn_u6);
 
     // Quantize values using quantized subgroup parameters (so dequant matches).
-    uint8_t unpacked[16];
-    unpack_u6_16(dst->scales, unpacked);
     float fd = f16_to_f32(dst->d);
     float fdm = f16_to_f32(dst->dmin);
     for (int32_t g = 0; g < 8; g++) {
-        float sc = fd * (float)(unpacked[g] & 0x3f);
-        float mn = fdm * (float)sext6(unpacked[8 + g]);
+        uint8_t sc6 = 0, mn6 = 0;
+        q4k_get_scale_min_u6(dst->scales, g, &sc6, &mn6);
+        float sc = fd * (float)(sc6 & 0x3f);
+        float mn = fdm * (float)sext6(mn6);
         const uint16_t* s = src_bf16 + g * 32;
         uint8_t* qdst = dst->qs + g * 16;
         float inv = (sc > 0.0f) ? (1.0f / sc) : 0.0f;
         for (int32_t j = 0; j < 16; j++) {
             float v0 = bf16_to_f32(s[2 * j + 0]);
             float v1 = bf16_to_f32(s[2 * j + 1]);
-            int32_t q0 = (int32_t)lrintf((v0 - mn) * inv);
-            int32_t q1 = (int32_t)lrintf((v1 - mn) * inv);
+            int32_t q0 = (int32_t)lrintf((v0 - mn) * inv) + 8;
+            int32_t q1 = (int32_t)lrintf((v1 - mn) * inv) + 8;
             uint8_t u0 = clamp_u8(q0, 0, 15);
             uint8_t u1 = clamp_u8(q1, 0, 15);
             qdst[j] = (uint8_t)(u0 | (u1 << 4));
@@ -337,16 +415,37 @@ tua_err_t tua_llm_q4_k_pack_bf16(tua_bytes* dst, int64_t dst_off,
     if (dst_off + need > tua_bytes_len(dst)) return TUA_E_INVALID;
 
     const uint16_t* sbase = (const uint16_t*)tua_bytes_data_at(src, src_off);
-    q4_k_block_t* dbase = (q4_k_block_t*)tua_bytes_data_at(dst, dst_off);
+    uint8_t* dbase = (uint8_t*)tua_bytes_data_at(dst, dst_off);
     if (!sbase || !dbase) return TUA_E_INVALID;
 
-    int32_t nb = n / 256;
+#if defined(TUA_LLM_USE_GGML)
+    tua_llm_ggml_ensure_init();
+    const struct ggml_type_traits* tr = ggml_get_type_traits(GGML_TYPE_Q4_K);
+    const struct ggml_type_traits_cpu* tc = ggml_get_type_traits_cpu(GGML_TYPE_Q4_K);
+    if (!tr || !tc || !tc->from_float) return TUA_E_NOTSUP;
+    if ((int64_t)tr->blck_size != 256) return TUA_E_NOTSUP;
+    if ((int64_t)tr->type_size != rowb / (n / 256)) return TUA_E_NOTSUP;
+
+    float* tmp = (float*)tua_tls_get_bytes((int64_t)n * 4);
+    if (!tmp) return TUA_E_NOMEM;
+
     for (int32_t row = 0; row < m; row++) {
         const uint16_t* srow = sbase + (int64_t)row * (int64_t)n;
-        q4_k_block_t* drow = dbase + (int64_t)row * (int64_t)nb;
+        uint8_t* drow = dbase + (int64_t)row * rowb;
+        for (int32_t i = 0; i < n; i++) tmp[i] = bf16_to_f32(srow[i]);
+        tc->from_float(tmp, drow, n);
+    }
+    return TUA_OK;
+#else
+    int32_t nb = n / 256;
+    q4_k_block_t* dblocks = (q4_k_block_t*)dbase;
+    for (int32_t row = 0; row < m; row++) {
+        const uint16_t* srow = sbase + (int64_t)row * (int64_t)n;
+        q4_k_block_t* drow = dblocks + (int64_t)row * (int64_t)nb;
         q4_k_pack_row(srow, n, drow);
     }
     return TUA_OK;
+#endif
 }
 
 tua_err_t tua_llm_q4_0_get_row_f32(tua_bytes* out, int64_t out_off,
@@ -402,27 +501,78 @@ tua_err_t tua_llm_q4_k_get_row_f32(tua_bytes* out, int64_t out_off,
     float* dst = (float*)tua_bytes_data_at(out, out_off);
     if (!blocks || !dst) return TUA_E_INVALID;
 
+#if defined(TUA_LLM_USE_GGML)
+    tua_llm_ggml_ensure_init();
+    const struct ggml_type_traits* tr = ggml_get_type_traits(GGML_TYPE_Q4_K);
+    if (!tr || !tr->to_float) return TUA_E_NOTSUP;
+    tr->to_float((const void*)blocks, dst, n);
+    return TUA_OK;
+#else
     for (int32_t bi = 0; bi < nb; bi++) {
-        uint8_t u6[16];
-        unpack_u6_16(blocks[bi].scales, u6);
         float d = f16_to_f32(blocks[bi].d);
         float dmin = f16_to_f32(blocks[bi].dmin);
         const uint8_t* qs = blocks[bi].qs;
         for (int32_t g = 0; g < 8; g++) {
-            float sc = d * (float)(u6[g] & 0x3f);
-            float mn = dmin * (float)sext6(u6[8 + g]);
+            uint8_t sc6 = 0, mn6 = 0;
+            q4k_get_scale_min_u6(blocks[bi].scales, g, &sc6, &mn6);
+            float sc = d * (float)(sc6 & 0x3f);
+            float mn = dmin * (float)sext6(mn6);
             const uint8_t* qg = qs + g * 16;
             for (int32_t j = 0; j < 16; j++) {
                 uint8_t b = qg[j];
                 uint8_t q0 = b & 0x0f;
                 uint8_t q1 = b >> 4;
                 int32_t base = bi * 256 + g * 32 + 2 * j;
-                dst[base + 0] = mn + sc * (float)q0;
-                dst[base + 1] = mn + sc * (float)q1;
+                dst[base + 0] = mn + sc * (float)((int32_t)q0 - 8);
+                dst[base + 1] = mn + sc * (float)((int32_t)q1 - 8);
             }
         }
     }
     return TUA_OK;
+#endif
+}
+
+tua_err_t tua_llm_q6_k_get_row_f32(tua_bytes* out, int64_t out_off,
+                                  tua_bytes* a, int64_t a_off,
+                                  int64_t row, int32_t n) {
+    if (row < 0) return TUA_E_INVALID;
+    if (n <= 0 || (n & 255) != 0) return TUA_E_INVALID;
+    if (!check_f32_span(out, out_off, n)) return TUA_E_INVALID;
+
+    int64_t rowb = tua_llm_q6_k_row_bytes(n);
+    if (rowb <= 0) return TUA_E_INVALID;
+    int64_t aoff = a_off + row * rowb;
+    if (!a) return TUA_E_INVALID;
+    if (aoff < 0) return TUA_E_INVALID;
+    if (aoff + rowb > tua_bytes_len(a)) return TUA_E_INVALID;
+
+    const uint8_t* p = (const uint8_t*)tua_bytes_data_at(a, aoff);
+    float* dst = (float*)tua_bytes_data_at(out, out_off);
+    if (!p || !dst) return TUA_E_INVALID;
+
+#if defined(TUA_LLM_USE_GGML)
+    tua_llm_ggml_ensure_init();
+    const struct ggml_type_traits* tr = ggml_get_type_traits(GGML_TYPE_Q6_K);
+    if (!tr || !tr->to_float) return TUA_E_NOTSUP;
+    tr->to_float((const void*)p, dst, n);
+    return TUA_OK;
+#else
+    int32_t nb = n / 256;
+    for (int32_t bi = 0; bi < nb; bi++) {
+        const q6_k_block_t* b = (const q6_k_block_t*)(p + (int64_t)bi * 210);
+        float d = f16_to_f32(b->d);
+        for (int32_t g = 0; g < 16; g++) {
+            float sc = d * (float)b->scales[g];
+            int32_t base = bi * 256 + g * 16;
+            for (int32_t j = 0; j < 16; j++) {
+                int32_t q = q6k_get_q(b, g * 16 + j);
+                int32_t qs = q - 32;
+                dst[base + j] = (float)qs * sc;
+            }
+        }
+    }
+    return TUA_OK;
+#endif
 }
 
 // =========================
@@ -726,15 +876,15 @@ static void q4_k_gemv_range_scalar(const void* Av, const float* X, float* Y, int
         const q4_k_block_t* brow = A + (int64_t)row * (int64_t)nb;
         double sum = 0.0;
         for (int32_t bi = 0; bi < nb; bi++) {
-            uint8_t u6[16];
-            unpack_u6_16(brow[bi].scales, u6);
             float d = f16_to_f32(brow[bi].d);
             float dmin = f16_to_f32(brow[bi].dmin);
             const uint8_t* qs = brow[bi].qs;
             const float* xp = X + bi * 256;
             for (int32_t g = 0; g < 8; g++) {
-                float sc = d * (float)(u6[g] & 0x3f);
-                float mn = dmin * (float)sext6(u6[8 + g]);
+                uint8_t sc6 = 0, mn6 = 0;
+                q4k_get_scale_min_u6(brow[bi].scales, g, &sc6, &mn6);
+                float sc = d * (float)(sc6 & 0x3f);
+                float mn = dmin * (float)sext6(mn6);
                 const uint8_t* qg = qs + g * 16;
                 const float* xg = xp + g * 32;
                 double sum_x = 0.0;
@@ -748,7 +898,7 @@ static void q4_k_gemv_range_scalar(const void* Av, const float* X, float* Y, int
                     sum_x += (double)x0 + (double)x1;
                     sum_qx += (double)q0 * (double)x0 + (double)q1 * (double)x1;
                 }
-                sum += (double)mn * sum_x + (double)sc * sum_qx;
+                sum += ((double)mn - 8.0 * (double)sc) * sum_x + (double)sc * sum_qx;
             }
         }
         Y[row] = (float)sum;
@@ -767,16 +917,16 @@ static void q4_k_gemv_range_avx2(const void* Av, const float* X, float* Y, int32
         double sum = 0.0;
 
         for (int32_t bi = 0; bi < nb; bi++) {
-            uint8_t u6[16];
-            unpack_u6_16(brow[bi].scales, u6);
             float d = f16_to_f32(brow[bi].d);
             float dmin = f16_to_f32(brow[bi].dmin);
             const uint8_t* qs = brow[bi].qs;
             const float* xp = X + bi * 256;
 
             for (int32_t g = 0; g < 8; g++) {
-                float sc = d * (float)(u6[g] & 0x3f);
-                float mn = dmin * (float)sext6(u6[8 + g]);
+                uint8_t sc6 = 0, mn6 = 0;
+                q4k_get_scale_min_u6(brow[bi].scales, g, &sc6, &mn6);
+                float sc = d * (float)(sc6 & 0x3f);
+                float mn = dmin * (float)sext6(mn6);
                 const uint8_t* qg = qs + g * 16;
                 const float* xg = xp + g * 32;
 
@@ -823,7 +973,7 @@ static void q4_k_gemv_range_avx2(const void* Av, const float* X, float* Y, int32
                     (t2[0] + t2[1] + t2[2] + t2[3] + t2[4] + t2[5] + t2[6] + t2[7]) +
                     (t3[0] + t3[1] + t3[2] + t3[3] + t3[4] + t3[5] + t3[6] + t3[7]);
 
-                sum += (double)mn * (double)sum_x + (double)sc * (double)sum_qx;
+                sum += ((double)mn - 8.0 * (double)sc) * (double)sum_x + (double)sc * (double)sum_qx;
             }
         }
         Y[row] = (float)sum;
@@ -837,6 +987,53 @@ static q4_gemv_range_fn q4_k_gemv_range_pick(void) {
 #endif
     return q4_k_gemv_range_scalar;
 }
+
+#if defined(TUA_LLM_USE_GGML)
+static tua_err_t q4_k_gemv_ggml(tua_bytes* y, int64_t y_off,
+                               tua_bytes* a, int64_t a_off,
+                               tua_bytes* x, int64_t x_off,
+                               int32_t m, int32_t n) {
+    if (m <= 0 || n <= 0) return TUA_E_INVALID;
+    if ((n & 255) != 0) return TUA_E_INVALID;
+    int64_t need = tua_llm_q4_k_mat_bytes(m, n);
+    if (need <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(x, x_off, n) || !check_f32_span(y, y_off, m)) return TUA_E_INVALID;
+    if (!a) return TUA_E_INVALID;
+    if (a_off < 0) return TUA_E_INVALID;
+    if (a_off + need > tua_bytes_len(a)) return TUA_E_INVALID;
+
+    const uint8_t* A = (const uint8_t*)tua_bytes_data_at(a, a_off);
+    const float* X = (const float*)tua_bytes_data_at(x, x_off);
+    float* Y = (float*)tua_bytes_data_at(y, y_off);
+    if (!A || !X || !Y) return TUA_E_INVALID;
+
+    tua_llm_ggml_ensure_init();
+
+    const struct ggml_type_traits_cpu* tcw = ggml_get_type_traits_cpu(GGML_TYPE_Q4_K);
+    const struct ggml_type_traits* trw = ggml_get_type_traits(GGML_TYPE_Q4_K);
+    if (!tcw || !trw || !tcw->vec_dot) return TUA_E_NOTSUP;
+
+    enum ggml_type vtype = tcw->vec_dot_type;
+    const struct ggml_type_traits_cpu* tcv = ggml_get_type_traits_cpu(vtype);
+    const struct ggml_type_traits* trv = ggml_get_type_traits(vtype);
+    if (!tcv || !trv || !tcv->from_float) return TUA_E_NOTSUP;
+    if (trv->blck_size <= 0) return TUA_E_NOTSUP;
+    if ((n % (int32_t)trv->blck_size) != 0) return TUA_E_INVALID;
+
+    int64_t xq_bytes = ((int64_t)n / (int64_t)trv->blck_size) * (int64_t)trv->type_size;
+    void* xq = tua_tls_get_bytes(xq_bytes);
+    if (!xq) return TUA_E_NOMEM;
+    tcv->from_float(X, xq, n);
+
+    int64_t rowb = tua_llm_q4_k_row_bytes(n);
+    if (rowb <= 0) return TUA_E_INVALID;
+    for (int32_t row = 0; row < m; row++) {
+        const void* rowp = (const void*)(A + (int64_t)row * rowb);
+        tcw->vec_dot(n, Y + row, sizeof(float), rowp, 0, xq, 0, 1);
+    }
+    return TUA_OK;
+}
+#endif
 
 static tua_err_t q4_k_gemv_cpu(tua_bytes* y, int64_t y_off,
                               tua_bytes* a, int64_t a_off,
@@ -868,7 +1065,132 @@ tua_err_t tua_llm_gemv_q4_k_f32(tua_bytes* y, int64_t y_off,
     if (q4_backend_is_metal()) {
         // Not implemented yet; fall back to CPU.
     }
+#if defined(TUA_LLM_USE_GGML)
+    return q4_k_gemv_ggml(y, y_off, a, a_off, x, x_off, m, n);
+#else
     return q4_k_gemv_cpu(y, y_off, a, a_off, x, x_off, m, n);
+#endif
+}
+
+// =========================
+// Q6_K GEMV (CPU)
+// =========================
+
+static void q6_k_gemv_range_scalar(const void* Av, const float* X, float* Y, int32_t n, int32_t row0, int32_t row1) {
+    const uint8_t* A = (const uint8_t*)Av;
+    int32_t nb = n / 256;
+    const int64_t rowb = (int64_t)nb * 210;
+
+    for (int32_t row = row0; row < row1; row++) {
+        const uint8_t* brow = A + (int64_t)row * rowb;
+        double sum = 0.0;
+        for (int32_t bi = 0; bi < nb; bi++) {
+            const q6_k_block_t* b = (const q6_k_block_t*)(brow + (int64_t)bi * 210);
+            float d = f16_to_f32(b->d);
+            const float* xp = X + bi * 256;
+            for (int32_t g = 0; g < 16; g++) {
+                float sc = d * (float)b->scales[g];
+                const float* xg = xp + g * 16;
+                double s = 0.0;
+                for (int32_t j = 0; j < 16; j++) {
+                    int32_t q = q6k_get_q(b, g * 16 + j);
+                    int32_t qs = q - 32;
+                    s += (double)qs * (double)xg[j];
+                }
+                sum += (double)sc * s;
+            }
+        }
+        Y[row] = (float)sum;
+    }
+}
+
+static q4_gemv_range_fn q6_k_gemv_range_pick(void) {
+    // Scalar only for now; can add SIMD later.
+    return q6_k_gemv_range_scalar;
+}
+
+#if defined(TUA_LLM_USE_GGML)
+static tua_err_t q6_k_gemv_ggml(tua_bytes* y, int64_t y_off,
+                              tua_bytes* a, int64_t a_off,
+                              tua_bytes* x, int64_t x_off,
+                              int32_t m, int32_t n) {
+    if (m <= 0 || n <= 0) return TUA_E_INVALID;
+    if ((n & 255) != 0) return TUA_E_INVALID;
+    int64_t need = tua_llm_q6_k_mat_bytes(m, n);
+    if (need <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(x, x_off, n) || !check_f32_span(y, y_off, m)) return TUA_E_INVALID;
+    if (!a) return TUA_E_INVALID;
+    if (a_off < 0) return TUA_E_INVALID;
+    if (a_off + need > tua_bytes_len(a)) return TUA_E_INVALID;
+
+    const uint8_t* A = (const uint8_t*)tua_bytes_data_at(a, a_off);
+    const float* X = (const float*)tua_bytes_data_at(x, x_off);
+    float* Y = (float*)tua_bytes_data_at(y, y_off);
+    if (!A || !X || !Y) return TUA_E_INVALID;
+
+    tua_llm_ggml_ensure_init();
+
+    const struct ggml_type_traits_cpu* tcw = ggml_get_type_traits_cpu(GGML_TYPE_Q6_K);
+    const struct ggml_type_traits* trw = ggml_get_type_traits(GGML_TYPE_Q6_K);
+    if (!tcw || !trw || !tcw->vec_dot) return TUA_E_NOTSUP;
+
+    enum ggml_type vtype = tcw->vec_dot_type;
+    const struct ggml_type_traits_cpu* tcv = ggml_get_type_traits_cpu(vtype);
+    const struct ggml_type_traits* trv = ggml_get_type_traits(vtype);
+    if (!tcv || !trv || !tcv->from_float) return TUA_E_NOTSUP;
+    if (trv->blck_size <= 0) return TUA_E_NOTSUP;
+    if ((n % (int32_t)trv->blck_size) != 0) return TUA_E_INVALID;
+
+    int64_t xq_bytes = ((int64_t)n / (int64_t)trv->blck_size) * (int64_t)trv->type_size;
+    void* xq = tua_tls_get_bytes(xq_bytes);
+    if (!xq) return TUA_E_NOMEM;
+    tcv->from_float(X, xq, n);
+
+    int64_t rowb = tua_llm_q6_k_row_bytes(n);
+    if (rowb <= 0) return TUA_E_INVALID;
+    for (int32_t row = 0; row < m; row++) {
+        const void* rowp = (const void*)(A + (int64_t)row * rowb);
+        tcw->vec_dot(n, Y + row, sizeof(float), rowp, 0, xq, 0, 1);
+    }
+    return TUA_OK;
+}
+#endif
+
+static tua_err_t q6_k_gemv_cpu(tua_bytes* y, int64_t y_off,
+                              tua_bytes* a, int64_t a_off,
+                              tua_bytes* x, int64_t x_off,
+                              int32_t m, int32_t n) {
+    if (m <= 0 || n <= 0) return TUA_E_INVALID;
+    if ((n & 255) != 0) return TUA_E_INVALID;
+    int64_t need = tua_llm_q6_k_mat_bytes(m, n);
+    if (need <= 0) return TUA_E_INVALID;
+    if (!check_f32_span(x, x_off, n) || !check_f32_span(y, y_off, m)) return TUA_E_INVALID;
+    if (!a) return TUA_E_INVALID;
+    if (a_off < 0) return TUA_E_INVALID;
+    if (a_off + need > tua_bytes_len(a)) return TUA_E_INVALID;
+
+    const void* A = (const void*)tua_bytes_data_at(a, a_off);
+    const float* X = (const float*)tua_bytes_data_at(x, x_off);
+    float* Y = (float*)tua_bytes_data_at(y, y_off);
+    if (!A || !X || !Y) return TUA_E_INVALID;
+
+    q4_gemv_range_fn fn = q6_k_gemv_range_pick();
+    q4_gemv_mt(A, X, Y, m, n, fn);
+    return TUA_OK;
+}
+
+tua_err_t tua_llm_gemv_q6_k_f32(tua_bytes* y, int64_t y_off,
+                               tua_bytes* a, int64_t a_off,
+                               tua_bytes* x, int64_t x_off,
+                               int32_t m, int32_t n) {
+    if (q4_backend_is_metal()) {
+        // Not implemented yet; fall back to CPU.
+    }
+#if defined(TUA_LLM_USE_GGML)
+    return q6_k_gemv_ggml(y, y_off, a, a_off, x, x_off, m, n);
+#else
+    return q6_k_gemv_cpu(y, y_off, a, a_off, x, x_off, m, n);
+#endif
 }
 
 // =========================
@@ -973,5 +1295,52 @@ int32_t tua_llm_q4_k_selftest(void) {
         float err = fabsf(yq[r] - yr[r]);
         if (!(err <= 0.12f)) return 10 + r;
     }
+    return 0;
+}
+
+int32_t tua_llm_q6_k_selftest(void) {
+    const int32_t m = 1;
+    const int32_t n = 256;
+    tua_bytes* A = tua_bytes_new_uninit(210);
+    tua_bytes* X = tua_bytes_new_uninit((int64_t)n * 4);
+    tua_bytes* Y = tua_bytes_new_uninit((int64_t)m * 4);
+    if (!A || !X || !Y) return 1;
+
+    // Quantize a deterministic float row via ggml, then round-trip through get_row_f32.
+    float src[n];
+    for (int32_t i = 0; i < n; i++) {
+        src[i] = sinf((float)i * 0.07f) * 0.5f + cosf((float)i * 0.11f) * 0.2f;
+    }
+#if defined(TUA_LLM_USE_GGML)
+    tua_llm_ggml_ensure_init();
+    const struct ggml_type_traits_cpu* tc = ggml_get_type_traits_cpu(GGML_TYPE_Q6_K);
+    if (!tc || !tc->from_float) return 2;
+    tc->from_float(src, tua_bytes_data_at(A, 0), n);
+#else
+    // Without ggml, we only validate the hand-written Q6_K layout via get_row_f32 in other tests.
+    return 0;
+#endif
+
+    float x[n];
+    for (int32_t i = 0; i < n; i++) x[i] = 1.0f;
+    memcpy(tua_bytes_data_at(X, 0), x, (size_t)n * 4);
+
+    tua_bytes* R = tua_bytes_new_uninit((int64_t)n * 4);
+    if (!R) return 4;
+    if (tua_llm_q6_k_get_row_f32(R, 0, A, 0, 0, n) != TUA_OK) return 5;
+    const float* rf = (const float*)tua_bytes_data_at(R, 0);
+    if (!rf) return 6;
+    for (int32_t i = 0; i < n; i++) {
+        float err = fabsf(rf[i] - src[i]);
+        if (!(err <= 0.08f)) return 7;
+    }
+
+    // GEMV should be close to the dequantized dot even if it internally quantizes activations.
+    if (tua_llm_gemv_q6_k_f32(Y, 0, A, 0, X, 0, m, n) != TUA_OK) return 13;
+    float y;
+    memcpy(&y, tua_bytes_data_at(Y, 0), 4);
+    float expected = 0.0f;
+    for (int32_t i = 0; i < n; i++) expected += rf[i];
+    if (fabsf(y - expected) > 0.5f) return 14;
     return 0;
 }

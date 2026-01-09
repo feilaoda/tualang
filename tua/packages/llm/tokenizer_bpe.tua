@@ -2,6 +2,8 @@ import "std/bytes" as bstd
 import "std/json" as json
 import "std/utf8" as utf8
 
+import Gguf from "./gguf"
+
 extern fn strlen(s: string) long
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
 extern fn tua_str_ptr(s: string) -> ptr
@@ -12,6 +14,7 @@ extern fn memcmp(a: ptr, b: ptr, n: long) int
 extern fn tua_llm_bpe_merge_ids(ids: long[], pairRank: map<long, long>, pairMergeId: map<long, long>, outErr: &int) -> long[]
 extern fn tua_llm_bpe_bytes_to_ids(b: bytes, off: long, len: long, byteToId: long[], outErr: &int) -> long[]
 extern fn tua_llm_bpe_decode_ids_to_bytes(ids: long[], idToToken: map<long, string>, outErr: &int) -> bytes
+extern fn tua_llm_bpe_merges_lines_pair_maps(merges: string[], vocab: map, outRank: &map, outMergeId: &map, outCount: &long) int
 
 extern fn tua_json_parse_key_path_bpe_merges_pair_maps(b: bytes, path: string, vocab: map, outRank: &map, outMergeId: &map, outCount: &long) int
 
@@ -43,6 +46,25 @@ private fn _mapGetOptLongString(m: map<long, string>, k: long) -> Option<string>
 
 private fn _mapGetOptIntInt(m: map<int, int>, k: int) -> Option<int> {
     return m[k]
+}
+
+private fn _endsWith(s: string, suf: string) -> bool {
+    if s == null || suf == null { return false }
+    let sb = bstd.Bytes.fromString(s)
+    let tb = bstd.Bytes.fromString(suf)
+    let sn = bstd.Bytes.len(sb)
+    let tn = bstd.Bytes.len(tb)
+    if tn > sn { return false }
+    let i: long = 0L
+    while i < tn {
+        let e0, a = bstd.Bytes.getU8(sb, sn - tn + i)
+        if e0 != 0 { return false }
+        let e1, b = bstd.Bytes.getU8(tb, i)
+        if e1 != 0 { return false }
+        if a != b { return false }
+        i = i + 1L
+    }
+    return true
 }
 
 private fn _byteToIdAt(a: long[], idx: int) -> long {
@@ -487,6 +509,105 @@ object BpeTokenizer {
         }
         let _ = mergeCount
         return out, 0
+    }
+
+    fn loadFromGguf(modelDirOrPath: string) -> TokenizerBpe, int {
+        // Uses GGUF tokenizer metadata: tokenizer.ggml.tokens + tokenizer.ggml.merges.
+        if modelDirOrPath == null { return TokenizerBpe{}, 1 }
+        let ggufPath: string = modelDirOrPath
+        if !_endsWith(modelDirOrPath, ".gguf") {
+            let fe, p = Gguf.findMainFile(modelDirOrPath)
+            if fe != 0 { return TokenizerBpe{}, 1 }
+            ggufPath = p
+        }
+
+        let ge, g = Gguf.parseMmap(ggufPath, 1)
+        if ge != 0 { return TokenizerBpe{}, 1 }
+        if g.tokens == null || g.merges == null { return TokenizerBpe{}, 1 }
+        let tokensArr: string[] = g.tokens
+        let mergesArr: string[] = g.merges
+
+        // Build vocab map: token string -> id
+        let vocab: map<string, long> = {}
+        let id: int = 0
+        while id < tokensArr.len() {
+            let s: string = tokensArr[id]
+            vocab[s] = (long)id
+            id = id + 1
+        }
+
+        let rankAny: map = null
+        let mergeAny: map = null
+        let mergeCount: long = 0L
+        let me = tua_llm_bpe_merges_lines_pair_maps(mergesArr, vocab, &rankAny, &mergeAny, &mergeCount)
+        if me != 0 || rankAny == null || mergeAny == null { return TokenizerBpe{}, 1 }
+        let pairRank: map<long, long> = rankAny
+        let pairMergeId: map<long, long> = mergeAny
+
+        // GGUF includes special token ids in metadata; keep `added` empty and rely on vocab lookups when needed.
+        let added: map<string, long> = {}
+        let addedList: string[] = {}
+
+        // Build id->token map (vocab only).
+        let idToToken: map<long, string> = {}
+        for tokStr, idVal in vocab {
+            let vid: long = idVal
+            idToToken[vid] = tokStr
+        }
+
+        // Byte-level mapping (GPT-2 style): byte -> unicode cp and inverse cp -> byte.
+        let byteToId: long[] = {}
+        let i: int = 0
+        while i < 256 {
+            byteToId.push(-1L)
+            i = i + 1
+        }
+        let cpToByte: map<int, int> = {}
+
+        let tmp = bstd.Bytes.new(4)
+        let bval: int = 0
+        let nextCp: int = 256
+        while bval < 256 {
+            let cp: int = -1
+            if bval >= 33 && bval <= 126 { cp = bval }
+            else if bval >= 161 && bval <= 172 { cp = bval }
+            else if bval >= 174 && bval <= 255 { cp = bval }
+            else { cp = nextCp; nextCp = nextCp + 1 }
+
+            cpToByte[cp] = bval
+            let ee, wrote = utf8.Utf8.encode1(cp, tmp, 0L)
+            if ee != 0 { return TokenizerBpe{}, 1 }
+            let s = tua_str_from_bytes_copy(tmp, 0L, wrote)
+            let o = vocab[s]
+            if o.isSome() {
+                let vid: long = o.unwrap()
+                byteToId[bval] = vid
+            }
+            bval = bval + 1
+        }
+
+        let out = TokenizerBpe{
+            raw: g.raw,
+            vocab: vocab,
+            idToToken: idToToken,
+            added: added,
+            addedList: addedList,
+            pairRank: pairRank,
+            pairMergeId: pairMergeId,
+            byteToId: byteToId,
+            cpToByte: cpToByte,
+        }
+        let _ = mergeCount
+        return out, 0
+    }
+
+    fn idOf(t: TokenizerBpe, s: string) -> long, int {
+        if s == null { return 0L, 1 }
+        let o1 = _mapGetOptStringLong(t.vocab, s)
+        if o1.isSome() { return o1.unwrap(), 0 }
+        let o2 = _mapGetOptStringLong(t.added, s)
+        if o2.isSome() { return o2.unwrap(), 0 }
+        return 0L, 2
     }
 
     fn addedId(t: TokenizerBpe, s: string) -> long, int {

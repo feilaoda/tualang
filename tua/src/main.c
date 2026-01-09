@@ -1152,6 +1152,78 @@ static int fileExists(const char* path) {
     return access(path, F_OK) == 0;
 }
 
+static int anyFileExists2(const char* a, const char* b) {
+    return (a && fileExists(a)) || (b && fileExists(b));
+}
+
+#if defined(TUA_LLM_USE_GGML)
+static char* findGgmlIncludeDir(void) {
+    const char* env = getenv("GGML_PREFIX");
+    if (env && env[0] != '\0') {
+        char* h = joinPath(env, "include/ggml.h");
+        if (fileExists(h)) {
+            free(h);
+            return joinPath(env, "include");
+        }
+        free(h);
+    }
+
+    const char* cands[] = {
+        "/usr/local/opt/llama.cpp",
+        "/opt/homebrew/opt/llama.cpp",
+        "/usr/local",
+        "/opt/homebrew",
+        NULL
+    };
+    for (int i = 0; cands[i]; i++) {
+        const char* p = cands[i];
+        char* h = joinPath(p, "include/ggml.h");
+        if (fileExists(h)) {
+            free(h);
+            return joinPath(p, "include");
+        }
+        free(h);
+    }
+    return NULL;
+}
+
+static char* findGgmlLibDir(void) {
+    const char* env = getenv("GGML_PREFIX");
+    if (env && env[0] != '\0') {
+        char* a = joinPath(env, "lib/libggml-base.a");
+        char* d = joinPath(env, "lib/libggml-base.dylib");
+        if (anyFileExists2(a, d)) {
+            free(a);
+            free(d);
+            return joinPath(env, "lib");
+        }
+        free(a);
+        free(d);
+    }
+
+    const char* cands[] = {
+        "/usr/local/opt/llama.cpp",
+        "/opt/homebrew/opt/llama.cpp",
+        "/usr/local",
+        "/opt/homebrew",
+        NULL
+    };
+    for (int i = 0; cands[i]; i++) {
+        const char* p = cands[i];
+        char* a = joinPath(p, "lib/libggml-base.a");
+        char* d = joinPath(p, "lib/libggml-base.dylib");
+        if (anyFileExists2(a, d)) {
+            free(a);
+            free(d);
+            return joinPath(p, "lib");
+        }
+        free(a);
+        free(d);
+    }
+    return NULL;
+}
+#endif
+
 static char* resolveExecutablePath(const char* argv0) {
     if (!argv0 || argv0[0] == '\0') return NULL;
     if (strchr(argv0, '/')) {
@@ -1531,6 +1603,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     char* bytesC = joinPath(srcDir, "tua_bytes.c");
     char* jsonC = joinPath(srcDir, "tua_json.c");
     char* llmC = joinPath(srcDir, "tua_llm.c");
+    char* llmQ4C = joinPath(srcDir, "tua_llm_q4.c");
     char* rtArchive = findRuntimeArchivePath(argv0);
     int needLlm = moduleUsesTuaLlm(module);
 
@@ -1553,13 +1626,42 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     // Framework links (e.g. Accelerate) are appended conditionally.
     if (needLlm) cap += 2;
 #endif
+#if defined(TUA_LLM_USE_GGML)
+    // Propagate ggml-backed quant kernels to AOT builds.
+    if (needLlm) cap += 12;
+#endif
     char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
+#if defined(TUA_LLM_USE_GGML)
+    char* ggmlInc = NULL;
+    char* ggmlLib = NULL;
+    char* ggmlRpath = NULL;
+#endif
 
     args[n++] = (char*)clangExe;
     args[n++] = (char*)optFlag;
     args[n++] = (char*)"-I";
     args[n++] = srcDir;
+#if defined(TUA_LLM_USE_GGML)
+    if (needLlm) {
+        // Ensure `tua_llm_q4.c` compiles with the same backend as the host compiler build.
+        args[n++] = (char*)"-DTUA_LLM_USE_GGML=1";
+        ggmlInc = findGgmlIncludeDir();
+        if (ggmlInc) {
+            args[n++] = (char*)"-I";
+            args[n++] = ggmlInc;
+        }
+        ggmlLib = findGgmlLibDir();
+        if (ggmlLib) {
+            args[n++] = (char*)"-L";
+            args[n++] = ggmlLib;
+            int need = (int)strlen("-Wl,-rpath,") + (int)strlen(ggmlLib);
+            ggmlRpath = (char*)malloc((size_t)need + 1);
+            sprintf(ggmlRpath, "-Wl,-rpath,%s", ggmlLib);
+            args[n++] = ggmlRpath;
+        }
+    }
+#endif
     args[n++] = (char*)"-o";
     args[n++] = (char*)outPath;
     args[n++] = (char*)"-pthread";
@@ -1569,6 +1671,7 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     if (bytesC && fileExists(bytesC)) args[n++] = bytesC;
     if (jsonC && fileExists(jsonC)) args[n++] = jsonC;
     if (needLlm && llmC && fileExists(llmC)) args[n++] = llmC;
+    if (needLlm && llmQ4C && fileExists(llmQ4C)) args[n++] = llmQ4C;
     if (rtArchive) args[n++] = rtArchive;
 
     // Raw link args first (e.g. -Wl,... or /path/to/libfoo.a)
@@ -1600,6 +1703,16 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     }
 #endif
 
+#if defined(TUA_LLM_USE_GGML)
+    if (needLlm) {
+        // `tua_llm_q4.c` uses ggml-cpu for Q4_K/Q6_K vec_dot kernels.
+        args[n++] = (char*)"-l";
+        args[n++] = (char*)"ggml-base";
+        args[n++] = (char*)"-l";
+        args[n++] = (char*)"ggml-cpu";
+    }
+#endif
+
 #if !defined(__APPLE__)
     // `tua_llm.c` uses libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
     if (needLlm) args[n++] = (char*)"-lm";
@@ -1615,9 +1728,15 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     free(bytesC);
     free(jsonC);
     free(llmC);
+    free(llmQ4C);
     free(rtArchive);
     free(srcDir);
     free(args);
+#if defined(TUA_LLM_USE_GGML)
+    if (ggmlInc) free(ggmlInc);
+    if (ggmlLib) free(ggmlLib);
+    if (ggmlRpath) free(ggmlRpath);
+#endif
     if (status == 0) {
         if (stderrText) free(stderrText);
         return 0;

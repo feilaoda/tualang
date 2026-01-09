@@ -9,8 +9,12 @@ object Qwen3Chat {
         }
         out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
         out = out + "<|im_start|>assistant\n"
-        // Match official template behavior: when enable_thinking=false, insert an empty <think> block.
-        if !enableThinking {
+        // Match official template behavior:
+        // - enable_thinking=true: open <think> but do not close (model generates the content and closing tag).
+        // - enable_thinking=false: insert an empty <think> block to suppress reasoning.
+        if enableThinking {
+            out = out + "<think>\n"
+        } else {
             out = out + "<think>\n\n</think>\n\n"
         }
         return out
@@ -29,7 +33,9 @@ object Qwen3Chat {
         let out: string = ""
         out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
         out = out + "<|im_start|>assistant\n"
-        if !enableThinking {
+        if enableThinking {
+            out = out + "<think>\n"
+        } else {
             out = out + "<think>\n\n</think>\n\n"
         }
         return out

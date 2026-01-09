@@ -1,0 +1,329 @@
+import "std/time" as time
+import "std/term" as term
+import "std/rt" as rt
+import "std/bytes" as bstd
+import "std/utf8" as u
+import LlmArgs, LlmOptions from "../packages/llm/options"
+import Qwen3Chat from "../packages/llm/qwen3_chat"
+
+// Requires linking an external library built from `examples/ffi_tuaext_llama_simple.c`:
+//   ./tools/build_llama_clib.sh
+//
+// Run example (JIT):
+//   TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextllama -L /usr/local/opt/llama.cpp/lib --link-arg=-Wl,-rpath,/usr/local/opt/llama.cpp/lib -l llama examples/llm_run_llama_cpp.tua examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf "Hello" --greedy --max-new-tokens 64 --threads 8
+//
+// Run REPL:
+//   TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextllama -L /usr/local/opt/llama.cpp/lib --link-arg=-Wl,-rpath,/usr/local/opt/llama.cpp/lib -l llama examples/llm_run_llama_cpp.tua examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf --repl --chat --threads 8
+
+extern fn tuaext_llama_backend_init()
+extern fn tuaext_llama_new(modelPath: string, nCtx: int, nThreads: int, nBatch: int, outErr: &int) -> ptr
+extern fn tuaext_llama_free(h: ptr)
+extern fn tuaext_llama_vocab_size(h: ptr) int
+extern fn tuaext_llama_vocab_is_eog(h: ptr, tok: long) int
+extern fn tuaext_llama_reset(h: ptr, outErr: &int) int
+extern fn tuaext_llama_tokenize(h: ptr, text: string, addSpecial: int, parseSpecial: int, outErr: &int) -> long[]
+extern fn tuaext_llama_token_to_piece(h: ptr, tok: long, special: int, outErr: &int) -> string
+extern fn tuaext_llama_decode(h: ptr, toks: long[], outErr: &int) int
+extern fn tuaext_llama_get_logits_f32(h: ptr, outErr: &int) -> bytes
+
+extern fn tua_llm_argmax_f32(x: bytes, xOff: long, n: int, outIndex: &long) int
+extern fn tua_llm_sample_topk_topp_f32(logits: bytes, logitsOff: long, n: int, topK: int, topP: float, temperature: float, rngState: &long, outIndex: &long) int
+
+private fn _argvHas(argv: string[], flag: string) -> bool {
+    if argv == null || flag == null { return false }
+    let i: int = 0
+    while i < argv.len() {
+        if argv[i] == flag { return true }
+        i = i + 1
+    }
+    return false
+}
+
+private fn _imod(a: int, b: int) -> int {
+    return a - (a / b) * b
+}
+
+private fn _firstPromptArg(argv: string[]) -> string {
+    // argv[1] is model path. First non-flag arg after that is prompt.
+    if argv == null { return null }
+    let i: int = 2
+    while i < argv.len() {
+        let a = argv[i]
+        if a != null {
+            let bs = bstd.Bytes.fromString(a)
+            if bs != null && bstd.Bytes.len(bs) > 0L {
+                let e0, b0 = bstd.Bytes.getU8(bs, 0L)
+                if e0 == 0 && b0 != 45 { // '-'
+                    return a
+                }
+            }
+        }
+        i = i + 1
+    }
+    return null
+}
+
+private fn _sampleNext(logits: bytes, nVocab: int, opts: LlmOptions, rng: &long) -> long, int {
+    let out: long = -1L
+    if opts.temperature == 0.0 || opts.topK <= 1 {
+        let ae = tua_llm_argmax_f32(logits, 0L, nVocab, &out)
+        if ae != 0 { return -1L, 1 }
+        return out, 0
+    }
+    let se = tua_llm_sample_topk_topp_f32(logits, 0L, nVocab, opts.topK, opts.topP, opts.temperature, rng, &out)
+    if se != 0 { return -1L, 1 }
+    return out, 0
+}
+
+private fn _feedText(h: ptr, text: string, addSpecial: int, parseSpecial: int) -> int {
+    if text == null || text == "" { return 0 }
+    let te: int = 0
+    let toks: long[] = tuaext_llama_tokenize(h, text, addSpecial, parseSpecial, &te)
+    if te != 0 || toks == null || toks.len() == 0 { return 1 }
+    let de: int = 0
+    let rc = tuaext_llama_decode(h, toks, &de)
+    if de != 0 || rc < 0 { return 2 }
+    return 0
+}
+
+// Stop kinds:
+//   0 = not stop
+//   1 = <|im_end|>
+//   2 = EOG / endoftext / EOS
+private fn _stopKind(h: ptr, tok: long) -> int {
+    if tuaext_llama_vocab_is_eog(h, tok) != 0 { return 2 }
+    let pe: int = 0
+    let s = tuaext_llama_token_to_piece(h, tok, 1, &pe)
+    if pe != 0 || s == null { return 0 }
+    let k: int = 0
+    if s == "<|im_end|>" { k = 1 }
+    if s == "<|endoftext|>" { k = 2 }
+    rt.Rt.free(s)
+    return k
+}
+
+private fn _printToken(h: ptr, tok: long, enableThinking: bool, inThink: int) -> int, int, int {
+    let it: int = inThink
+    let pe: int = 0
+    let s = tuaext_llama_token_to_piece(h, tok, 1, &pe)
+    if pe != 0 || s == null { return 1, it, 0 }
+
+    if s == "<think>" {
+        it = 1
+        let printedThink: int = 0
+        if enableThinking {
+            println("\n<think>")
+            printedThink = 1
+        } else {
+            // hide think content
+        }
+        rt.Rt.free(s)
+        return 0, it, printedThink
+    }
+    if s == "</think>" {
+        it = 0
+        let printedThink2: int = 0
+        if enableThinking {
+            println("\n</think>")
+            printedThink2 = 1
+        } else {
+            // stop hiding think content
+        }
+        rt.Rt.free(s)
+        return 0, it, printedThink2
+    }
+    if !enableThinking && it != 0 {
+        rt.Rt.free(s)
+        return 0, it, 0
+    }
+
+    // Don't print template control tokens.
+    if s == "<|im_start|>" || s == "<|im_end|>" || s == "<|endoftext|>" {
+        rt.Rt.free(s)
+        return 0, it, 0
+    }
+
+    print("{}", u.Utf8.lossyString(s))
+    rt.Rt.free(s)
+    return 0, it, 1
+}
+
+private fn _gen(h: ptr, nVocab: int, opts: LlmOptions, startInThink: int) -> int, int, int {
+    let rng: long = opts.seed
+    let outCount: int = 0
+    let visCount: int = 0
+    let inThink: int = startInThink
+    let stopKind: int = 0
+
+    let start = time.Time.monoNs()
+    while outCount < opts.maxNewTokens {
+        let le: int = 0
+        let logits = tuaext_llama_get_logits_f32(h, &le)
+        if le != 0 || logits == null { return 1, outCount, stopKind }
+
+        let nextId, se = _sampleNext(logits, nVocab, opts, &rng)
+        if se != 0 { return 2, outCount, stopKind }
+
+        stopKind = _stopKind(h, nextId)
+        if stopKind != 0 {
+            let oneStop: long[] = { nextId }
+            let de0: int = 0
+            let rc0 = tuaext_llama_decode(h, oneStop, &de0)
+            if de0 != 0 || rc0 < 0 { return 3, outCount, stopKind }
+            break
+        }
+
+        let one: long[] = { nextId }
+        let de: int = 0
+        let rc = tuaext_llama_decode(h, one, &de)
+        if de != 0 || rc < 0 { return 4, outCount, stopKind }
+
+        let pe2, it2, printed = _printToken(h, nextId, opts.enableThinking != 0, inThink)
+        if pe2 != 0 { return 5, outCount, stopKind }
+        inThink = it2
+        outCount = outCount + 1
+        if printed != 0 { visCount = visCount + 1 }
+        if _imod(outCount, 8) == 0 {
+            let _ = term.Stdout.flush()
+        }
+    }
+    let end = time.Time.monoNs()
+    let secs: double = (double)(end - start) / 1000000000.0
+    let tokpsTotal: double = 0.0
+    let tokpsVis: double = 0.0
+    if secs > 0.0 {
+        tokpsTotal = (double)outCount / secs
+        tokpsVis = (double)visCount / secs
+    }
+    println("")
+    println("gen_tokens={} tok/s={} visible_tokens={} vis_tok/s={}", outCount, tokpsTotal, visCount, tokpsVis)
+    return 0, outCount, stopKind
+}
+
+fn main(args: string[]) -> int {
+    let modelPath = "examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf"
+    if args.len() >= 2 { modelPath = args[1] }
+    let prompt = _firstPromptArg(args)
+
+    let oe, opts0 = LlmArgs.parseArgv(args)
+    if oe != 0 { println("bad args"); return 1 }
+    let opts: LlmOptions = opts0
+    if opts.maxNewTokens <= 1 { opts.maxNewTokens = 256 }
+
+    tuaext_llama_backend_init()
+
+    let nThreads: int = opts.threads
+    if nThreads <= 0 { nThreads = 4 }
+    let nCtx: int = opts.kvMaxSeq
+    if nCtx <= 0 { nCtx = 2048 }
+    let nBatch: int = 256
+
+    let ce: int = 0
+    let h = tuaext_llama_new(modelPath, nCtx, nThreads, nBatch, &ce)
+    if ce != 0 || h == null { println("load llama.cpp model failed"); return 1 }
+
+    let nVocab = tuaext_llama_vocab_size(h)
+    if nVocab <= 0 { tuaext_llama_free(h); println("bad vocab"); return 1 }
+
+    let interactive: bool = _argvHas(args, "--repl") || prompt == null
+    let useChatTemplate: bool = opts.chat != 0
+    let sysPrompt: string = "You are a helpful assistant."
+
+    if interactive {
+        if useChatTemplate {
+            println("llama.cpp chat REPL. Commands: /exit /quit /reset")
+        } else {
+            println("llama.cpp raw REPL. Commands: /exit /quit /reset")
+        }
+
+        let needBos: int = 1
+        if useChatTemplate {
+            let e0 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+            if e0 != 0 { tuaext_llama_free(h); println("system prefill failed"); return 1 }
+            needBos = 0
+        }
+
+        while true {
+            print("You> ")
+            let _ = term.Stdout.flush()
+            let re, line, n = term.Stdin.readLine()
+            if re != 0 { tuaext_llama_free(h); println("readLine failed"); return 1 }
+            if line == null && n == 0 { println(""); break } // EOF
+            if line == null { continue }
+            if n == 0 { rt.Rt.free(line); continue }
+
+            let user: string = line
+            if user == "/exit" || user == "/quit" {
+                rt.Rt.free(line)
+                break
+            }
+            if user == "/reset" {
+                let xe: int = 0
+                let _ = tuaext_llama_reset(h, &xe)
+                needBos = 1
+                if useChatTemplate {
+                    let e1 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+                    if e1 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("system prefill failed"); return 1 }
+                    needBos = 0
+                }
+                rt.Rt.free(line)
+                println("ok")
+                continue
+            }
+
+            if useChatTemplate {
+                let seg = Qwen3Chat.userTurn(user, opts.enableThinking != 0)
+                let e2 = _feedText(h, seg, needBos, 1)
+                if e2 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("prefill failed"); return 1 }
+                needBos = 0
+            } else {
+                let xe2: int = 0
+                let _ = tuaext_llama_reset(h, &xe2)
+                needBos = 1
+                let e3 = _feedText(h, user, needBos, 1)
+                if e3 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("prefill failed"); return 1 }
+                needBos = 0
+            }
+
+            rt.Rt.free(line)
+            println("Assistant>")
+            let _ = term.Stdout.flush()
+            let startInThink: int = 0
+            if useChatTemplate && opts.enableThinking != 0 { startInThink = 1 }
+            if startInThink != 0 { println("<think>") }
+            let ge, _, sk = _gen(h, nVocab, opts, startInThink)
+            if ge != 0 { tuaext_llama_free(h); println("gen failed"); return 1 }
+
+            // If generation ended by EOS/EOT, reset to allow continued chatting.
+            if useChatTemplate && sk == 2 {
+                let xe3: int = 0
+                let _ = tuaext_llama_reset(h, &xe3)
+                needBos = 1
+                let e4 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+                if e4 != 0 { tuaext_llama_free(h); println("system prefill failed"); return 1 }
+                needBos = 0
+            }
+        }
+
+        tuaext_llama_free(h)
+        return 0
+    }
+
+    // Single-turn.
+    let inputText: string = prompt
+    if useChatTemplate {
+        inputText = Qwen3Chat.singleWithSystem(sysPrompt, prompt, opts.enableThinking != 0)
+    }
+    let e = _feedText(h, inputText, 1, 1)
+    if e != 0 { tuaext_llama_free(h); println("prefill failed"); return 1 }
+    println("prompt={}", prompt)
+    print("gen_text=")
+    let _ = term.Stdout.flush()
+    let startInThink2: int = 0
+    if useChatTemplate && opts.enableThinking != 0 { startInThink2 = 1 }
+    if startInThink2 != 0 { print("<think>") }
+    let ge2, _, _ = _gen(h, nVocab, opts, startInThink2)
+    if ge2 != 0 { tuaext_llama_free(h); println("gen failed"); return 1 }
+    tuaext_llama_free(h)
+    return 0
+}

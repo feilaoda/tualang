@@ -81,6 +81,11 @@ tua_err_t tua_llm_gemv_q4_0_f32(tua_bytes* y, int64_t y_off,
                                int32_t m, int32_t n);
 int32_t tua_llm_q4_0_selftest(void);
 
+// Build BPE merge pair maps from a `string[]` of merge lines (`"A B"`) and the vocab map.
+// Returns 0 on success and writes (rankMap, mergeIdMap, count).
+int32_t tua_llm_bpe_merges_lines_pair_maps(tua_array* merges, tua_map* vocab,
+                                          tua_map** out_rank, tua_map** out_merge_id, int64_t* out_count);
+
 // Apply GPT-style repetition penalty in-place to logits:
 // for each unique token id in the last `last_n` ids, adjust:
 //   if logit > 0: logit /= penalty

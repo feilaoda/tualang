@@ -1757,6 +1757,83 @@ static inline int64_t pair_key_i64(int64_t a, int64_t b) {
     return (int64_t)k;
 }
 
+// Build BPE pairRank/pairMergeId from a GGUF `tokenizer.ggml.merges` string[] and the vocab map.
+// Each merge line is expected to be `"A B"` (single space separator) and merged token is `A + B`.
+int32_t tua_llm_bpe_merges_lines_pair_maps(tua_array* merges, tua_map* vocab,
+                                          tua_map** out_rank, tua_map** out_merge_id, int64_t* out_count) {
+    if (!out_rank || !out_merge_id || !out_count) return 1;
+    *out_rank = NULL;
+    *out_merge_id = NULL;
+    *out_count = 0;
+    if (!merges || !vocab) return 1;
+    if (merges->len < 0 || merges->len > INT32_MAX) return 1;
+    if (merges->elem_size != (int64_t)sizeof(void*)) return 1;
+    if (merges->len > 0 && !merges->data) return 1;
+
+    tua_map* rankMap = tua_map_new();
+    tua_map* mergeIdMap = tua_map_new();
+    if (!rankMap || !mergeIdMap) tua_panic("out of memory");
+
+    const char* const* lines = (const char* const*)merges->data;
+    int64_t rank = 0;
+    for (int32_t i = 0; i < (int32_t)merges->len; i++) {
+        const char* line = lines[i];
+        if (!line) { tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        const char* sp = strchr(line, ' ');
+        if (!sp) { tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        size_t la = (size_t)(sp - line);
+        const char* bstr0 = sp + 1;
+        if (*bstr0 == '\0') { tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        char* a = (char*)malloc(la + 1);
+        if (!a) tua_panic("out of memory");
+        memcpy(a, line, la);
+        a[la] = '\0';
+        char* bstr = strdup(bstr0);
+        if (!bstr) tua_panic("out of memory");
+
+        int32_t okA = 0;
+        int32_t okB = 0;
+        tua_value vA = tua_map_get_with_ok(vocab, tua_value_string(a), &okA);
+        tua_value vB = tua_map_get_with_ok(vocab, tua_value_string(bstr), &okB);
+        int64_t idA = okA ? tua_value_to_long(vA) : INT64_MIN;
+        int64_t idB = okB ? tua_value_to_long(vB) : INT64_MIN;
+        if (!okA || !okB || idA == INT64_MIN || idB == INT64_MIN) {
+            free(a);
+            free(bstr);
+            tua_map_free(rankMap);
+            tua_map_free(mergeIdMap);
+            return 1;
+        }
+
+        char* merged = tua_str_concat(a, bstr);
+        int32_t okM = 0;
+        tua_value vM = tua_map_get_with_ok(vocab, tua_value_string(merged), &okM);
+        int64_t idM = okM ? tua_value_to_long(vM) : INT64_MIN;
+        if (!okM || idM == INT64_MIN) {
+            free(merged);
+            free(a);
+            free(bstr);
+            tua_map_free(rankMap);
+            tua_map_free(mergeIdMap);
+            return 1;
+        }
+
+        int64_t keyS = pair_key_i64(idA, idB);
+        tua_map_set(rankMap, tua_value_long(keyS), tua_value_long(rank));
+        tua_map_set(mergeIdMap, tua_value_long(keyS), tua_value_long(idM));
+
+        free(merged);
+        free(a);
+        free(bstr);
+        rank++;
+    }
+
+    *out_rank = rankMap;
+    *out_merge_id = mergeIdMap;
+    *out_count = rank;
+    return 0;
+}
+
 static inline int32_t gpt2_bytes_to_unicode_inv(int32_t cp) {
     // Inverse mapping for GPT-2 ByteLevel `bytes_to_unicode()`.
     // Allowed bytes map to themselves; excluded bytes map to code points starting at 256.

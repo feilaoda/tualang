@@ -52,24 +52,19 @@ fn main() {
     _wU64LE(buf, 16L, 2L)  // n_kv
     let at: long = 24L
     at = at + _wStr(buf, at, "general.architecture")
-    _wU32LE(buf, at, (long)g.GgufType.str)
+    _wU32LE(buf, at, 8L) // gguf_value_type: STRING
     at = at + 4L
     at = at + _wStr(buf, at, "llama")
     at = at + _wStr(buf, at, "llama.context_length")
-    _wU32LE(buf, at, (long)g.GgufType.uint32)
+    _wU32LE(buf, at, 4L) // gguf_value_type: UINT32
     at = at + 4L
     _wU32LE(buf, at, 2048L)
     at = at + 4L
     assert(at == 105L)
-    let e, f = g.GGUF.parseBytes(move buf)
+    let e, f = g.Gguf.parseBytes(move buf, 0)
     assert(e == 0)
-    assert(f.version == (u32)2)
+    assert(f.version == 2)
     assert(f.tensorCount == 0L)
-    assert(f.kv != null)
-    let kv: map = f.kv
-    let a:any = kv["general.architecture"].unwrap()
-    let s: string = a
-    assert(s == "llama")
-    let c:any = kv["llama.context_length"].unwrap()
-    assert((long)c == 2048L)
+    assert(f.arch == "llama")
+    assert(f.ctxLen == 2048)
 }

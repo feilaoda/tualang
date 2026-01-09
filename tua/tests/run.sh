@@ -17,6 +17,21 @@ if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" t
   fi
 fi
 
+llama_ok=0
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+  if [[ -n "${LLAMA_PREFIX:-}" || -f "/usr/local/opt/llama.cpp/include/llama.h" || -f "/opt/homebrew/opt/llama.cpp/include/llama.h" ]]; then
+    if [[ ! -f "$ROOT/build/clib/libtuaextllama.a" ]]; then
+      if ./tools/build_llama_clib.sh >/dev/null 2>&1; then
+        llama_ok=1
+      else
+        llama_ok=0
+      fi
+    else
+      llama_ok=1
+    fi
+  fi
+fi
+
 fail=0
 total=0
 skip=0
@@ -75,6 +90,12 @@ for f in tests/*.tua; do
   if [[ -n "$tuac_line" ]]; then
     read -r -a dirArgs <<< "$tuac_line"
     args+=("${dirArgs[@]}")
+  fi
+
+  if [[ "$llama_ok" -ne 1 && -n "$tuac_line" ]] && echo " $tuac_line " | grep -Eq "(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)"; then
+    echo "[SKIP] $base (llama.cpp not available)"
+    skip=$((skip+1))
+    continue
   fi
 
   if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 0 ]]; then

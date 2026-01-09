@@ -81,4 +81,31 @@ tua_err_t tua_llm_gemv_q4_k_f32(tua_bytes* y, int64_t y_off,
 
 int32_t tua_llm_q4_k_selftest(void);
 
+// =========================
+// Q6_K: per-256-value block, symmetric signed int6 with per-16 group scale.
+//
+// Layout matches ggml's `block_q6_k`:
+// - ql[128]: low 4 bits for 256 values
+// - qh[64]: high 2 bits for 256 values (packed 4 values per byte)
+// - scales[16]: int8 scales per 16-value group (256/16=16 groups)
+// - d: FP16 base scale
+//
+// Dequant: v = (q - 32) * (d * scales[group])
+//
+// Requirements: n > 0, n % 256 == 0.
+
+int64_t tua_llm_q6_k_row_bytes(int32_t n);
+int64_t tua_llm_q6_k_mat_bytes(int32_t m, int32_t n);
+
+tua_err_t tua_llm_q6_k_get_row_f32(tua_bytes* out, int64_t out_off,
+                                  tua_bytes* a, int64_t a_off,
+                                  int64_t row, int32_t n);
+
+tua_err_t tua_llm_gemv_q6_k_f32(tua_bytes* y, int64_t y_off,
+                               tua_bytes* a, int64_t a_off,
+                               tua_bytes* x, int64_t x_off,
+                               int32_t m, int32_t n);
+
+int32_t tua_llm_q6_k_selftest(void);
+
 #endif

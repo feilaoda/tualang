@@ -1,179 +1,574 @@
 import "std/bytes" as bstd
-import Cursor, Io from "std/io"
+import "std/fs" as fs
 
-extern fn tua_map_new() -> map
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
 extern fn tua_f32_from_u32_bits(bits: u32) double
-extern fn tua_f64_from_u64_bits(bits: u64) double
 
-// GGUF types (llama.cpp).
-enum GgufType {
-    uint8 = 0,
-    int8 = 1,
-    uint16 = 2,
-    int16 = 3,
-    uint32 = 4,
-    int32 = 5,
-    float32 = 6,
-    boolv = 7,
-    str = 8,
-    array = 9,
-    uint64 = 10,
-    int64 = 11,
-    float64 = 12,
+// Minimal GGUF reader (enough for llama.cpp-produced GGUF model + tokenizer metadata).
+// Spec reference: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
+
+private fn _endsWith(s: string, suf: string) -> bool {
+    if s == null || suf == null { return false }
+    let sb = bstd.Bytes.fromString(s)
+    let tb = bstd.Bytes.fromString(suf)
+    let sn = bstd.Bytes.len(sb)
+    let tn = bstd.Bytes.len(tb)
+    if tn > sn { return false }
+    let i: long = 0L
+    while i < tn {
+        let e0, a = bstd.Bytes.getU8(sb, sn - tn + i)
+        if e0 != 0 { return false }
+        let e1, b = bstd.Bytes.getU8(tb, i)
+        if e1 != 0 { return false }
+        if a != b { return false }
+        i = i + 1L
+    }
+    return true
+}
+
+private fn _contains(s: string, sub: string) -> bool {
+    if s == null || sub == null { return false }
+    let sb = bstd.Bytes.fromString(s)
+    let tb = bstd.Bytes.fromString(sub)
+    let sn = bstd.Bytes.len(sb)
+    let tn = bstd.Bytes.len(tb)
+    if tn <= 0L { return true }
+    if tn > sn { return false }
+    let i: long = 0L
+    while i + tn <= sn {
+        let j: long = 0L
+        while j < tn {
+            let e0, a = bstd.Bytes.getU8(sb, i + j)
+            if e0 != 0 { return false }
+            let e1, b = bstd.Bytes.getU8(tb, j)
+            if e1 != 0 { return false }
+            if a != b { break }
+            j = j + 1L
+        }
+        if j == tn { return true }
+        i = i + 1L
+    }
+    return false
+}
+
+private fn _align(off: long, a: long) -> long {
+    if a <= 1L { return off }
+    let r = off - (off / a) * a
+    if r == 0L { return off }
+    return off + (a - r)
+}
+
+private fn _readU32(b: bytes, off: long) -> int, long, long {
+    let e, u = bstd.Bytes.readU32LE(b, off)
+    if e != 0 { return 1, 0L, off }
+    return 0, (long)u, off + 4L
+}
+
+private fn _readU64(b: bytes, off: long) -> int, long, long {
+    let e, u = bstd.Bytes.readU64LE(b, off)
+    if e != 0 { return 1, 0L, off }
+    return 0, (long)u, off + 8L
+}
+
+private fn _readString(b: bytes, off: long) -> int, string, long {
+    let e0, n, o1 = _readU64(b, off)
+    if e0 != 0 { return 1, null, off }
+    if n < 0L { return 1, null, off }
+    let end = o1 + n
+    if end < o1 { return 1, null, off }
+    if end > bstd.Bytes.len(b) { return 1, null, off }
+    let s = tua_str_from_bytes_copy(b, o1, n)
+    return 0, s, end
+}
+
+private fn _skipString(b: bytes, off: long) -> int, long {
+    let e0, n, o1 = _readU64(b, off)
+    if e0 != 0 { return 1, off }
+    if n < 0L { return 1, off }
+    let end = o1 + n
+    if end < o1 { return 1, off }
+    if end > bstd.Bytes.len(b) { return 1, off }
+    return 0, end
+}
+
+// Value types (gguf_value_type)
+private enum Vt {
+    u8_ = 0,
+    i8_ = 1,
+    u16_ = 2,
+    i16_ = 3,
+    u32_ = 4,
+    i32_ = 5,
+    f32_ = 6,
+    bool_ = 7,
+    str_ = 8,
+    arr_ = 9,
+}
+
+private fn _skipFixed(vt: long) -> long {
+    if vt == (long)Vt.u8_ { return 1L }
+    if vt == (long)Vt.i8_ { return 1L }
+    if vt == (long)Vt.u16_ { return 2L }
+    if vt == (long)Vt.i16_ { return 2L }
+    if vt == (long)Vt.u32_ { return 4L }
+    if vt == (long)Vt.i32_ { return 4L }
+    if vt == (long)Vt.f32_ { return 4L }
+    if vt == (long)Vt.bool_ { return 1L }
+    return 0L
+}
+
+private fn _skipValue(b: bytes, off: long, vt: long) -> int, long {
+    if vt == (long)Vt.str_ {
+        let e, o2 = _skipString(b, off)
+        if e != 0 { return 1, off }
+        return 0, o2
+    }
+    if vt == (long)Vt.arr_ {
+        let e0, elemT, o1 = _readU32(b, off)
+        if e0 != 0 { return 1, off }
+        let e1, n, o2 = _readU64(b, o1)
+        if e1 != 0 { return 1, off }
+        if elemT == (long)Vt.str_ {
+            let i: long = 0L
+            let cur: long = o2
+            while i < n {
+                let e2, o3 = _skipString(b, cur)
+                if e2 != 0 { return 1, off }
+                cur = o3
+                i = i + 1L
+            }
+            return 0, cur
+        }
+        let sz = _skipFixed(elemT)
+        if sz <= 0L { return 1, off }
+        let end = o2 + n * sz
+        if end < o2 { return 1, off }
+        return 0, end
+    }
+    let sz = _skipFixed(vt)
+    if sz <= 0L { return 1, off }
+    return 0, off + sz
+}
+
+struct GgufTensorInfo {
+    // ggml_type as int (e.g. 0=F32, 1=F16, 12=Q4_K, 14=Q6_K)
+    t: int
+    nd: int
+    d0: long
+    d1: long
+    off: long // relative to dataStart
 }
 
 struct GgufFile {
-    version: u32
+    raw: bytes
+    version: int
     tensorCount: long
-    kv: map
+    kvCount: long
+    alignment: long
+    dataStart: long
+
+    // common metadata we need for Qwen3 and tokenizer
+    arch: string
+    chatTemplate: string
+
+    // qwen3.* metadata
+    ctxLen: int
+    blockCount: int
+    embd: int
+    ffn: int
+    heads: int
+    kvHeads: int
+    headDim: int
+    ropeTheta: float
+    rmsEps: float
+
+    // tokenizer metadata (optional; may be null if not parsed)
+    bos: long
+    eos: long
+    pad: long
+    addBos: int
+    tokens: string[]
+    merges: string[]
+
+    // tensor index: name -> absolute offset (in `raw`) of the tensor info record (nd field).
+    tensors: map<string, long>
 }
 
-private fn _readString(cur: Cursor) -> int, string {
-    let e0, ln = cur.readU64LE()
-    if e0 != 0 { return 1, null }
-    let n: long = (long)ln
-    let e1, bb = cur.readBytes(n)
-    if e1 != 0 { return 1, null }
-    let s = tua_str_from_bytes_copy(bb, 0L, n)
-    return 0, s
-}
+object Gguf {
+    fn findMainFile(modelDir: string) -> int, string {
+        if modelDir == null { return 1, null }
+        let e, names = fs.Fs.readdir(modelDir)
+        if e != 0 || names == null { return 2, null }
+        let namesArr: string[] = names
 
-private fn _readValue(cur: Cursor, typ: int) -> int, any {
-    if typ == GgufType.uint8 {
-        let e, v = cur.readU8()
-        if e != 0 { return 1, null }
-        return 0, v
+        // Prefer a single-file GGUF (no -00001-of- shard suffix).
+        let best: string = null
+        let i: int = 0
+        while i < namesArr.len() {
+            let n = namesArr[i]
+            if n != null && _endsWith(n, ".gguf") && !_contains(n, "-of-") {
+                best = modelDir + "/" + n
+                break
+            }
+            i = i + 1
+        }
+        if best != null {
+            fs.Fs.freeStringArray(namesArr)
+            return 0, best
+        }
+
+        // Fallback: pick the first *.gguf (may be a shard; caller might reject).
+        i = 0
+        while i < namesArr.len() {
+            let n = namesArr[i]
+            if n != null && _endsWith(n, ".gguf") {
+                best = modelDir + "/" + n
+                break
+            }
+            i = i + 1
+        }
+        fs.Fs.freeStringArray(namesArr)
+        if best == null { return 3, null }
+        return 0, best
     }
-    if typ == GgufType.int8 {
-        let e, v = cur.readU8()
-        if e != 0 { return 1, null }
-        let out: int = v
-        if out >= 128 { out = out - 256 }
-        return 0, out
-    }
-    if typ == GgufType.uint16 {
-        let e, v = cur.readU16LE()
-        if e != 0 { return 1, null }
-        return 0, (int)v
-    }
-    if typ == GgufType.int16 {
-        let e, v = cur.readI16LE()
-        if e != 0 { return 1, null }
-        return 0, (int)v
-    }
-    if typ == GgufType.uint32 {
-        let e, v = cur.readU32LE()
-        if e != 0 { return 1, null }
-        return 0, (long)v
-    }
-    if typ == GgufType.int32 {
-        let e, v = cur.readI32LE()
-        if e != 0 { return 1, null }
-        return 0, v
-    }
-    if typ == GgufType.uint64 {
-        let e, v = cur.readU64LE()
-        if e != 0 { return 1, null }
-        return 0, (long)v
-    }
-    if typ == GgufType.int64 {
-        let e, v = cur.readI64LE()
-        if e != 0 { return 1, null }
-        return 0, v
-    }
-    if typ == GgufType.float32 {
-        let e, v = cur.readU32LE()
-        if e != 0 { return 1, null }
-        let d = tua_f32_from_u32_bits(v)
-        return 0, d
-    }
-    if typ == GgufType.float64 {
-        let e, v = cur.readU64LE()
-        if e != 0 { return 1, null }
-        let d = tua_f64_from_u64_bits(v)
-        return 0, d
-    }
-    if typ == GgufType.boolv {
-        let e, v = cur.readU8()
-        if e != 0 { return 1, null }
-        return 0, v != 0
-    }
-    if typ == GgufType.str {
-        let e, s = _readString(cur)
-        if e != 0 { return 1, null }
-        return 0, s
-    }
-    if typ == GgufType.array {
-        let et, elemType = cur.readU32LE()
-        if et != 0 { return 1, null }
-        let en, count = cur.readU64LE()
-        if en != 0 { return 1, null }
-        let n: long = (long)count
-        let out: any[] = {}
+
+    fn parseBytes(raw: bytes, wantTokenizer: int) -> int, GgufFile {
+        // Keep `raw` un-moved until we successfully parse and return it in `out`.
+        let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
+            arch: null, chatTemplate: null,
+            ctxLen: 0, blockCount: 0, embd: 0, ffn: 0, heads: 0, kvHeads: 0, headDim: 0, ropeTheta: 0.0, rmsEps: 0.0,
+            bos: 0L, eos: 0L, pad: 0L, addBos: 0, tokens: null, merges: null,
+            tensors: null,
+        }
+        if raw == null { return 1, z }
+
+        // Magic
+        if bstd.Bytes.len(raw) < 4L { return 2, z }
+        let e1, b0 = bstd.Bytes.getU8(raw, 0L)
+        let e2, b1 = bstd.Bytes.getU8(raw, 1L)
+        let e3, b2 = bstd.Bytes.getU8(raw, 2L)
+        let e4, b3 = bstd.Bytes.getU8(raw, 3L)
+        if e1 != 0 || e2 != 0 || e3 != 0 || e4 != 0 { return 2, z }
+        if b0 != 71 || b1 != 71 || b2 != 85 || b3 != 70 { return 2, z } // "GGUF"
+
+        let off: long = 4L
+        let ev, ver, o1 = _readU32(raw, off)
+        if ev != 0 { return 2, z }
+        off = o1
+        let et, tcnt, o2 = _readU64(raw, off)
+        if et != 0 { return 2, z }
+        off = o2
+        let ek, kcnt, o3 = _readU64(raw, off)
+        if ek != 0 { return 2, z }
+        off = o3
+
+        let alignment: long = 32L
+        let arch: string = null
+        let chatTemplate: string = null
+        let ctxLen: int = 0
+        let blockCount: int = 0
+        let embd: int = 0
+        let ffn: int = 0
+        let heads: int = 0
+        let kvHeads: int = 0
+        let headDim: int = 0
+        let ropeTheta: float = 0.0
+        let rmsEps: float = 0.0
+        let bos: long = 0L
+        let eos: long = 0L
+        let pad: long = 0L
+        let addBos: int = 0
+        let tokens: string[] = null
+        let merges: string[] = null
+
+        // KV section
         let i: long = 0L
-        while i < n {
-            let ve, v = _readValue(cur, (int)elemType)
-            if ve != 0 { return 1, null }
-            out.push(v)
+        while i < kcnt {
+            let ke, key, okey = _readString(raw, off)
+            if ke != 0 { return 3, z }
+            off = okey
+            let vte, vt, ovt = _readU32(raw, off)
+            if vte != 0 { return 3, z }
+            off = ovt
+
+            if key == "general.alignment" {
+                if vt == (long)Vt.u32_ || vt == (long)Vt.i32_ {
+                    let ve, v, ov = _readU32(raw, off)
+                    if ve != 0 { return 3, z }
+                    alignment = v
+                    off = ov
+                    i = i + 1L
+                    continue
+                }
+            }
+            if key == "general.architecture" && vt == (long)Vt.str_ {
+                let se, s, os = _readString(raw, off)
+                if se != 0 { return 3, z }
+                arch = s
+                off = os
+                i = i + 1L
+                continue
+            }
+            if key == "tokenizer.chat_template" && vt == (long)Vt.str_ {
+                let se, s, os = _readString(raw, off)
+                if se != 0 { return 3, z }
+                chatTemplate = s
+                off = os
+                i = i + 1L
+                continue
+            }
+            if key == "tokenizer.ggml.bos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                bos = v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "tokenizer.ggml.eos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                eos = v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "tokenizer.ggml.padding_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                pad = v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "tokenizer.ggml.add_bos_token" && vt == (long)Vt.bool_ {
+                let be, bv = bstd.Bytes.getU8(raw, off)
+                if be != 0 { return 3, z }
+                if bv != 0 { addBos = 1 }
+                off = off + 1L
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                ctxLen = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "llama.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                ctxLen = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.block_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                blockCount = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.embedding_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                embd = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.feed_forward_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                ffn = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.attention.head_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                heads = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.attention.head_count_kv" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                kvHeads = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.attention.key_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+                let ve, v, ov = _readU32(raw, off)
+                if ve != 0 { return 3, z }
+                headDim = (int)v
+                off = ov
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.rope.freq_base" && vt == (long)Vt.f32_ {
+                let eF, uF = bstd.Bytes.readU32LE(raw, off)
+                if eF != 0 { return 3, z }
+                ropeTheta = (float)tua_f32_from_u32_bits(uF)
+                off = off + 4L
+                i = i + 1L
+                continue
+            }
+            if key == "qwen3.attention.layer_norm_rms_epsilon" && vt == (long)Vt.f32_ {
+                let eF, uF = bstd.Bytes.readU32LE(raw, off)
+                if eF != 0 { return 3, z }
+                rmsEps = (float)tua_f32_from_u32_bits(uF)
+                off = off + 4L
+                i = i + 1L
+                continue
+            }
+
+            if wantTokenizer != 0 && key == "tokenizer.ggml.tokens" && vt == (long)Vt.arr_ {
+                let eA0, elemT, oA0 = _readU32(raw, off)
+                if eA0 != 0 { return 3, z }
+                let eA1, nA, oA1 = _readU64(raw, oA0)
+                if eA1 != 0 { return 3, z }
+                if elemT != (long)Vt.str_ { return 3, z }
+                let arr: string[] = {}
+                let j: long = 0L
+                let cur: long = oA1
+                while j < nA {
+                    let eS, s, oS = _readString(raw, cur)
+                    if eS != 0 { return 3, z }
+                    arr.push(s)
+                    cur = oS
+                    j = j + 1L
+                }
+                tokens = arr
+                off = cur
+                i = i + 1L
+                continue
+            }
+            if wantTokenizer != 0 && key == "tokenizer.ggml.merges" && vt == (long)Vt.arr_ {
+                let eA0, elemT, oA0 = _readU32(raw, off)
+                if eA0 != 0 { return 3, z }
+                let eA1, nA, oA1 = _readU64(raw, oA0)
+                if eA1 != 0 { return 3, z }
+                if elemT != (long)Vt.str_ { return 3, z }
+                let arr: string[] = {}
+                let j: long = 0L
+                let cur: long = oA1
+                while j < nA {
+                    let eS, s, oS = _readString(raw, cur)
+                    if eS != 0 { return 3, z }
+                    arr.push(s)
+                    cur = oS
+                    j = j + 1L
+                }
+                merges = arr
+                off = cur
+                i = i + 1L
+                continue
+            }
+
+            // default: skip
+            let se, nOff = _skipValue(raw, off, vt)
+            if se != 0 { return 3, z }
+            off = nOff
             i = i + 1L
+        }
+
+        // Tensor infos
+        let tensors: map<string, long> = {}
+        let ti: long = 0L
+        while ti < tcnt {
+            let ne, name, oN = _readString(raw, off)
+            if ne != 0 { return 4, z }
+            off = oN
+            let infoOff: long = off
+            let nde, ndL, oNd = _readU32(raw, off)
+            if nde != 0 { return 4, z }
+            let nd: int = (int)ndL
+            off = oNd
+            let d0: long = 0L
+            let d1: long = 0L
+            // dims are u64[nd], little-endian
+            let k: int = 0
+            while k < nd {
+                let de2, dv, oDv = _readU64(raw, off)
+                if de2 != 0 { return 4, z }
+                if k == 0 { d0 = dv }
+                if k == 1 { d1 = dv }
+                off = oDv
+                k = k + 1
+            }
+            let te, tL, oT = _readU32(raw, off)
+            if te != 0 { return 4, z }
+            off = oT
+            let oe, offRel, oOff = _readU64(raw, off)
+            if oe != 0 { return 4, z }
+            off = oOff
+
+            tensors[name] = infoOff
+            ti = ti + 1L
+        }
+
+        let dataStart = _align(off, alignment)
+
+        let out = GgufFile{ raw: raw, version: (int)ver, tensorCount: tcnt, kvCount: kcnt, alignment: alignment, dataStart: dataStart,
+            arch: arch, chatTemplate: chatTemplate,
+            ctxLen: ctxLen, blockCount: blockCount, embd: embd, ffn: ffn, heads: heads, kvHeads: kvHeads, headDim: headDim, ropeTheta: ropeTheta, rmsEps: rmsEps,
+            bos: bos, eos: eos, pad: pad, addBos: addBos, tokens: tokens, merges: merges,
+            tensors: tensors,
         }
         return 0, out
     }
-    return 1, null
-}
 
-object GGUF {
-    // Parse GGUF header + KV metadata (v0). Tensors are intentionally skipped for now.
-    fn parseBytes(move b: bytes) -> int, GgufFile {
-        let out = GgufFile{ version: (u32)0, tensorCount: 0L, kv: null }
-        if b == null { return 1, out }
-
-        let cur = Cursor{ data: b, pos: 0L }
-
-        let e0, m0 = cur.readU8()
-        if e0 != 0 { return 1, out }
-        let e1, m1 = cur.readU8()
-        if e1 != 0 { return 1, out }
-        let e2, m2 = cur.readU8()
-        if e2 != 0 { return 1, out }
-        let e3, m3 = cur.readU8()
-        if e3 != 0 { return 1, out }
-        if m0 != 71 || m1 != 71 || m2 != 85 || m3 != 70 { return 1, out } // "GGUF"
-
-        let ev, ver = cur.readU32LE()
-        if ev != 0 { return 1, out }
-        let et, nt = cur.readU64LE()
-        if et != 0 { return 1, out }
-        let ek, nk = cur.readU64LE()
-        if ek != 0 { return 1, out }
-
-        let kv: map = tua_map_new()
-        let i: long = 0L
-        let n: long = (long)nk
-        while i < n {
-            let ke, key = _readString(cur)
-            if ke != 0 { return 1, out }
-            let te, typ = cur.readU32LE()
-            if te != 0 { return 1, out }
-            let ve, val = _readValue(cur, (int)typ)
-            if ve != 0 { return 1, out }
-            kv[key] = val
-            i = i + 1L
+    fn parseMmap(path: string, wantTokenizer: int) -> int, GgufFile {
+        let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
+            arch: null, chatTemplate: null,
+            ctxLen: 0, blockCount: 0, embd: 0, ffn: 0, heads: 0, kvHeads: 0, headDim: 0, ropeTheta: 0.0, rmsEps: 0.0,
+            bos: 0L, eos: 0L, pad: 0L, addBos: 0, tokens: null, merges: null,
+            tensors: null,
         }
-
-        out.version = ver
-        out.tensorCount = (long)nt
-        out.kv = kv
-        return 0, out
+        let e0, raw = bstd.Bytes.mmapFile(path)
+        if e0 != 0 { return 1, z }
+        if raw == null { return 1, z }
+        return parseBytes(move raw, wantTokenizer)
     }
 
-    fn parseMmap(path: string) -> int, GgufFile {
-        let out = GgufFile{ version: (u32)0, tensorCount: 0L, kv: null }
-        let e, r = Io.mmapFileReader(path)
-        if e != 0 { return e, out }
-        if r.data == null { return 1, out }
-        let data = r.data
-        return GGUF.parseBytes(move data)
+    fn tensorInfo(let g: GgufFile, name: string) -> int, GgufTensorInfo {
+        if g.tensors == null { return 1, GgufTensorInfo{} }
+        let m: map<string, long> = g.tensors
+        let opt = m[name]
+        if opt.isNone() { return 2, GgufTensorInfo{} }
+        let at: long = opt.unwrap()
+        if at < 0L { return 3, GgufTensorInfo{} }
+        if g.raw == null { return 3, GgufTensorInfo{} }
+
+        let nde, ndL, oNd = _readU32(g.raw, at)
+        if nde != 0 { return 3, GgufTensorInfo{} }
+        let nd: int = (int)ndL
+        let cur: long = oNd
+        let d0: long = 0L
+        let d1: long = 0L
+        let k: int = 0
+        while k < nd {
+            let de2, dv, oDv = _readU64(g.raw, cur)
+            if de2 != 0 { return 3, GgufTensorInfo{} }
+            if k == 0 { d0 = dv }
+            if k == 1 { d1 = dv }
+            cur = oDv
+            k = k + 1
+        }
+        let te, tL, oT = _readU32(g.raw, cur)
+        if te != 0 { return 3, GgufTensorInfo{} }
+        cur = oT
+        let oe, offRel, oOff = _readU64(g.raw, cur)
+        if oe != 0 { return 3, GgufTensorInfo{} }
+        let info = GgufTensorInfo{ t: (int)tL, nd: nd, d0: d0, d1: d1, off: offRel }
+        return 0, info
     }
 }

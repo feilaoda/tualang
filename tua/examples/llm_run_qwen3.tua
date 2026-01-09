@@ -25,6 +25,9 @@ fn main(args: string[]) -> int {
     if oe != 0 { println("bad args"); return 1 }
 
     let tok, te = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
+    if te != 0 {
+        tok, te = BpeTokenizer.loadFromGguf(modelDir)
+    }
     if te != 0 { println("load tokenizer failed"); return 1 }
 
     let inputText: string = prompt
@@ -43,9 +46,9 @@ fn main(args: string[]) -> int {
     let stopIds: long[] = {}
     if opts.chat != 0 {
         // For chat, stop when the chat ends.
-        let imEnd, ie = BpeTokenizer.addedId(tok, "<|im_end|>")
+        let imEnd, ie = BpeTokenizer.idOf(tok, "<|im_end|>")
         if ie == 0 { stopIds.push(imEnd) }
-        let eot, ie2 = BpeTokenizer.addedId(tok, "<|endoftext|>")
+        let eot, ie2 = BpeTokenizer.idOf(tok, "<|endoftext|>")
         if ie2 == 0 { stopIds.push(eot) }
     }
 

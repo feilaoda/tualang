@@ -7,12 +7,14 @@ import SafeTensors, SafeDtype, SafeTensorsFile from "./safetensors"
 import OpsBackend, OpTranspose from "./ops"
 import AccelerateOps from "./ops_accelerate"
 import LlmOptions from "./options"
+import Gguf, GgufFile, GgufTensorInfo from "./gguf"
 
 extern fn sqrtf(x: float) float
 extern fn tua_bytes_bf16_to_f32(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
 extern fn tua_bytes_f16_to_f32(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
 extern fn tua_bytes_f32_to_bf16(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
 extern fn tua_bytes_f32_to_f16(src: bytes, srcOff: long, dst: bytes, dstOff: long, n: long) int
+extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
 extern fn tua_llm_add_inplace_f32(dst: bytes, dstOff: long, src: bytes, srcOff: long, n: long) int
 extern fn tua_llm_rmsnorm_f32(out: bytes, outOff: long, x: bytes, xOff: long, w: bytes, wOff: long, n: int, eps: float) int
 extern fn tua_llm_rmsnorm_f32_bf16w(out: bytes, outOff: long, x: bytes, xOff: long, w: bytes, wOff: long, n: int, eps: float) int
@@ -35,6 +37,8 @@ extern fn tua_llm_gemv_q4_0_f32(y: bytes, yOff: long, a: bytes, aOff: long, x: b
 extern fn tua_llm_q4_k_pack_bf16(dst: bytes, dstOff: long, src: bytes, srcOff: long, m: int, n: int) int
 extern fn tua_llm_q4_k_get_row_f32(out: bytes, outOff: long, a: bytes, aOff: long, row: long, n: int) int
 extern fn tua_llm_gemv_q4_k_f32(y: bytes, yOff: long, a: bytes, aOff: long, x: bytes, xOff: long, m: int, n: int) int
+extern fn tua_llm_q6_k_get_row_f32(out: bytes, outOff: long, a: bytes, aOff: long, row: long, n: int) int
+extern fn tua_llm_gemv_q6_k_f32(y: bytes, yOff: long, a: bytes, aOff: long, x: bytes, xOff: long, m: int, n: int) int
 extern fn tua_llm_repetition_penalty_f32(logits: bytes, logitsOff: long, n: int, ids: long[], lastN: int, penalty: float) int
 extern fn tua_llm_no_repeat_ngram_f32(logits: bytes, logitsOff: long, n: int, ids: long[], ngram: int) int
 extern fn tua_llm_logit_ban_id_f32(logits: bytes, logitsOff: long, n: int, id: long) int
@@ -87,13 +91,16 @@ private enum LayerW {
 }
 
 struct Qwen3Weights {
-    // 0 = f32 weights, 1 = bf16 weights, 2 = fp16 weights, 3 = q4_0 weights, 4 = q4_k weights.
+    // 0 = f32 weights, 1 = bf16 weights, 2 = fp16 weights,
+    // 3 = q4_0 weights, 4 = q4_k weights (packed from BF16),
+    // 5 = gguf q4_k/q6_k weights (pre-quantized, mixed types).
     dtype: int
     arena: bytes
     offEmbed: long
     offLmHead: long
     offNorm: long
     layerOffs: long[]
+    extraOffs: long[]
 }
 
 private fn _align(off: long, a: long) -> long {
@@ -101,6 +108,50 @@ private fn _align(off: long, a: long) -> long {
     let r = off - (off / a) * a
     if r == 0L { return off }
     return off + (a - r)
+}
+
+private fn _ggufBlkTensorName(layer: int, suffix: string) -> string {
+    if suffix == null { return null }
+    let idx: string = conv.Int.toString(layer)
+    if idx == null { return null }
+    let p0: bytes = bstd.Bytes.fromString("blk.")
+    let p1: bytes = bstd.Bytes.fromString(idx)
+    let p2: bytes = bstd.Bytes.fromString(".")
+    let p3: bytes = bstd.Bytes.fromString(suffix)
+    if p0 == null || p1 == null || p2 == null || p3 == null { return null }
+    let n0: long = bstd.Bytes.len(p0)
+    let n1: long = bstd.Bytes.len(p1)
+    let n2: long = bstd.Bytes.len(p2)
+    let n3: long = bstd.Bytes.len(p3)
+    let total: long = n0 + n1 + n2 + n3
+    if total <= 0L { return null }
+    let buf: bytes = bstd.Bytes.newLongUninit(total)
+    if buf == null { return null }
+    let o: long = 0L
+    if bstd.Bytes.copy(buf, o, p0, 0L, n0) != 0 { return null }
+    o = o + n0
+    if bstd.Bytes.copy(buf, o, p1, 0L, n1) != 0 { return null }
+    o = o + n1
+    if bstd.Bytes.copy(buf, o, p2, 0L, n2) != 0 { return null }
+    o = o + n2
+    if bstd.Bytes.copy(buf, o, p3, 0L, n3) != 0 { return null }
+    let out: string = tua_str_from_bytes_copy(buf, 0L, total)
+    return out
+}
+
+// For GGUF mixed-type weights, encode (offset, kind) into a single long to avoid extra side arrays.
+// kind: 0 = Q4_K, 1 = Q6_K.
+private fn _packOffKind(off: long, kind: int) -> long {
+    return off * 4L + (long)kind
+}
+
+private fn _unpackOff(packed: long) -> long {
+    return packed / 4L
+}
+
+private fn _unpackKind(packed: long) -> int {
+    let q: long = packed / 4L
+    return (int)(packed - q * 4L)
 }
 
 private fn _q4RowBytes(n: int) -> long {
@@ -129,6 +180,21 @@ private fn _q4kRowBytes(n: int) -> long {
 private fn _q4kMatBytes(m: int, n: int) -> long {
     if m <= 0 || n <= 0 { return 0L }
     let rb = _q4kRowBytes(n)
+    if rb <= 0L { return 0L }
+    return rb * (long)m
+}
+
+private fn _q6kRowBytes(n: int) -> long {
+    // Q6_K: 256 values per block, 210 bytes per block.
+    if n <= 0 { return 0L }
+    let r = n - (n / 256) * 256
+    if r != 0 { return 0L }
+    return (long)(n / 256) * 210L
+}
+
+private fn _q6kMatBytes(m: int, n: int) -> long {
+    if m <= 0 || n <= 0 { return 0L }
+    let rb = _q6kRowBytes(n)
     if rb <= 0L { return 0L }
     return rb * (long)m
 }
@@ -294,6 +360,7 @@ struct Qwen3State {
     wOffLmHead: long
     wOffNorm: long
     wLayerOffs: long[]
+    wLayerExtraOffs: long[]
 
     // KV cache (float32).
     kvDtype: int
@@ -407,7 +474,7 @@ object Qwen3 {
     }
 
     fn loadWeightsF32(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
-        let z = Qwen3Weights{ dtype: 0, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+        let z = Qwen3Weights{ dtype: 0, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
 
         let e0, st = SafeTensors.parseMmap(modelPath)
         if e0 != 0 { return 10 + e0, z }
@@ -598,7 +665,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 0, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 0, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -621,7 +688,7 @@ object Qwen3 {
     }
 
     fn loadWeightsBF16(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
-        let z = Qwen3Weights{ dtype: 1, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+        let z = Qwen3Weights{ dtype: 1, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
 
         let e0, st = SafeTensors.parseMmap(modelPath)
         if e0 != 0 { return 10 + e0, z }
@@ -795,12 +862,12 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 1, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 1, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
     fn loadWeightsF16(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
-        let z = Qwen3Weights{ dtype: 2, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+        let z = Qwen3Weights{ dtype: 2, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
 
         let e0, st = SafeTensors.parseMmap(modelPath)
         if e0 != 0 { return 10 + e0, z }
@@ -976,7 +1043,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 2, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 2, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -1001,7 +1068,7 @@ object Qwen3 {
     }
 
     fn loadWeightsQ4(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
-        let z = Qwen3Weights{ dtype: 3, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+        let z = Qwen3Weights{ dtype: 3, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
 
         let e0, st = SafeTensors.parseMmap(modelPath)
         if e0 != 0 { return 10 + e0, z }
@@ -1196,12 +1263,12 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 3, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 3, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
     fn loadWeightsQ4K(modelPath: string, cfg: Qwen3Config) -> int, Qwen3Weights {
-        let z = Qwen3Weights{ dtype: 4, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null }
+        let z = Qwen3Weights{ dtype: 4, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
 
         if _q4kRowBytes(cfg.hidden) <= 0L { return 9, z }
         if _q4kRowBytes(cfg.intermediate) <= 0L { return 9, z }
@@ -1395,7 +1462,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 4, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 4, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -1686,7 +1753,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 3, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 3, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -1870,7 +1937,257 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 4, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 4, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
+        return 0, out
+    }
+
+    private fn _ggufCopyRaw(let g: GgufFile, name: string, arena: bytes, dstOff: long, nbytes: long) -> int {
+        let e, ti = Gguf.tensorInfo(g, name)
+        if e != 0 { return 1 }
+        let srcOff: long = g.dataStart + ti.off
+        if bstd.Bytes.copy(arena, dstOff, g.raw, srcOff, nbytes) != 0 { return 2 }
+        return 0
+    }
+
+    fn loadWeightsGgufQ4KM(modelDir: string, let cfg: Qwen3Config) -> int, Qwen3Weights {
+        // Load pre-quantized GGUF (Q4_K + Q6_K mix) into a single arena.
+        let z = Qwen3Weights{ dtype: 5, arena: null, offEmbed: 0L, offLmHead: 0L, offNorm: 0L, layerOffs: null, extraOffs: null }
+        if modelDir == null { return 1, z }
+
+        let fe, ggufPath = Gguf.findMainFile(modelDir)
+        if fe != 0 { return 3, z }
+        let ge, g = Gguf.parseMmap(ggufPath, 0)
+        if ge != 0 { return 4, z }
+        if g.raw == null { return 4, z }
+
+        let eEmb0, tiEmb0 = Gguf.tensorInfo(g, "token_embd.weight")
+        if eEmb0 != 0 { return 100, z }
+        if tiEmb0.t != 14 || tiEmb0.nd != 2 { return 101, z } // Q6_K
+        let hidden: int = (int)tiEmb0.d0
+        let vocab: int = (int)tiEmb0.d1
+        let layers: int = g.blockCount
+        let intermediate: int = g.ffn
+        let heads: int = g.heads
+        let kvHeads: int = g.kvHeads
+        let headDim: int = g.headDim
+        if hidden <= 0 || vocab <= 0 || layers <= 0 || intermediate <= 0 || heads <= 0 || kvHeads <= 0 || headDim <= 0 { return 2, z }
+
+        if _q4kRowBytes(hidden) <= 0L { return 2, z }
+        if _q4kRowBytes(intermediate) <= 0L { return 2, z }
+        if _q6kRowBytes(hidden) <= 0L { return 2, z }
+        if _q6kRowBytes(intermediate) <= 0L { return 2, z }
+
+        let qdim: int = heads * headDim
+        let kvdim: int = kvHeads * headDim
+
+        // Pass 1: size.
+        let cur: long = 0L
+        let offEmbed: long = 0L
+        let offLm: long = 0L
+        let offNorm: long = 0L
+        let lmIsTied: int = 0
+        let layerOffs: long[] = {}
+        let extraOffs: long[] = {} // per-layer: [kOff, vOff, upOff]
+
+        cur = _align(cur, 64L)
+        offEmbed = cur
+        cur = cur + _q6kMatBytes(vocab, hidden)
+
+        let eOut, _ = Gguf.tensorInfo(g, "output.weight")
+        if eOut != 0 {
+            lmIsTied = 1
+            offLm = offEmbed
+        } else {
+            cur = _align(cur, 64L)
+            offLm = cur
+            cur = cur + _q6kMatBytes(vocab, hidden)
+        }
+
+        cur = _align(cur, 64L)
+        offNorm = cur
+        cur = cur + (long)hidden * 4L
+
+        let li: int = 0
+        while li < layers {
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + (long)hidden * 4L // attn_norm
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + (long)hidden * 4L // ffn_norm
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + (long)headDim * 4L // q_norm
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + (long)headDim * 4L // k_norm
+
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + _q4kMatBytes(qdim, hidden) // q
+            cur = _align(cur, 64L); extraOffs.push(cur); cur = cur + _q4kMatBytes(kvdim, hidden) // k
+            // v can be Q4_K or Q6_K in Q4_K_M.
+            cur = _align(cur, 64L)
+            let vOff: long = cur
+            let vName: string = _ggufBlkTensorName(li, "attn_v.weight")
+            if vName == null { return 2200 + li, z }
+            let ev0, vti = Gguf.tensorInfo(g, vName)
+            if ev0 != 0 || vti.nd != 2 || (int)vti.d0 != hidden || (int)vti.d1 != kvdim { return 2200 + li, z }
+            let vKind: int = -1
+            if vti.t == 12 { vKind = 0 } else if vti.t == 14 { vKind = 1 } else { return 2200 + li, z }
+            extraOffs.push(_packOffKind(vOff, vKind))
+            if vKind == 0 {
+                cur = cur + _q4kMatBytes(kvdim, hidden)
+            } else {
+                cur = cur + _q6kMatBytes(kvdim, hidden)
+            }
+
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + _q4kMatBytes(hidden, qdim) // o
+
+            cur = _align(cur, 64L); layerOffs.push(cur); cur = cur + _q4kMatBytes(intermediate, hidden) // gate
+            cur = _align(cur, 64L); extraOffs.push(cur); cur = cur + _q4kMatBytes(intermediate, hidden) // up
+
+            // down can be Q4_K or Q6_K in Q4_K_M; store packed (off, kind) in layerOffs for this slot.
+            cur = _align(cur, 64L)
+            let downOff: long = cur
+            let downName: string = _ggufBlkTensorName(li, "ffn_down.weight")
+            if downName == null { return 2400 + li, z }
+            let ed0, dti = Gguf.tensorInfo(g, downName)
+            if ed0 != 0 || dti.nd != 2 || (int)dti.d0 != intermediate || (int)dti.d1 != hidden { return 2400 + li, z }
+            let downKind: int = -1
+            if dti.t == 12 { downKind = 0 } else if dti.t == 14 { downKind = 1 } else { return 2400 + li, z }
+            layerOffs.push(_packOffKind(downOff, downKind))
+            if downKind == 0 {
+                cur = cur + _q4kMatBytes(hidden, intermediate)
+            } else {
+                cur = cur + _q6kMatBytes(hidden, intermediate)
+            }
+
+            li = li + 1
+        }
+
+        let arena = bstd.Bytes.newLongUninit(cur)
+        if arena == null { return 5, z }
+
+        // Pass 2: copy.
+        let eEmb, tiEmb = Gguf.tensorInfo(g, "token_embd.weight")
+        if eEmb != 0 { return 100, z }
+        if tiEmb.t != 14 || tiEmb.nd != 2 || (int)tiEmb.d0 != hidden || (int)tiEmb.d1 != vocab { return 101, z }
+        if Qwen3._ggufCopyRaw(g, "token_embd.weight", arena, offEmbed, _q6kMatBytes(vocab, hidden)) != 0 { return 102, z }
+
+        if lmIsTied == 0 {
+            let eLm, tiLm = Gguf.tensorInfo(g, "output.weight")
+            if eLm != 0 { return 110, z }
+            if tiLm.t != 14 || tiLm.nd != 2 || (int)tiLm.d0 != hidden || (int)tiLm.d1 != vocab { return 111, z }
+            if Qwen3._ggufCopyRaw(g, "output.weight", arena, offLm, _q6kMatBytes(vocab, hidden)) != 0 { return 112, z }
+        }
+
+        let eOn, tiOn = Gguf.tensorInfo(g, "output_norm.weight")
+        if eOn != 0 { return 120, z }
+        if tiOn.t != 0 || tiOn.nd != 1 { return 121, z }
+        let hiddenOn: int = (int)tiOn.d0
+        if hiddenOn <= 0 { return 121, z }
+        if hiddenOn != hidden { hidden = hiddenOn }
+        if Qwen3._ggufCopyRaw(g, "output_norm.weight", arena, offNorm, (long)hiddenOn * 4L) != 0 { return 122, z }
+
+        // layers
+        let idx: int = 0
+        li = 0
+        while li < layers {
+            let name0: string = _ggufBlkTensorName(li, "attn_norm.weight")
+            if name0 == null { return 2000 + idx, z }
+            let inOff = layerOffs[idx]
+            let e0, ti0 = Gguf.tensorInfo(g, name0)
+            if e0 != 0 || ti0.t != 0 || ti0.nd != 1 || (int)ti0.d0 != hidden { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name0, arena, inOff, (long)hidden * 4L) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let name1: string = _ggufBlkTensorName(li, "ffn_norm.weight")
+            if name1 == null { return 2000 + idx, z }
+            let postOff = layerOffs[idx]
+            let e1, ti1 = Gguf.tensorInfo(g, name1)
+            if e1 != 0 || ti1.t != 0 || ti1.nd != 1 || (int)ti1.d0 != hidden { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name1, arena, postOff, (long)hidden * 4L) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let name2: string = _ggufBlkTensorName(li, "attn_q_norm.weight")
+            if name2 == null { return 2000 + idx, z }
+            let qnOff = layerOffs[idx]
+            let e2, ti2 = Gguf.tensorInfo(g, name2)
+            if e2 != 0 || ti2.t != 0 || ti2.nd != 1 || (int)ti2.d0 != headDim { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name2, arena, qnOff, (long)headDim * 4L) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let name3: string = _ggufBlkTensorName(li, "attn_k_norm.weight")
+            if name3 == null { return 2000 + idx, z }
+            let knOff = layerOffs[idx]
+            let e3, ti3 = Gguf.tensorInfo(g, name3)
+            if e3 != 0 || ti3.t != 0 || ti3.nd != 1 || (int)ti3.d0 != headDim { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name3, arena, knOff, (long)headDim * 4L) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let qOff = layerOffs[idx]
+            let name4: string = _ggufBlkTensorName(li, "attn_q.weight")
+            if name4 == null { return 2000 + idx, z }
+            let e4, ti4 = Gguf.tensorInfo(g, name4)
+            if e4 != 0 || ti4.t != 12 || ti4.nd != 2 || (int)ti4.d0 != hidden || (int)ti4.d1 != qdim { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name4, arena, qOff, _q4kMatBytes(qdim, hidden)) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let ekOff: long = extraOffs[li * 3 + 0]
+            let evPacked: long = extraOffs[li * 3 + 1]
+            let vKind: int = _unpackKind(evPacked)
+            let evOff: long = _unpackOff(evPacked)
+
+            let name5: string = _ggufBlkTensorName(li, "attn_k.weight")
+            if name5 == null { return 2100 + li, z }
+            let e5, ti5 = Gguf.tensorInfo(g, name5)
+            if e5 != 0 || ti5.t != 12 || ti5.nd != 2 || (int)ti5.d0 != hidden || (int)ti5.d1 != kvdim { return 2100 + li, z }
+            if Qwen3._ggufCopyRaw(g, name5, arena, ekOff, _q4kMatBytes(kvdim, hidden)) != 0 { return 2100 + li, z }
+
+            let name6: string = _ggufBlkTensorName(li, "attn_v.weight")
+            if name6 == null { return 2200 + li, z }
+            let e6, ti6 = Gguf.tensorInfo(g, name6)
+            if vKind == 0 {
+                if e6 != 0 || ti6.t != 12 || ti6.nd != 2 || (int)ti6.d0 != hidden || (int)ti6.d1 != kvdim { return 2200 + li, z }
+                if Qwen3._ggufCopyRaw(g, name6, arena, evOff, _q4kMatBytes(kvdim, hidden)) != 0 { return 2200 + li, z }
+            } else {
+                if e6 != 0 || ti6.t != 14 || ti6.nd != 2 || (int)ti6.d0 != hidden || (int)ti6.d1 != kvdim { return 2200 + li, z }
+                if Qwen3._ggufCopyRaw(g, name6, arena, evOff, _q6kMatBytes(kvdim, hidden)) != 0 { return 2200 + li, z }
+            }
+
+            let oOff = layerOffs[idx]
+            let name7: string = _ggufBlkTensorName(li, "attn_output.weight")
+            if name7 == null { return 2000 + idx, z }
+            let e7, ti7 = Gguf.tensorInfo(g, name7)
+            if e7 != 0 || ti7.t != 12 || ti7.nd != 2 || (int)ti7.d0 != qdim || (int)ti7.d1 != hidden { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name7, arena, oOff, _q4kMatBytes(hidden, qdim)) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let gateOff = layerOffs[idx]
+            let name8: string = _ggufBlkTensorName(li, "ffn_gate.weight")
+            if name8 == null { return 2000 + idx, z }
+            let e8, ti8 = Gguf.tensorInfo(g, name8)
+            if e8 != 0 || ti8.t != 12 || ti8.nd != 2 || (int)ti8.d0 != hidden || (int)ti8.d1 != intermediate { return 2000 + idx, z }
+            if Qwen3._ggufCopyRaw(g, name8, arena, gateOff, _q4kMatBytes(intermediate, hidden)) != 0 { return 2000 + idx, z }
+            idx = idx + 1
+
+            let upOff: long = extraOffs[li * 3 + 2]
+            let name9: string = _ggufBlkTensorName(li, "ffn_up.weight")
+            if name9 == null { return 2300 + li, z }
+            let e9, ti9 = Gguf.tensorInfo(g, name9)
+            if e9 != 0 || ti9.t != 12 || ti9.nd != 2 || (int)ti9.d0 != hidden || (int)ti9.d1 != intermediate { return 2300 + li, z }
+            if Qwen3._ggufCopyRaw(g, name9, arena, upOff, _q4kMatBytes(intermediate, hidden)) != 0 { return 2300 + li, z }
+
+            let downPacked: long = layerOffs[idx]
+            let downKind: int = _unpackKind(downPacked)
+            let downOff: long = _unpackOff(downPacked)
+            let name10: string = _ggufBlkTensorName(li, "ffn_down.weight")
+            if name10 == null { return 2000 + idx, z }
+            let e10, ti10 = Gguf.tensorInfo(g, name10)
+            if downKind == 0 {
+                if e10 != 0 || ti10.t != 12 || ti10.nd != 2 || (int)ti10.d0 != intermediate || (int)ti10.d1 != hidden { return 2000 + idx, z }
+                if Qwen3._ggufCopyRaw(g, name10, arena, downOff, _q4kMatBytes(hidden, intermediate)) != 0 { return 2000 + idx, z }
+            } else {
+                if e10 != 0 || ti10.t != 14 || ti10.nd != 2 || (int)ti10.d0 != intermediate || (int)ti10.d1 != hidden { return 2000 + idx, z }
+                if Qwen3._ggufCopyRaw(g, name10, arena, downOff, _q6kMatBytes(hidden, intermediate)) != 0 { return 2000 + idx, z }
+            }
+            idx = idx + 1
+
+            li = li + 1
+        }
+
+        let out = Qwen3Weights{ dtype: 5, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: extraOffs }
         return 0, out
     }
 
@@ -2053,7 +2370,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 0, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 0, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -2259,7 +2576,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 1, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 1, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -2441,7 +2758,7 @@ object Qwen3 {
             li = li + 1
         }
 
-        let out = Qwen3Weights{ dtype: 2, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs }
+        let out = Qwen3Weights{ dtype: 2, arena: arena, offEmbed: offEmbed, offLmHead: offLm, offNorm: offNorm, layerOffs: layerOffs, extraOffs: null }
         return 0, out
     }
 
@@ -2456,6 +2773,9 @@ object Qwen3 {
             return Qwen3.loadWeightsQ4Auto(modelDir, cfg)
         }
         if dtype == 4 {
+            // Prefer GGUF q4_k_m / q4_k_s distributions when present.
+            let ge, w = Qwen3.loadWeightsGgufQ4KM(modelDir, cfg)
+            if ge == 0 { return 0, move w }
             return Qwen3.loadWeightsQ4KAuto(modelDir, cfg)
         }
         return Qwen3.loadWeightsF32Auto(modelDir, cfg)
@@ -2483,6 +2803,7 @@ object Qwen3 {
             wOffLmHead: 0L,
             wOffNorm: 0L,
             wLayerOffs: null,
+            wLayerExtraOffs: {},
             kvDtype: 0,
             kvBuf: null,
             kvKBase: 0L,
@@ -2502,11 +2823,41 @@ object Qwen3 {
             prof: Qwen3Profile{},
         }
 
+        // Config: prefer config.json; fall back to GGUF metadata if present.
         let ce, cfg = Qwen3.loadConfig(modelDir + "/config.json")
-        if ce != 0 { return 1, z }
+        if ce != 0 {
+            let fe, ggufPath = Gguf.findMainFile(modelDir)
+            if fe != 0 { return 1, z }
+            let ge, gg = Gguf.parseMmap(ggufPath, 0)
+            if ge != 0 { return 1, z }
+            let eTok, tiTok = Gguf.tensorInfo(gg, "token_embd.weight")
+            if eTok != 0 { return 1, z }
+            // token_embd.weight dims: [hidden, vocab]
+            let vocab: int = (int)tiTok.d1
+            let rope: float = gg.ropeTheta
+            if rope == 0.0 { rope = 1000000.0 }
+            let eps: float = gg.rmsEps
+            if eps == 0.0 { eps = 0.000001 }
+            cfg = Qwen3Config{
+                hidden: gg.embd,
+                intermediate: gg.ffn,
+                layers: gg.blockCount,
+                heads: gg.heads,
+                kvHeads: gg.kvHeads,
+                headDim: gg.headDim,
+                vocab: vocab,
+                maxPos: gg.ctxLen,
+                ropeTheta: rope,
+                rmsEps: eps,
+                bos: gg.bos,
+                eos: gg.eos,
+            }
+        }
 
         let we, w = Qwen3.loadWeightsAuto(modelDir, cfg, opts.weightsDtype)
         if we != 0 { return 1, z }
+        let wExtraOffs: long[] = w.extraOffs
+        if wExtraOffs == null { wExtraOffs = {} }
 
         let maxSeq = _maxSeq(cfg, opts)
         if maxSeq <= 0 { return 2, z }
@@ -2542,6 +2893,7 @@ object Qwen3 {
             wOffLmHead: w.offLmHead,
             wOffNorm: w.offNorm,
             wLayerOffs: w.layerOffs,
+            wLayerExtraOffs: wExtraOffs,
             kvDtype: opts.kvDtype,
             kvBuf: kvBuf,
             kvKBase: kvKBase,
@@ -2624,6 +2976,8 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         if tua_llm_q4_0_get_row_f32(s.x, 0L, s.wArena, s.wOffEmbed, id, cfg.hidden) != 0 { return 1 }
     } else if s.wDtype == 4 {
         if tua_llm_q4_k_get_row_f32(s.x, 0L, s.wArena, s.wOffEmbed, id, cfg.hidden) != 0 { return 1 }
+    } else if s.wDtype == 5 {
+        if tua_llm_q6_k_get_row_f32(s.x, 0L, s.wArena, s.wOffEmbed, id, cfg.hidden) != 0 { return 1 }
     } else if s.wDtype == 1 || s.wDtype == 2 {
         let rowBytes: long = id * (long)cfg.hidden * 2L
         let eoff = s.wOffEmbed + rowBytes
@@ -2654,8 +3008,24 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let qkvOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.qkvProj)
         let tQkv: long = 0L
         if prof.enabled != 0 { tQkv = time.Time.monoNs() }
-        let qkvdim: int = qdim + 2 * kvdim
-        if _gemv(s, qkvdim, cfg.hidden, qkvOff, s.x1, 0L, s.qkv, 0L) != 0 { return 1 }
+        if s.wDtype == 5 {
+            let extra: long[] = s.wLayerExtraOffs
+            if extra == null || extra.len() < (long)(layer * 3 + 2) { return 1 }
+            let ek: long = extra[layer * 3 + 0]
+            let evPacked: long = extra[layer * 3 + 1]
+            let vKind: int = _unpackKind(evPacked)
+            let evOff: long = _unpackOff(evPacked)
+            if tua_llm_gemv_q4_k_f32(s.qkv, 0L, s.wArena, qkvOff, s.x1, 0L, qdim, cfg.hidden) != 0 { return 1 }
+            if tua_llm_gemv_q4_k_f32(s.qkv, (long)qdim * 4L, s.wArena, ek, s.x1, 0L, kvdim, cfg.hidden) != 0 { return 1 }
+            if vKind == 0 {
+                if tua_llm_gemv_q4_k_f32(s.qkv, ((long)qdim + (long)kvdim) * 4L, s.wArena, evOff, s.x1, 0L, kvdim, cfg.hidden) != 0 { return 1 }
+            } else {
+                if tua_llm_gemv_q6_k_f32(s.qkv, ((long)qdim + (long)kvdim) * 4L, s.wArena, evOff, s.x1, 0L, kvdim, cfg.hidden) != 0 { return 1 }
+            }
+        } else {
+            let qkvdim: int = qdim + 2 * kvdim
+            if _gemv(s, qkvdim, cfg.hidden, qkvOff, s.x1, 0L, s.qkv, 0L) != 0 { return 1 }
+        }
         if prof.enabled != 0 { prof.nsQkv = prof.nsQkv + (time.Time.monoNs() - tQkv); prof.cQkv = prof.cQkv + 1 }
 
         let qOffF32: long = 0L
@@ -2718,7 +3088,11 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let oOff = _layerOff(s.wLayerOffs, layer, (int)LayerW.oProj)
         let tO: long = 0L
         if prof.enabled != 0 { tO = time.Time.monoNs() }
-        if _gemv(s, cfg.hidden, qdim, oOff, s.attn, 0L, s.x2, 0L) != 0 { return 1 }
+        if s.wDtype == 5 {
+            if tua_llm_gemv_q4_k_f32(s.x2, 0L, s.wArena, oOff, s.attn, 0L, cfg.hidden, qdim) != 0 { return 1 }
+        } else {
+            if _gemv(s, cfg.hidden, qdim, oOff, s.attn, 0L, s.x2, 0L) != 0 { return 1 }
+        }
         if prof.enabled != 0 { prof.nsO = prof.nsO + (time.Time.monoNs() - tO); prof.cO = prof.cO + 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
@@ -2733,17 +3107,35 @@ private fn _forwardToken(let s: Qwen3State, id: long) -> int {
         let tGateUp: long = 0L
         if prof.enabled != 0 { tGateUp = time.Time.monoNs() }
         let gateUpDim: int = 2 * cfg.intermediate
-        if _gemv(s, gateUpDim, cfg.hidden, gateUpOff, s.x1, 0L, s.gateUp, 0L) != 0 { return 1 }
+        let upOffF32: long = (long)cfg.intermediate * 4L
+        if s.wDtype == 5 {
+            let extra: long[] = s.wLayerExtraOffs
+            if extra == null || extra.len() < (long)(layer * 3 + 3) { return 1 }
+            let upW: long = extra[layer * 3 + 2]
+            if tua_llm_gemv_q4_k_f32(s.gateUp, 0L, s.wArena, gateUpOff, s.x1, 0L, cfg.intermediate, cfg.hidden) != 0 { return 1 }
+            if tua_llm_gemv_q4_k_f32(s.gateUp, upOffF32, s.wArena, upW, s.x1, 0L, cfg.intermediate, cfg.hidden) != 0 { return 1 }
+        } else {
+            if _gemv(s, gateUpDim, cfg.hidden, gateUpOff, s.x1, 0L, s.gateUp, 0L) != 0 { return 1 }
+        }
         if prof.enabled != 0 { prof.nsGateUp = prof.nsGateUp + (time.Time.monoNs() - tGateUp); prof.cGateUp = prof.cGateUp + 1 }
         let tSilu: long = 0L
         if prof.enabled != 0 { tSilu = time.Time.monoNs() }
-        let upOffF32: long = (long)cfg.intermediate * 4L
         if tua_llm_silu_mul2_f32(s.inter, 0L, s.gateUp, 0L, upOffF32, (long)cfg.intermediate) != 0 { return 1 }
         if prof.enabled != 0 { prof.nsSiluMul = prof.nsSiluMul + (time.Time.monoNs() - tSilu) }
 
         let tDown: long = 0L
         if prof.enabled != 0 { tDown = time.Time.monoNs() }
-        if _gemv(s, cfg.hidden, cfg.intermediate, downOff, s.inter, 0L, s.x2, 0L) != 0 { return 1 }
+        if s.wDtype == 5 {
+            let downKind: int = _unpackKind(downOff)
+            let downOff2: long = _unpackOff(downOff)
+            if downKind == 0 {
+                if tua_llm_gemv_q4_k_f32(s.x2, 0L, s.wArena, downOff2, s.inter, 0L, cfg.hidden, cfg.intermediate) != 0 { return 1 }
+            } else {
+                if tua_llm_gemv_q6_k_f32(s.x2, 0L, s.wArena, downOff2, s.inter, 0L, cfg.hidden, cfg.intermediate) != 0 { return 1 }
+            }
+        } else {
+            if _gemv(s, cfg.hidden, cfg.intermediate, downOff, s.inter, 0L, s.x2, 0L) != 0 { return 1 }
+        }
         if prof.enabled != 0 { prof.nsDown = prof.nsDown + (time.Time.monoNs() - tDown); prof.cDown = prof.cDown + 1 }
         if _addInplace(s.x, s.x2, hidden) != 0 { return 1 }
 
@@ -2798,7 +3190,11 @@ private fn _logits(let s: Qwen3State) -> int {
 
     let tLm: long = 0L
     if prof.enabled != 0 { tLm = time.Time.monoNs() }
-    if _gemv(s, cfg.vocab, cfg.hidden, s.wOffLmHead, s.x1, 0L, s.logits, 0L) != 0 { return 1 }
+    if s.wDtype == 5 {
+        if tua_llm_gemv_q6_k_f32(s.logits, 0L, s.wArena, s.wOffLmHead, s.x1, 0L, cfg.vocab, cfg.hidden) != 0 { return 1 }
+    } else {
+        if _gemv(s, cfg.vocab, cfg.hidden, s.wOffLmHead, s.x1, 0L, s.logits, 0L) != 0 { return 1 }
+    }
     if prof.enabled != 0 { prof.nsLmHead = prof.nsLmHead + (time.Time.monoNs() - tLm); prof.cLmHead = prof.cLmHead + 1 }
 
     if prof.enabled != 0 { prof.nsLogits = prof.nsLogits + (time.Time.monoNs() - tAll); s.prof = prof }
