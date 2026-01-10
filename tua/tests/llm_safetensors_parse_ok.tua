@@ -4,118 +4,83 @@ import "std/bytes" as bstd
 import SafeTensors, SafeDtype from "../packages/llm/safetensors"
 
 private fn _wU64LE(b: bytes, off: long, v: long) {
- 
- 
+
   let x: u64 = (u64)v
- 
- 
+
   let i: long = 0L
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= 8L { break }
- 
- 
- 
- 
- 
-   let v8: int = (int)((x >> (u64)(i * 8L)) & (u64)255)
-        bstd.Bytes.setU8(b, off + i, v8)
-        i = i + 1L
- 
-   }
+
+    if i >= 8L { break }
+
+    let v8: int = (int)((x >> (u64)(i * 8L)) & (u64)255)
+    bstd.Bytes.setU8(b, off + i, v8)
+    i = i + 1L
+
+  }
 }
 
 private fn _mkHeader() -> bytes {
-    // {"x":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}
- 
- 
+  // {"x":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}
+
   let tmp = bstd.Bytes.new(64)
- 
- 
+
   let cs:int[] = {
-        123,34,120,34,58,123,34,100,116,121,112,101,34,58,34,70,51,50,34,44,34,115,104,97,112,101,34,58,91,50,93,44,34,100,97,116,97,95,111,102,102,115,101,116,115,34,58,91,48,44,56,93,125,125
- 
-   }
- 
- 
+    123,34,120,34,58,123,34,100,116,121,112,101,34,58,34,70,51,50,34,44,34,115,104,97,112,101,34,58,91,50,93,44,34,100,97,116,97,95,111,102,102,115,101,116,115,34,58,91,48,44,56,93,125,125
+
+  }
+
   let i: long = 0L
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= (long)cs.len() { break }
-        bstd.Bytes.setU8(tmp, i, cs[(int)i])
-        i = i + 1L
- 
-   }
- 
- 
+
+    if i >= (long)cs.len() { break }
+    bstd.Bytes.setU8(tmp, i, cs[(int)i])
+    i = i + 1L
+
+  }
+
   let out = bstd.Bytes.new((int)i)
-    bstd.Bytes.copy(out, 0L, tmp, 0L, i)
- 
- 
+  bstd.Bytes.copy(out, 0L, tmp, 0L, i)
+
   return out
 }
 
 fn main() {
-    // Minimal safetensors: 1 tensor named "x" with dtype F32, shape [2], data_offsets [0, 8].
- 
- 
+  // Minimal safetensors: 1 tensor named "x" with dtype F32, shape [2], data_offsets [0, 8].
+
   let hdrb = _mkHeader()
- 
- 
+
   let hlen = bstd.Bytes.len(hdrb)
 
- 
- 
   let total: long = 8L + hlen + 8L
- 
- 
+
   let file = bstd.Bytes.new((int)total)
-    _wU64LE(file, 0L, hlen)
-    bstd.Bytes.copy(file, 8L, hdrb, 0L, hlen)
+  _wU64LE(file, 0L, hlen)
+  bstd.Bytes.copy(file, 8L, hdrb, 0L, hlen)
 
-    // 2x f32 zeros in data section (8 bytes) already zero-initialized.
- 
- 
+  // 2x f32 zeros in data section (8 bytes) already zero-initialized.
+
   let st, e = SafeTensors.parseBytes(move file)
-    assert(e == 0)
+  assert(e == 0)
 
- 
- 
   let recAny, ie = SafeTensors.tensorInfo(st, "x")
-    assert(ie == 0)
- 
- 
+  assert(ie == 0)
+
   let rec: map = recAny
- 
- 
+
   let dtAny: any = rec["dtype"].unwrap()
-    assert((int)dtAny == SafeDtype.float32)
- 
- 
+  assert((int)dtAny == SafeDtype.float32)
+
   let ndimAny: any = rec["ndim"].unwrap()
-    assert((int)ndimAny == 1)
- 
- 
+  assert((int)ndimAny == 1)
+
   let d0Any: any = rec["d0"].unwrap()
-    assert((long)d0Any == 2L)
- 
- 
+  assert((long)d0Any == 2L)
+
   let offAny: any = rec["dataOff"].unwrap()
-    assert((long)offAny == 0L)
- 
- 
+  assert((long)offAny == 0L)
+
   let lenAny: any = rec["dataLen"].unwrap()
-    assert((long)lenAny == 8L)
+  assert((long)lenAny == 8L)
 }

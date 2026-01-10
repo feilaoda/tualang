@@ -9,159 +9,78 @@ extern fn tua_fs_readdir_arr(path: string, outErr: &int) -> string[]
 extern fn tua_fs_string_array_free(names: string[])
 
 object Fs {
-    // Reads an entire file into a NUL-terminated buffer. Caller must free via `rt.Rt.free`.
- 
- 
+  // Reads an entire file into a NUL-terminated buffer. Caller must free via `rt.Rt.free`.
+
   fn readFile(path: string) -> string, int, int{
- 
- 
- 
- 
- 
-   let data: string = null
- 
- 
- 
- 
- 
-   let n: int = 0
- 
- 
- 
- 
- 
-   let err = tua_fs_readfile_alloc(path, &data, &n)
- 
- 
- 
- 
- 
-   return data, n, err
- 
-   }
 
-    // Writes a string to a file (truncate/create).
- 
- 
+    let data: string = null
+
+    let n: int = 0
+
+    let err = tua_fs_readfile_alloc(path, &data, &n)
+
+    return data, n, err
+
+  }
+
+  // Writes a string to a file (truncate/create).
+
   fn writeFile(path: string, data: string) int {
- 
- 
- 
- 
- 
-   return tua_fs_writefile_str(path, data)
- 
-   }
 
-    // Stat info: `(err, kind, size, mtimeNs, mode)`
- 
- 
+    return tua_fs_writefile_str(path, data)
+
+  }
+
+  // Stat info: `(err, kind, size, mtimeNs, mode)`
+
   fn stat(path: string) -> int, long, long, int, int{
- 
- 
- 
- 
- 
-   let kind: int = 0
- 
- 
- 
- 
- 
-   let size: long = 0
- 
- 
- 
- 
- 
-   let mtimeNs: long = 0
- 
- 
- 
- 
- 
-   let mode: int = 0
- 
- 
- 
- 
- 
-   let err = tua_fs_stat_simple(path, &kind, &size, &mtimeNs, &mode)
- 
- 
- 
- 
- 
-   return kind, size, mtimeNs, mode, err
- 
-   }
 
- 
- 
+    let kind: int = 0
+
+    let size: long = 0
+
+    let mtimeNs: long = 0
+
+    let mode: int = 0
+
+    let err = tua_fs_stat_simple(path, &kind, &size, &mtimeNs, &mode)
+
+    return kind, size, mtimeNs, mode, err
+
+  }
+
   fn mkdir(path: string, mode: int) int {
- 
- 
- 
- 
- 
-   return tua_fs_mkdir(path, mode)
- 
-   }
 
-    // Resolves absolute path. Caller must free via `rt.Rt.free`.
- 
- 
+    return tua_fs_mkdir(path, mode)
+
+  }
+
+  // Resolves absolute path. Caller must free via `rt.Rt.free`.
+
   fn realpath(path: string) -> string, int{
- 
- 
- 
- 
- 
-   let out: string = null
- 
- 
- 
- 
- 
-   let err = tua_fs_realpath_alloc(path, &out)
- 
- 
- 
- 
- 
-   return out, err
- 
-   }
 
-    // Reads directory entries as `string[]`. Free via `Fs.freeStringArray`.
- 
- 
+    let out: string = null
+
+    let err = tua_fs_realpath_alloc(path, &out)
+
+    return out, err
+
+  }
+
+  // Reads directory entries as `string[]`. Free via `Fs.freeStringArray`.
+
   fn readdir(path: string) -> string[], int{
- 
- 
- 
- 
- 
-   let err: int = 0
- 
- 
- 
- 
- 
-   let arr: string[] = tua_fs_readdir_arr(path, &err)
- 
- 
- 
- 
- 
-   return arr, err
- 
-   }
 
- 
- 
+    let err: int = 0
+
+    let arr: string[] = tua_fs_readdir_arr(path, &err)
+
+    return arr, err
+
+  }
+
   fn freeStringArray(names: string[]) {
-        tua_fs_string_array_free(names)
- 
-   }
+    tua_fs_string_array_free(names)
+
+  }
 }

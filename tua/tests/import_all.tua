@@ -1,8 +1,8 @@
 import "modules/import_mod"
 
 fn main() {
-    assert(import_mod.A() == 1)
-    assert(import_mod.B() == "ok")
-    assert(A() == 1)
-    assert(B() == "ok")
+  assert(import_mod.A() == 1)
+  assert(import_mod.B() == "ok")
+  assert(A() == 1)
+  assert(B() == "ok")
 }

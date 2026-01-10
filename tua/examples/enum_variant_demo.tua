@@ -1,19 +1,19 @@
 enum RoleTypeInt {
-    Admin = 10,
-    User,
-    Guest = 20
+  Admin = 10,
+  User,
+  Guest = 20
 }
 
 enum RoleType {
-    Admin,
-    User,
-    Guest
+  Admin,
+  User,
+  Guest
 }
 
 enum RoleType2 {
-    Admin = "admin",
-    User,
-    Guest = "guest"
+  Admin = "admin",
+  User,
+  Guest = "guest"
 }
 
 println(RoleTypeInt.Admin)
@@ -41,9 +41,9 @@ println(RoleType2.toString(RoleType2.User))
 println(RoleType2.toString(RoleType2.Guest))
 
 enum RoleType3 {
-    Admin = "admin",
-    User = "user",
-    Guest = "guest"
+  Admin = "admin",
+  User = "user",
+  Guest = "guest"
 }
 
 println(RoleType3.Admin)

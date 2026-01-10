@@ -4,34 +4,25 @@ import Qwen3, Qwen3Infer from "../packages/llm/qwen3"
 import LlmArgs, LlmOptions from "../packages/llm/options"
 
 fn main() {
- 
- 
+
   let opt0: LlmOptions = LlmArgs.defaults()
- 
- 
+
   let opt: LlmOptions = opt0
-    opt.weightsDtype = 1
-    opt.kvMaxSeq = 8
-    opt.profile = 1
+  opt.weightsDtype = 1
+  opt.kvMaxSeq = 8
+  opt.profile = 1
 
- 
- 
   let st, e = Qwen3.loadState("tests/fixtures/qwen3_tied_lm", opt)
-    assert(e == 0)
-    assert(st.wDtype == 1)
+  assert(e == 0)
+  assert(st.wDtype == 1)
 
- 
- 
   let prompt: long[] = {0L}
- 
- 
-  let pe = Qwen3Infer.prefill(st, prompt)
-    assert(pe == 0)
 
- 
- 
+  let pe = Qwen3Infer.prefill(st, prompt)
+  assert(pe == 0)
+
   let nextId, ne = Qwen3Infer.nextTokenArgmax(st)
-    assert(ne == 0)
-    assert(nextId >= 0L)
-    assert(nextId < 8L)
+  assert(ne == 0)
+  assert(nextId >= 0L)
+  assert(nextId < 8L)
 }

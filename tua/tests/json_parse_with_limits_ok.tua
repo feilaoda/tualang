@@ -2,83 +2,63 @@ import "std/bytes" as bstd
 import "json" as json
 
 private fn _mk(cs: int[]) -> bytes {
- 
- 
+
   let tmp = bstd.Bytes.new(256)
- 
- 
+
   let i: long = 0L
- 
- 
+
   while i < (long)cs.len() {
-        bstd.Bytes.setU8(tmp, i, cs[(int)i])
-        i = i + 1L
- 
-   }
- 
- 
+    bstd.Bytes.setU8(tmp, i, cs[(int)i])
+    i = i + 1L
+
+  }
+
   let out = bstd.Bytes.new((int)i)
-    bstd.Bytes.copy(out, 0L, tmp, 0L, i)
- 
- 
+  bstd.Bytes.copy(out, 0L, tmp, 0L, i)
+
   return out
 }
 
 fn main() {
- 
- 
+
   let b0 = _mk({123,34,97,34,58,49,125}) // {"a":1}
- 
- 
+
   let v0, e0 = json.Json.parseBytesWithLimits(b0, 2, 10L, 10L)
-    assert(e0 == 0)
- 
- 
+  assert(e0 == 0)
+
   let m0: map = v0
-    assert(m0.len() == 1)
+  assert(m0.len() == 1)
 
-    // maxDepth: root container counts as depth=1.
- 
- 
+  // maxDepth: root container counts as depth=1.
+
   let b1 = _mk({123,34,97,34,58,123,34,98,34,58,49,125,125}) // {"a":{"b":1}}
- 
- 
+
   let v1, e1 = json.Json.parseBytesWithLimits(b1, 1, 0L, 0L)
- 
- 
+
   let _ = v1
-    assert(e1 == 3)
+  assert(e1 == 3)
 
-    // maxNodes: counts containers + scalars + object keys.
- 
- 
+  // maxNodes: counts containers + scalars + object keys.
+
   let b2 = bstd.Bytes.fromString("[1,2,3]")
- 
- 
+
   let v2, e2 = json.Json.parseBytesWithLimits(b2, 0, 3L, 0L)
- 
- 
+
   let _ = v2
-    assert(e2 == 3)
+  assert(e2 == 3)
 
-    // maxStringBytes: counts UTF-8 bytes for strings, including object keys.
-    // {"s":"hello"} uses 1 (key) + 5 (value) = 6 bytes.
- 
- 
+  // maxStringBytes: counts UTF-8 bytes for strings, including object keys.
+  // {"s":"hello"} uses 1 (key) + 5 (value) = 6 bytes.
+
   let b3 = _mk({123,34,115,34,58,34,104,101,108,108,111,34,125})
- 
- 
-  let v3, e3 = json.Json.parseBytesWithLimits(b3, 0, 0L, 5L)
- 
- 
-  let _ = v3
-    assert(e3 == 3)
 
- 
- 
+  let v3, e3 = json.Json.parseBytesWithLimits(b3, 0, 0L, 5L)
+
+  let _ = v3
+  assert(e3 == 3)
+
   let v4, e4 = json.Json.parseBytesWithLimits(b3, 0, 0L, 6L)
- 
- 
+
   let _ = v4
-    assert(e4 == 0)
+  assert(e4 == 0)
 }

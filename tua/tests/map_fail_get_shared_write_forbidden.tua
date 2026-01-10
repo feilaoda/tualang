@@ -2,15 +2,12 @@ struct S {
   a: int
 }
 
-
 // map.get is a shared (read-only) element reference.
 
 fn main() {
- 
- 
+
   let m: map<string, S> = { "x": S{ a: 1 } }
- 
- 
+
   let r = m.get("x").unwrap()
-    r.a = 2
+  r.a = 2
 }

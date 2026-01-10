@@ -1,22 +1,16 @@
 struct Point {
-    x: int,
-    y: int
+  x: int,
+  y: int
 }
 
 impl Point {
- 
- 
+
   fn sum() -> int {
- 
- 
- 
- 
- 
-   return this.x + this.y
- 
-   }
+
+    return this.x + this.y
+
+  }
 }
 
 let p = Point(1, 2)
 println(p.sum())
-

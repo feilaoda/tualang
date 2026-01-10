@@ -4,41 +4,30 @@ import "json" as json
 import "std/rt" as rt
 
 fn main() {
- 
- 
+
   let data, _, fe = fs.Fs.readFile("tests/fixtures/json_key_path_array.json")
-    assert(fe == 0)
-    assert(data != null)
- 
- 
+  assert(fe == 0)
+  assert(data != null)
+
   let b = bstd.Bytes.fromString(data)
-    rt.Rt.free(data)
+  rt.Rt.free(data)
 
- 
- 
   let arr0, e0 = json.Json.parseKeyPathStringArray(b, "model.merges")
-    assert(e0 == 0)
-    assert(arr0 != null)
- 
- 
+  assert(e0 == 0)
+  assert(arr0 != null)
+
   let arr: string[] = arr0
-    assert(arr.len() == 2)
-    assert(arr[0] == "a b")
-    assert(arr[1] == "c d")
+  assert(arr.len() == 2)
+  assert(arr[0] == "a b")
+  assert(arr[1] == "c d")
 
- 
- 
   let abad, ebad = json.Json.parseKeyPathStringArray(b, "model.vocab")
- 
- 
-  let _ = abad
-    assert(ebad == 1)
 
- 
- 
+  let _ = abad
+  assert(ebad == 1)
+
   let an, en = json.Json.parseKeyPathStringArray(b, "model.missing")
- 
- 
+
   let _ = an
-    assert(en == 2)
+  assert(en == 2)
 }

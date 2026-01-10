@@ -1,20 +1,17 @@
 import "std/array"
 
 fn main() {
- 
- 
-  let a: int[] = {1, 2, 3}
-    assert(!a.isEmpty())
-    assert(a.first() == Some(1))
-    assert(a.last() == Some(3))
-    assert(a.getOpt(-1).isNone())
-    assert(a.getOpt(3).isNone())
-    assert(a.getOpt(2) == Some(3))
 
- 
- 
+  let a: int[] = {1, 2, 3}
+  assert(!a.isEmpty())
+  assert(a.first() == Some(1))
+  assert(a.last() == Some(3))
+  assert(a.getOpt(-1).isNone())
+  assert(a.getOpt(3).isNone())
+  assert(a.getOpt(2) == Some(3))
+
   let b: array<string> = {}
-    assert(b.isEmpty())
-    assert(b.first().isNone())
-    assert(b.last().isNone())
+  assert(b.isEmpty())
+  assert(b.first().isNone())
+  assert(b.last().isNone())
 }

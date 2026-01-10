@@ -4,9 +4,8 @@ struct Base {
 
 impl Base {
   fn id() -> int {
- 
- 
-  return id
+
+    return id
   }
 }
 
@@ -16,8 +15,7 @@ struct Child {
 }
 
 fn main() {
- 
- 
+
   let c: Child = Child{ base: Base{ id: 7 }, extra: 1 }
-    assert(c.id() == 7)
+  assert(c.id() == 7)
 }

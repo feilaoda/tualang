@@ -7,5 +7,5 @@ fn f() int {
 }
 
 fn main() {
-    assert(f() == 2)
+  assert(f() == 2)
 }

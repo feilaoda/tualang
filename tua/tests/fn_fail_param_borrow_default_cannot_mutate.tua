@@ -6,7 +6,6 @@ fn bad(f: Foo) {
   f.x = 1
 }
 
-
 fn main() {
-    bad(Foo())
+  bad(Foo())
 }

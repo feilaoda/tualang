@@ -1,19 +1,16 @@
-
 extern fn strlen(s: string) long
 
 struct Foo {
   x: string
   fn len() long {
- 
- 
-  return strlen(x)
+
+    return strlen(x)
   }
 }
 
 fn main() {
- 
- 
-  let foo = Foo() 
-    foo.x = "abc"
-    assert(foo.len() == 3)
+
+  let foo = Foo()
+  foo.x = "abc"
+  assert(foo.len() == 3)
 }

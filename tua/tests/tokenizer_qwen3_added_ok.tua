@@ -3,45 +3,34 @@
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 
 fn main() {
- 
- 
+
   let path = "examples/models/qwen3-0.6b/tokenizer.json"
- 
- 
+
   let tok, e0 = BpeTokenizer.loadFromTokenizerJson(path)
-    assert(e0 == 0)
+  assert(e0 == 0)
 
-    // Added/special tokens must be atomic in encode().
- 
- 
+  // Added/special tokens must be atomic in encode().
+
   let id, e1 = BpeTokenizer.addedId(tok, "<|im_start|>")
-    assert(e1 == 0)
-    assert(id == 151644L)
+  assert(e1 == 0)
+  assert(id == 151644L)
 
- 
- 
   let ids0, e2 = BpeTokenizer.encode(tok, "<|im_start|>")
-    assert(e2 == 0)
- 
- 
+  assert(e2 == 0)
+
   let ids: long[] = ids0
-    assert(ids.len() == 1)
-    assert(ids[0] == 151644L)
+  assert(ids.len() == 1)
+  assert(ids[0] == 151644L)
 
- 
- 
   let ids1, e3 = BpeTokenizer.encode(tok, "<|im_start|>Hello<|im_end|>")
-    assert(e3 == 0)
- 
- 
-  let ids2: long[] = ids1
-    assert(ids2.len() >= 2)
-    assert(ids2[0] == 151644L)
-    assert(ids2[ids2.len() - 1] == 151645L)
+  assert(e3 == 0)
 
- 
- 
+  let ids2: long[] = ids1
+  assert(ids2.len() >= 2)
+  assert(ids2[0] == 151644L)
+  assert(ids2[ids2.len() - 1] == 151645L)
+
   let out, e4 = BpeTokenizer.decode(tok, ids2)
-    assert(e4 == 0)
-    assert(out == "<|im_start|>Hello<|im_end|>")
+  assert(e4 == 0)
+  assert(out == "<|im_start|>Hello<|im_end|>")
 }

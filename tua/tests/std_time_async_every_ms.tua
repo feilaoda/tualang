@@ -2,43 +2,32 @@ import "std/rt" as rt
 import "std/time/async" as time
 
 fn main() {
- 
- 
+
   let loop = rt.Rt.loopCreate()
-    assert(loop != null)
+  assert(loop != null)
 
- 
- 
   let fired = 0
- 
- 
+
   let h: ptr = null
-    h = time.TimeAsync.everyMs(loop, 1, fn() {
-        fired = fired + 1
- 
- 
- 
- 
- 
-   if fired >= 3 {
-            time.TimeAsync.everyCancel(h)
-            // Ensure the cancel cleanup task runs before stopping the loop.
-            rt.Rt.post(loop, fn() {
-                rt.Rt.loopStop(loop)
- 
-           })
- 
-       }
- 
-   })
-    assert(h != null)
+  h = time.TimeAsync.everyMs(loop, 1, fn() {
+    fired = fired + 1
 
- 
- 
+    if fired >= 3 {
+      time.TimeAsync.everyCancel(h)
+      // Ensure the cancel cleanup task runs before stopping the loop.
+      rt.Rt.post(loop, fn() {
+        rt.Rt.loopStop(loop)
+
+      })
+
+    }
+
+  })
+  assert(h != null)
+
   let rc = rt.Rt.loopRun(loop)
-    assert(rc == 0)
-    assert(fired >= 3)
+  assert(rc == 0)
+  assert(fired >= 3)
 
-    rt.Rt.loopFree(loop)
+  rt.Rt.loopFree(loop)
 }
-

@@ -3,36 +3,26 @@
 import BpeTokenizer from "../packages/llm/tokenizer_bpe"
 
 fn main() {
- 
- 
+
   let tok, e = BpeTokenizer.loadFromTokenizerJson("tests/fixtures/tokenizer_small.json")
-    assert(e == 0)
+  assert(e == 0)
 
- 
- 
   let sid, ae = BpeTokenizer.addedId(tok, "<s>")
-    assert(ae == 0)
-    assert(sid == 3L)
+  assert(ae == 0)
+  assert(sid == 3L)
 
- 
- 
   let ids0, ee = BpeTokenizer.encode(tok, "ab")
-    assert(ee == 0)
- 
- 
+  assert(ee == 0)
+
   let ids: long[] = ids0
-    assert(ids.len() == 1)
-    assert(ids[0] == 2L)
+  assert(ids.len() == 1)
+  assert(ids[0] == 2L)
 
- 
- 
   let out, de = BpeTokenizer.decode(tok, ids)
-    assert(de == 0)
-    assert(out == "ab")
+  assert(de == 0)
+  assert(out == "ab")
 
- 
- 
   let out2, de2 = BpeTokenizer.decode1(tok, ids)
-    assert(de2 == 0)
-    assert(out2 == "ab")
+  assert(de2 == 0)
+  assert(out2 == "ab")
 }

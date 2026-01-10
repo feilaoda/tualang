@@ -1,17 +1,13 @@
 import "std/strconv" as strconv
 
-
-
-
 fn main() {
- 
- 
+
   let o1: Option<int> = strconv.Int.parse("123")
-    assert(o1.isSome())
-    assert(o1.unwrap() == 123)
-    assert(strconv.Int.parse("-1").unwrap() == -1)
-    assert(strconv.Int.parse(" 42 ").unwrap() == 42)
-    assert(strconv.Int.parse("").isNone())
-    assert(strconv.Int.parse("x").isNone())
-    assert(strconv.Int.parse("2147483648").isNone())
+  assert(o1.isSome())
+  assert(o1.unwrap() == 123)
+  assert(strconv.Int.parse("-1").unwrap() == -1)
+  assert(strconv.Int.parse(" 42 ").unwrap() == 42)
+  assert(strconv.Int.parse("").isNone())
+  assert(strconv.Int.parse("x").isNone())
+  assert(strconv.Int.parse("2147483648").isNone())
 }

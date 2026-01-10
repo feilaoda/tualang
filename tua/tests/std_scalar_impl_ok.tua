@@ -1,19 +1,16 @@
 import "std/scalar"
 
 fn main() {
- 
- 
+
   let x: int = -3
-    assert(x.abs() == 3)
+  assert(x.abs() == 3)
 
- 
- 
   let y: long = -5L
-    assert(y.abs() == 5L)
+  assert(y.abs() == 5L)
 
-    assert("".isEmpty())
-    assert(!"a".isEmpty())
+  assert("".isEmpty())
+  assert(!"a".isEmpty())
 
-    assert(true.not2() == false)
-    assert(false.not2() == true)
+  assert(true.not2() == false)
+  assert(false.not2() == true)
 }

@@ -1,18 +1,12 @@
 fn makeAdder(n:int) -> (int) int {
- 
- 
+
   return fn(x:int) -> int {
- 
- 
- 
- 
- 
-   return x + n
- 
-   }
+
+    return x + n
+
+  }
 }
 
-
 fn main() {
-    assert(makeAdder(5)(10) == 15)
+  assert(makeAdder(5)(10) == 15)
 }

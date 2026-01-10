@@ -2,25 +2,19 @@ import "std/rt" as rt
 import "std/fs" as fs
 import "std/strconv" as strconv
 
-
-
 // Exercise a few std externs so the declarations exist.
 
-
 fn main() {
-    extern fn strlen(s: string) long
- 
- 
+  extern fn strlen(s: string) long
+
   let n = strlen("hello")
-    assert(n == 5)
- 
- 
+  assert(n == 5)
+
   let s, err = fs.Fs.realpath(".")
-    assert(err == 0)
-    rt.Rt.free(s)
- 
- 
+  assert(err == 0)
+  rt.Rt.free(s)
+
   let t = strconv.Int.toString(7)
-    assert(t == "7")
-    rt.Rt.free(t)
+  assert(t == "7")
+  rt.Rt.free(t)
 }

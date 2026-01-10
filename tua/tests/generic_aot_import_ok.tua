@@ -2,13 +2,10 @@ import "modules/generic_lib.tua" as lib
 
 struct S { a: int }
 
-
 fn main() {
- 
- 
+
   let s: S = S{ a: 7 }
- 
- 
+
   let s2: S = lib.id<S>(move s)
-    assert(s2.a == 7)
+  assert(s2.a == 7)
 }

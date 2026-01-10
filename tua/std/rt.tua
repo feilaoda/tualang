@@ -24,313 +24,161 @@ extern fn tua_workqueue_create(outWq: &ptr, threads: int) int
 extern fn tua_workqueue_free(wq: ptr)
 
 object Rt {
- 
- 
+
   fn free(p: ptr) {
- 
- 
- 
- 
- 
-   if p != null {
-            tua_free(p)
- 
-       }
- 
-   }
 
- 
- 
+    if p != null {
+      tua_free(p)
+
+    }
+
+  }
+
   fn deadlineAfterMs(ms: int) long {
- 
- 
- 
- 
- 
-   if ms <= 0 {
- 
- 
- 
- 
- 
-       return 0
- 
-       }
- 
- 
- 
- 
- 
-   return tua_deadline_after_ms(ms)
- 
-   }
 
- 
- 
+    if ms <= 0 {
+
+      return 0
+
+    }
+
+    return tua_deadline_after_ms(ms)
+
+  }
+
   fn monoNs() long {
- 
- 
- 
- 
- 
-   return tua_time_mono_ns()
- 
-   }
 
- 
- 
+    return tua_time_mono_ns()
+
+  }
+
   fn realNs() long {
- 
- 
- 
- 
- 
-   return tua_time_real_ns()
- 
-   }
 
- 
- 
+    return tua_time_real_ns()
+
+  }
+
   fn sleepNs(ns: long) {
- 
- 
- 
- 
- 
-   if ns <= 0 {
- 
- 
- 
- 
- 
-       return
- 
-       }
-        tua_sleep_ns(ns)
- 
-   }
 
- 
- 
+    if ns <= 0 {
+
+      return
+
+    }
+    tua_sleep_ns(ns)
+
+  }
+
   fn sleepMs(ms: int) {
- 
- 
- 
- 
- 
-   if ms <= 0 {
- 
- 
- 
- 
- 
-       return
- 
-       }
-        // Keep it simple; long is i64.
- 
- 
- 
- 
- 
-   let ns: long = ms
-        Rt.sleepNs(ns * 1000000)
- 
-   }
 
-    // Run `cb` on the loop thread after `delayMs`.
-    // Callback signature: `fn()`.
- 
- 
+    if ms <= 0 {
+
+      return
+
+    }
+    // Keep it simple; long is i64.
+
+    let ns: long = ms
+    Rt.sleepNs(ns * 1000000)
+
+  }
+
+  // Run `cb` on the loop thread after `delayMs`.
+  // Callback signature: `fn()`.
+
   fn afterMs(loop: ptr, delayMs: int, cb: () -> void) int {
- 
- 
- 
- 
- 
-   let d: long = delayMs
- 
- 
- 
- 
- 
-   return tua_timer_after_ms_cl(loop, d, cb)
- 
-   }
 
-    // Post `cb` onto the loop thread.
-    // Callback signature: `fn()`.
- 
- 
+    let d: long = delayMs
+
+    return tua_timer_after_ms_cl(loop, d, cb)
+
+  }
+
+  // Post `cb` onto the loop thread.
+  // Callback signature: `fn()`.
+
   fn post(loop: ptr, cb: () -> void) int {
- 
- 
- 
- 
- 
-   return tua_loop_post_cl(loop, cb)
- 
-   }
 
-    // Start a repeating timer; callback signature: `fn()`.
-    // Returns an opaque timer-handle `ptr` which must be cancelled to free resources.
- 
- 
+    return tua_loop_post_cl(loop, cb)
+
+  }
+
+  // Start a repeating timer; callback signature: `fn()`.
+  // Returns an opaque timer-handle `ptr` which must be cancelled to free resources.
+
   fn everyMs(loop: ptr, intervalMs: int, cb: () -> void) -> ptr {
- 
- 
- 
- 
- 
-   let h: ptr = null
- 
- 
- 
- 
- 
-   let d: long = intervalMs
- 
- 
- 
- 
- 
-   let err = tua_timer_every_ms_cl(loop, d, cb, &h)
- 
- 
- 
- 
- 
-   if err != 0 {
- 
- 
- 
- 
- 
-       return null
- 
-       }
- 
- 
- 
- 
- 
-   return h
- 
-   }
 
- 
- 
+    let h: ptr = null
+
+    let d: long = intervalMs
+
+    let err = tua_timer_every_ms_cl(loop, d, cb, &h)
+
+    if err != 0 {
+
+      return null
+
+    }
+
+    return h
+
+  }
+
   fn everyCancel(handle: ptr) {
-        tua_timer_every_cancel_cl(handle)
- 
-   }
+    tua_timer_every_cancel_cl(handle)
 
- 
- 
+  }
+
   fn loopCreate() -> ptr {
- 
- 
- 
- 
- 
-   let loop: ptr = null
- 
- 
- 
- 
- 
-   let err = tua_loop_create(&loop)
- 
- 
- 
- 
- 
-   if err != 0 {
- 
- 
- 
- 
- 
-       return null
- 
-       }
- 
- 
- 
- 
- 
-   return loop
- 
-   }
 
- 
- 
+    let loop: ptr = null
+
+    let err = tua_loop_create(&loop)
+
+    if err != 0 {
+
+      return null
+
+    }
+
+    return loop
+
+  }
+
   fn loopRun(loop: ptr) int {
- 
- 
- 
- 
- 
-   return tua_loop_run(loop)
- 
-   }
 
- 
- 
+    return tua_loop_run(loop)
+
+  }
+
   fn loopStop(loop: ptr) {
-        tua_loop_stop(loop)
- 
-   }
+    tua_loop_stop(loop)
 
- 
- 
+  }
+
   fn loopFree(loop: ptr) {
-        tua_loop_free(loop)
- 
-   }
+    tua_loop_free(loop)
 
- 
- 
+  }
+
   fn workqueueCreate(threads: int) -> ptr {
- 
- 
- 
- 
- 
-   let wq: ptr = null
- 
- 
- 
- 
- 
-   let err = tua_workqueue_create(&wq, threads)
- 
- 
- 
- 
- 
-   if err != 0 {
- 
- 
- 
- 
- 
-       return null
- 
-       }
- 
- 
- 
- 
- 
-   return wq
- 
-   }
 
- 
- 
+    let wq: ptr = null
+
+    let err = tua_workqueue_create(&wq, threads)
+
+    if err != 0 {
+
+      return null
+
+    }
+
+    return wq
+
+  }
+
   fn workqueueFree(wq: ptr) {
-        tua_workqueue_free(wq)
- 
-   }
+    tua_workqueue_free(wq)
+
+  }
 }

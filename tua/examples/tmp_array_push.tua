@@ -1,10 +1,9 @@
 fn main() {
- 
- 
+
   let s2:string[] = []
-    println(s2.len())
-    s2.push("?")
-    println(s2.len())
-    println(s2[0])
+  println(s2.len())
+  s2.push("?")
+  println(s2.len())
+  println(s2[0])
 }
 main()

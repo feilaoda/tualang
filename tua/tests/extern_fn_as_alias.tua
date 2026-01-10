@@ -1,24 +1,20 @@
-
 object Foo {
   fn atoi(s: string) int {
- 
- 
-  return c_atoi(s)
+
+    return c_atoi(s)
   }
 
   fn fib(n: int) int {
- 
- 
-  if n < 2 { return n }
- 
- 
-  return fib(n - 1) + fib(n - 2)
+
+    if n < 2 { return n }
+
+    return fib(n - 1) + fib(n - 2)
   }
 }
 
 extern fn atoi(s: string) int as c_atoi
 
 fn main() {
-    assert(Foo.atoi("10") == 10)
-    assert(Foo.fib(10) == 55)
+  assert(Foo.atoi("10") == 10)
+  assert(Foo.fib(10) == 55)
 }

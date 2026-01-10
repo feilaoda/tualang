@@ -10,10 +10,8 @@ impl HasId for S {
   fn id() -> int { return id + 1 }
 }
 
-
 fn main() {
- 
- 
+
   let v: HasId = S{ id: 2 }
-    assert(v.id() == 3)
+  assert(v.id() == 3)
 }

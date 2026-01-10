@@ -2,7 +2,6 @@ fn wrap<T>(x: map<string, T>) -> int {
   return 0
 }
 
-
 fn main() {
-    wrap({"a": 1})
+  wrap({"a": 1})
 }

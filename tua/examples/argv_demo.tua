@@ -3,6 +3,5 @@
 
 println(ARGV.len())
 for let i=0; i<ARGV.len(); i++ {
-    println(ARGV[i])
+  println(ARGV[i])
 }
-

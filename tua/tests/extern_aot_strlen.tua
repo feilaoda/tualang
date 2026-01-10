@@ -1,13 +1,11 @@
 import "std/rt" as rt
 
-
 // no allocations here; keep a std/rt import to ensure std path works in AOT tests
 
 fn main() {
-    extern fn strlen(s: string) long
- 
- 
+  extern fn strlen(s: string) long
+
   let n = strlen("hello")
-    assert(n == 5)
-    rt.Rt.sleepMs(0)
+  assert(n == 5)
+  rt.Rt.sleepMs(0)
 }

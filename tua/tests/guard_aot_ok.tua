@@ -1,34 +1,24 @@
 fn foo(ok:int) -> int,int {
- 
- 
+
   if ok == 1 {
- 
- 
- 
- 
- 
-   return 123, 0;
- 
-   }
- 
- 
+
+    return 123, 0;
+
+  }
+
   return 0, 7;
 }
 
 fn main(args: string[]) int {
-    // keep `args` to satisfy the AOT main signature
- 
- 
+  // keep `args` to satisfy the AOT main signature
+
   let a = foo(1) ? { return 1; }
- 
- 
+
   if a != 123 { return 2; }
 
-    // Error path: guard triggers and returns from main.
- 
- 
+  // Error path: guard triggers and returns from main.
+
   let b = foo(0) ? { return 0; }
- 
- 
+
   return b;
 }

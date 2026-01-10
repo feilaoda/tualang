@@ -1,12 +1,8 @@
-
-
 fn main() {
- 
- 
+
   let s:string = "hello" + " " + "world"
-    assert(s == "hello world")
- 
- 
+  assert(s == "hello world")
+
   let t:string = "x" + null
-    assert(t == "xnull")
+  assert(t == "xnull")
 }

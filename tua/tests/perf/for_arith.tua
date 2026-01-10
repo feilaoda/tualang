@@ -1,20 +1,16 @@
 fn main() {
- 
- 
+
   let n = 10000000
- 
- 
+
   let s:long = 0L
- 
- 
+
   let i = 0
- 
- 
+
   for i = 0; i < n; i++ {
-        // simple mix to avoid trivial elimination
-        s = s * 1664525L + i + 1013904223L
- 
-   }
-    assert(s != 0L)
-    println(s)
+    // simple mix to avoid trivial elimination
+    s = s * 1664525L + i + 1013904223L
+
+  }
+  assert(s != 0L)
+  println(s)
 }

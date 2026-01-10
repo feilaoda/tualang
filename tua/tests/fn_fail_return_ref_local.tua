@@ -9,5 +9,5 @@ fn bad() -> &Foo {
 }
 
 fn main() {
-    println(bad().x)
+  println(bad().x)
 }

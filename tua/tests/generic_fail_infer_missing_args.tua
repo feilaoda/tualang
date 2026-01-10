@@ -2,7 +2,6 @@ fn make<T>() -> T {
   return (T)0
 }
 
-
 fn main() {
-    make()
+  make()
 }

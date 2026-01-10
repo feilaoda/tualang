@@ -2,13 +2,10 @@ fn take(move m: map) -> int {
   return m.len()
 }
 
-
 fn main() {
- 
- 
+
   let x: map = { "a": 1 }
- 
- 
+
   let n = take(move x)
-    assert(n == 1)
+  assert(n == 1)
 }

@@ -1,20 +1,14 @@
-
-
 fn main() {
- 
- 
+
   let m: map = {}
-    m["a"] = 1
- 
- 
+  m["a"] = 1
+
   let o = m.get("a")
-    assert(o.isSome())
- 
- 
+  assert(o.isSome())
+
   let p = o.unwrap()
-    assert(p != null)
- 
- 
+  assert(p != null)
+
   let o2 = m.get("b")
-    assert(o2.isNone())
+  assert(o2.isNone())
 }

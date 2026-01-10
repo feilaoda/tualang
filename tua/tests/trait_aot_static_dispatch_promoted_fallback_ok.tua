@@ -8,9 +8,8 @@ struct Base {
 
 impl Base {
   fn id() -> int {
- 
- 
-  return id
+
+    return id
   }
 }
 
@@ -24,10 +23,8 @@ fn getId<T: HasId>(x: T) -> int {
   return x.id()
 }
 
-
 fn main() {
- 
- 
+
   let c: Child = Child{ base: Base{ id: 7 } }
-    assert(getId<Child>(c) == 7)
+  assert(getId<Child>(c) == 7)
 }

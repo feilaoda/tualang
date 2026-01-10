@@ -1,49 +1,34 @@
 fn foo(ok:int) -> int,int,int {
- 
- 
+
   if ok == 1 {
- 
- 
- 
- 
- 
-   return 7, 9, 0;
- 
-   }
- 
- 
+
+    return 7, 9, 0;
+
+  }
+
   return 0, 0, 5;
 }
 
 fn bar(ok:int) -> int,int {
-    // Forward the non-err multi-return results.
- 
- 
+  // Forward the non-err multi-return results.
+
   return foo(ok) ? { return 0, 0; }
 }
 
 fn main(args: string[]) int {
-    // keep `args` to satisfy the allowed main signature
- 
- 
+  // keep `args` to satisfy the allowed main signature
+
   let a, b = bar(1);
- 
- 
+
   if a != 7 { return 1; }
- 
- 
+
   if b != 9 { return 2; }
 
- 
- 
   let c, d = bar(0);
- 
- 
+
   if c != 0 { return 3; }
- 
- 
+
   if d != 0 { return 4; }
- 
- 
+
   return 0;
 }

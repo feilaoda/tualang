@@ -2,121 +2,68 @@
 // Based on `examples/models/qwen3-0.6b/tokenizer_config.json` (chat_template).
 
 object Qwen3Chat {
- 
- 
+
   fn singleWithSystem(systemContent: string, userContent: string, enableThinking: bool) -> string {
- 
- 
- 
- 
- 
-   let out: string = ""
- 
- 
- 
- 
- 
-   if systemContent != null {
-            out = out + "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
- 
-       }
-        out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
-        out = out + "<|im_start|>assistant\n"
-        // Match official template behavior:
-        // - enable_thinking=true: open <think> but do not close (model generates the content and closing tag).
-        // - enable_thinking=false: insert an empty <think> block to suppress reasoning.
- 
- 
- 
- 
- 
-   if enableThinking {
-            out = out + "<think>\n"
- 
-       } else {
-            out = out + "<think>\n\n</think>\n\n"
- 
-       }
- 
- 
- 
- 
- 
-   return out
- 
-   }
 
- 
- 
+    let out: string = ""
+
+    if systemContent != null {
+      out = out + "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
+
+    }
+    out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
+    out = out + "<|im_start|>assistant\n"
+    // Match official template behavior:
+    // - enable_thinking=true: open <think> but do not close (model generates the content and closing tag).
+    // - enable_thinking=false: insert an empty <think> block to suppress reasoning.
+
+    if enableThinking {
+      out = out + "<think>\n"
+
+    } else {
+      out = out + "<think>\n\n</think>\n\n"
+
+    }
+
+    return out
+
+  }
+
   fn single(userContent: string, enableThinking: bool) -> string {
- 
- 
- 
- 
- 
-   return Qwen3Chat.singleWithSystem(null, userContent, enableThinking)
- 
-   }
 
- 
- 
+    return Qwen3Chat.singleWithSystem(null, userContent, enableThinking)
+
+  }
+
   fn systemTurn(systemContent: string) -> string {
- 
- 
- 
- 
- 
-   if systemContent == null { return "" }
- 
- 
- 
- 
- 
-   return "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
- 
-   }
 
- 
- 
+    if systemContent == null { return "" }
+
+    return "<|im_start|>system\n" + systemContent + "<|im_end|>\n"
+
+  }
+
   fn userTurn(userContent: string, enableThinking: bool) -> string {
- 
- 
- 
- 
- 
-   let out: string = ""
-        out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
-        out = out + "<|im_start|>assistant\n"
- 
- 
- 
- 
- 
-   if enableThinking {
-            out = out + "<think>\n"
- 
-       } else {
-            out = out + "<think>\n\n</think>\n\n"
- 
-       }
- 
- 
- 
- 
- 
-   return out
- 
-   }
 
- 
- 
+    let out: string = ""
+    out = out + "<|im_start|>user\n" + userContent + "<|im_end|>\n"
+    out = out + "<|im_start|>assistant\n"
+
+    if enableThinking {
+      out = out + "<think>\n"
+
+    } else {
+      out = out + "<think>\n\n</think>\n\n"
+
+    }
+
+    return out
+
+  }
+
   fn assistantClose() -> string {
- 
- 
- 
- 
- 
-   return "<|im_end|>\n"
- 
-   }
+
+    return "<|im_end|>\n"
+
+  }
 }

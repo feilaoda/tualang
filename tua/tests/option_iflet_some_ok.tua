@@ -1,33 +1,25 @@
-
-
 fn main() {
- 
- 
+
   let o: Option<int> = Some(7)
- 
- 
+
   let x = 0
- 
- 
+
   if let Some(v) = o {
-      x = v
- 
-   }
-    assert(x == 7)
- 
- 
+    x = v
+
+  }
+  assert(x == 7)
+
   let o2: Option<int> = None()
- 
- 
+
   let y = 0
- 
- 
+
   if let Some(v2) = o2 {
-      y = v2
- 
-   } else {
-      y = 9
- 
-   }
-    assert(y == 9)
+    y = v2
+
+  } else {
+    y = 9
+
+  }
+  assert(y == 9)
 }

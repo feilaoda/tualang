@@ -1,44 +1,29 @@
 // Run with: `time ./bin/tuac examples/fib_perf.tua`
 // Increase `reps` to make it slower/heavier.
 
-
 fn fib(n:int) int {
- 
- 
+
   if n < 2 {
- 
- 
- 
- 
- 
-   return n
- 
-   }
- 
- 
+
+    return n
+
+  }
+
   let a = 0
- 
- 
+
   let b = 1
- 
- 
+
   let i = 2
- 
- 
+
   while i <= n {
- 
- 
- 
- 
- 
-   let c = a + b
-        a = b
-        b = c
-        i++
- 
-   }
- 
- 
+
+    let c = a + b
+    a = b
+    b = c
+    i++
+
+  }
+
   return b
 }
 
@@ -53,15 +38,12 @@ let reps = 50000000
 let i = 0
 let checksum = 0
 while i < reps {
-    checksum = checksum + fib(35)
- 
- 
+  checksum = checksum + fib(35)
+
   if checksum > 1000000000 {
-        checksum = checksum - 1000000000
- 
-   }
-    i++
+    checksum = checksum - 1000000000
+
+  }
+  i++
 }
 println(checksum)
-
-

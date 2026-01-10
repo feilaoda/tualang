@@ -1,4 +1,3 @@
 fn main() {
-    assert(false)
+  assert(false)
 }
-

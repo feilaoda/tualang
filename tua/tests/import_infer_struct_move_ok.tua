@@ -1,11 +1,9 @@
 import "modules/ret_struct_mod" as m
 
 fn main() {
- 
- 
+
   let x = m.make()
- 
- 
+
   let y = x
-    assert(m.getA(y) == 1)
+  assert(m.getA(y) == 1)
 }

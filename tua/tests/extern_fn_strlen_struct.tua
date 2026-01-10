@@ -1,29 +1,20 @@
-
 struct Foo {
-    x: string
-    y: long
- 
- 
+  x: string
+  y: long
+
   fn strlen() long {
-        println("strlen")
-        println(y)
- 
- 
- 
- 
- 
-   return strlen(x)
- 
-   }
+    println("strlen")
+    println(y)
+
+    return strlen(x)
+
+  }
 }
 
 extern fn strlen(s: string) long
 
-
-
 fn main() {
- 
- 
+
   let foo = Foo("abcd")
-    println(foo.strlen())
+  println(foo.strlen())
 }

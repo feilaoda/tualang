@@ -2,38 +2,27 @@ let i = 0
 let sum = 0
 
 while i < 10 {
-    i++
- 
- 
+  i++
+
   if i == 5 {
- 
- 
- 
- 
- 
-   continue
- 
-   }
- 
- 
+
+    continue
+
+  }
+
   if i == 8 {
- 
- 
- 
- 
- 
-   break
- 
-   }
-    sum = sum + i
+
+    break
+
+  }
+  sum = sum + i
 }
 
 println(sum)
 
 let j = 0
 do {
-    j++
+  j++
 } while j < 3
 
 println(j)
-

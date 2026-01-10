@@ -3,16 +3,13 @@ struct Foo {
 }
 
 fn main() {
- 
- 
+
   let foo: Foo = Foo()
-    foo.x = 1
- 
- 
+  foo.x = 1
+
   const a: &Foo = &foo
- 
- 
+
   const b: &Foo = &foo
-    assert(a.x == 1)
-    assert(b.x == 1)
+  assert(a.x == 1)
+  assert(b.x == 1)
 }

@@ -1,19 +1,13 @@
-
-
 fn main() {
- 
- 
+
   let m: map<string, int> = { "a": 1, "z": 2 }
- 
- 
+
   let v = m["a"]
- 
- 
+
   let v3:int = v.unwrap()
- 
- 
+
   let v4:int = v ?? 0
-    assert(v.isSome())
-    assert(v.unwrap() == 1)
-    assert(v == Some(1))
+  assert(v.isSome())
+  assert(v.unwrap() == 1)
+  assert(v == Some(1))
 }

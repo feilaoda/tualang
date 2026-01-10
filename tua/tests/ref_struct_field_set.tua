@@ -3,12 +3,10 @@ struct Foo {
 }
 
 fn main() {
- 
- 
+
   let foo: Foo = Foo()
- 
- 
+
   let r: &Foo = &foo
-    r.x = 1
-    assert(foo.x == 1)
+  r.x = 1
+  assert(foo.x == 1)
 }

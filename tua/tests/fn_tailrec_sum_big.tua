@@ -1,23 +1,16 @@
 fn sum(n:int, acc:long) -> long {
- 
- 
+
   if n == 0 {
- 
- 
- 
- 
- 
-   return acc
- 
-   }
- 
- 
+
+    return acc
+
+  }
+
   return sum(n - 1, acc + n)
 }
 
 fn main() {
- 
- 
+
   let r:long = sum(200000, 0L)
-    assert(r == 20000100000L)
+  assert(r == 20000100000L)
 }

@@ -2,13 +2,10 @@ fn take(move m: map) -> int {
   return m.len()
 }
 
-
 fn main() {
- 
- 
+
   let x: map = { "a": 1 }
- 
- 
+
   let n = take(x)
-    println(n)
+  println(n)
 }

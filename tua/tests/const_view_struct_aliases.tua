@@ -3,19 +3,15 @@ struct Foo {
 }
 
 fn main() {
- 
- 
+
   let a: Foo = Foo()
-    a.x = 1
-    {
- 
- 
- 
- 
-  const v = a
-      assert(v.x == 1)
- 
-   }
-    a.x = 2
-    assert(a.x == 2)
+  a.x = 1
+  {
+
+    const v = a
+    assert(v.x == 1)
+
+  }
+  a.x = 2
+  assert(a.x == 2)
 }

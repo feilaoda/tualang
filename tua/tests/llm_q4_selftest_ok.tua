@@ -3,11 +3,9 @@
 extern fn tua_llm_q4_0_selftest() int
 
 fn main(args: string[]) -> int {
- 
- 
+
   let e = tua_llm_q4_0_selftest()
-    assert(e == 0)
- 
- 
+  assert(e == 0)
+
   return 0
 }

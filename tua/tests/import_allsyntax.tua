@@ -1,6 +1,6 @@
 import "modules/import_mod"
 
 fn main() {
-    assert(A() == 1)
-    assert(B() == "ok")
+  assert(A() == 1)
+  assert(B() == "ok")
 }

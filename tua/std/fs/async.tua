@@ -7,64 +7,42 @@ extern fn tua_fs_readdir_async_cl(loop: ptr, wq: ptr, path: string, cb: (int, st
 extern fn tua_fs_string_array_free(names: string[])
 
 object FsAsync {
-    // Allocates a NUL-terminated buffer and reads the file. Buffer must be freed via `rt.Rt.free`.
-    // Callback signature: `fn(err:int, data:string, n:int)`.
- 
- 
+  // Allocates a NUL-terminated buffer and reads the file. Buffer must be freed via `rt.Rt.free`.
+  // Callback signature: `fn(err:int, data:string, n:int)`.
+
   fn readFile(loop: ptr, wq: ptr, path: string, cb: (int, string, int) -> void) int {
- 
- 
- 
- 
- 
-   return tua_fs_readfile_alloc_async_cl(loop, wq, path, cb)
- 
-   }
 
-    // Writes a string to a file (truncate). Callback signature: `fn(err:int, _:ptr)`.
- 
- 
+    return tua_fs_readfile_alloc_async_cl(loop, wq, path, cb)
+
+  }
+
+  // Writes a string to a file (truncate). Callback signature: `fn(err:int, _:ptr)`.
+
   fn writeFile(loop: ptr, wq: ptr, path: string, data: string, cb: (int, ptr) -> void) int {
- 
- 
- 
- 
- 
-   return tua_fs_writefile_str_async_cl(loop, wq, path, data, cb)
- 
-   }
 
-    // Callback signature: `fn(err:int, kind:int, size:long, mtimeNs:long, mode:int)`.
- 
- 
+    return tua_fs_writefile_str_async_cl(loop, wq, path, data, cb)
+
+  }
+
+  // Callback signature: `fn(err:int, kind:int, size:long, mtimeNs:long, mode:int)`.
+
   fn stat(loop: ptr, wq: ptr, path: string, cb: (int, int, long, long, int) -> void) int {
- 
- 
- 
- 
- 
-   return tua_fs_stat_async_cl(loop, wq, path, cb)
- 
-   }
 
-    // Callback signature: `fn(err:int, names:string[])`.
-    // The returned array owns its strings; free via `FsAsync.freeStringArray`.
- 
- 
+    return tua_fs_stat_async_cl(loop, wq, path, cb)
+
+  }
+
+  // Callback signature: `fn(err:int, names:string[])`.
+  // The returned array owns its strings; free via `FsAsync.freeStringArray`.
+
   fn readdir(loop: ptr, wq: ptr, path: string, cb: (int, string[]) -> void) int {
- 
- 
- 
- 
- 
-   return tua_fs_readdir_async_cl(loop, wq, path, cb)
- 
-   }
 
- 
- 
+    return tua_fs_readdir_async_cl(loop, wq, path, cb)
+
+  }
+
   fn freeStringArray(names: string[]) {
-        tua_fs_string_array_free(names)
- 
-   }
+    tua_fs_string_array_free(names)
+
+  }
 }

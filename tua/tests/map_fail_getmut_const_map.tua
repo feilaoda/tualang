@@ -2,15 +2,12 @@ struct S {
   a: int
 }
 
-
 // Cannot take mutable element reference from a const map.
 
 fn main() {
- 
- 
+
   const m: map<string, S> = { "x": S{ a: 1 } }
- 
- 
+
   let r = m.getMut("x").unwrap()
-    println(r.a)
+  println(r.a)
 }

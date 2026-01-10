@@ -3,9 +3,8 @@ struct A {
 
 impl A {
   fn f() -> int {
- 
- 
-  return 1
+
+    return 1
   }
 }
 
@@ -14,9 +13,8 @@ struct B {
 
 impl B {
   fn f() -> int {
- 
- 
-  return 2
+
+    return 2
   }
 }
 
@@ -26,8 +24,7 @@ struct C {
 }
 
 fn main() {
- 
- 
+
   let c: C = C{ a: A{}, b: B{} }
-    println(c.f()) // ambiguous: must write c.a.f() or c.b.f()
+  println(c.f()) // ambiguous: must write c.a.f() or c.b.f()
 }

@@ -1,6 +1,5 @@
 fn main() {
-    a:int = 1
-    b:int = a + 2
-    assert(b == 3)
+  a:int = 1
+  b:int = a + 2
+  assert(b == 3)
 }
-

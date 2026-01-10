@@ -1,15 +1,11 @@
-
 // cannot move because `s` still borrows `a`
 
 fn main() {
- 
- 
+
   let a: int[] = {1, 2, 3}
- 
- 
+
   let s: Slice<int> = a.slice(0L, 1L)
- 
- 
+
   let a2 = a
-    println(s.len())
+  println(s.len())
 }

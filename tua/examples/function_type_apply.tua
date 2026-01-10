@@ -1,18 +1,15 @@
 fn apply(x:int, f:(int)->int) -> int {
- 
- 
+
   return f(x)
 }
 
 let add10: (int) -> int = fn(x:int) -> int {
- 
- 
+
   return x + 10
 }
 
 fn add10_2(x:int) -> int {
- 
- 
+
   return x + 10
 }
 
@@ -20,85 +17,56 @@ println(apply(5, add10))
 println(apply(7, fn(x:int) -> int { return x * 2 }))
 //println(apply(8, add10_2))
 
-
 fn foo(x:int) -> int {
- 
- 
+
   return x + 10
 }
 fn foo1(x:int) -> int {
- 
- 
+
   return x + 10
 }
 
-
 fn bar(x:int) -> (int) -> int {
- 
- 
+
   return fn (y) -> int {
- 
- 
- 
- 
- 
-   return 0
- 
-   }
+
+    return 0
+
+  }
 }
 // Return function type sugar: `(int) int` == `(int) -> int`
 fn bar_sugar(x:int) -> (int) int {
- 
- 
+
   return fn (y:int) int {
- 
- 
- 
- 
- 
-   return y + x
- 
-   }
+
+    return y + x
+
+  }
 }
 
 fn bar2(x:int) -> (int) int {
- 
- 
+
   return fn (x)-> int {
- 
- 
- 
- 
- 
-   return x + 10
- 
-   }
+
+    return x + 10
+
+  }
 }
 
 fn bar3(x:int) -> (int) -> (int) int {
- 
- 
+
   return fn (x:int) -> (int) int {
- 
- 
- 
- 
- 
-   return fn (y:int) int {
- 
- 
- 
- 
- 
-       return x + y
- 
-       }
- 
-   }
+
+    return fn (y:int) int {
+
+      return x + y
+
+    }
+
+  }
 }
 
 let f:(int)->int = fn (x:int) int {
- 
- 
+
   return x + 10
 }

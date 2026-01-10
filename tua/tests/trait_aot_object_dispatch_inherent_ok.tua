@@ -12,10 +12,8 @@ impl S {
 
 impl HasId for S {}
 
-
 fn main() {
- 
- 
+
   let v: HasId = S{ id: 11 }
-    assert(v.id() == 11)
+  assert(v.id() == 11)
 }

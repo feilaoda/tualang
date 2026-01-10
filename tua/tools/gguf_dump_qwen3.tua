@@ -1,23 +1,23 @@
 import Gguf from "../packages/llm/gguf"
 
 fn main(args: string[]) -> int {
-    let modelDir = "examples/models/qwen3-4b-q4km"
-    if args != null && args.len() >= 2 { modelDir = args[1] }
-    let tensorName: string = "output_norm.weight"
-    if args != null && args.len() >= 3 { tensorName = args[2] }
+  let modelDir = "examples/models/qwen3-4b-q4km"
+  if args != null && args.len() >= 2 { modelDir = args[1] }
+  let tensorName: string = "output_norm.weight"
+  if args != null && args.len() >= 3 { tensorName = args[2] }
 
-    let fe, ggufPath = Gguf.findMainFile(modelDir)
-    println("findMainFile: e={} path={}", fe, ggufPath)
-    if fe != 0 { return 1 }
+  let fe, ggufPath = Gguf.findMainFile(modelDir)
+  println("findMainFile: e={} path={}", fe, ggufPath)
+  if fe != 0 { return 1 }
 
-    let ge, g = Gguf.parseMmap(ggufPath, 0)
-    println("parseMmap: e={} ver={} tensors={} kv={} align={} dataStart={} embd={} ffn={} layers={} heads={} kvHeads={} headDim={}", ge, g.version, g.tensorCount, g.kvCount, g.alignment, g.dataStart, g.embd, g.ffn, g.blockCount, g.heads, g.kvHeads, g.headDim)
-    if ge != 0 { return 1 }
+  let ge, g = Gguf.parseMmap(ggufPath, 0)
+  println("parseMmap: e={} ver={} tensors={} kv={} align={} dataStart={} embd={} ffn={} layers={} heads={} kvHeads={} headDim={}", ge, g.version, g.tensorCount, g.kvCount, g.alignment, g.dataStart, g.embd, g.ffn, g.blockCount, g.heads, g.kvHeads, g.headDim)
+  if ge != 0 { return 1 }
 
-    let e0, ti0 = Gguf.tensorInfo(g, tensorName)
-    println("{}: e={} t={} nd={} d0={} d1={} off={}", tensorName, e0, ti0.t, ti0.nd, ti0.d0, ti0.d1, ti0.off)
+  let e0, ti0 = Gguf.tensorInfo(g, tensorName)
+  println("{}: e={} t={} nd={} d0={} d1={} off={}", tensorName, e0, ti0.t, ti0.nd, ti0.d0, ti0.d1, ti0.off)
 
-    let e1, ti1 = Gguf.tensorInfo(g, "token_embd.weight")
-    println("token_embd.weight: e={} t={} nd={} d0={} d1={} off={}", e1, ti1.t, ti1.nd, ti1.d0, ti1.d1, ti1.off)
-    return 0
+  let e1, ti1 = Gguf.tensorInfo(g, "token_embd.weight")
+  println("token_embd.weight: e={} t={} nd={} d0={} d1={} off={}", e1, ti1.t, ti1.nd, ti1.d0, ti1.d1, ti1.off)
+  return 0
 }

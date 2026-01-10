@@ -7,121 +7,62 @@ extern fn tua_parse_double(s: string, out: &double) int
 extern fn atoi(s: string) -> int
 
 object Int {
-    // Parse base-10 int. Returns None() on invalid input or overflow.
- 
- 
+  // Parse base-10 int. Returns None() on invalid input or overflow.
+
   fn parse(s: string) -> Option<int> {
- 
- 
- 
- 
- 
-   let out: int = 0
- 
- 
- 
- 
- 
-   if tua_parse_int(s, &out) {
- 
- 
- 
- 
- 
-       return Some(out)
- 
-       }
- 
- 
- 
- 
- 
-   return None()
- 
-   }
 
- 
- 
+    let out: int = 0
+
+    if tua_parse_int(s, &out) {
+
+      return Some(out)
+
+    }
+
+    return None()
+
+  }
+
   fn toString(i: int) -> string {
- 
- 
- 
- 
- 
-   return tua_int_to_string_alloc(i)
- 
-   }
 
- 
- 
+    return tua_int_to_string_alloc(i)
+
+  }
+
   fn atoi(s: string) -> int {
- 
- 
- 
- 
- 
-   return atoi(s)
- 
-   }
+
+    return atoi(s)
+
+  }
 }
 
 object Double {
-    // Parse decimal float. Returns None() on invalid input.
- 
- 
+  // Parse decimal float. Returns None() on invalid input.
+
   fn parse(s: string) -> Option<double> {
- 
- 
- 
- 
- 
-   let out: double = 0.0
- 
- 
- 
- 
- 
-   if tua_parse_double(s, &out) {
- 
- 
- 
- 
- 
-       return Some(out)
- 
-       }
- 
- 
- 
- 
- 
-   return None()
- 
-   }
+
+    let out: double = 0.0
+
+    if tua_parse_double(s, &out) {
+
+      return Some(out)
+
+    }
+
+    return None()
+
+  }
 }
 
 object Float {
- 
- 
+
   fn parse(s: string) -> Option<float> {
- 
- 
- 
- 
- 
-   let o = Double.parse(s)
- 
- 
- 
- 
- 
-   if o.isNone() { return None() }
- 
- 
- 
- 
- 
-   return Some((float)o.unwrap())
- 
-   }
+
+    let o = Double.parse(s)
+
+    if o.isNone() { return None() }
+
+    return Some((float)o.unwrap())
+
+  }
 }

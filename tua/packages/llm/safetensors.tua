@@ -5,1872 +5,856 @@ extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
 extern fn tua_str_from_bytes_copy(b: bytes, off: long, len: long) string
 
 enum SafeDtype {
-    float32 = 0,
-    float16 = 1,
-    bfloat16 = 2,
-    int64 = 3,
-    uint8 = 4,
+  float32 = 0,
+  float16 = 1,
+  bfloat16 = 2,
+  int64 = 3,
+  uint8 = 4,
 }
 
 struct TensorInfo {
-    // Deprecated: prefer using the per-tensor record `map` returned by `tensorInfo`.
-    // Kept as a placeholder for future typed APIs.
-    _dummy: int = 0
+  // Deprecated: prefer using the per-tensor record `map` returned by `tensorInfo`.
+  // Kept as a placeholder for future typed APIs.
+  _dummy: int = 0
 }
 
 struct SafeTensorsFile {
-    data: bytes
-    headerLen: long
-    tensors: map // string -> map (scalar fields only)
-    metadata: map
+  data: bytes
+  headerLen: long
+  tensors: map // string -> map (scalar fields only)
+  metadata: map
 }
 
 private fn _dtypeFromString(s: string) -> int, int {
- 
- 
+
   if s == "F32" { return SafeDtype.float32, 0}
- 
- 
+
   if s == "F16" { return SafeDtype.float16, 0}
- 
- 
+
   if s == "BF16" { return SafeDtype.bfloat16, 0}
- 
- 
+
   if s == "I64" { return SafeDtype.int64, 0}
- 
- 
+
   if s == "U8" { return SafeDtype.uint8, 0}
- 
- 
+
   return 0, 1
 }
 
 private fn _isWs(c: int) -> bool {
- 
- 
+
   return c == 32 || c == 10 || c == 13 || c == 9
 }
 
 private fn _readU64LE(b: bytes, off: long) -> long, int{
- 
- 
+
   let v, e = bstd.Bytes.readU64LE(b, off)
- 
- 
+
   if e != 0 { return 0L, e}
- 
- 
+
   return (long)v, 0
 }
 
 private fn _skipWs(b: bytes, pos: long, n: long) -> long, int{
- 
- 
+
   let i = pos
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= n { break }
- 
- 
- 
- 
- 
-   let c, e = bstd.Bytes.getU8(b, i)
- 
- 
- 
- 
- 
-   if e != 0 { return pos, 1}
- 
- 
- 
- 
- 
-   if !_isWs(c) { break }
-        i = i + 1L
- 
-   }
- 
- 
+
+    if i >= n { break }
+
+    let c, e = bstd.Bytes.getU8(b, i)
+
+    if e != 0 { return pos, 1}
+
+    if !_isWs(c) { break }
+    i = i + 1L
+
+  }
+
   return i, 0
 }
 
 private fn _expectByte(b: bytes, pos: long, n: long, want: int) -> long, int{
- 
- 
+
   if pos >= n { return pos, 1}
- 
- 
+
   let c, e = bstd.Bytes.getU8(b, pos)
- 
- 
+
   if e != 0 { return pos, 1}
- 
- 
+
   if c != want { return pos, 1}
- 
- 
+
   return pos + 1L, 0
 }
 
 private fn _scanStringEnd(b: bytes, pos: long, n: long) -> long, bool, int{
-    // pos points at '"'
- 
- 
+  // pos points at '"'
+
   if pos >= n { return pos, false, 1}
- 
- 
+
   let q, e0 = bstd.Bytes.getU8(b, pos)
- 
- 
+
   if e0 != 0 { return pos, false, 1}
- 
- 
+
   if q != 34 { return pos, false, 1}
 
- 
- 
   let i = pos + 1L
- 
- 
+
   let hasEsc = false
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= n { break }
- 
- 
- 
- 
- 
-   let c, ei = bstd.Bytes.getU8(b, i)
- 
- 
- 
- 
- 
-   if ei != 0 { return pos, false, 1}
- 
- 
- 
- 
- 
-   if c == 92 { // '\\'
-            hasEsc = true
- 
- 
- 
- 
- 
-       if i + 1L >= n { return pos, false, 1}
-            i = i + 2L
- 
- 
- 
- 
- 
-       continue
- 
-       }
- 
- 
- 
- 
- 
-   if c == 34 { // '"'
- 
- 
- 
- 
- 
-       return i, hasEsc, 0
- 
-       }
-        i = i + 1L
- 
-   }
- 
- 
+
+    if i >= n { break }
+
+    let c, ei = bstd.Bytes.getU8(b, i)
+
+    if ei != 0 { return pos, false, 1}
+
+    if c == 92 { // '\\'
+      hasEsc = true
+
+      if i + 1L >= n { return pos, false, 1}
+      i = i + 2L
+
+      continue
+
+    }
+
+    if c == 34 { // '"'
+
+      return i, hasEsc, 0
+
+    }
+    i = i + 1L
+
+  }
+
   return pos, false, 1
 }
 
 private fn _parseString(b: bytes, pos: long, n: long) -> string, long, int{
- 
- 
+
   let end, hasEsc, e = _scanStringEnd(b, pos, n)
- 
- 
+
   if e != 0 { return null, pos, 1}
 
- 
- 
   let rawOff = pos + 1L
- 
- 
-  let rawLen = end - rawOff
- 
- 
-  if !hasEsc {
- 
- 
- 
- 
- 
-   let s = tua_str_from_bytes_copy(b, rawOff, rawLen)
- 
- 
- 
- 
- 
-   return s, end + 1L, 0
- 
-   }
 
-    // Unescape a small subset sufficient for safetensors headers.
- 
- 
+  let rawLen = end - rawOff
+
+  if !hasEsc {
+
+    let s = tua_str_from_bytes_copy(b, rawOff, rawLen)
+
+    return s, end + 1L, 0
+
+  }
+
+  // Unescape a small subset sufficient for safetensors headers.
+
   let tmp = bstd.Bytes.new((int)rawLen)
- 
- 
+
   let outLen: long = 0L
- 
- 
+
   let i = rawOff
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= end { break }
- 
- 
- 
- 
- 
-   let c, ei = bstd.Bytes.getU8(b, i)
- 
- 
- 
- 
- 
-   if ei != 0 { return null, pos, 1}
- 
- 
- 
- 
- 
-   if c != 92 {
-            bstd.Bytes.setU8(tmp, outLen, c)
-            outLen = outLen + 1L
-            i = i + 1L
- 
- 
- 
- 
- 
-       continue
- 
-       }
- 
- 
- 
- 
- 
-   if i + 1L >= end { return null, pos, 1}
- 
- 
- 
- 
- 
-   let esc, ee = bstd.Bytes.getU8(b, i + 1L)
- 
- 
- 
- 
+
+    if i >= end { break }
+
+    let c, ei = bstd.Bytes.getU8(b, i)
+
+    if ei != 0 { return null, pos, 1}
+
+    if c != 92 {
+      bstd.Bytes.setU8(tmp, outLen, c)
+      outLen = outLen + 1L
+      i = i + 1L
+
+      continue
+
+    }
+
+    if i + 1L >= end { return null, pos, 1}
+
+    let esc, ee = bstd.Bytes.getU8(b, i + 1L)
+
     if ee != 0 { return null, pos, 1}
- 
- 
- 
- 
- 
-   if esc == 34 { bstd.Bytes.setU8(tmp, outLen, 34); outLen = outLen + 1L; i = i + 2L; continue } // \"
- 
- 
- 
- 
- 
-   if esc == 92 { bstd.Bytes.setU8(tmp, outLen, 92); outLen = outLen + 1L; i = i + 2L; continue } // \\
- 
- 
- 
- 
- 
-   if esc == 47 { bstd.Bytes.setU8(tmp, outLen, 47); outLen = outLen + 1L; i = i + 2L; continue } // \/
- 
- 
- 
- 
- 
-   if esc == 98 { bstd.Bytes.setU8(tmp, outLen, 8); outLen = outLen + 1L; i = i + 2L; continue }  // \b
- 
- 
- 
- 
- 
-   if esc == 102 { bstd.Bytes.setU8(tmp, outLen, 12); outLen = outLen + 1L; i = i + 2L; continue } // \f
- 
- 
- 
- 
- 
-   if esc == 110 { bstd.Bytes.setU8(tmp, outLen, 10); outLen = outLen + 1L; i = i + 2L; continue } // \n
- 
- 
- 
- 
- 
-   if esc == 114 { bstd.Bytes.setU8(tmp, outLen, 13); outLen = outLen + 1L; i = i + 2L; continue } // \r
- 
- 
- 
- 
- 
-   if esc == 116 { bstd.Bytes.setU8(tmp, outLen, 9); outLen = outLen + 1L; i = i + 2L; continue }  // \t
-        // \uXXXX not expected in tensor names/dtype; reject for now.
- 
- 
- 
- 
- 
-   return null, pos, 1
- 
-   }
- 
- 
+
+    if esc == 34 { bstd.Bytes.setU8(tmp, outLen, 34); outLen = outLen + 1L; i = i + 2L; continue } // \"
+
+    if esc == 92 { bstd.Bytes.setU8(tmp, outLen, 92); outLen = outLen + 1L; i = i + 2L; continue } // \\
+
+    if esc == 47 { bstd.Bytes.setU8(tmp, outLen, 47); outLen = outLen + 1L; i = i + 2L; continue } // \/
+
+    if esc == 98 { bstd.Bytes.setU8(tmp, outLen, 8); outLen = outLen + 1L; i = i + 2L; continue }  // \b
+
+    if esc == 102 { bstd.Bytes.setU8(tmp, outLen, 12); outLen = outLen + 1L; i = i + 2L; continue } // \f
+
+    if esc == 110 { bstd.Bytes.setU8(tmp, outLen, 10); outLen = outLen + 1L; i = i + 2L; continue } // \n
+
+    if esc == 114 { bstd.Bytes.setU8(tmp, outLen, 13); outLen = outLen + 1L; i = i + 2L; continue } // \r
+
+    if esc == 116 { bstd.Bytes.setU8(tmp, outLen, 9); outLen = outLen + 1L; i = i + 2L; continue }  // \t
+    // \uXXXX not expected in tensor names/dtype; reject for now.
+
+    return null, pos, 1
+
+  }
+
   let s = tua_str_from_bytes_copy(tmp, 0L, outLen)
- 
- 
+
   return s, end + 1L, 0
 }
 
 private fn _skipString(b: bytes, pos: long, n: long) -> long, int{
- 
- 
+
   let end, _, e = _scanStringEnd(b, pos, n)
- 
- 
+
   if e != 0 { return pos, 1}
- 
- 
+
   return end + 1L, 0
 }
 
 private fn _isDigit(c: int) -> bool { return c >= 48 && c <= 57 }
 
 private fn _parseInt(b: bytes, pos: long, n: long) -> long, long, int{
- 
- 
+
   let i = pos
- 
- 
+
   if i >= n { return 0L, pos, 1}
- 
- 
+
   let c0, e0 = bstd.Bytes.getU8(b, i)
- 
- 
+
   if e0 != 0 { return 0L, pos, 1}
- 
- 
+
   let sign: long = 1L
- 
- 
+
   if c0 == 45 { sign = -1L; i = i + 1L }
- 
- 
+
   if i >= n { return 0L, pos, 1}
- 
- 
+
   let c1, e1 = bstd.Bytes.getU8(b, i)
- 
- 
+
   if e1 != 0 { return 0L, pos, 1}
- 
- 
+
   if !_isDigit(c1) { return 0L, pos, 1}
 
- 
- 
   let v: long = 0L
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= n { break }
- 
- 
- 
- 
- 
-   let c, ei = bstd.Bytes.getU8(b, i)
- 
- 
- 
- 
- 
-   if ei != 0 { return 0L, pos, 1}
- 
- 
- 
- 
- 
-   if !_isDigit(c) { break }
-        v = (v * 10L) + (long)(c - 48)
-        i = i + 1L
- 
-   }
- 
- 
+
+    if i >= n { break }
+
+    let c, ei = bstd.Bytes.getU8(b, i)
+
+    if ei != 0 { return 0L, pos, 1}
+
+    if !_isDigit(c) { break }
+    v = (v * 10L) + (long)(c - 48)
+    i = i + 1L
+
+  }
+
   return v * sign, i, 0
 }
 
 private fn _skipLiteral(b: bytes, pos: long, n: long, lit: int[]) -> long, int{
- 
- 
+
   let i: long = 0L
- 
- 
+
   while true {
- 
- 
- 
- 
- 
-   if i >= (long)lit.len() { break }
- 
- 
- 
- 
- 
-   let p = pos + i
- 
- 
- 
- 
- 
-   if p >= n { return pos, 1}
- 
- 
- 
- 
- 
-   let c, e = bstd.Bytes.getU8(b, p)
- 
- 
- 
- 
- 
-   if e != 0 { return pos, 1}
- 
- 
- 
- 
- 
-   if c != lit[(int)i] { return pos, 1}
-        i = i + 1L
- 
-   }
- 
- 
+
+    if i >= (long)lit.len() { break }
+
+    let p = pos + i
+
+    if p >= n { return pos, 1}
+
+    let c, e = bstd.Bytes.getU8(b, p)
+
+    if e != 0 { return pos, 1}
+
+    if c != lit[(int)i] { return pos, 1}
+    i = i + 1L
+
+  }
+
   return pos + (long)lit.len(), 0
 }
 
 private fn _skipValue(b: bytes, pos: long, n: long) -> long, int{
- 
- 
+
   let i0, e0 = _skipWs(b, pos, n)
- 
- 
+
   if e0 != 0 { return pos, 1}
- 
- 
+
   if i0 >= n { return pos, 1}
- 
- 
+
   let c, ec = bstd.Bytes.getU8(b, i0)
- 
- 
+
   if ec != 0 { return pos, 1}
 
- 
- 
   if c == 34 {
- 
- 
- 
- 
- 
-   let p, es = _skipString(b, i0, n)
- 
- 
- 
- 
-    return p, es
- 
-   } // '"'
- 
- 
-  if c == 45 || _isDigit(c) {
- 
- 
- 
- 
- 
-   let _, j, en = _parseInt(b, i0, n)
- 
- 
- 
- 
-    if en != 0 { return pos, 1}
- 
- 
- 
- 
- 
-   return j, 0
- 
-   }
- 
- 
-  if c == 116 { // 't'
- 
- 
- 
- 
- 
-   let lit:int[] = {116,114,117,101} // true
- 
- 
- 
- 
- 
-   let p, el = _skipLiteral(b, i0, n, lit)
- 
- 
- 
- 
-    return p, el
- 
-   }
- 
- 
-  if c == 102 { // 'f'
- 
- 
- 
- 
- 
-   let lit:int[] = {102,97,108,115,101} // false
- 
- 
- 
- 
- 
-   let p, el = _skipLiteral(b, i0, n, lit)
- 
- 
- 
- 
-    return p, el
- 
-   }
- 
- 
-  if c == 110 { // 'n'
- 
- 
- 
- 
- 
-   let lit:int[] = {110,117,108,108} // null
- 
- 
- 
- 
- 
-   let p, el = _skipLiteral(b, i0, n, lit)
- 
- 
- 
- 
-    return p, el
- 
-   }
- 
- 
-  if c == 123 { // '{'
- 
- 
- 
- 
- 
-   let i, e1 = _expectByte(b, i0, n, 123)
- 
- 
- 
- 
-    if e1 != 0 { return pos, 1}
- 
- 
- 
- 
- 
-   while true {
- 
- 
- 
- 
- 
-       let p, ew = _skipWs(b, i, n)
- 
- 
- 
- 
-        if ew != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if p >= n { return pos, 1}
- 
- 
- 
- 
- 
-       let kch, ek = bstd.Bytes.getU8(b, p)
- 
- 
- 
- 
- 
-       if ek != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if kch == 125 { return p + 1L, 0} // '}'
-            // key
- 
- 
- 
- 
- 
-       let _, p2, es = _parseString(b, p, n)
- 
- 
- 
- 
-        if es != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       let p3, ew2 = _skipWs(b, p2, n)
- 
- 
- 
- 
-        if ew2 != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       let p4, ec2 = _expectByte(b, p3, n, 58) // ':'
- 
- 
- 
- 
-        if ec2 != 0 { return pos, 1}
-            // value
- 
- 
- 
- 
- 
-       let p5, ev = _skipValue(b, p4, n)
- 
- 
- 
- 
-        if ev != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       let p6, ew3 = _skipWs(b, p5, n)
- 
- 
- 
- 
-        if ew3 != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if p6 >= n { return pos, 1}
- 
- 
- 
- 
- 
-       let d, ed = bstd.Bytes.getU8(b, p6)
- 
- 
- 
- 
- 
-       if ed != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if d == 44 { i = p6 + 1L; continue } // ','
- 
- 
- 
- 
- 
-       if d == 125 { return p6 + 1L, 0} // '}'
- 
- 
- 
- 
- 
-       return pos, 1
- 
-       }
- 
-   }
- 
- 
-  if c == 91 { // '['
- 
- 
- 
- 
- 
-   let i, e1 = _expectByte(b, i0, n, 91)
- 
- 
- 
- 
-    if e1 != 0 { return pos, 1}
- 
- 
- 
- 
- 
-   while true {
- 
- 
- 
- 
- 
-       let p, ew = _skipWs(b, i, n)
- 
- 
- 
- 
-        if ew != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if p >= n { return pos, 1}
- 
- 
- 
- 
- 
-       let ch, ek = bstd.Bytes.getU8(b, p)
- 
- 
- 
- 
- 
-       if ek != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if ch == 93 { return p + 1L, 0} // ']'
- 
- 
- 
- 
- 
-       let p2, ev = _skipValue(b, p, n)
- 
- 
- 
- 
-        if ev != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       let p3, ew2 = _skipWs(b, p2, n)
- 
- 
- 
- 
-        if ew2 != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if p3 >= n { return pos, 1}
- 
- 
- 
- 
- 
-       let d, ed = bstd.Bytes.getU8(b, p3)
- 
- 
- 
- 
- 
-       if ed != 0 { return pos, 1}
- 
- 
- 
- 
- 
-       if d == 44 { i = p3 + 1L; continue } // ','
- 
- 
- 
- 
- 
-       if d == 93 { return p3 + 1L, 0} // ']'
- 
- 
- 
- 
- 
-       return pos, 1
- 
-       }
- 
-   }
 
- 
- 
+    let p, es = _skipString(b, i0, n)
+
+    return p, es
+
+  } // '"'
+
+  if c == 45 || _isDigit(c) {
+
+    let _, j, en = _parseInt(b, i0, n)
+
+    if en != 0 { return pos, 1}
+
+    return j, 0
+
+  }
+
+  if c == 116 { // 't'
+
+    let lit:int[] = {116,114,117,101} // true
+
+    let p, el = _skipLiteral(b, i0, n, lit)
+
+    return p, el
+
+  }
+
+  if c == 102 { // 'f'
+
+    let lit:int[] = {102,97,108,115,101} // false
+
+    let p, el = _skipLiteral(b, i0, n, lit)
+
+    return p, el
+
+  }
+
+  if c == 110 { // 'n'
+
+    let lit:int[] = {110,117,108,108} // null
+
+    let p, el = _skipLiteral(b, i0, n, lit)
+
+    return p, el
+
+  }
+
+  if c == 123 { // '{'
+
+    let i, e1 = _expectByte(b, i0, n, 123)
+
+    if e1 != 0 { return pos, 1}
+
+    while true {
+
+      let p, ew = _skipWs(b, i, n)
+
+      if ew != 0 { return pos, 1}
+
+      if p >= n { return pos, 1}
+
+      let kch, ek = bstd.Bytes.getU8(b, p)
+
+      if ek != 0 { return pos, 1}
+
+      if kch == 125 { return p + 1L, 0} // '}'
+      // key
+
+      let _, p2, es = _parseString(b, p, n)
+
+      if es != 0 { return pos, 1}
+
+      let p3, ew2 = _skipWs(b, p2, n)
+
+      if ew2 != 0 { return pos, 1}
+
+      let p4, ec2 = _expectByte(b, p3, n, 58) // ':'
+
+      if ec2 != 0 { return pos, 1}
+      // value
+
+      let p5, ev = _skipValue(b, p4, n)
+
+      if ev != 0 { return pos, 1}
+
+      let p6, ew3 = _skipWs(b, p5, n)
+
+      if ew3 != 0 { return pos, 1}
+
+      if p6 >= n { return pos, 1}
+
+      let d, ed = bstd.Bytes.getU8(b, p6)
+
+      if ed != 0 { return pos, 1}
+
+      if d == 44 { i = p6 + 1L; continue } // ','
+
+      if d == 125 { return p6 + 1L, 0} // '}'
+
+      return pos, 1
+
+    }
+
+  }
+
+  if c == 91 { // '['
+
+    let i, e1 = _expectByte(b, i0, n, 91)
+
+    if e1 != 0 { return pos, 1}
+
+    while true {
+
+      let p, ew = _skipWs(b, i, n)
+
+      if ew != 0 { return pos, 1}
+
+      if p >= n { return pos, 1}
+
+      let ch, ek = bstd.Bytes.getU8(b, p)
+
+      if ek != 0 { return pos, 1}
+
+      if ch == 93 { return p + 1L, 0} // ']'
+
+      let p2, ev = _skipValue(b, p, n)
+
+      if ev != 0 { return pos, 1}
+
+      let p3, ew2 = _skipWs(b, p2, n)
+
+      if ew2 != 0 { return pos, 1}
+
+      if p3 >= n { return pos, 1}
+
+      let d, ed = bstd.Bytes.getU8(b, p3)
+
+      if ed != 0 { return pos, 1}
+
+      if d == 44 { i = p3 + 1L; continue } // ','
+
+      if d == 93 { return p3 + 1L, 0} // ']'
+
+      return pos, 1
+
+    }
+
+  }
+
   return pos, 1
 }
 
 private fn _parseShapeArray(b: bytes, pos: long, n: long) -> int, long, long, long, long, long, int{
-    // returns: err, ndim, d0..d3, nextPos
- 
- 
+  // returns: err, ndim, d0..d3, nextPos
+
   let i0, e0 = _skipWs(b, pos, n)
- 
- 
+
   if e0 != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
+
   let i1, e1 = _expectByte(b, i0, n, 91) // '['
- 
- 
+
   if e1 != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
 
- 
- 
   let ndim: int = 0
- 
- 
-  let d0: long = 0L
- 
- 
-  let d1: long = 0L
- 
- 
-  let d2: long = 0L
- 
- 
-  let d3: long = 0L
- 
- 
-  let i = i1
- 
- 
-  while true {
- 
- 
- 
- 
- 
-   let p, ew = _skipWs(b, i, n)
- 
- 
- 
- 
-    if ew != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   if p >= n { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   let ch, ec = bstd.Bytes.getU8(b, p)
- 
- 
- 
- 
- 
-   if ec != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   if ch == 93 { // ']'
- 
- 
- 
- 
- 
-       if ndim == 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-       return ndim, d0, d1, d2, d3, p + 1L, 0
- 
-       }
- 
- 
- 
- 
- 
-   let v, p2, en = _parseInt(b, p, n)
- 
- 
- 
- 
-    if en != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   if ndim == 0 { d0 = v }
- 
- 
- 
- 
- 
-   if ndim == 1 { d1 = v }
- 
- 
- 
- 
- 
-   if ndim == 2 { d2 = v }
- 
- 
- 
- 
- 
-   if ndim == 3 { d3 = v }
-        ndim = ndim + 1
- 
- 
- 
- 
- 
-   if ndim > 4 { return 0, 0L, 0L, 0L, 0L, pos, 1}
 
- 
- 
- 
- 
- 
-   let p3, ew2 = _skipWs(b, p2, n)
- 
- 
- 
- 
+  let d0: long = 0L
+
+  let d1: long = 0L
+
+  let d2: long = 0L
+
+  let d3: long = 0L
+
+  let i = i1
+
+  while true {
+
+    let p, ew = _skipWs(b, i, n)
+
+    if ew != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    if p >= n { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    let ch, ec = bstd.Bytes.getU8(b, p)
+
+    if ec != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    if ch == 93 { // ']'
+
+      if ndim == 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+      return ndim, d0, d1, d2, d3, p + 1L, 0
+
+    }
+
+    let v, p2, en = _parseInt(b, p, n)
+
+    if en != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    if ndim == 0 { d0 = v }
+
+    if ndim == 1 { d1 = v }
+
+    if ndim == 2 { d2 = v }
+
+    if ndim == 3 { d3 = v }
+    ndim = ndim + 1
+
+    if ndim > 4 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    let p3, ew2 = _skipWs(b, p2, n)
+
     if ew2 != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   if p3 >= n { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   let d, ed = bstd.Bytes.getU8(b, p3)
- 
- 
- 
- 
- 
-   if ed != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
- 
- 
- 
- 
- 
-   if d == 44 { i = p3 + 1L; continue } // ','
- 
- 
- 
- 
- 
-   if d == 93 { return ndim, d0, d1, d2, d3, p3 + 1L, 0} // ']'
- 
- 
- 
- 
- 
-   return 0, 0L, 0L, 0L, 0L, pos, 1
- 
-   }
- 
- 
+
+    if p3 >= n { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    let d, ed = bstd.Bytes.getU8(b, p3)
+
+    if ed != 0 { return 0, 0L, 0L, 0L, 0L, pos, 1}
+
+    if d == 44 { i = p3 + 1L; continue } // ','
+
+    if d == 93 { return ndim, d0, d1, d2, d3, p3 + 1L, 0} // ']'
+
+    return 0, 0L, 0L, 0L, 0L, pos, 1
+
+  }
+
   return 0, 0L, 0L, 0L, 0L, pos, 1
 }
 
 private fn _parseOffsetsArray(b: bytes, pos: long, n: long) -> long, long, long, int{
-    // returns: err, off0, off1, nextPos
- 
- 
+  // returns: err, off0, off1, nextPos
+
   let i0, e0 = _skipWs(b, pos, n)
- 
- 
+
   if e0 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let i1, e1 = _expectByte(b, i0, n, 91) // '['
- 
- 
+
   if e1 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p0, e2 = _skipWs(b, i1, n)
- 
- 
+
   if e2 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let off0, p1, en0 = _parseInt(b, p0, n)
- 
- 
+
   if en0 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p2, e3 = _skipWs(b, p1, n)
- 
- 
+
   if e3 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p3, e4 = _expectByte(b, p2, n, 44) // ','
- 
- 
+
   if e4 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p4, e5 = _skipWs(b, p3, n)
- 
- 
+
   if e5 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let off1, p5, en1 = _parseInt(b, p4, n)
- 
- 
+
   if en1 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p6, e6 = _skipWs(b, p5, n)
- 
- 
+
   if e6 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   let p7, e7 = _expectByte(b, p6, n, 93) // ']'
- 
- 
+
   if e7 != 0 { return 0L, 0L, pos, 1}
- 
- 
+
   return off0, off1, p7, 0
 }
 
 object SafeTensors {
- 
- 
+
   fn parseBytes(move b: bytes) -> SafeTensorsFile, int{
- 
- 
- 
- 
- 
-   let out = SafeTensorsFile{ data: null, headerLen: 0L, tensors: null, metadata: null }
- 
- 
- 
- 
- 
-   if b == null { return out, 1}
- 
- 
- 
- 
- 
-   let n = bstd.Bytes.len(b)
- 
- 
- 
- 
- 
-   if !(n >= 8L) { return out, 1}
 
- 
- 
- 
- 
- 
-   let headerLen, he = _readU64LE(b, 0L)
- 
- 
- 
- 
+    let out = SafeTensorsFile{ data: null, headerLen: 0L, tensors: null, metadata: null }
+
+    if b == null { return out, 1}
+
+    let n = bstd.Bytes.len(b)
+
+    if !(n >= 8L) { return out, 1}
+
+    let headerLen, he = _readU64LE(b, 0L)
+
     if he != 0 { return out, 1}
- 
- 
- 
- 
- 
-   if !(headerLen >= 2L) { return out, 1}
- 
- 
- 
- 
- 
-   if headerLen > (n - 8) { return out, 1}
 
- 
- 
- 
- 
- 
-   let hdr = bstd.Bytes.new((int)headerLen)
- 
- 
- 
- 
- 
-   let ce = bstd.Bytes.copy(hdr, 0L, b, 8L, headerLen)
- 
- 
- 
- 
- 
-   if ce != 0 { return out, 1}
+    if !(headerLen >= 2L) { return out, 1}
 
- 
- 
- 
- 
- 
-   let tensors: map = tua_map_new()
-        // Parse header JSON directly (avoid building nested any/map/array trees).
- 
- 
- 
- 
- 
-   let hn = bstd.Bytes.len(hdr)
- 
- 
- 
- 
- 
-   let p0, e0 = _skipWs(hdr, 0L, hn)
- 
- 
- 
- 
+    if headerLen > (n - 8) { return out, 1}
+
+    let hdr = bstd.Bytes.new((int)headerLen)
+
+    let ce = bstd.Bytes.copy(hdr, 0L, b, 8L, headerLen)
+
+    if ce != 0 { return out, 1}
+
+    let tensors: map = tua_map_new()
+    // Parse header JSON directly (avoid building nested any/map/array trees).
+
+    let hn = bstd.Bytes.len(hdr)
+
+    let p0, e0 = _skipWs(hdr, 0L, hn)
+
     if e0 != 0 { return out, 1}
- 
- 
- 
- 
- 
-   let p1, e1 = _expectByte(hdr, p0, hn, 123) // '{'
- 
- 
- 
- 
+
+    let p1, e1 = _expectByte(hdr, p0, hn, 123) // '{'
+
     if e1 != 0 { return out, 1}
 
- 
- 
- 
- 
- 
-   let p = p1
- 
- 
- 
- 
- 
-   while true {
- 
- 
- 
- 
- 
-       let p2, ew = _skipWs(hdr, p, hn)
- 
- 
- 
- 
-        if ew != 0 { return out, 1}
- 
- 
- 
- 
- 
-       if p2 >= hn { return out, 1}
- 
- 
- 
- 
- 
-       let ch, ec = bstd.Bytes.getU8(hdr, p2)
- 
- 
- 
- 
- 
-       if ec != 0 { return out, 1}
- 
- 
- 
- 
- 
-       if ch == 125 { break } // '}'
+    let p = p1
 
- 
- 
- 
- 
- 
-       let key, p3, ek = _parseString(hdr, p2, hn)
- 
- 
- 
- 
-        if ek != 0 { return out, 1}
- 
- 
- 
- 
- 
-       let p4, ew2 = _skipWs(hdr, p3, hn)
- 
- 
- 
- 
-        if ew2 != 0 { return out, 1}
- 
- 
- 
- 
- 
-       let p5, ec2 = _expectByte(hdr, p4, hn, 58) // ':'
- 
- 
- 
- 
-        if ec2 != 0 { return out, 1}
+    while true {
 
- 
- 
- 
- 
- 
-       if key == "__metadata__" {
- 
- 
- 
- 
- 
-           let p6, es = _skipValue(hdr, p5, hn)
- 
- 
- 
- 
+      let p2, ew = _skipWs(hdr, p, hn)
+
+      if ew != 0 { return out, 1}
+
+      if p2 >= hn { return out, 1}
+
+      let ch, ec = bstd.Bytes.getU8(hdr, p2)
+
+      if ec != 0 { return out, 1}
+
+      if ch == 125 { break } // '}'
+
+      let key, p3, ek = _parseString(hdr, p2, hn)
+
+      if ek != 0 { return out, 1}
+
+      let p4, ew2 = _skipWs(hdr, p3, hn)
+
+      if ew2 != 0 { return out, 1}
+
+      let p5, ec2 = _expectByte(hdr, p4, hn, 58) // ':'
+
+      if ec2 != 0 { return out, 1}
+
+      if key == "__metadata__" {
+
+        let p6, es = _skipValue(hdr, p5, hn)
+
+        if es != 0 { return out, 1}
+        p = p6
+
+      } else {
+        // Parse tensor entry object with keys: dtype, shape, data_offsets.
+
+        let p6, ew3 = _skipWs(hdr, p5, hn)
+
+        if ew3 != 0 { return out, 1}
+
+        let p7, eo = _expectByte(hdr, p6, hn, 123) // '{'
+
+        if eo != 0 { return out, 1}
+
+        let dt: int = -1
+
+        let ndim: int = 0
+
+        let d0: long = 0L
+
+        let d1: long = 0L
+
+        let d2: long = 0L
+
+        let d3: long = 0L
+
+        let off0: long = -1L
+
+        let off1: long = -1L
+
+        let q = p7
+
+        while true {
+
+          let q2, ewk = _skipWs(hdr, q, hn)
+
+          if ewk != 0 { return out, 1}
+
+          if q2 >= hn { return out, 1}
+
+          let c2, ecc = bstd.Bytes.getU8(hdr, q2)
+
+          if ecc != 0 { return out, 1}
+
+          if c2 == 125 { q = q2 + 1L; break } // '}'
+
+          let fk, q3, efk = _parseString(hdr, q2, hn)
+
+          if efk != 0 { return out, 1}
+
+          let q4, ewk2 = _skipWs(hdr, q3, hn)
+
+          if ewk2 != 0 { return out, 1}
+
+          let q5, ecln = _expectByte(hdr, q4, hn, 58) // ':'
+
+          if ecln != 0 { return out, 1}
+
+          if fk == "dtype" {
+
+            let dtStr, q6, eds = _parseString(hdr, q5, hn)
+
+            if eds != 0 { return out, 1}
+
+            let dti, de = _dtypeFromString(dtStr)
+
+            if de != 0 { return out, 1}
+            dt = dti
+            q = q6
+
+          } else if fk == "shape" {
+
+            let nd, s0, s1, s2, s3, q6, esh = _parseShapeArray(hdr, q5, hn)
+
+            if esh != 0 { return out, 1}
+            ndim = nd
+            d0 = s0
+            d1 = s1
+            d2 = s2
+            d3 = s3
+            q = q6
+
+          } else if fk == "data_offsets" {
+
+            let a0, a1, q6, eoff = _parseOffsetsArray(hdr, q5, hn)
+
+            if eoff != 0 { return out, 1}
+            off0 = a0
+            off1 = a1
+            q = q6
+
+          } else {
+
+            let q6, es = _skipValue(hdr, q5, hn)
+
             if es != 0 { return out, 1}
-                p = p6
- 
-           } else {
-                // Parse tensor entry object with keys: dtype, shape, data_offsets.
- 
- 
- 
- 
- 
-           let p6, ew3 = _skipWs(hdr, p5, hn)
- 
- 
- 
- 
-            if ew3 != 0 { return out, 1}
- 
- 
- 
- 
- 
-           let p7, eo = _expectByte(hdr, p6, hn, 123) // '{'
- 
- 
- 
- 
-            if eo != 0 { return out, 1}
+            q = q6
 
- 
- 
- 
- 
- 
-           let dt: int = -1
- 
- 
- 
- 
- 
-           let ndim: int = 0
- 
- 
- 
- 
- 
-           let d0: long = 0L
- 
- 
- 
- 
- 
-           let d1: long = 0L
- 
- 
- 
- 
- 
-           let d2: long = 0L
- 
- 
- 
- 
- 
-           let d3: long = 0L
- 
- 
- 
- 
- 
-           let off0: long = -1L
- 
- 
- 
- 
- 
-           let off1: long = -1L
+          }
 
- 
- 
- 
- 
- 
-           let q = p7
- 
- 
- 
- 
- 
-           while true {
- 
- 
- 
- 
- 
-               let q2, ewk = _skipWs(hdr, q, hn)
- 
- 
- 
- 
-                if ewk != 0 { return out, 1}
- 
- 
- 
- 
- 
-               if q2 >= hn { return out, 1}
- 
- 
- 
- 
- 
-               let c2, ecc = bstd.Bytes.getU8(hdr, q2)
- 
- 
- 
- 
- 
-               if ecc != 0 { return out, 1}
- 
- 
- 
- 
- 
-               if c2 == 125 { q = q2 + 1L; break } // '}'
+          let q7, ewk3 = _skipWs(hdr, q, hn)
 
- 
- 
- 
- 
- 
-               let fk, q3, efk = _parseString(hdr, q2, hn)
- 
- 
- 
- 
-                if efk != 0 { return out, 1}
- 
- 
- 
- 
- 
-               let q4, ewk2 = _skipWs(hdr, q3, hn)
- 
- 
- 
- 
-                if ewk2 != 0 { return out, 1}
- 
- 
- 
- 
- 
-               let q5, ecln = _expectByte(hdr, q4, hn, 58) // ':'
- 
- 
- 
- 
-                if ecln != 0 { return out, 1}
+          if ewk3 != 0 { return out, 1}
 
- 
- 
- 
- 
- 
-               if fk == "dtype" {
- 
- 
- 
- 
- 
-                   let dtStr, q6, eds = _parseString(hdr, q5, hn)
- 
- 
- 
- 
-                    if eds != 0 { return out, 1}
- 
- 
- 
- 
- 
-                   let dti, de = _dtypeFromString(dtStr)
- 
- 
- 
- 
-                    if de != 0 { return out, 1}
-                        dt = dti
-                        q = q6
- 
-                   } else if fk == "shape" {
- 
- 
- 
- 
- 
-                   let nd, s0, s1, s2, s3, q6, esh = _parseShapeArray(hdr, q5, hn)
- 
- 
- 
- 
-                    if esh != 0 { return out, 1}
-                        ndim = nd
-                        d0 = s0
-                        d1 = s1
-                        d2 = s2
-                        d3 = s3
-                        q = q6
- 
-                   } else if fk == "data_offsets" {
- 
- 
- 
- 
- 
-                   let a0, a1, q6, eoff = _parseOffsetsArray(hdr, q5, hn)
- 
- 
- 
- 
-                    if eoff != 0 { return out, 1}
-                        off0 = a0
-                        off1 = a1
-                        q = q6
- 
-                   } else {
- 
- 
- 
- 
- 
-                   let q6, es = _skipValue(hdr, q5, hn)
- 
- 
- 
- 
-                    if es != 0 { return out, 1}
-                        q = q6
- 
-                   }
+          if q7 >= hn { return out, 1}
 
- 
- 
- 
- 
- 
-               let q7, ewk3 = _skipWs(hdr, q, hn)
- 
- 
- 
- 
-                if ewk3 != 0 { return out, 1}
- 
- 
- 
- 
- 
-               if q7 >= hn { return out, 1}
- 
- 
- 
- 
- 
-               let delim, edelim = bstd.Bytes.getU8(hdr, q7)
- 
- 
- 
- 
- 
-               if edelim != 0 { return out, 1}
- 
- 
- 
- 
- 
-               if delim == 44 { q = q7 + 1L; continue } // ','
- 
- 
- 
- 
- 
-               if delim == 125 { q = q7 + 1L; break } // '}'
- 
- 
- 
- 
- 
-               return out, 1
- 
-               }
+          let delim, edelim = bstd.Bytes.getU8(hdr, q7)
 
- 
- 
- 
- 
- 
-           if dt < 0 { return out, 1}
- 
- 
- 
- 
- 
-           if off0 < 0L { return out, 1}
- 
- 
- 
- 
- 
-           if off1 < off0 { return out, 1}
- 
- 
- 
- 
- 
-           if ndim <= 0 { return out, 1}
+          if edelim != 0 { return out, 1}
 
- 
- 
- 
- 
- 
-           let rec: map = tua_map_new()
-                rec["dtype"] = dt
-                rec["dataOff"] = off0
-                rec["dataLen"] = off1 - off0
-                rec["ndim"] = ndim
-                rec["d0"] = d0
-                rec["d1"] = d1
-                rec["d2"] = d2
-                rec["d3"] = d3
-                tensors[key] = rec
-                // `map` does not refcount; avoid dropping `rec` after storing it into `tensors`.
-                rec = null
-                p = q
- 
-           }
+          if delim == 44 { q = q7 + 1L; continue } // ','
 
- 
- 
- 
- 
- 
-       let p7, ew4 = _skipWs(hdr, p, hn)
- 
- 
- 
- 
-        if ew4 != 0 { return out, 1}
- 
- 
- 
- 
- 
-       if p7 >= hn { return out, 1}
- 
- 
- 
- 
- 
-       let delim, edelim = bstd.Bytes.getU8(hdr, p7)
- 
- 
- 
- 
- 
-       if edelim != 0 { return out, 1}
- 
- 
- 
- 
- 
-       if delim == 44 { p = p7 + 1L; continue } // ','
- 
- 
- 
- 
- 
-       if delim == 125 { p = p7; continue } // outer while will break
- 
- 
- 
- 
- 
-       return out, 1
- 
-       }
+          if delim == 125 { q = q7 + 1L; break } // '}'
 
-        // `map` / `bytes` are non-refcounted runtime objects; avoid dropping locals after attaching them to the output.
- 
- 
- 
- 
- 
-   let out2 = SafeTensorsFile{ data: b, headerLen: headerLen, tensors: tensors, metadata: null }
-        b = null
-        tensors = null
- 
- 
- 
- 
- 
-   return out2, 0
- 
-   }
+          return out, 1
 
- 
- 
+        }
+
+        if dt < 0 { return out, 1}
+
+        if off0 < 0L { return out, 1}
+
+        if off1 < off0 { return out, 1}
+
+        if ndim <= 0 { return out, 1}
+
+        let rec: map = tua_map_new()
+        rec["dtype"] = dt
+        rec["dataOff"] = off0
+        rec["dataLen"] = off1 - off0
+        rec["ndim"] = ndim
+        rec["d0"] = d0
+        rec["d1"] = d1
+        rec["d2"] = d2
+        rec["d3"] = d3
+        tensors[key] = rec
+        // `map` does not refcount; avoid dropping `rec` after storing it into `tensors`.
+        rec = null
+        p = q
+
+      }
+
+      let p7, ew4 = _skipWs(hdr, p, hn)
+
+      if ew4 != 0 { return out, 1}
+
+      if p7 >= hn { return out, 1}
+
+      let delim, edelim = bstd.Bytes.getU8(hdr, p7)
+
+      if edelim != 0 { return out, 1}
+
+      if delim == 44 { p = p7 + 1L; continue } // ','
+
+      if delim == 125 { p = p7; continue } // outer while will break
+
+      return out, 1
+
+    }
+
+    // `map` / `bytes` are non-refcounted runtime objects; avoid dropping locals after attaching them to the output.
+
+    let out2 = SafeTensorsFile{ data: b, headerLen: headerLen, tensors: tensors, metadata: null }
+    b = null
+    tensors = null
+
+    return out2, 0
+
+  }
+
   fn parseMmap(path: string) -> SafeTensorsFile, int{
- 
- 
- 
- 
- 
-   let out = SafeTensorsFile{ data: null, headerLen: 0L, tensors: null, metadata: null }
- 
- 
- 
- 
- 
-   let b, e = bstd.Bytes.mmapFile(path)
- 
- 
- 
- 
+
+    let out = SafeTensorsFile{ data: null, headerLen: 0L, tensors: null, metadata: null }
+
+    let b, e = bstd.Bytes.mmapFile(path)
+
     if e != 0 { return out, e}
- 
- 
- 
- 
- 
-   return SafeTensors.parseBytes(move b)
- 
-   }
 
- 
- 
+    return SafeTensors.parseBytes(move b)
+
+  }
+
   fn tensorInfo(f: SafeTensorsFile, name: string) -> map, int{
- 
- 
- 
- 
- 
-   let z: map = null
- 
- 
- 
- 
- 
-   if f.tensors == null { return z, 1}
- 
- 
- 
- 
- 
-   let tensors: map = f.tensors
- 
- 
- 
- 
- 
-   let opt = tensors[name]
- 
- 
- 
- 
- 
-   if opt.isNone() { return z, 1}
- 
- 
- 
- 
- 
-   let vAny: any = opt.unwrap()
- 
- 
- 
- 
- 
-   if vAny == null { return z, 1}
- 
- 
- 
- 
- 
-   let rec: map = vAny
- 
- 
- 
- 
- 
-   return rec, 0
- 
-   }
 
- 
- 
+    let z: map = null
+
+    if f.tensors == null { return z, 1}
+
+    let tensors: map = f.tensors
+
+    let opt = tensors[name]
+
+    if opt.isNone() { return z, 1}
+
+    let vAny: any = opt.unwrap()
+
+    if vAny == null { return z, 1}
+
+    let rec: map = vAny
+
+    return rec, 0
+
+  }
+
   fn tensorDataPtr(f: SafeTensorsFile, dataOff: long) -> ptr {
- 
- 
- 
- 
- 
-   if f.data == null { return null }
- 
- 
- 
- 
- 
-   let base: long = 8L + f.headerLen
- 
- 
- 
- 
- 
-   return tua_bytes_data_at(f.data, base + dataOff)
- 
-   }
+
+    if f.data == null { return null }
+
+    let base: long = 8L + f.headerLen
+
+    return tua_bytes_data_at(f.data, base + dataOff)
+
+  }
 }

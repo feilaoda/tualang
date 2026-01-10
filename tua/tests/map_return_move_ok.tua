@@ -5,11 +5,9 @@ fn make() -> map {
 }
 
 fn main() {
- 
- 
+
   let x: map = make()
- 
- 
+
   let v:int = x["a"].unwrap()
-    assert(v == 1)
+  assert(v == 1)
 }

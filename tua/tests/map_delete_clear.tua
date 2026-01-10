@@ -1,60 +1,43 @@
-
-
-
-
-
-
-
 fn main() {
- 
- 
+
   let m: map<int, int> = { 1: 10, 2: 20, 3: 30, }
-    assert(m.len() == 3)
-    assert(m.delete(2) == true)
-    assert(m.delete(2) == false)
-    assert(m.len() == 2)
-    assert(m[2].isNone())
-    assert(m.hasKey(2) == false)
- 
- 
+  assert(m.len() == 3)
+  assert(m.delete(2) == true)
+  assert(m.delete(2) == false)
+  assert(m.len() == 2)
+  assert(m[2].isNone())
+  assert(m.hasKey(2) == false)
+
   let sum:int = 0
- 
- 
+
   let n:int = 0
- 
- 
+
   for k, v in m {
- 
- 
- 
- 
-  let vi:int = v
-      sum = sum + vi
-      n = n + 1
- 
-   }
-    assert(sum == 40)
-    assert(n == 2)
-    m[4] = 40
-    assert(m.len() == 3)
-    assert(m[4].unwrap() == 40)
-    assert(m.delete(3L) == true)
-    assert(m.hasKey(3) == false)
-    assert(m.len() == 2)
-    m.clear()
-    assert(m.len() == 0)
- 
- 
+
+    let vi:int = v
+    sum = sum + vi
+    n = n + 1
+
+  }
+  assert(sum == 40)
+  assert(n == 2)
+  m[4] = 40
+  assert(m.len() == 3)
+  assert(m[4].unwrap() == 40)
+  assert(m.delete(3L) == true)
+  assert(m.hasKey(3) == false)
+  assert(m.len() == 2)
+  m.clear()
+  assert(m.len() == 0)
+
   let n2:int = 0
- 
- 
+
   for k, v in m {
-      n2 = n2 + 1
- 
-   }
-    assert(n2 == 0)
- 
- 
+    n2 = n2 + 1
+
+  }
+  assert(n2 == 0)
+
   let m2 = {}
-    assert(m2.delete(1) == false)
+  assert(m2.delete(1) == false)
 }

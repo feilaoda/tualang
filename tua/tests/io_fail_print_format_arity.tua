@@ -1,8 +1,7 @@
 // placeholder count mismatch (2 placeholders, 1 value)
 
 fn main() {
- 
- 
+
   let a = 1
-    println("this {} is {}", a)
+  println("this {} is {}", a)
 }

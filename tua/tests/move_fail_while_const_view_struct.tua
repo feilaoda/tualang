@@ -2,16 +2,12 @@ struct Foo {
   x: int
 }
 
-
 fn main() {
- 
- 
+
   let a: Foo = Foo()
- 
- 
+
   const v = a
- 
- 
+
   let b = a
-    println(v.x + b.x)
+  println(v.x + b.x)
 }

@@ -1,14 +1,10 @@
-
 fn main() {
- 
- 
+
   let m: map = {}
-    m["a"] = 1
- 
- 
+  m["a"] = 1
+
   let p = m.get("a").unwrap()
- 
- 
+
   let v = p.get()
-    assert(v == 1)
+  assert(v == 1)
 }

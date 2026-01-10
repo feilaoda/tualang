@@ -3,49 +3,35 @@
 import "../packages/llm/options" as o
 
 fn main() {
- 
- 
+
   let a0: string[] = {"prog"}
- 
- 
+
   let opt0, e0 = o.LlmArgs.parseArgv(a0)
-    assert(e0 == 0)
-    assert(opt0.weightsDtype == 0)
-    assert(opt0.kvDtype == 0)
+  assert(e0 == 0)
+  assert(opt0.weightsDtype == 0)
+  assert(opt0.kvDtype == 0)
 
- 
- 
   let a1: string[] = {"prog", "--w-bf16"}
- 
- 
+
   let opt1, e1 = o.LlmArgs.parseArgv(a1)
-    assert(e1 == 0)
-    assert(opt1.weightsDtype == 1)
+  assert(e1 == 0)
+  assert(opt1.weightsDtype == 1)
 
- 
- 
   let a2: string[] = {"prog", "--w-fp16"}
- 
- 
+
   let opt2, e2 = o.LlmArgs.parseArgv(a2)
-    assert(e2 == 0)
-    assert(opt2.weightsDtype == 2)
+  assert(e2 == 0)
+  assert(opt2.weightsDtype == 2)
 
- 
- 
   let a3: string[] = {"prog", "--w-f32"}
- 
- 
-  let opt3, e3 = o.LlmArgs.parseArgv(a3)
-    assert(e3 == 0)
-    assert(opt3.weightsDtype == 0)
 
- 
- 
+  let opt3, e3 = o.LlmArgs.parseArgv(a3)
+  assert(e3 == 0)
+  assert(opt3.weightsDtype == 0)
+
   let a4: string[] = {"prog", "--kv-bf16"}
- 
- 
+
   let opt4, e4 = o.LlmArgs.parseArgv(a4)
-    assert(e4 == 0)
-    assert(opt4.kvDtype == 1)
+  assert(e4 == 0)
+  assert(opt4.kvDtype == 1)
 }

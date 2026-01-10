@@ -1,4 +1,3 @@
-
 fn main() {
-    typeof(1)
+  typeof(1)
 }

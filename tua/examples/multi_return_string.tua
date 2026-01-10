@@ -1,6 +1,5 @@
 fn mix() -> string, int {
- 
- 
+
   return "hi", 42
 }
 

@@ -3,5 +3,5 @@ fn grow<T>() -> int {
 }
 
 fn main() {
-    grow<int>()
+  grow<int>()
 }

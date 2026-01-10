@@ -1,27 +1,20 @@
 enum RoleType {
-    Admin,
-    User
+  Admin,
+  User
 }
 
 object MathUtils {
- 
- 
+
   fn add(a:int, b:int) int {
- 
- 
- 
- 
- 
-   return a + b
- 
-   }
+
+    return a + b
+
+  }
 }
 
 struct Role {
- 
- 
+
   const type: string = "Role"
 }
 
 println(MathUtils.add(1, 2))
-

@@ -4,12 +4,10 @@ extern fn tuaext_llama_backend_init()
 extern fn tuaext_llama_time_us() long
 
 fn main(args: string[]) -> int {
-    tuaext_llama_backend_init()
- 
- 
+  tuaext_llama_backend_init()
+
   let t = tuaext_llama_time_us()
-    assert(t > 0L)
- 
- 
+  assert(t > 0L)
+
   return 0
 }

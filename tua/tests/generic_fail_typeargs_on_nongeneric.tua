@@ -2,7 +2,6 @@ fn f(x: int) -> int {
   return x
 }
 
-
 fn main() {
-    f<int>(1)
+  f<int>(1)
 }

@@ -3,20 +3,16 @@
 import Qwen3 from "../packages/llm/qwen3"
 
 fn main() {
- 
- 
+
   let cfg, ce = Qwen3.loadConfig("tests/fixtures/qwen3_sharded_tied/config.json")
- 
- 
+
   let _ = cfg
-    assert(ce == 0)
+  assert(ce == 0)
 
- 
- 
   let w, we = Qwen3.loadWeightsF32Auto("tests/fixtures/qwen3_sharded_tied", cfg)
-    assert(we == 0)
-    assert(w.arena != null)
+  assert(we == 0)
+  assert(w.arena != null)
 
-    // `lm_head.weight` is missing from the weight_map; loader must tie it to embeddings.
-    assert(w.offLmHead == w.offEmbed)
+  // `lm_head.weight` is missing from the weight_map; loader must tie it to embeddings.
+  assert(w.offLmHead == w.offEmbed)
 }

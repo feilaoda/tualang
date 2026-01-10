@@ -3,5 +3,5 @@ fn id<T>(move x: T) -> T {
 }
 
 fn main() {
-    assert(id(1) == 1)
+  assert(id(1) == 1)
 }

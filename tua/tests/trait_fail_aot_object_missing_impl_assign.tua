@@ -13,8 +13,7 @@ impl S {
 // Missing: `impl HasId for S {}`
 
 fn main() {
- 
- 
+
   let v: HasId = S{ id: 1 }
-    println(v.id())
+  println(v.id())
 }

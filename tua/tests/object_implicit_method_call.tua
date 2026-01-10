@@ -1,11 +1,9 @@
-
 extern fn atoi(s: string) int
 
 object C {
   fn atoi(s: string) int {
- 
- 
-  return atoi(s)
+
+    return atoi(s)
   }
 
   fn test() {
@@ -15,5 +13,5 @@ object C {
 }
 
 fn main() {
-    C.test()
+  C.test()
 }

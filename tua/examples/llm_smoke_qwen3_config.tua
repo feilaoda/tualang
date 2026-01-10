@@ -1,18 +1,13 @@
 import Qwen3 from "../packages/llm/qwen3"
 
 fn main(args: string[]) -> int {
- 
- 
+
   let modelDir = "examples/models/qwen3-0.6b"
- 
- 
+
   if args.len() >= 2 { modelDir = args[1] }
- 
- 
+
   let cfg, e = Qwen3.loadConfig(modelDir + "/config.json")
-    println("loadConfig e={} hidden={} layers={} heads={} kvHeads={} headDim={} vocab={} maxPos={}", e, cfg.hidden, cfg.layers, cfg.heads, cfg.kvHeads, cfg.headDim, cfg.vocab, cfg.maxPos)
- 
- 
+  println("loadConfig e={} hidden={} layers={} heads={} kvHeads={} headDim={} vocab={} maxPos={}", e, cfg.hidden, cfg.layers, cfg.heads, cfg.kvHeads, cfg.headDim, cfg.vocab, cfg.maxPos)
+
   return 0
 }
-

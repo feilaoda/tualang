@@ -2,7 +2,6 @@ struct Foo {
   x: int
 }
 
-
 fn bad() {
   let a: Foo = Foo()
   a.x = 1
@@ -10,10 +9,8 @@ fn bad() {
   g = r
 }
 
-
 fn main() {
- 
- 
+
   let g: &Foo
-    bad()
+  bad()
 }

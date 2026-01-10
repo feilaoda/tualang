@@ -1,6 +1,5 @@
 fn pair() -> int, int {
- 
- 
+
   return 1, 2
 }
 

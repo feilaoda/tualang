@@ -2,45 +2,34 @@ import "std/bytes" as bstd
 import "json" as j
 
 private fn _mk() -> bytes {
- 
- 
+
   let tmp = bstd.Bytes.new(16)
- 
- 
+
   let cs:int[] = {123,34,97,34,58,49,125} // {"a":1}
- 
- 
+
   let i: long = 0L
- 
- 
+
   while i < (long)cs.len() {
-        bstd.Bytes.setU8(tmp, i, cs[(int)i])
-        i = i + 1L
- 
-   }
- 
- 
+    bstd.Bytes.setU8(tmp, i, cs[(int)i])
+    i = i + 1L
+
+  }
+
   let out = bstd.Bytes.new((int)i)
-    bstd.Bytes.copy(out, 0L, tmp, 0L, i)
- 
- 
+  bstd.Bytes.copy(out, 0L, tmp, 0L, i)
+
   return out
 }
 
-
 fn main() {
- 
- 
+
   let b = _mk()
- 
- 
+
   let root, e = j.Json.parseBytes(b)
-    assert(e == 0)
- 
- 
+  assert(e == 0)
+
   let m: map = root
- 
- 
+
   let av:any = m["a"].unwrap()
-    assert((long)av == 1L)
+  assert((long)av == 1L)
 }

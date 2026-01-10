@@ -5,23 +5,20 @@
 // - Native: custom kernels (future)
 
 enum OpTranspose {
-    none = 0,
-    trans = 1,
+  none = 0,
+  trans = 1,
 }
 
 trait OpsBackend {
- 
- 
+
   fn setThreads(n: int) int
 
-    // C := alpha * op(A) * op(B) + beta * C
-    // Row-major; pointers are assumed contiguous with leading dimensions (lda/ldb/ldc).
- 
- 
+  // C := alpha * op(A) * op(B) + beta * C
+  // Row-major; pointers are assumed contiguous with leading dimensions (lda/ldb/ldc).
+
   fn gemmF32(transA: int, transB: int, m: int, n: int, k: int, alpha: float, a: ptr, lda: int, b: ptr, ldb: int, beta: float, c: ptr, ldc: int) int
 
-    // y := alpha * op(A) * x + beta * y
- 
- 
+  // y := alpha * op(A) * x + beta * y
+
   fn gemvF32(transA: int, m: int, n: int, alpha: float, a: ptr, lda: int, x: ptr, incx: int, beta: float, y: ptr, incy: int) int
 }

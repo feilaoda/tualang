@@ -1,106 +1,50 @@
 // Generic array helpers built on top of intrinsic array operations.
 
 impl<T> array<T> {
- 
- 
+
   fn isEmpty() bool {
- 
- 
- 
- 
- 
-   return this.len() == 0
- 
-   }
 
- 
- 
+    return this.len() == 0
+
+  }
+
   fn first() -> Option<T> {
- 
- 
- 
- 
- 
-   if this.len() == 0 {
- 
- 
- 
- 
- 
-       return None()
- 
-       }
- 
- 
- 
- 
- 
-   return Some(this[0])
- 
-   }
 
- 
- 
+    if this.len() == 0 {
+
+      return None()
+
+    }
+
+    return Some(this[0])
+
+  }
+
   fn last() -> Option<T> {
- 
- 
- 
- 
- 
-   let n: int = this.len()
- 
- 
- 
- 
- 
-   if n == 0 {
- 
- 
- 
- 
- 
-       return None()
- 
-       }
- 
- 
- 
- 
- 
-   return Some(this[n - 1])
- 
-   }
 
- 
- 
+    let n: int = this.len()
+
+    if n == 0 {
+
+      return None()
+
+    }
+
+    return Some(this[n - 1])
+
+  }
+
   fn getOpt(i: int) -> Option<T> {
- 
- 
- 
- 
- 
-   let n: int = this.len()
- 
- 
- 
- 
- 
-   if i < 0 || i >= n {
- 
- 
- 
- 
- 
-       return None()
- 
-       }
- 
- 
- 
- 
- 
-   return Some(this[i])
- 
-   }
-}
 
+    let n: int = this.len()
+
+    if i < 0 || i >= n {
+
+      return None()
+
+    }
+
+    return Some(this[i])
+
+  }
+}

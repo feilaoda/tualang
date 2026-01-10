@@ -16,16 +16,12 @@ fn getId(x: HasId) -> int {
   return x.id()
 }
 
-
-
 fn main() {
- 
- 
+
   let s: S = S{ id: 3 }
-    assert(getId(s) == 3)
- 
- 
+  assert(getId(s) == 3)
+
   let v: HasId = S{ id: 4 }
-    assert(v.id() == 4)
-    assert(getId(v) == 4)
+  assert(v.id() == 4)
+  assert(getId(v) == 4)
 }

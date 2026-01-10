@@ -16,16 +16,13 @@ fn take(move x: HasId) -> int {
   return x.id()
 }
 
-
 // Use-after-move.
 
 fn main() {
- 
- 
+
   let v: HasId = S{ id: 1 }
- 
- 
+
   let n = take(move v)
-    println(n)
-    println(v.id())
+  println(n)
+  println(v.id())
 }

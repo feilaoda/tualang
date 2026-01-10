@@ -4,271 +4,134 @@ import "std/bytes" as bstd
 import "std/utf8" as utf8
 
 impl int {
- 
- 
+
   fn abs() int {
- 
- 
- 
- 
- 
-   if this < 0 {
- 
- 
- 
- 
- 
-       return -this
- 
-       }
- 
- 
- 
- 
- 
-   return this
- 
-   }
+
+    if this < 0 {
+
+      return -this
+
+    }
+
+    return this
+
+  }
 }
 
 impl long {
- 
- 
+
   fn abs() long {
- 
- 
- 
- 
- 
-   if this < 0L {
- 
- 
- 
- 
- 
-       return -this
- 
-       }
- 
- 
- 
- 
- 
-   return this
- 
-   }
+
+    if this < 0L {
+
+      return -this
+
+    }
+
+    return this
+
+  }
 }
 
 impl string {
- 
- 
+
   fn isEmpty() bool {
- 
- 
- 
- 
- 
-   return this == ""
- 
-   }
 
-    // UTF-8 bytes copy.
- 
- 
+    return this == ""
+
+  }
+
+  // UTF-8 bytes copy.
+
   fn toBytes() -> bytes {
- 
- 
- 
- 
- 
-   if this == null { return null }
-        // Return via a local to avoid dropping temporaries (bytes are non-refcounted).
- 
- 
- 
- 
- 
-   let out: bytes = bstd.Bytes.fromString(this)
- 
- 
- 
- 
- 
-   return out
- 
-   }
 
-    // Unicode codepoints (best-effort): invalid UTF-8 sequences are replaced with U+FFFD.
- 
- 
+    if this == null { return null }
+    // Return via a local to avoid dropping temporaries (bytes are non-refcounted).
+
+    let out: bytes = bstd.Bytes.fromString(this)
+
+    return out
+
+  }
+
+  // Unicode codepoints (best-effort): invalid UTF-8 sequences are replaced with U+FFFD.
+
   fn toIntArray() -> int[] {
- 
- 
- 
- 
- 
-   if this == null { return null }
- 
- 
- 
- 
- 
-   let src: bytes = bstd.Bytes.fromString(this)
- 
- 
- 
- 
- 
-   let out: int[] = {}
- 
- 
- 
- 
- 
-   if src == null { return out }
- 
- 
- 
- 
- 
-   let n: long = bstd.Bytes.len(src)
- 
- 
- 
- 
- 
-   let i: long = 0L
- 
- 
- 
- 
- 
-   while i < n {
- 
- 
- 
- 
- 
-       let cp, sz, e = utf8.Utf8.decode1(src, i)
- 
- 
- 
- 
-        if e == 0 && sz > 0L {
-                out.push(cp)
-                i = i + sz
- 
- 
- 
- 
- 
-           continue
- 
-           }
-            out.push(65533) // U+FFFD
-            i = i + 1L
- 
-       }
- 
- 
- 
- 
- 
-   return out
- 
-   }
 
-    // Unicode codepoints widened to long (best-effort): invalid UTF-8 sequences are replaced with U+FFFD.
- 
- 
+    if this == null { return null }
+
+    let src: bytes = bstd.Bytes.fromString(this)
+
+    let out: int[] = {}
+
+    if src == null { return out }
+
+    let n: long = bstd.Bytes.len(src)
+
+    let i: long = 0L
+
+    while i < n {
+
+      let cp, sz, e = utf8.Utf8.decode1(src, i)
+
+      if e == 0 && sz > 0L {
+        out.push(cp)
+        i = i + sz
+
+        continue
+
+      }
+      out.push(65533) // U+FFFD
+      i = i + 1L
+
+    }
+
+    return out
+
+  }
+
+  // Unicode codepoints widened to long (best-effort): invalid UTF-8 sequences are replaced with U+FFFD.
+
   fn toLongArray() -> long[] {
- 
- 
- 
- 
- 
-   if this == null { return null }
- 
- 
- 
- 
- 
-   let src: bytes = bstd.Bytes.fromString(this)
- 
- 
- 
- 
- 
-   let out: long[] = {}
- 
- 
- 
- 
- 
-   if src == null { return out }
- 
- 
- 
- 
- 
-   let n: long = bstd.Bytes.len(src)
- 
- 
- 
- 
- 
-   let i: long = 0L
- 
- 
- 
- 
- 
-   while i < n {
- 
- 
- 
- 
- 
-       let cp, sz, e = utf8.Utf8.decode1(src, i)
- 
- 
- 
- 
-        if e == 0 && sz > 0L {
-                out.push((long)cp)
-                i = i + sz
- 
- 
- 
- 
- 
-           continue
- 
-           }
-            out.push(65533L) // U+FFFD
-            i = i + 1L
- 
-       }
- 
- 
- 
- 
- 
-   return out
- 
-   }
+
+    if this == null { return null }
+
+    let src: bytes = bstd.Bytes.fromString(this)
+
+    let out: long[] = {}
+
+    if src == null { return out }
+
+    let n: long = bstd.Bytes.len(src)
+
+    let i: long = 0L
+
+    while i < n {
+
+      let cp, sz, e = utf8.Utf8.decode1(src, i)
+
+      if e == 0 && sz > 0L {
+        out.push((long)cp)
+        i = i + sz
+
+        continue
+
+      }
+      out.push(65533L) // U+FFFD
+      i = i + 1L
+
+    }
+
+    return out
+
+  }
 }
 
 impl bool {
- 
- 
+
   fn not2() bool {
- 
- 
- 
- 
- 
-   return !this
- 
-   }
+
+    return !this
+
+  }
 }

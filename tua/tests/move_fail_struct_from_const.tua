@@ -3,11 +3,9 @@ struct Foo {
 }
 
 fn main() {
- 
- 
+
   const a: Foo = Foo()
- 
- 
+
   let b: Foo = a
-    println(b.x)
+  println(b.x)
 }
