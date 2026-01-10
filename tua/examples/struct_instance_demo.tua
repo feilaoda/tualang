@@ -2,11 +2,19 @@ struct Point {
     x: int = 0
     y: int = 0
 
-    fn move(dx:int, dy:int) int {
+ 
+ 
+  fn move(dx:int, dy:int) int {
         this.x = this.x + dx
         this.y = this.y + dy
-        return this.x
-    }
+ 
+ 
+ 
+ 
+ 
+   return this.x
+ 
+   }
 }
 
 let p = Point(1, 2)

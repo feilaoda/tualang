@@ -3,11 +3,17 @@
 import Qwen3 from "../packages/llm/qwen3"
 
 fn main() {
-    let ce, cfg = Qwen3.loadConfig("tests/fixtures/qwen3_sharded_tied/config.json")
-    let _ = cfg
+ 
+ 
+  let cfg, ce = Qwen3.loadConfig("tests/fixtures/qwen3_sharded_tied/config.json")
+ 
+ 
+  let _ = cfg
     assert(ce == 0)
 
-    let we, w = Qwen3.loadWeightsF32Auto("tests/fixtures/qwen3_sharded_tied", cfg)
+ 
+ 
+  let w, we = Qwen3.loadWeightsF32Auto("tests/fixtures/qwen3_sharded_tied", cfg)
     assert(we == 0)
     assert(w.arena != null)
 

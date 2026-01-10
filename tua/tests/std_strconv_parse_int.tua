@@ -4,7 +4,9 @@ import "std/strconv" as strconv
 
 
 fn main() {
-    let o1: Option<int> = strconv.Int.parse("123")
+ 
+ 
+  let o1: Option<int> = strconv.Int.parse("123")
     assert(o1.isSome())
     assert(o1.unwrap() == 123)
     assert(strconv.Int.parse("-1").unwrap() == -1)

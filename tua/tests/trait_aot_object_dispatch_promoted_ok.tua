@@ -18,6 +18,8 @@ impl HasId for Child {}
 
 
 fn main() {
-    let v: HasId = Child{ base: Base{ id: 7 } }
+ 
+ 
+  let v: HasId = Child{ base: Base{ id: 7 } }
     assert(v.id() == 7)
 }

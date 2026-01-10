@@ -2,7 +2,13 @@ import make from "modules/ret_struct_mod"
 
 
 fn main() {
-    let x = make()
-    let y = x
-    let z = x
+ 
+ 
+  let x = make()
+ 
+ 
+  let y = x
+ 
+ 
+  let z = x
 }

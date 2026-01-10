@@ -2,7 +2,13 @@ import "modules/ret_struct_mod" as m
 
 
 fn main() {
-    let x = m.make()
-    let y = x
-    let z = x
+ 
+ 
+  let x = m.make()
+ 
+ 
+  let y = x
+ 
+ 
+  let z = x
 }

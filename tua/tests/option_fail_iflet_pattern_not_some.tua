@@ -1,7 +1,12 @@
 
 fn main() {
-    let o: Option<int> = Some(1)
-    if let None(v) = o {
+ 
+ 
+  let o: Option<int> = Some(1)
+ 
+ 
+  if let None(v) = o {
       println(v)
-    }
+ 
+   }
 }

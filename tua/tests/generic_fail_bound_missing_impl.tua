@@ -10,6 +10,8 @@ fn getId<T: HasId>(x: T) -> int {
 
 
 fn main() {
-    let s: S = S{ id: 1 }
+ 
+ 
+  let s: S = S{ id: 1 }
     getId<S>(s)
 }

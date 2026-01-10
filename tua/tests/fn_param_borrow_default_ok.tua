@@ -10,7 +10,9 @@ fn read(f: Foo) -> int {
 // `read(a)` is a borrow, not a move.
 
 fn main() {
-    let a: Foo = Foo()
+ 
+ 
+  let a: Foo = Foo()
     a.x = 1
     assert(read(a) == 1)
     a.x = 2

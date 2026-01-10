@@ -5,13 +5,19 @@ import "std/strconv" as strconv
 
 
 fn main() {
-    let s1 = strconv.Int.toString(0)
+ 
+ 
+  let s1 = strconv.Int.toString(0)
     assert(s1 == "0")
     rt.Rt.free(s1)
-    let s2 = strconv.Int.toString(123)
+ 
+ 
+  let s2 = strconv.Int.toString(123)
     assert(s2 == "123")
     rt.Rt.free(s2)
-    let s3 = strconv.Int.toString(-42)
+ 
+ 
+  let s3 = strconv.Int.toString(-42)
     assert(s3 == "-42")
     rt.Rt.free(s3)
 }

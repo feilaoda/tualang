@@ -28,7 +28,9 @@ fn getId2<T: HasId2>(x: T) -> int {
 }
 
 fn main() {
-    let s: S = S{ id: 9 }
+ 
+ 
+  let s: S = S{ id: 9 }
     assert(getId<S>(s) == 9)
     assert(getId2<S>(s) == 18)
 }

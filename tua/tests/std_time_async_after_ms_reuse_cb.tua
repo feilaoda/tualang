@@ -2,23 +2,42 @@ import "std/rt" as rt
 import "std/time/async" as time
 
 fn main() {
-    let loop = rt.Rt.loopCreate()
+ 
+ 
+  let loop = rt.Rt.loopCreate()
     assert(loop != null)
 
-    let fired = 0
-    let cb = fn() {
+ 
+ 
+  let fired = 0
+ 
+ 
+  let cb = fn() {
         fired = fired + 1
-        if fired == 2 {
+ 
+ 
+ 
+ 
+ 
+   if fired == 2 {
             rt.Rt.loopStop(loop)
-        }
-    }
+ 
+       }
+ 
+   }
 
-    let e1 = time.TimeAsync.afterMs(loop, 1, cb)
-    let e2 = time.TimeAsync.afterMs(loop, 2, cb)
+ 
+ 
+  let e1 = time.TimeAsync.afterMs(loop, 1, cb)
+ 
+ 
+  let e2 = time.TimeAsync.afterMs(loop, 2, cb)
     assert(e1 == 0)
     assert(e2 == 0)
 
-    let rc = rt.Rt.loopRun(loop)
+ 
+ 
+  let rc = rt.Rt.loopRun(loop)
     assert(rc == 0)
     assert(fired == 2)
 

@@ -5,9 +5,13 @@
 // keep `o` alive past the mutation so the borrow can't end early (NLL)
 
 fn main() {
-    let m: map = {}
+ 
+ 
+  let m: map = {}
     m["a"] = 1
-    let o = m.getMut("a")
+ 
+ 
+  let o = m.getMut("a")
     m.delete("a")
     assert(o.isSome())
 }

@@ -1,6 +1,8 @@
 object Foo {
   fn atoi10() int {
-    return atoi("10")
+ 
+ 
+  return atoi("10")
   }
 }
 

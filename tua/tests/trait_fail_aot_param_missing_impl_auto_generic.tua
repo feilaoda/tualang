@@ -17,6 +17,8 @@ fn getId(x: HasId) -> int {
 
 
 fn main() {
-    let s: S = S{ id: 2 }
+ 
+ 
+  let s: S = S{ id: 2 }
     println(getId(s))
 }

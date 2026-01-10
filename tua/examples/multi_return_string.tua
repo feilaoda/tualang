@@ -1,5 +1,7 @@
 fn mix() -> string, int {
-    return "hi", 42
+ 
+ 
+  return "hi", 42
 }
 
 let s, n = mix()

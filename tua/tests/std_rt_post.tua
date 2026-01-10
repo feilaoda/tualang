@@ -1,17 +1,26 @@
 import "std/rt" as rt
 
 fn main() {
-    let loop = rt.Rt.loopCreate()
+ 
+ 
+  let loop = rt.Rt.loopCreate()
     assert(loop != null)
 
-    let fired = 0
-    let err = rt.Rt.post(loop, fn() {
+ 
+ 
+  let fired = 0
+ 
+ 
+  let err = rt.Rt.post(loop, fn() {
         fired = 1
         rt.Rt.loopStop(loop)
-    })
+ 
+   })
     assert(err == 0)
 
-    let rc = rt.Rt.loopRun(loop)
+ 
+ 
+  let rc = rt.Rt.loopRun(loop)
     assert(rc == 0)
     assert(fired == 1)
 

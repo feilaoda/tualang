@@ -1,14 +1,30 @@
 fn sum(n:int, acc:long) long {
-    if n == 0 {
-        return acc
-    }
-    return sum(n-1, acc + n)
+ 
+ 
+  if n == 0 {
+ 
+ 
+ 
+ 
+ 
+   return acc
+ 
+   }
+ 
+ 
+  return sum(n-1, acc + n)
 }
 
 fn main() {
-    let n = 1000000
-    let r:long = sum(n, 0L)
-    let expect:long = (n + 1L) * n / 2L
+ 
+ 
+  let n = 1000000
+ 
+ 
+  let r:long = sum(n, 0L)
+ 
+ 
+  let expect:long = (n + 1L) * n / 2L
     assert(r == expect)
     println(r)
 }

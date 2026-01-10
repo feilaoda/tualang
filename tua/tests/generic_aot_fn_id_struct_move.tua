@@ -6,8 +6,12 @@ fn id<T>(move x: T) -> T {
 
 
 fn main() {
-    let s: S = S{ a: 1, b: 2 }
-    let s2: S = id<S>(move s)
+ 
+ 
+  let s: S = S{ a: 1, b: 2 }
+ 
+ 
+  let s2: S = id<S>(move s)
     assert(s2.a == 1)
     assert(s2.b == 2)
 }

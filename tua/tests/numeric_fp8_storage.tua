@@ -1,6 +1,12 @@
 fn main() {
-    let b: byte = (byte)255
-    let x: f8 = (f8)b
-    let y: byte = (byte)x
+ 
+ 
+  let b: byte = (byte)255
+ 
+ 
+  let x: f8 = (f8)b
+ 
+ 
+  let y: byte = (byte)x
     assert(y == (byte)255)
 }

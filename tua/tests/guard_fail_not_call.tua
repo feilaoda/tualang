@@ -1,6 +1,12 @@
 fn main() -> int {
-    let x = 1;
-    let a = x ? { return 0; }
-    return a;
+ 
+ 
+  let x = 1;
+ 
+ 
+  let a = x ? { return 0; }
+ 
+ 
+  return a;
 }
 

@@ -1,7 +1,12 @@
 
 fn main() {
-    let x = 1
-    if let Some(v) = x {
+ 
+ 
+  let x = 1
+ 
+ 
+  if let Some(v) = x {
       println(v)
-    }
+ 
+   }
 }

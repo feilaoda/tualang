@@ -1,4 +1,6 @@
 fn main() {
-    let a:int[2] = {0}
+ 
+ 
+  let a:int[2] = {0}
     a.push(1)
 }

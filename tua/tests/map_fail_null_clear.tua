@@ -1,4 +1,6 @@
 fn main() {
-    let m: map = null
+ 
+ 
+  let m: map = null
     m.clear()
 }

@@ -2,14 +2,28 @@ import "std/bytes" as bstd
 import "json" as j
 
 fn main(args: string[]) -> int {
-    let path = "examples/models/qwen3-0.6b/tokenizer.json"
-    if args.len() >= 2 { path = args[1] }
+ 
+ 
+  let path = "examples/models/qwen3-0.6b/tokenizer.json"
+ 
+ 
+  if args.len() >= 2 { path = args[1] }
 
-    let e, b = bstd.Bytes.mmapFile(path)
-    if e != 0 { println("mmap failed err={}", e); return 1 }
+ 
+ 
+  let b, e = bstd.Bytes.mmapFile(path)
+ 
+ 
+  if e != 0 { println("mmap failed err={}", e); return 1 }
 
-    let se, v = j.Json.scanTopLevelString(b, "version")
-    if se != 0 { println("scan failed err={}", se); return 1 }
+ 
+ 
+  let v, se = j.Json.scanTopLevelString(b, "version")
+ 
+ 
+  if se != 0 { println("scan failed err={}", se); return 1 }
     println("tokenizer version={}", v)
-    return 0
+ 
+ 
+  return 0
 }

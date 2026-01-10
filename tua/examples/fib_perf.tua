@@ -3,19 +3,43 @@
 
 
 fn fib(n:int) int {
-    if n < 2 {
-        return n
-    }
-    let a = 0
-    let b = 1
-    let i = 2
-    while i <= n {
-        let c = a + b
+ 
+ 
+  if n < 2 {
+ 
+ 
+ 
+ 
+ 
+   return n
+ 
+   }
+ 
+ 
+  let a = 0
+ 
+ 
+  let b = 1
+ 
+ 
+  let i = 2
+ 
+ 
+  while i <= n {
+ 
+ 
+ 
+ 
+ 
+   let c = a + b
         a = b
         b = c
         i++
-    }
-    return b
+ 
+   }
+ 
+ 
+  return b
 }
 
 assert(fib(0) == 0, "fib(0)")
@@ -30,9 +54,12 @@ let i = 0
 let checksum = 0
 while i < reps {
     checksum = checksum + fib(35)
-    if checksum > 1000000000 {
+ 
+ 
+  if checksum > 1000000000 {
         checksum = checksum - 1000000000
-    }
+ 
+   }
     i++
 }
 println(checksum)

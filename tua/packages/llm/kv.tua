@@ -16,40 +16,123 @@ struct KvSpec {
 }
 
 trait KvCache {
-    fn spec() KvSpec
-    fn seqLen() int
-    fn clear()
-    fn kTokenPtr(layer: int, pos: int) ptr
-    fn vTokenPtr(layer: int, pos: int) ptr
+ 
+ 
+  fn spec() KvSpec
+ 
+ 
+  fn seqLen() int
+ 
+ 
+  fn clear()
+ 
+ 
+  fn kTokenPtr(layer: int, pos: int) ptr
+ 
+ 
+  fn vTokenPtr(layer: int, pos: int) ptr
 }
 
 private fn _elemBytes(dtype: int) long {
-    if dtype == KvDtype.float16 { return 2L }
-    return 4L
+ 
+ 
+  if dtype == KvDtype.float16 { return 2L }
+ 
+ 
+  return 4L
 }
 
 object KvBudget {
-    fn bytesPerToken(spec: KvSpec) long {
-        let eb = _elemBytes(spec.dtype)
-        let vec: long = (long)spec.kvHeads * (long)spec.headDim
+ 
+ 
+  fn bytesPerToken(spec: KvSpec) long {
+ 
+ 
+ 
+ 
+ 
+   let eb = _elemBytes(spec.dtype)
+ 
+ 
+ 
+ 
+ 
+   let vec: long = (long)spec.kvHeads * (long)spec.headDim
         // K + V
-        return 2L * (long)spec.layers * vec * eb
-    }
+ 
+ 
+ 
+ 
+ 
+   return 2L * (long)spec.layers * vec * eb
+ 
+   }
 
-    fn requiredBytes(spec: KvSpec) long {
-        return (long)spec.maxSeq * KvBudget.bytesPerToken(spec)
-    }
+ 
+ 
+  fn requiredBytes(spec: KvSpec) long {
+ 
+ 
+ 
+ 
+ 
+   return (long)spec.maxSeq * KvBudget.bytesPerToken(spec)
+ 
+   }
 
-    fn maxSeqForBytes(layers: int, kvHeads: int, headDim: int, dtype: int, bytes: long) int {
-        if bytes <= 0L { return 0 }
-        let eb = _elemBytes(dtype)
-        let denom: long = 2L * (long)layers * (long)kvHeads * (long)headDim * eb
-        if denom <= 0L { return 0 }
-        let m: long = bytes / denom
-        if m < 0L { return 0 }
-        if m > 2147483647L { return 2147483647 }
-        return (int)m
-    }
+ 
+ 
+  fn maxSeqForBytes(layers: int, kvHeads: int, headDim: int, dtype: int, bytes: long) int {
+ 
+ 
+ 
+ 
+ 
+   if bytes <= 0L { return 0 }
+ 
+ 
+ 
+ 
+ 
+   let eb = _elemBytes(dtype)
+ 
+ 
+ 
+ 
+ 
+   let denom: long = 2L * (long)layers * (long)kvHeads * (long)headDim * eb
+ 
+ 
+ 
+ 
+ 
+   if denom <= 0L { return 0 }
+ 
+ 
+ 
+ 
+ 
+   let m: long = bytes / denom
+ 
+ 
+ 
+ 
+ 
+   if m < 0L { return 0 }
+ 
+ 
+ 
+ 
+ 
+   if m > 2147483647L { return 2147483647 }
+ 
+ 
+ 
+ 
+ 
+   return (int)m
+ 
+   }
 }
 
 // Contiguous KV cache:
@@ -70,61 +153,195 @@ struct KvContiguous {
     tokenBytes: long
 }
 
-private fn _kvContiguousNew(move spec: KvSpec, maxBytes: long) -> int, KvContiguous {
-    let z = KvContiguous{ layers: 0, kvHeads: 0, headDim: 0, maxSeq: 0, dtype: spec.dtype, seq: 0, buf: null, kBase: 0L, vBase: 0L, layerBytes: 0L, tokenBytes: 0L }
-    if spec.layers <= 0 { return 1, z }
-    if spec.kvHeads <= 0 { return 1, z }
-    if spec.headDim <= 0 { return 1, z }
-    if spec.maxSeq < 0 { return 1, z }
-    let eb = _elemBytes(spec.dtype)
-    let vec: long = (long)spec.kvHeads * (long)spec.headDim
-    let tokenBytes = vec * eb
-    let layerBytes = (long)spec.maxSeq * tokenBytes
-    let need: long = 2L * (long)spec.layers * layerBytes
-    if maxBytes > 0L {
-        if need > maxBytes { return 2, z }
-    }
+private fn _kvContiguousNew(move spec: KvSpec, maxBytes: long) -> KvContiguous, int{
+ 
+ 
+  let z = KvContiguous{ layers: 0, kvHeads: 0, headDim: 0, maxSeq: 0, dtype: spec.dtype, seq: 0, buf: null, kBase: 0L, vBase: 0L, layerBytes: 0L, tokenBytes: 0L }
+ 
+ 
+  if spec.layers <= 0 { return z, 1}
+ 
+ 
+  if spec.kvHeads <= 0 { return z, 1}
+ 
+ 
+  if spec.headDim <= 0 { return z, 1}
+ 
+ 
+  if spec.maxSeq < 0 { return z, 1}
+ 
+ 
+  let eb = _elemBytes(spec.dtype)
+ 
+ 
+  let vec: long = (long)spec.kvHeads * (long)spec.headDim
+ 
+ 
+  let tokenBytes = vec * eb
+ 
+ 
+  let layerBytes = (long)spec.maxSeq * tokenBytes
+ 
+ 
+  let need: long = 2L * (long)spec.layers * layerBytes
+ 
+ 
+  if maxBytes > 0L {
+ 
+ 
+ 
+ 
+ 
+   if need > maxBytes { return z, 2}
+ 
+   }
 
-    let layers = spec.layers
-    let buf = bstd.Bytes.newLong(need)
-    let out = KvContiguous{ layers: spec.layers, kvHeads: spec.kvHeads, headDim: spec.headDim, maxSeq: spec.maxSeq, dtype: spec.dtype, seq: 0, buf: buf, kBase: 0L, vBase: (long)layers * layerBytes, layerBytes: layerBytes, tokenBytes: tokenBytes }
-    return 0, out
+ 
+ 
+  let layers = spec.layers
+ 
+ 
+  let buf = bstd.Bytes.newLong(need)
+ 
+ 
+  let out = KvContiguous{ layers: spec.layers, kvHeads: spec.kvHeads, headDim: spec.headDim, maxSeq: spec.maxSeq, dtype: spec.dtype, seq: 0, buf: buf, kBase: 0L, vBase: (long)layers * layerBytes, layerBytes: layerBytes, tokenBytes: tokenBytes }
+ 
+ 
+  return out, 0
 }
 
 object Kv {
-    fn contiguous(move spec: KvSpec, maxBytes: long) -> int, KvContiguous {
-        return _kvContiguousNew(move spec, maxBytes)
-    }
+ 
+ 
+  fn contiguous(move spec: KvSpec, maxBytes: long) -> KvContiguous, int{
+ 
+ 
+ 
+ 
+ 
+   return _kvContiguousNew(move spec, maxBytes)
+ 
+   }
 }
 
 impl KvContiguous {
-    fn new(move spec: KvSpec, maxBytes: long) -> int, KvContiguous {
-        return _kvContiguousNew(move spec, maxBytes)
-    }
+ 
+ 
+  fn new(move spec: KvSpec, maxBytes: long) -> KvContiguous, int{
+ 
+ 
+ 
+ 
+ 
+   return _kvContiguousNew(move spec, maxBytes)
+ 
+   }
 
-    fn spec() -> KvSpec { return KvSpec{ layers: layers, kvHeads: kvHeads, headDim: headDim, maxSeq: maxSeq, dtype: dtype } }
-    fn seqLen() -> int { return seq }
-    fn clear() { seq = 0 }
+ 
+ 
+  fn spec() -> KvSpec { return KvSpec{ layers: layers, kvHeads: kvHeads, headDim: headDim, maxSeq: maxSeq, dtype: dtype } }
+ 
+ 
+  fn seqLen() -> int { return seq }
+ 
+ 
+  fn clear() { seq = 0 }
 
-    fn kTokenPtr(layer: int, pos: int) -> ptr {
-        if buf == null { return null }
-        if layer < 0 { return null }
-        if layer >= layers { return null }
-        if pos < 0 { return null }
-        if pos >= maxSeq { return null }
-        let off: long = kBase + ((long)layer * layerBytes) + ((long)pos * tokenBytes)
-        return tua_bytes_data_at(buf, off)
-    }
+ 
+ 
+  fn kTokenPtr(layer: int, pos: int) -> ptr {
+ 
+ 
+ 
+ 
+ 
+   if buf == null { return null }
+ 
+ 
+ 
+ 
+ 
+   if layer < 0 { return null }
+ 
+ 
+ 
+ 
+ 
+   if layer >= layers { return null }
+ 
+ 
+ 
+ 
+ 
+   if pos < 0 { return null }
+ 
+ 
+ 
+ 
+ 
+   if pos >= maxSeq { return null }
+ 
+ 
+ 
+ 
+ 
+   let off: long = kBase + ((long)layer * layerBytes) + ((long)pos * tokenBytes)
+ 
+ 
+ 
+ 
+ 
+   return tua_bytes_data_at(buf, off)
+ 
+   }
 
-    fn vTokenPtr(layer: int, pos: int) -> ptr {
-        if buf == null { return null }
-        if layer < 0 { return null }
-        if layer >= layers { return null }
-        if pos < 0 { return null }
-        if pos >= maxSeq { return null }
-        let off: long = vBase + ((long)layer * layerBytes) + ((long)pos * tokenBytes)
-        return tua_bytes_data_at(buf, off)
-    }
+ 
+ 
+  fn vTokenPtr(layer: int, pos: int) -> ptr {
+ 
+ 
+ 
+ 
+ 
+   if buf == null { return null }
+ 
+ 
+ 
+ 
+ 
+   if layer < 0 { return null }
+ 
+ 
+ 
+ 
+ 
+   if layer >= layers { return null }
+ 
+ 
+ 
+ 
+ 
+   if pos < 0 { return null }
+ 
+ 
+ 
+ 
+ 
+   if pos >= maxSeq { return null }
+ 
+ 
+ 
+ 
+ 
+   let off: long = vBase + ((long)layer * layerBytes) + ((long)pos * tokenBytes)
+ 
+ 
+ 
+ 
+ 
+   return tua_bytes_data_at(buf, off)
+ 
+   }
 }
 
 impl KvCache for KvContiguous {}

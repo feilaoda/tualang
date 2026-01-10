@@ -3,35 +3,61 @@ import "json" as j
 
 private fn _mk() -> bytes {
     // {"a":[1,2,{"b":3}],"version":"1.0","z":null}
-    let tmp = bstd.Bytes.new(128)
-    let cs:int[] = {
+ 
+ 
+  let tmp = bstd.Bytes.new(128)
+ 
+ 
+  let cs:int[] = {
         123,
         34,97,34,58,91,49,44,50,44,123,34,98,34,58,51,125,93,44,
         34,118,101,114,115,105,111,110,34,58,34,49,46,48,34,44,
         34,122,34,58,110,117,108,108,
         125
-    }
-    let i: long = 0L
-    while i < (long)cs.len() {
+ 
+   }
+ 
+ 
+  let i: long = 0L
+ 
+ 
+  while i < (long)cs.len() {
         bstd.Bytes.setU8(tmp, i, cs[(int)i])
         i = i + 1L
-    }
-    let out = bstd.Bytes.new((int)i)
+ 
+   }
+ 
+ 
+  let out = bstd.Bytes.new((int)i)
     bstd.Bytes.copy(out, 0L, tmp, 0L, i)
-    return out
+ 
+ 
+  return out
 }
 
 fn main() {
-    let b = _mk()
-    let e, s = j.Json.scanTopLevelString(b, "version")
+ 
+ 
+  let b = _mk()
+ 
+ 
+  let s, e = j.Json.scanTopLevelString(b, "version")
     assert(e == 0)
     assert(s == "1.0")
-    let e2, s2 = j.Json.scanTopLevelString(b, "missing")
-    let _ = s2
+ 
+ 
+  let s2, e2 = j.Json.scanTopLevelString(b, "missing")
+ 
+ 
+  let _ = s2
     assert(e2 != 0)
 
-    let e3, v = j.Json.scanTopLevelValue(b, "a")
+ 
+ 
+  let v, e3 = j.Json.scanTopLevelValue(b, "a")
     assert(e3 == 0)
-    let arr:any[] = v
+ 
+ 
+  let arr:any[] = v
     assert(arr.len() == 3)
 }

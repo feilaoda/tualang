@@ -1,12 +1,18 @@
 
 fn main() {
-    let a:int[] = {1, 2}
+ 
+ 
+  let a:int[] = {1, 2}
     assert(a.len() == 2)
     a.push(3)
     assert(a.len() == 3)
     assert(a[2] == 3)
-    let m:map<string,int> = {"a": 1}
-    let oa = m["a"]
+ 
+ 
+  let m:map<string,int> = {"a": 1}
+ 
+ 
+  let oa = m["a"]
     assert(oa.isSome())
     assert(oa.unwrap() == 1)
 }

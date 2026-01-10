@@ -1,5 +1,7 @@
 fn main() {
-    const m: map<int, int> = { 1: 10 }
+ 
+ 
+  const m: map<int, int> = { 1: 10 }
     m[2] = 20
     assert(m[2].unwrap() == 20)
 }

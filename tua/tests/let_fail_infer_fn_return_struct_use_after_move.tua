@@ -6,7 +6,13 @@ fn make() -> S {
 
 
 fn main() {
-    let x = make()
-    let y = x
-    let z = x
+ 
+ 
+  let x = make()
+ 
+ 
+  let y = x
+ 
+ 
+  let z = x
 }

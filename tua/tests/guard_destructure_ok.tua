@@ -1,17 +1,37 @@
 fn foo(ok:int) -> int,int,int {
-    if ok == 1 {
-        return 11, 22, 0;
-    }
-    return 0, 0, 7;
+ 
+ 
+  if ok == 1 {
+ 
+ 
+ 
+ 
+ 
+   return 11, 22, 0;
+ 
+   }
+ 
+ 
+  return 0, 0, 7;
 }
 
 fn main(args: string[]) int {
     // keep `args` to satisfy the allowed main signature
-    let a, b = foo(1) ? { return 1; }
-    if a != 11 { return 2; }
-    if b != 22 { return 3; }
+ 
+ 
+  let a, b = foo(1) ? { return 1; }
+ 
+ 
+  if a != 11 { return 2; }
+ 
+ 
+  if b != 22 { return 3; }
 
     // Error path: guard triggers and returns from main.
-    let c, d = foo(0) ? { return 0; }
-    return c + d;
+ 
+ 
+  let c, d = foo(0) ? { return 0; }
+ 
+ 
+  return c + d;
 }

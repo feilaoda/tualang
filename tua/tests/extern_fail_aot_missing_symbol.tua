@@ -1,6 +1,8 @@
 
 fn main() {
-    let x = definitely_missing_symbol()
+ 
+ 
+  let x = definitely_missing_symbol()
     assert(x == 0)
 }
 

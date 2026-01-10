@@ -1,10 +1,14 @@
 import "std/scalar"
 
 fn main() {
-    let x: int = -3
+ 
+ 
+  let x: int = -3
     assert(x.abs() == 3)
 
-    let y: long = -5L
+ 
+ 
+  let y: long = -5L
     assert(y.abs() == 5L)
 
     assert("".isEmpty())

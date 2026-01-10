@@ -1,13 +1,25 @@
 fn makeCounter() -> int {
-    let x = 0
-    let inc = fn() -> int {
+ 
+ 
+  let x = 0
+ 
+ 
+  let inc = fn() -> int {
         x = x + 1
-        return x
-    }
+ 
+ 
+ 
+ 
+ 
+   return x
+ 
+   }
 
     println(inc())
     println(inc())
-    return 0
+ 
+ 
+  return 0
 }
 
 makeCounter()

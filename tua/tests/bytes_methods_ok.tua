@@ -1,8 +1,12 @@
 import "std/bytes"
 
 fn main() {
-    let src: bytes = bytes.Bytes.fromString("abc")
-    let dst: bytes = bytes.Bytes.new(3)
+ 
+ 
+  let src: bytes = bytes.Bytes.fromString("abc")
+ 
+ 
+  let dst: bytes = bytes.Bytes.new(3)
 
     assert(src.len() == 3L)
     assert(src.getU8(0L) == (byte)97)
@@ -10,12 +14,16 @@ fn main() {
     assert(src.isReadonly() == 0)
 
     // dst[0..3] = src[0..3]
-    let e = dst.copy(0L, src, 0L, 3L)
+ 
+ 
+  let e = dst.copy(0L, src, 0L, 3L)
     assert(e == 0)
     assert(dst.getU8(2L) == (byte)99)
 
     // Overwrite dst[1] = 120 ('x')
-    let e2 = dst.setU8(1L, 120)
+ 
+ 
+  let e2 = dst.setU8(1L, 120)
     assert(e2 == 0)
     assert(dst.get(1L) == (byte)120)
 }

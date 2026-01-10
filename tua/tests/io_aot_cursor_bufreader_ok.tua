@@ -13,7 +13,9 @@ import Cursor, BufReader, Io from "std/io"
 
 
 fn main() {
-    let b = bstd.Bytes.new(8)
+ 
+ 
+  let b = bstd.Bytes.new(8)
     bstd.Bytes.setU8(b, 0L, 1)
     bstd.Bytes.setU8(b, 1L, 2)
     bstd.Bytes.setU8(b, 2L, 3)
@@ -22,29 +24,49 @@ fn main() {
     bstd.Bytes.setU8(b, 5L, 6)
     bstd.Bytes.setU8(b, 6L, 7)
     bstd.Bytes.setU8(b, 7L, 8)
-    let cur: Cursor = Io.cursorFromBytes(move b)
-    let e0, v0 = cur.readU8()
+ 
+ 
+  let cur: Cursor = Io.cursorFromBytes(move b)
+ 
+ 
+  let v0, e0 = cur.readU8()
     assert(e0 == 0)
     assert(v0 == 1)
-    let e16, v16 = cur.readU16LE()
+ 
+ 
+  let v16, e16 = cur.readU16LE()
     assert(e16 == 0)
     assert((int)v16 == 770) // 0x0302
-    let e32, v32 = cur.readU32LE()
+ 
+ 
+  let v32, e32 = cur.readU32LE()
     assert(e32 == 0)
     assert((int)v32 == 117835012) // 0x07060504
-    let e1, last = cur.readU8()
+ 
+ 
+  let last, e1 = cur.readU8()
     assert(e1 == 0)
     assert(last == 8)
-    let eof, _ = cur.readU8()
+ 
+ 
+  let _, eof = cur.readU8()
     assert(eof != 0)
-    let b2 = bstd.Bytes.new(4)
+ 
+ 
+  let b2 = bstd.Bytes.new(4)
     bstd.Bytes.setU8(b2, 0L, 10)
     bstd.Bytes.setU8(b2, 1L, 0)
     bstd.Bytes.setU8(b2, 2L, 0)
     bstd.Bytes.setU8(b2, 3L, 0)
-    let cur2: Cursor = Io.cursorFromBytes(move b2)
-    let br: BufReader = Io.bufReader(move cur2, 2)
-    let be, bv = br.readU32LE()
+ 
+ 
+  let cur2: Cursor = Io.cursorFromBytes(move b2)
+ 
+ 
+  let br: BufReader = Io.bufReader(move cur2, 2)
+ 
+ 
+  let bv, be = br.readU32LE()
     assert(be == 0)
     assert((int)bv == 10)
 }

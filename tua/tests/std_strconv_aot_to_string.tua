@@ -3,7 +3,9 @@ import "std/strconv" as strconv
 
 
 fn main() {
-    let s = strconv.Int.toString(42)
+ 
+ 
+  let s = strconv.Int.toString(42)
     assert(s == "42")
     rt.Rt.free(s)
 }

@@ -5,7 +5,9 @@ fn two() -> S, S {
 }
 
 fn main() {
-    let a, b = two()
+ 
+ 
+  let a, b = two()
     assert(a.a == 1)
     assert(b.a == 2)
 }

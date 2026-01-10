@@ -12,7 +12,9 @@ struct C {
 
 
 fn main() {
-    let c: C = C{ b: B{ a: A{ x: 1 } } }
+ 
+ 
+  let c: C = C{ b: B{ a: A{ x: 1 } } }
     assert(c.x == 1)
     assert(c.b.a.x == 1)
 }

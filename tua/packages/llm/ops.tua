@@ -10,12 +10,18 @@ enum OpTranspose {
 }
 
 trait OpsBackend {
-    fn setThreads(n: int) int
+ 
+ 
+  fn setThreads(n: int) int
 
     // C := alpha * op(A) * op(B) + beta * C
     // Row-major; pointers are assumed contiguous with leading dimensions (lda/ldb/ldc).
-    fn gemmF32(transA: int, transB: int, m: int, n: int, k: int, alpha: float, a: ptr, lda: int, b: ptr, ldb: int, beta: float, c: ptr, ldc: int) int
+ 
+ 
+  fn gemmF32(transA: int, transB: int, m: int, n: int, k: int, alpha: float, a: ptr, lda: int, b: ptr, ldb: int, beta: float, c: ptr, ldc: int) int
 
     // y := alpha * op(A) * x + beta * y
-    fn gemvF32(transA: int, m: int, n: int, alpha: float, a: ptr, lda: int, x: ptr, incx: int, beta: float, y: ptr, incy: int) int
+ 
+ 
+  fn gemvF32(transA: int, m: int, n: int, alpha: float, a: ptr, lda: int, x: ptr, incx: int, beta: float, y: ptr, incy: int) int
 }

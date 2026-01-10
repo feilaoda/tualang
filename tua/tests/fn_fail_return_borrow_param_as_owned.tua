@@ -8,6 +8,8 @@ fn id(f: Foo) -> Foo {
 
 
 fn main() {
-    let a: Foo = Foo()
+ 
+ 
+  let a: Foo = Foo()
     id(a)
 }

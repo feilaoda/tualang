@@ -8,87 +8,243 @@ extern fn tua_f32_from_u32_bits(bits: u32) double
 // Spec reference: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
 
 private fn _endsWith(s: string, suf: string) -> bool {
-    if s == null || suf == null { return false }
-    let sb = bstd.Bytes.fromString(s)
-    let tb = bstd.Bytes.fromString(suf)
-    let sn = bstd.Bytes.len(sb)
-    let tn = bstd.Bytes.len(tb)
-    if tn > sn { return false }
-    let i: long = 0L
-    while i < tn {
-        let a, e0 = bstd.Bytes.getU8(sb, sn - tn + i)
-        if e0 != 0 { return false }
-        let b, e1 = bstd.Bytes.getU8(tb, i)
-        if e1 != 0 { return false }
-        if a != b { return false }
+ 
+ 
+  if s == null || suf == null { return false }
+ 
+ 
+  let sb = bstd.Bytes.fromString(s)
+ 
+ 
+  let tb = bstd.Bytes.fromString(suf)
+ 
+ 
+  let sn = bstd.Bytes.len(sb)
+ 
+ 
+  let tn = bstd.Bytes.len(tb)
+ 
+ 
+  if tn > sn { return false }
+ 
+ 
+  let i: long = 0L
+ 
+ 
+  while i < tn {
+ 
+ 
+ 
+ 
+ 
+   let a, e0 = bstd.Bytes.getU8(sb, sn - tn + i)
+ 
+ 
+ 
+ 
+ 
+   if e0 != 0 { return false }
+ 
+ 
+ 
+ 
+ 
+   let b, e1 = bstd.Bytes.getU8(tb, i)
+ 
+ 
+ 
+ 
+ 
+   if e1 != 0 { return false }
+ 
+ 
+ 
+ 
+ 
+   if a != b { return false }
         i = i + 1L
-    }
-    return true
+ 
+   }
+ 
+ 
+  return true
 }
 
 private fn _contains(s: string, sub: string) -> bool {
-    if s == null || sub == null { return false }
-    let sb = bstd.Bytes.fromString(s)
-    let tb = bstd.Bytes.fromString(sub)
-    let sn = bstd.Bytes.len(sb)
-    let tn = bstd.Bytes.len(tb)
-    if tn <= 0L { return true }
-    if tn > sn { return false }
-    let i: long = 0L
-    while i + tn <= sn {
-        let j: long = 0L
-        while j < tn {
-            let a, e0 = bstd.Bytes.getU8(sb, i + j)
-            if e0 != 0 { return false }
-            let b, e1 = bstd.Bytes.getU8(tb, j)
-            if e1 != 0 { return false }
-            if a != b { break }
+ 
+ 
+  if s == null || sub == null { return false }
+ 
+ 
+  let sb = bstd.Bytes.fromString(s)
+ 
+ 
+  let tb = bstd.Bytes.fromString(sub)
+ 
+ 
+  let sn = bstd.Bytes.len(sb)
+ 
+ 
+  let tn = bstd.Bytes.len(tb)
+ 
+ 
+  if tn <= 0L { return true }
+ 
+ 
+  if tn > sn { return false }
+ 
+ 
+  let i: long = 0L
+ 
+ 
+  while i + tn <= sn {
+ 
+ 
+ 
+ 
+ 
+   let j: long = 0L
+ 
+ 
+ 
+ 
+ 
+   while j < tn {
+ 
+ 
+ 
+ 
+ 
+       let a, e0 = bstd.Bytes.getU8(sb, i + j)
+ 
+ 
+ 
+ 
+ 
+       if e0 != 0 { return false }
+ 
+ 
+ 
+ 
+ 
+       let b, e1 = bstd.Bytes.getU8(tb, j)
+ 
+ 
+ 
+ 
+ 
+       if e1 != 0 { return false }
+ 
+ 
+ 
+ 
+ 
+       if a != b { break }
             j = j + 1L
-        }
-        if j == tn { return true }
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   if j == tn { return true }
         i = i + 1L
-    }
-    return false
+ 
+   }
+ 
+ 
+  return false
 }
 
 private fn _align(off: long, a: long) -> long {
-    if a <= 1L { return off }
-    let r = off - (off / a) * a
-    if r == 0L { return off }
-    return off + (a - r)
+ 
+ 
+  if a <= 1L { return off }
+ 
+ 
+  let r = off - (off / a) * a
+ 
+ 
+  if r == 0L { return off }
+ 
+ 
+  return off + (a - r)
 }
 
-private fn _readU32(b: bytes, off: long) -> int, long, long {
-    let e, u = bstd.Bytes.readU32LE(b, off)
-    if e != 0 { return 1, 0L, off }
-    return 0, (long)u, off + 4L
+private fn _readU32(b: bytes, off: long) -> long, long, int{
+ 
+ 
+  let u, e = bstd.Bytes.readU32LE(b, off)
+ 
+ 
+  if e != 0 { return 0L, off, 1}
+ 
+ 
+  return (long)u, off + 4L, 0
 }
 
-private fn _readU64(b: bytes, off: long) -> int, long, long {
-    let e, u = bstd.Bytes.readU64LE(b, off)
-    if e != 0 { return 1, 0L, off }
-    return 0, (long)u, off + 8L
+private fn _readU64(b: bytes, off: long) -> long, long, int{
+ 
+ 
+  let u, e = bstd.Bytes.readU64LE(b, off)
+ 
+ 
+  if e != 0 { return 0L, off, 1}
+ 
+ 
+  return (long)u, off + 8L, 0
 }
 
-private fn _readString(b: bytes, off: long) -> int, string, long {
-    let e0, n, o1 = _readU64(b, off)
-    if e0 != 0 { return 1, null, off }
-    if n < 0L { return 1, null, off }
-    let end = o1 + n
-    if end < o1 { return 1, null, off }
-    if end > bstd.Bytes.len(b) { return 1, null, off }
-    let s = tua_str_from_bytes_copy(b, o1, n)
-    return 0, s, end
+private fn _readString(b: bytes, off: long) -> string, long, int{
+ 
+ 
+  let n, o1, e0 = _readU64(b, off)
+ 
+ 
+  if e0 != 0 { return null, off, 1}
+ 
+ 
+  if n < 0L { return null, off, 1}
+ 
+ 
+  let end = o1 + n
+ 
+ 
+  if end < o1 { return null, off, 1}
+ 
+ 
+  if end > bstd.Bytes.len(b) { return null, off, 1}
+ 
+ 
+  let s = tua_str_from_bytes_copy(b, o1, n)
+ 
+ 
+  return s, end, 0
 }
 
-private fn _skipString(b: bytes, off: long) -> int, long {
-    let e0, n, o1 = _readU64(b, off)
-    if e0 != 0 { return 1, off }
-    if n < 0L { return 1, off }
-    let end = o1 + n
-    if end < o1 { return 1, off }
-    if end > bstd.Bytes.len(b) { return 1, off }
-    return 0, end
+private fn _skipString(b: bytes, off: long) -> long, int{
+ 
+ 
+  let n, o1, e0 = _readU64(b, off)
+ 
+ 
+  if e0 != 0 { return off, 1}
+ 
+ 
+  if n < 0L { return off, 1}
+ 
+ 
+  let end = o1 + n
+ 
+ 
+  if end < o1 { return off, 1}
+ 
+ 
+  if end > bstd.Bytes.len(b) { return off, 1}
+ 
+ 
+  return end, 0
 }
 
 // Value types (gguf_value_type)
@@ -106,48 +262,171 @@ private enum Vt {
 }
 
 private fn _skipFixed(vt: long) -> long {
-    if vt == (long)Vt.u8_ { return 1L }
-    if vt == (long)Vt.i8_ { return 1L }
-    if vt == (long)Vt.u16_ { return 2L }
-    if vt == (long)Vt.i16_ { return 2L }
-    if vt == (long)Vt.u32_ { return 4L }
-    if vt == (long)Vt.i32_ { return 4L }
-    if vt == (long)Vt.f32_ { return 4L }
-    if vt == (long)Vt.bool_ { return 1L }
-    return 0L
+ 
+ 
+  if vt == (long)Vt.u8_ { return 1L }
+ 
+ 
+  if vt == (long)Vt.i8_ { return 1L }
+ 
+ 
+  if vt == (long)Vt.u16_ { return 2L }
+ 
+ 
+  if vt == (long)Vt.i16_ { return 2L }
+ 
+ 
+  if vt == (long)Vt.u32_ { return 4L }
+ 
+ 
+  if vt == (long)Vt.i32_ { return 4L }
+ 
+ 
+  if vt == (long)Vt.f32_ { return 4L }
+ 
+ 
+  if vt == (long)Vt.bool_ { return 1L }
+ 
+ 
+  return 0L
 }
 
-private fn _skipValue(b: bytes, off: long, vt: long) -> int, long {
-    if vt == (long)Vt.str_ {
-        let e, o2 = _skipString(b, off)
-        if e != 0 { return 1, off }
-        return 0, o2
-    }
-    if vt == (long)Vt.arr_ {
-        let e0, elemT, o1 = _readU32(b, off)
-        if e0 != 0 { return 1, off }
-        let e1, n, o2 = _readU64(b, o1)
-        if e1 != 0 { return 1, off }
-        if elemT == (long)Vt.str_ {
-            let i: long = 0L
-            let cur: long = o2
-            while i < n {
-                let e2, o3 = _skipString(b, cur)
-                if e2 != 0 { return 1, off }
+private fn _skipValue(b: bytes, off: long, vt: long) -> long, int{
+ 
+ 
+  if vt == (long)Vt.str_ {
+ 
+ 
+ 
+ 
+ 
+   let o2, e = _skipString(b, off)
+ 
+ 
+ 
+ 
+    if e != 0 { return off, 1}
+ 
+ 
+ 
+ 
+ 
+   return o2, 0
+ 
+   }
+ 
+ 
+  if vt == (long)Vt.arr_ {
+ 
+ 
+ 
+ 
+ 
+   let o1, e0, elemT = _readU32(b, off)
+ 
+ 
+ 
+ 
+    if e0 != 0 { return off, 1}
+ 
+ 
+ 
+ 
+ 
+   let n, o2, e1 = _readU64(b, o1)
+ 
+ 
+ 
+ 
+    if e1 != 0 { return off, 1}
+ 
+ 
+ 
+ 
+ 
+   if elemT == (long)Vt.str_ {
+ 
+ 
+ 
+ 
+ 
+       let i: long = 0L
+ 
+ 
+ 
+ 
+ 
+       let cur: long = o2
+ 
+ 
+ 
+ 
+ 
+       while i < n {
+ 
+ 
+ 
+ 
+ 
+           let o3, e2 = _skipString(b, cur)
+ 
+ 
+ 
+ 
+            if e2 != 0 { return off, 1}
                 cur = o3
                 i = i + 1L
-            }
-            return 0, cur
-        }
-        let sz = _skipFixed(elemT)
-        if sz <= 0L { return 1, off }
-        let end = o2 + n * sz
-        if end < o2 { return 1, off }
-        return 0, end
-    }
-    let sz = _skipFixed(vt)
-    if sz <= 0L { return 1, off }
-    return 0, off + sz
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       return cur, 0
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   let sz = _skipFixed(elemT)
+ 
+ 
+ 
+ 
+ 
+   if sz <= 0L { return off, 1}
+ 
+ 
+ 
+ 
+ 
+   let end = o2 + n * sz
+ 
+ 
+ 
+ 
+ 
+   if end < o2 { return off, 1}
+ 
+ 
+ 
+ 
+ 
+   return end, 0
+ 
+   }
+ 
+ 
+  let sz = _skipFixed(vt)
+ 
+ 
+  if sz <= 0L { return off, 1}
+ 
+ 
+  return off + sz, 0
 }
 
 struct GgufTensorInfo {
@@ -195,380 +474,1437 @@ struct GgufFile {
 }
 
 object Gguf {
-    fn findMainFile(modelDir: string) -> int, string {
-        if modelDir == null { return 1, null }
-        let e, names = fs.Fs.readdir(modelDir)
-        if e != 0 || names == null { return 2, null }
-        let namesArr: string[] = names
+ 
+ 
+  fn findMainFile(modelDir: string) -> string, int{
+ 
+ 
+ 
+ 
+ 
+   if modelDir == null { return null, 1}
+ 
+ 
+ 
+ 
+ 
+   let names, e = fs.Fs.readdir(modelDir)
+ 
+ 
+ 
+ 
+    if e != 0 || names == null { return null, 2}
+ 
+ 
+ 
+ 
+ 
+   let namesArr: string[] = names
 
         // Prefer a single-file GGUF (no -00001-of- shard suffix).
-        let best: string = null
-        let i: int = 0
-        while i < namesArr.len() {
-            let n = namesArr[i]
-            if n != null && _endsWith(n, ".gguf") && !_contains(n, "-of-") {
+ 
+ 
+ 
+ 
+ 
+   let best: string = null
+ 
+ 
+ 
+ 
+ 
+   let i: int = 0
+ 
+ 
+ 
+ 
+ 
+   while i < namesArr.len() {
+ 
+ 
+ 
+ 
+ 
+       let n = namesArr[i]
+ 
+ 
+ 
+ 
+ 
+       if n != null && _endsWith(n, ".gguf") && !_contains(n, "-of-") {
                 best = modelDir + "/" + n
-                break
-            }
+ 
+ 
+ 
+ 
+ 
+           break
+ 
+           }
             i = i + 1
-        }
-        if best != null {
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   if best != null {
             fs.Fs.freeStringArray(namesArr)
-            return 0, best
-        }
+ 
+ 
+ 
+ 
+ 
+       return best, 0
+ 
+       }
 
         // Fallback: pick the first *.gguf (may be a shard; caller might reject).
         i = 0
-        while i < namesArr.len() {
-            let n = namesArr[i]
-            if n != null && _endsWith(n, ".gguf") {
+ 
+ 
+ 
+ 
+ 
+   while i < namesArr.len() {
+ 
+ 
+ 
+ 
+ 
+       let n = namesArr[i]
+ 
+ 
+ 
+ 
+ 
+       if n != null && _endsWith(n, ".gguf") {
                 best = modelDir + "/" + n
-                break
-            }
+ 
+ 
+ 
+ 
+ 
+           break
+ 
+           }
             i = i + 1
-        }
+ 
+       }
         fs.Fs.freeStringArray(namesArr)
-        if best == null { return 3, null }
-        return 0, best
-    }
+ 
+ 
+ 
+ 
+ 
+   if best == null { return null, 3}
+ 
+ 
+ 
+ 
+ 
+   return best, 0
+ 
+   }
 
-    fn parseBytes(raw: bytes, wantTokenizer: int) -> int, GgufFile {
+ 
+ 
+  fn parseBytes(raw: bytes, wantTokenizer: int) -> GgufFile, int{
         // Keep `raw` un-moved until we successfully parse and return it in `out`.
-        let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
+ 
+ 
+ 
+ 
+ 
+   let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
             arch: null, chatTemplate: null,
             ctxLen: 0, blockCount: 0, embd: 0, ffn: 0, heads: 0, kvHeads: 0, headDim: 0, ropeTheta: 0.0, rmsEps: 0.0,
             bos: 0L, eos: 0L, pad: 0L, addBos: 0, tokens: null, merges: null,
             tensors: null,
-        }
-        if raw == null { return 1, z }
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   if raw == null { return z, 1}
 
         // Magic
-        if bstd.Bytes.len(raw) < 4L { return 2, z }
-        let b0, e1 = bstd.Bytes.getU8(raw, 0L)
-        let b1, e2 = bstd.Bytes.getU8(raw, 1L)
-        let b2, e3 = bstd.Bytes.getU8(raw, 2L)
-        let b3, e4 = bstd.Bytes.getU8(raw, 3L)
-        if e1 != 0 || e2 != 0 || e3 != 0 || e4 != 0 { return 2, z }
-        if b0 != 71 || b1 != 71 || b2 != 85 || b3 != 70 { return 2, z } // "GGUF"
+ 
+ 
+ 
+ 
+ 
+   if bstd.Bytes.len(raw) < 4L { return z, 2}
+ 
+ 
+ 
+ 
+ 
+   let b0, e1 = bstd.Bytes.getU8(raw, 0L)
+ 
+ 
+ 
+ 
+ 
+   let b1, e2 = bstd.Bytes.getU8(raw, 1L)
+ 
+ 
+ 
+ 
+ 
+   let b2, e3 = bstd.Bytes.getU8(raw, 2L)
+ 
+ 
+ 
+ 
+ 
+   let b3, e4 = bstd.Bytes.getU8(raw, 3L)
+ 
+ 
+ 
+ 
+ 
+   if e1 != 0 || e2 != 0 || e3 != 0 || e4 != 0 { return z, 2}
+ 
+ 
+ 
+ 
+ 
+   if b0 != 71 || b1 != 71 || b2 != 85 || b3 != 70 { return z, 2} // "GGUF"
 
-        let off: long = 4L
-        let ev, ver, o1 = _readU32(raw, off)
-        if ev != 0 { return 2, z }
+ 
+ 
+ 
+ 
+ 
+   let off: long = 4L
+ 
+ 
+ 
+ 
+ 
+   let ver, o1, ev = _readU32(raw, off)
+ 
+ 
+ 
+ 
+    if ev != 0 { return z, 2}
         off = o1
-        let et, tcnt, o2 = _readU64(raw, off)
-        if et != 0 { return 2, z }
+ 
+ 
+ 
+ 
+ 
+   let tcnt, o2, et = _readU64(raw, off)
+ 
+ 
+ 
+ 
+    if et != 0 { return z, 2}
         off = o2
-        let ek, kcnt, o3 = _readU64(raw, off)
-        if ek != 0 { return 2, z }
+ 
+ 
+ 
+ 
+ 
+   let kcnt, o3, ek = _readU64(raw, off)
+ 
+ 
+ 
+ 
+    if ek != 0 { return z, 2}
         off = o3
 
-        let alignment: long = 32L
-        let arch: string = null
-        let chatTemplate: string = null
-        let ctxLen: int = 0
-        let blockCount: int = 0
-        let embd: int = 0
-        let ffn: int = 0
-        let heads: int = 0
-        let kvHeads: int = 0
-        let headDim: int = 0
-        let ropeTheta: float = 0.0
-        let rmsEps: float = 0.0
-        let bos: long = 0L
-        let eos: long = 0L
-        let pad: long = 0L
-        let addBos: int = 0
-        let tokens: string[] = null
-        let merges: string[] = null
+ 
+ 
+ 
+ 
+ 
+   let alignment: long = 32L
+ 
+ 
+ 
+ 
+ 
+   let arch: string = null
+ 
+ 
+ 
+ 
+ 
+   let chatTemplate: string = null
+ 
+ 
+ 
+ 
+ 
+   let ctxLen: int = 0
+ 
+ 
+ 
+ 
+ 
+   let blockCount: int = 0
+ 
+ 
+ 
+ 
+ 
+   let embd: int = 0
+ 
+ 
+ 
+ 
+ 
+   let ffn: int = 0
+ 
+ 
+ 
+ 
+ 
+   let heads: int = 0
+ 
+ 
+ 
+ 
+ 
+   let kvHeads: int = 0
+ 
+ 
+ 
+ 
+ 
+   let headDim: int = 0
+ 
+ 
+ 
+ 
+ 
+   let ropeTheta: float = 0.0
+ 
+ 
+ 
+ 
+ 
+   let rmsEps: float = 0.0
+ 
+ 
+ 
+ 
+ 
+   let bos: long = 0L
+ 
+ 
+ 
+ 
+ 
+   let eos: long = 0L
+ 
+ 
+ 
+ 
+ 
+   let pad: long = 0L
+ 
+ 
+ 
+ 
+ 
+   let addBos: int = 0
+ 
+ 
+ 
+ 
+ 
+   let tokens: string[] = null
+ 
+ 
+ 
+ 
+ 
+   let merges: string[] = null
 
         // KV section
-        let i: long = 0L
-        while i < kcnt {
-            let ke, key, okey = _readString(raw, off)
-            if ke != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+   let i: long = 0L
+ 
+ 
+ 
+ 
+ 
+   while i < kcnt {
+ 
+ 
+ 
+ 
+ 
+       let key, okey, ke = _readString(raw, off)
+ 
+ 
+ 
+ 
+        if ke != 0 { return z, 3}
             off = okey
-            let vte, vt, ovt = _readU32(raw, off)
-            if vte != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+       let vt, ovt, vte = _readU32(raw, off)
+ 
+ 
+ 
+ 
+        if vte != 0 { return z, 3}
             off = ovt
 
-            if key == "general.alignment" {
-                if vt == (long)Vt.u32_ || vt == (long)Vt.i32_ {
-                    let ve, v, ov = _readU32(raw, off)
-                    if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+       if key == "general.alignment" {
+ 
+ 
+ 
+ 
+ 
+           if vt == (long)Vt.u32_ || vt == (long)Vt.i32_ {
+ 
+ 
+ 
+ 
+ 
+               let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+                if ve != 0 { return z, 3}
                     alignment = v
                     off = ov
                     i = i + 1L
-                    continue
-                }
-            }
-            if key == "general.architecture" && vt == (long)Vt.str_ {
-                let se, s, os = _readString(raw, off)
-                if se != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+               continue
+ 
+               }
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "general.architecture" && vt == (long)Vt.str_ {
+ 
+ 
+ 
+ 
+ 
+           let s, os, se = _readString(raw, off)
+ 
+ 
+ 
+ 
+            if se != 0 { return z, 3}
                 arch = s
                 off = os
                 i = i + 1L
-                continue
-            }
-            if key == "tokenizer.chat_template" && vt == (long)Vt.str_ {
-                let se, s, os = _readString(raw, off)
-                if se != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "tokenizer.chat_template" && vt == (long)Vt.str_ {
+ 
+ 
+ 
+ 
+ 
+           let s, os, se = _readString(raw, off)
+ 
+ 
+ 
+ 
+            if se != 0 { return z, 3}
                 chatTemplate = s
                 off = os
                 i = i + 1L
-                continue
-            }
-            if key == "tokenizer.ggml.bos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "tokenizer.ggml.bos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 bos = v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "tokenizer.ggml.eos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "tokenizer.ggml.eos_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 eos = v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "tokenizer.ggml.padding_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "tokenizer.ggml.padding_token_id" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 pad = v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "tokenizer.ggml.add_bos_token" && vt == (long)Vt.bool_ {
-                let bv, be = bstd.Bytes.getU8(raw, off)
-                if be != 0 { return 3, z }
-                if bv != 0 { addBos = 1 }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "tokenizer.ggml.add_bos_token" && vt == (long)Vt.bool_ {
+ 
+ 
+ 
+ 
+ 
+           let bv, be = bstd.Bytes.getU8(raw, off)
+ 
+ 
+ 
+ 
+ 
+           if be != 0 { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           if bv != 0 { addBos = 1 }
                 off = off + 1L
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 ctxLen = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "llama.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "llama.context_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 ctxLen = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.block_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.block_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 blockCount = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.embedding_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.embedding_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 embd = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.feed_forward_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.feed_forward_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 ffn = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.attention.head_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.attention.head_count" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 heads = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.attention.head_count_kv" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.attention.head_count_kv" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 kvHeads = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.attention.key_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
-                let ve, v, ov = _readU32(raw, off)
-                if ve != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.attention.key_length" && (vt == (long)Vt.u32_ || vt == (long)Vt.i32_) {
+ 
+ 
+ 
+ 
+ 
+           let v, ov, ve = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if ve != 0 { return z, 3}
                 headDim = (int)v
                 off = ov
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.rope.freq_base" && vt == (long)Vt.f32_ {
-                let eF, uF = bstd.Bytes.readU32LE(raw, off)
-                if eF != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.rope.freq_base" && vt == (long)Vt.f32_ {
+ 
+ 
+ 
+ 
+ 
+           let uF, eF = bstd.Bytes.readU32LE(raw, off)
+ 
+ 
+ 
+ 
+            if eF != 0 { return z, 3}
                 ropeTheta = (float)tua_f32_from_u32_bits(uF)
                 off = off + 4L
                 i = i + 1L
-                continue
-            }
-            if key == "qwen3.attention.layer_norm_rms_epsilon" && vt == (long)Vt.f32_ {
-                let eF, uF = bstd.Bytes.readU32LE(raw, off)
-                if eF != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if key == "qwen3.attention.layer_norm_rms_epsilon" && vt == (long)Vt.f32_ {
+ 
+ 
+ 
+ 
+ 
+           let uF, eF = bstd.Bytes.readU32LE(raw, off)
+ 
+ 
+ 
+ 
+            if eF != 0 { return z, 3}
                 rmsEps = (float)tua_f32_from_u32_bits(uF)
                 off = off + 4L
                 i = i + 1L
-                continue
-            }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
 
-            if wantTokenizer != 0 && key == "tokenizer.ggml.tokens" && vt == (long)Vt.arr_ {
-                let eA0, elemT, oA0 = _readU32(raw, off)
-                if eA0 != 0 { return 3, z }
-                let eA1, nA, oA1 = _readU64(raw, oA0)
-                if eA1 != 0 { return 3, z }
-                if elemT != (long)Vt.str_ { return 3, z }
-                let arr: string[] = {}
-                let j: long = 0L
-                let cur: long = oA1
-                while j < nA {
-                    let eS, s, oS = _readString(raw, cur)
-                    if eS != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+       if wantTokenizer != 0 && key == "tokenizer.ggml.tokens" && vt == (long)Vt.arr_ {
+ 
+ 
+ 
+ 
+ 
+           let oA0, eA0, elemT = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if eA0 != 0 { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           let nA, oA1, eA1 = _readU64(raw, oA0)
+ 
+ 
+ 
+ 
+            if eA1 != 0 { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           if elemT != (long)Vt.str_ { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           let arr: string[] = {}
+ 
+ 
+ 
+ 
+ 
+           let j: long = 0L
+ 
+ 
+ 
+ 
+ 
+           let cur: long = oA1
+ 
+ 
+ 
+ 
+ 
+           while j < nA {
+ 
+ 
+ 
+ 
+ 
+               let s, oS, eS = _readString(raw, cur)
+ 
+ 
+ 
+ 
+                if eS != 0 { return z, 3}
                     arr.push(s)
                     cur = oS
                     j = j + 1L
-                }
+ 
+               }
                 tokens = arr
                 off = cur
                 i = i + 1L
-                continue
-            }
-            if wantTokenizer != 0 && key == "tokenizer.ggml.merges" && vt == (long)Vt.arr_ {
-                let eA0, elemT, oA0 = _readU32(raw, off)
-                if eA0 != 0 { return 3, z }
-                let eA1, nA, oA1 = _readU64(raw, oA0)
-                if eA1 != 0 { return 3, z }
-                if elemT != (long)Vt.str_ { return 3, z }
-                let arr: string[] = {}
-                let j: long = 0L
-                let cur: long = oA1
-                while j < nA {
-                    let eS, s, oS = _readString(raw, cur)
-                    if eS != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       if wantTokenizer != 0 && key == "tokenizer.ggml.merges" && vt == (long)Vt.arr_ {
+ 
+ 
+ 
+ 
+ 
+           let oA0, eA0, elemT = _readU32(raw, off)
+ 
+ 
+ 
+ 
+            if eA0 != 0 { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           let nA, oA1, eA1 = _readU64(raw, oA0)
+ 
+ 
+ 
+ 
+            if eA1 != 0 { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           if elemT != (long)Vt.str_ { return z, 3}
+ 
+ 
+ 
+ 
+ 
+           let arr: string[] = {}
+ 
+ 
+ 
+ 
+ 
+           let j: long = 0L
+ 
+ 
+ 
+ 
+ 
+           let cur: long = oA1
+ 
+ 
+ 
+ 
+ 
+           while j < nA {
+ 
+ 
+ 
+ 
+ 
+               let s, oS, eS = _readString(raw, cur)
+ 
+ 
+ 
+ 
+                if eS != 0 { return z, 3}
                     arr.push(s)
                     cur = oS
                     j = j + 1L
-                }
+ 
+               }
                 merges = arr
                 off = cur
                 i = i + 1L
-                continue
-            }
+ 
+ 
+ 
+ 
+ 
+           continue
+ 
+           }
 
             // default: skip
-            let se, nOff = _skipValue(raw, off, vt)
-            if se != 0 { return 3, z }
+ 
+ 
+ 
+ 
+ 
+       let nOff, se = _skipValue(raw, off, vt)
+ 
+ 
+ 
+ 
+        if se != 0 { return z, 3}
             off = nOff
             i = i + 1L
-        }
+ 
+       }
 
         // Tensor infos
-        let tensors: map<string, long> = {}
-        let ti: long = 0L
-        while ti < tcnt {
-            let ne, name, oN = _readString(raw, off)
-            if ne != 0 { return 4, z }
+ 
+ 
+ 
+ 
+ 
+   let tensors: map<string, long> = {}
+ 
+ 
+ 
+ 
+ 
+   let ti: long = 0L
+ 
+ 
+ 
+ 
+ 
+   while ti < tcnt {
+ 
+ 
+ 
+ 
+ 
+       let name, oN, ne = _readString(raw, off)
+ 
+ 
+ 
+ 
+        if ne != 0 { return z, 4}
             off = oN
-            let infoOff: long = off
-            let nde, ndL, oNd = _readU32(raw, off)
-            if nde != 0 { return 4, z }
-            let nd: int = (int)ndL
+ 
+ 
+ 
+ 
+ 
+       let infoOff: long = off
+ 
+ 
+ 
+ 
+ 
+       let ndL, oNd, nde = _readU32(raw, off)
+ 
+ 
+ 
+ 
+        if nde != 0 { return z, 4}
+ 
+ 
+ 
+ 
+ 
+       let nd: int = (int)ndL
             off = oNd
-            let d0: long = 0L
-            let d1: long = 0L
+ 
+ 
+ 
+ 
+ 
+       let d0: long = 0L
+ 
+ 
+ 
+ 
+ 
+       let d1: long = 0L
             // dims are u64[nd], little-endian
-            let k: int = 0
-            while k < nd {
-                let de2, dv, oDv = _readU64(raw, off)
-                if de2 != 0 { return 4, z }
-                if k == 0 { d0 = dv }
-                if k == 1 { d1 = dv }
+ 
+ 
+ 
+ 
+ 
+       let k: int = 0
+ 
+ 
+ 
+ 
+ 
+       while k < nd {
+ 
+ 
+ 
+ 
+ 
+           let dv, oDv, de2 = _readU64(raw, off)
+ 
+ 
+ 
+ 
+            if de2 != 0 { return z, 4}
+ 
+ 
+ 
+ 
+ 
+           if k == 0 { d0 = dv }
+ 
+ 
+ 
+ 
+ 
+           if k == 1 { d1 = dv }
                 off = oDv
                 k = k + 1
-            }
-            let te, tL, oT = _readU32(raw, off)
-            if te != 0 { return 4, z }
+ 
+           }
+ 
+ 
+ 
+ 
+ 
+       let tL, oT, te = _readU32(raw, off)
+ 
+ 
+ 
+ 
+        if te != 0 { return z, 4}
             off = oT
-            let oe, offRel, oOff = _readU64(raw, off)
-            if oe != 0 { return 4, z }
+ 
+ 
+ 
+ 
+ 
+       let offRel, oOff, oe = _readU64(raw, off)
+ 
+ 
+ 
+ 
+        if oe != 0 { return z, 4}
             off = oOff
 
             tensors[name] = infoOff
             ti = ti + 1L
-        }
+ 
+       }
 
-        let dataStart = _align(off, alignment)
+ 
+ 
+ 
+ 
+ 
+   let dataStart = _align(off, alignment)
 
-        let out = GgufFile{ raw: raw, version: (int)ver, tensorCount: tcnt, kvCount: kcnt, alignment: alignment, dataStart: dataStart,
+ 
+ 
+ 
+ 
+ 
+   let out = GgufFile{ raw: raw, version: (int)ver, tensorCount: tcnt, kvCount: kcnt, alignment: alignment, dataStart: dataStart,
             arch: arch, chatTemplate: chatTemplate,
             ctxLen: ctxLen, blockCount: blockCount, embd: embd, ffn: ffn, heads: heads, kvHeads: kvHeads, headDim: headDim, ropeTheta: ropeTheta, rmsEps: rmsEps,
             bos: bos, eos: eos, pad: pad, addBos: addBos, tokens: tokens, merges: merges,
             tensors: tensors,
-        }
-        return 0, out
-    }
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   return out, 0
+ 
+   }
 
-    fn parseMmap(path: string, wantTokenizer: int) -> int, GgufFile {
-        let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
+ 
+ 
+  fn parseMmap(path: string, wantTokenizer: int) -> GgufFile, int{
+ 
+ 
+ 
+ 
+ 
+   let z = GgufFile{ raw: null, version: 0, tensorCount: 0L, kvCount: 0L, alignment: 32L, dataStart: 0L,
             arch: null, chatTemplate: null,
             ctxLen: 0, blockCount: 0, embd: 0, ffn: 0, heads: 0, kvHeads: 0, headDim: 0, ropeTheta: 0.0, rmsEps: 0.0,
             bos: 0L, eos: 0L, pad: 0L, addBos: 0, tokens: null, merges: null,
             tensors: null,
-        }
-        let e0, raw = bstd.Bytes.mmapFile(path)
-        if e0 != 0 { return 1, z }
-        if raw == null { return 1, z }
-        return parseBytes(move raw, wantTokenizer)
-    }
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   let raw, e0 = bstd.Bytes.mmapFile(path)
+ 
+ 
+ 
+ 
+    if e0 != 0 { return z, 1}
+ 
+ 
+ 
+ 
+ 
+   if raw == null { return z, 1}
+ 
+ 
+ 
+ 
+ 
+   return parseBytes(move raw, wantTokenizer)
+ 
+   }
 
-    fn tensorInfo(let g: GgufFile, name: string) -> int, GgufTensorInfo {
-        if g.tensors == null { return 1, GgufTensorInfo{} }
-        let m: map<string, long> = g.tensors
-        let opt = m[name]
-        if opt.isNone() { return 2, GgufTensorInfo{} }
-        let at: long = opt.unwrap()
-        if at < 0L { return 3, GgufTensorInfo{} }
-        if g.raw == null { return 3, GgufTensorInfo{} }
+ 
+ 
+  fn tensorInfo(let g: GgufFile, name: string) -> GgufTensorInfo, int{
+ 
+ 
+ 
+ 
+ 
+   if g.tensors == null { return GgufTensorInfo{}, 1}
+ 
+ 
+ 
+ 
+ 
+   let m: map<string, long> = g.tensors
+ 
+ 
+ 
+ 
+ 
+   let opt = m[name]
+ 
+ 
+ 
+ 
+ 
+   if opt.isNone() { return GgufTensorInfo{}, 2}
+ 
+ 
+ 
+ 
+ 
+   let at: long = opt.unwrap()
+ 
+ 
+ 
+ 
+ 
+   if at < 0L { return GgufTensorInfo{}, 3}
+ 
+ 
+ 
+ 
+ 
+   if g.raw == null { return GgufTensorInfo{}, 3}
 
-        let nde, ndL, oNd = _readU32(g.raw, at)
-        if nde != 0 { return 3, GgufTensorInfo{} }
-        let nd: int = (int)ndL
-        let cur: long = oNd
-        let d0: long = 0L
-        let d1: long = 0L
-        let k: int = 0
-        while k < nd {
-            let de2, dv, oDv = _readU64(g.raw, cur)
-            if de2 != 0 { return 3, GgufTensorInfo{} }
-            if k == 0 { d0 = dv }
-            if k == 1 { d1 = dv }
+ 
+ 
+ 
+ 
+ 
+   let ndL, oNd, nde = _readU32(g.raw, at)
+ 
+ 
+ 
+ 
+    if nde != 0 { return GgufTensorInfo{}, 3}
+ 
+ 
+ 
+ 
+ 
+   let nd: int = (int)ndL
+ 
+ 
+ 
+ 
+ 
+   let cur: long = oNd
+ 
+ 
+ 
+ 
+ 
+   let d0: long = 0L
+ 
+ 
+ 
+ 
+ 
+   let d1: long = 0L
+ 
+ 
+ 
+ 
+ 
+   let k: int = 0
+ 
+ 
+ 
+ 
+ 
+   while k < nd {
+ 
+ 
+ 
+ 
+ 
+       let dv, oDv, de2 = _readU64(g.raw, cur)
+ 
+ 
+ 
+ 
+        if de2 != 0 { return GgufTensorInfo{}, 3}
+ 
+ 
+ 
+ 
+ 
+       if k == 0 { d0 = dv }
+ 
+ 
+ 
+ 
+ 
+       if k == 1 { d1 = dv }
             cur = oDv
             k = k + 1
-        }
-        let te, tL, oT = _readU32(g.raw, cur)
-        if te != 0 { return 3, GgufTensorInfo{} }
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   let tL, oT, te = _readU32(g.raw, cur)
+ 
+ 
+ 
+ 
+    if te != 0 { return GgufTensorInfo{}, 3}
         cur = oT
-        let oe, offRel, oOff = _readU64(g.raw, cur)
-        if oe != 0 { return 3, GgufTensorInfo{} }
-        let info = GgufTensorInfo{ t: (int)tL, nd: nd, d0: d0, d1: d1, off: offRel }
-        return 0, info
-    }
+ 
+ 
+ 
+ 
+ 
+   let offRel, oOff, oe = _readU64(g.raw, cur)
+ 
+ 
+ 
+ 
+    if oe != 0 { return GgufTensorInfo{}, 3}
+ 
+ 
+ 
+ 
+ 
+   let info = GgufTensorInfo{ t: (int)tL, nd: nd, d0: d0, d1: d1, off: offRel }
+ 
+ 
+ 
+ 
+ 
+   return info, 0
+ 
+   }
 }

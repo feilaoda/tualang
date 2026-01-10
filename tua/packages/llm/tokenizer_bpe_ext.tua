@@ -9,12 +9,40 @@ extern fn tuaext_bpe_decode_ids_to_string(ids: long[], idToToken: map<long, stri
 
 object BpeTokenizerExt {
     // External-C decode (requires linking/dlopen'ing a user-provided library that exports `tuaext_bpe_decode_ids_to_string`).
-    fn decode2(t: TokenizerBpe, ids: long[]) -> string, int {
-        if ids == null { return null, 1 }
-        let de: int = 0
-        let s = tuaext_bpe_decode_ids_to_string(ids, t.idToToken, &de)
-        if de != 0 || s == null { return null, 1 }
-        return s, 0
-    }
+ 
+ 
+  fn decode2(t: TokenizerBpe, ids: long[]) -> string, int {
+ 
+ 
+ 
+ 
+ 
+   if ids == null { return null, 1 }
+ 
+ 
+ 
+ 
+ 
+   let de: int = 0
+ 
+ 
+ 
+ 
+ 
+   let s = tuaext_bpe_decode_ids_to_string(ids, t.idToToken, &de)
+ 
+ 
+ 
+ 
+ 
+   if de != 0 || s == null { return null, 1 }
+ 
+ 
+ 
+ 
+ 
+   return s, 0
+ 
+   }
 }
 

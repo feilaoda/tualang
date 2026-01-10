@@ -1,14 +1,26 @@
 object C {
 
-    fn atoi(s: string) int {
-        return atoi(s);
-    }
+ 
+ 
+  fn atoi(s: string) int {
+ 
+ 
+ 
+ 
+ 
+   return atoi(s);
+ 
+   }
 
 }
 
 
 extern fn atoi(s: string) int
 extern "C" {
-    fn atoi(s: string) int
-    fn  x(s: string) int
+ 
+ 
+  fn atoi(s: string) int
+ 
+ 
+  fn  x(s: string) int
 }

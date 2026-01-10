@@ -8,7 +8,11 @@ fn id(p: Ref<Foo>) -> Ref<Foo> {
 
 
 fn main() {
-    let a: Foo = Foo()
-    let r: Ref<Foo> = id(&a)
+ 
+ 
+  let a: Foo = Foo()
+ 
+ 
+  let r: Ref<Foo> = id(&a)
     r.x = 1
 }

@@ -2,21 +2,35 @@ import "std/bytes" as bstd
 import "json" as j
 
 private fn _mk1() -> bytes {
-    let tmp = bstd.Bytes.new(256)
-    let i: long = 0L
+ 
+ 
+  let tmp = bstd.Bytes.new(256)
+ 
+ 
+  let i: long = 0L
     // {"a":1,"b":[true,false,null],"s":"x\n\"y\"","u":"\u0041\u0042"}
-    let cs:int[] = {
+ 
+ 
+  let cs:int[] = {
         123,34,97,34,58,49,44,34,98,34,58,91,116,114,117,101,44,102,97,108,115,101,44,110,117,108,108,93,44,
         34,115,34,58,34,120,92,110,92,34,121,92,34,34,44,
         34,117,34,58,34,92,117,48,48,52,49,92,117,48,48,52,50,34,125
-    }
-    while i < (long)cs.len() {
+ 
+   }
+ 
+ 
+  while i < (long)cs.len() {
         bstd.Bytes.setU8(tmp, i, cs[(int)i])
         i = i + 1L
-    }
-    let out = bstd.Bytes.new((int)i)
+ 
+   }
+ 
+ 
+  let out = bstd.Bytes.new((int)i)
     bstd.Bytes.copy(out, 0L, tmp, 0L, i)
-    return out
+ 
+ 
+  return out
 }
 
 
@@ -29,75 +43,152 @@ private fn _mk1() -> bytes {
 
 // Surrogate pair: 😀 => UTF-8 length 4 bytes.
 private fn _mk3() -> bytes {
-    let tmp = bstd.Bytes.new(64)
-    let i: long = 0L
+ 
+ 
+  let tmp = bstd.Bytes.new(64)
+ 
+ 
+  let i: long = 0L
     // {"x":"\uD83D\uDE00"}
-    let cs:int[] = {123,34,120,34,58,34,92,117,68,56,51,68,92,117,68,69,48,48,34,125}
-    while i < (long)cs.len() {
+ 
+ 
+  let cs:int[] = {123,34,120,34,58,34,92,117,68,56,51,68,92,117,68,69,48,48,34,125}
+ 
+ 
+  while i < (long)cs.len() {
         bstd.Bytes.setU8(tmp, i, cs[(int)i])
         i = i + 1L
-    }
-    let out = bstd.Bytes.new((int)i)
+ 
+   }
+ 
+ 
+  let out = bstd.Bytes.new((int)i)
     bstd.Bytes.copy(out, 0L, tmp, 0L, i)
-    return out
+ 
+ 
+  return out
 }
 
 fn main() {
-    let b1 = _mk1()
-    let e, root = j.Json.parseBytes(b1)
+ 
+ 
+  let b1 = _mk1()
+ 
+ 
+  let root, e = j.Json.parseBytes(b1)
     assert(e == 0)
-    let m: map = root
-    let av:any = m["a"].unwrap()
+ 
+ 
+  let m: map = root
+ 
+ 
+  let av:any = m["a"].unwrap()
     assert((long)av == 1L)
-    let bv:any = m["b"].unwrap()
-    let arr:any[] = bv
+ 
+ 
+  let bv:any = m["b"].unwrap()
+ 
+ 
+  let arr:any[] = bv
     assert(arr.len() == 3)
-    let b0: bool = arr[0]
+ 
+ 
+  let b0: bool = arr[0]
     assert(b0 == true)
-    let b1: bool = arr[1]
+ 
+ 
+  let b1: bool = arr[1]
     assert(b1 == false)
-    let n2:any = arr[2]
+ 
+ 
+  let n2:any = arr[2]
     assert(n2 == null)
-    let sv:any = m["s"].unwrap()
-    let ss: string = sv
-    let sb = bstd.Bytes.fromString(ss)
+ 
+ 
+  let sv:any = m["s"].unwrap()
+ 
+ 
+  let ss: string = sv
+ 
+ 
+  let sb = bstd.Bytes.fromString(ss)
     assert(bstd.Bytes.len(sb) == 5L)
-    let c0, se0 = bstd.Bytes.getU8(sb, 0L)
+ 
+ 
+  let c0, se0 = bstd.Bytes.getU8(sb, 0L)
     assert(se0 == 0)
     assert(c0 == 120) // 'x'
-    let c1, se1 = bstd.Bytes.getU8(sb, 1L)
+ 
+ 
+  let c1, se1 = bstd.Bytes.getU8(sb, 1L)
     assert(se1 == 0)
     assert(c1 == 10)  // '\n'
-    let c2, se2 = bstd.Bytes.getU8(sb, 2L)
+ 
+ 
+  let c2, se2 = bstd.Bytes.getU8(sb, 2L)
     assert(se2 == 0)
     assert(c2 == 34)  // '"'
-    let c3, se3 = bstd.Bytes.getU8(sb, 3L)
+ 
+ 
+  let c3, se3 = bstd.Bytes.getU8(sb, 3L)
     assert(se3 == 0)
     assert(c3 == 121) // 'y'
-    let c4, se4 = bstd.Bytes.getU8(sb, 4L)
+ 
+ 
+  let c4, se4 = bstd.Bytes.getU8(sb, 4L)
     assert(se4 == 0)
     assert(c4 == 34)  // '"'
-    let uv:any = m["u"].unwrap()
-    let us: string = uv
+ 
+ 
+  let uv:any = m["u"].unwrap()
+ 
+ 
+  let us: string = uv
     assert(us == "AB")
-    let b2 = bstd.Bytes.fromString("[1,2.5,1e2,-3]")
-    let e2, v2 = j.Json.parseBytes(b2)
+ 
+ 
+  let b2 = bstd.Bytes.fromString("[1,2.5,1e2,-3]")
+ 
+ 
+  let v2, e2 = j.Json.parseBytes(b2)
     assert(e2 == 0)
-    let a2:any[] = v2
-    let n0: long = a2[0]
+ 
+ 
+  let a2:any[] = v2
+ 
+ 
+  let n0: long = a2[0]
     assert(n0 == 1L)
-    let n1: double = a2[1]
+ 
+ 
+  let n1: double = a2[1]
     assert(n1 == 2.5)
-    let n2: double = a2[2]
+ 
+ 
+  let n2: double = a2[2]
     assert(n2 == 100.0)
-    let n3: long = a2[3]
+ 
+ 
+  let n3: long = a2[3]
     assert(n3 == -3L)
-    let b3 = _mk3()
-    let e3, v3 = j.Json.parseBytes(b3)
+ 
+ 
+  let b3 = _mk3()
+ 
+ 
+  let v3, e3 = j.Json.parseBytes(b3)
     assert(e3 == 0)
-    let m3: map = v3
-    let x:any = m3["x"].unwrap()
-    let xs: string = x
-    let bx = bstd.Bytes.fromString(xs)
+ 
+ 
+  let m3: map = v3
+ 
+ 
+  let x:any = m3["x"].unwrap()
+ 
+ 
+  let xs: string = x
+ 
+ 
+  let bx = bstd.Bytes.fromString(xs)
     assert(bstd.Bytes.len(bx) == 4L)
 }

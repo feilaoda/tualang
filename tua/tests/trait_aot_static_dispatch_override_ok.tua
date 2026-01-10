@@ -8,13 +8,17 @@ struct S {
 
 impl S {
   fn id() -> int {
-    return 1
+ 
+ 
+  return 1
   }
 }
 
 impl HasId for S {
   fn id() -> int {
-    return 2
+ 
+ 
+  return 2
   }
 }
 
@@ -24,7 +28,9 @@ fn getId<T: HasId>(x: T) -> int {
 
 
 fn main() {
-    let s: S = S{id: 10}
+ 
+ 
+  let s: S = S{id: 10}
     assert(s.id() == 1)
     assert(getId<S>(s) == 2)
 }

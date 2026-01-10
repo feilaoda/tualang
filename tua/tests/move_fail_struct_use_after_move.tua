@@ -3,8 +3,12 @@ struct Foo {
 }
 
 fn main() {
-    let a: Foo = Foo()
+ 
+ 
+  let a: Foo = Foo()
     a.x = 1
-    let b: Foo = a
+ 
+ 
+  let b: Foo = a
     println(a.x)
 }

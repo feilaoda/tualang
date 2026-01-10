@@ -1,8 +1,12 @@
 
 
 fn main() {
-    let outer: map = {}
-    let inner: map = {"a": 1}
+ 
+ 
+  let outer: map = {}
+ 
+ 
+  let inner: map = {"a": 1}
     outer["x"] = inner
     println(inner.len())
 }

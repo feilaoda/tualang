@@ -1,7 +1,9 @@
 extern fn strlen(s: string) long
 
 fn main() {
-    let n: long = strlen("abc")
+ 
+ 
+  let n: long = strlen("abc")
     assert(n == 3)
 }
 

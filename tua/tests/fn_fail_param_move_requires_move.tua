@@ -4,7 +4,11 @@ fn take(move m: map) -> int {
 
 
 fn main() {
-    let x: map = { "a": 1 }
-    let n = take(x)
+ 
+ 
+  let x: map = { "a": 1 }
+ 
+ 
+  let n = take(x)
     println(n)
 }

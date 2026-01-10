@@ -12,6 +12,8 @@ impl HasId for S {
 
 
 fn main() {
-    let v: HasId = S{ id: 2 }
+ 
+ 
+  let v: HasId = S{ id: 2 }
     assert(v.id() == 3)
 }

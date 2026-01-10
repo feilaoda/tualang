@@ -3,7 +3,11 @@ struct Foo {
 }
 
 fn main() {
-    const foo: Foo = Foo()
-    let m: &Foo = &foo
+ 
+ 
+  const foo: Foo = Foo()
+ 
+ 
+  let m: &Foo = &foo
     m.x = 1
 }

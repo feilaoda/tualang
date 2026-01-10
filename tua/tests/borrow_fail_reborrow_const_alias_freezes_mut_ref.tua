@@ -5,11 +5,20 @@ struct Foo {
 
 
 fn main() {
-    let a: Foo = Foo()
-    let r: Ref<Foo> = &a
+ 
+ 
+  let a: Foo = Foo()
+ 
+ 
+  let r: Ref<Foo> = &a
     {
-      const s: Ref<Foo> = r
+ 
+ 
+ 
+ 
+  const s: Ref<Foo> = r
       r.x = 1
       assert(s.x == 1)
-    }
+ 
+   }
 }

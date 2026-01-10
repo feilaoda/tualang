@@ -1,6 +1,8 @@
 import "modules/ns_struct" as m
 
 fn main() {
-    let u = m.User(7)
+ 
+ 
+  let u = m.User(7)
     assert(u.id == 7)
 }

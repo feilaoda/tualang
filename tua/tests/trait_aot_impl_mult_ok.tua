@@ -11,17 +11,38 @@ struct None { ...Base as b }
   impl HasId for None {}
 
   fn whos(t: string) -> HasId {
-    if t == "girl" {
-      return Girl{ b: Base{ id: 5 }, extra2: 2 }
-    } else if t == "boy" {
-      return Boy{ base: Base{ id: 6 }, extra3: 3 }
-    } else {
-      return None{ b: Base{ id: 7 } }
-    }
+ 
+ 
+  if t == "girl" {
+ 
+ 
+ 
+ 
+  return Girl{ b: Base{ id: 5 }, extra2: 2 }
+ 
+   } else if t == "boy" {
+ 
+ 
+ 
+ 
+  return Boy{ base: Base{ id: 6 }, extra3: 3 }
+ 
+   } else {
+ 
+ 
+ 
+ 
+  return None{ b: Base{ id: 7 } }
+ 
+   }
   }
 
 
 fn main() {
-      let p: HasId = whos("girl1")
+ 
+ 
+ 
+ 
+  let p: HasId = whos("girl1")
       println(p.id())
 }

@@ -4,8 +4,14 @@ struct Foo {
 
 
 fn main() {
-    let a: Foo = Foo()
-    const v = a
-    let b = a
+ 
+ 
+  let a: Foo = Foo()
+ 
+ 
+  const v = a
+ 
+ 
+  let b = a
     println(v.x + b.x)
 }

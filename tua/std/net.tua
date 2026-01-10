@@ -14,64 +14,191 @@ extern fn tua_tcp_write_str_async_cl(loop: ptr, sock: ptr, data: string, deadlin
 extern fn tua_tcp_read_alloc_async_cl(loop: ptr, sock: ptr, max: int, deadline: long, cb: (int, string, int) -> void) int
 
 object Tcp {
-    fn listen(host: string, port: string, backlog: int) -> ptr {
-        let lst: ptr = null
-        let err = tua_tcp_listen(host, port, backlog, &lst)
-        if err != 0 {
-            return null
-        }
-        return lst
-    }
+ 
+ 
+  fn listen(host: string, port: string, backlog: int) -> ptr {
+ 
+ 
+ 
+ 
+ 
+   let lst: ptr = null
+ 
+ 
+ 
+ 
+ 
+   let err = tua_tcp_listen(host, port, backlog, &lst)
+ 
+ 
+ 
+ 
+ 
+   if err != 0 {
+ 
+ 
+ 
+ 
+ 
+       return null
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   return lst
+ 
+   }
 
-    fn listenerPort(listener: ptr) int {
-        return tua_tcp_listener_local_port(listener)
-    }
+ 
+ 
+  fn listenerPort(listener: ptr) int {
+ 
+ 
+ 
+ 
+ 
+   return tua_tcp_listener_local_port(listener)
+ 
+   }
 
-    fn listenerClose(listener: ptr) {
+ 
+ 
+  fn listenerClose(listener: ptr) {
         tua_tcp_listener_close(listener)
-    }
+ 
+   }
 
-    fn close(sock: ptr) {
+ 
+ 
+  fn close(sock: ptr) {
         tua_tcp_socket_close(sock)
-    }
+ 
+   }
 
     // Start accepting connections; callback signature: `fn(err:int, sock:ptr)`.
     // Returns an opaque accept-handle `ptr` which can be cancelled.
-    fn accept(loop: ptr, listener: ptr, cb: (int, ptr) -> void) -> ptr {
-        let h: ptr = null
-        let err = tua_tcp_accept_start_cl(loop, listener, cb, &h)
-        if err != 0 {
-            return null
-        }
-        return h
-    }
+ 
+ 
+  fn accept(loop: ptr, listener: ptr, cb: (int, ptr) -> void) -> ptr {
+ 
+ 
+ 
+ 
+ 
+   let h: ptr = null
+ 
+ 
+ 
+ 
+ 
+   let err = tua_tcp_accept_start_cl(loop, listener, cb, &h)
+ 
+ 
+ 
+ 
+ 
+   if err != 0 {
+ 
+ 
+ 
+ 
+ 
+       return null
+ 
+       }
+ 
+ 
+ 
+ 
+ 
+   return h
+ 
+   }
 
-    fn acceptCancel(handle: ptr) {
+ 
+ 
+  fn acceptCancel(handle: ptr) {
         tua_tcp_accept_cancel_cl(handle)
-    }
+ 
+   }
 
     // Callback signature: `fn(err:int, sock:ptr)`.
-    fn connect(loop: ptr, wq: ptr, host: string, port: string, timeoutMs: int, cb: (int, ptr) -> void) int {
-        let d = rt.Rt.deadlineAfterMs(timeoutMs)
-        return tua_tcp_connect_async_cl(loop, wq, host, port, d, cb)
-    }
+ 
+ 
+  fn connect(loop: ptr, wq: ptr, host: string, port: string, timeoutMs: int, cb: (int, ptr) -> void) int {
+ 
+ 
+ 
+ 
+ 
+   let d = rt.Rt.deadlineAfterMs(timeoutMs)
+ 
+ 
+ 
+ 
+ 
+   return tua_tcp_connect_async_cl(loop, wq, host, port, d, cb)
+ 
+   }
 
     // Callback signature: `fn(err:int, sock:ptr)`.
-    fn connectPort(loop: ptr, wq: ptr, host: string, port: int, timeoutMs: int, cb: (int, ptr) -> void) int {
-        let d = rt.Rt.deadlineAfterMs(timeoutMs)
-        return tua_tcp_connect_port_async_cl(loop, wq, host, port, d, cb)
-    }
+ 
+ 
+  fn connectPort(loop: ptr, wq: ptr, host: string, port: int, timeoutMs: int, cb: (int, ptr) -> void) int {
+ 
+ 
+ 
+ 
+ 
+   let d = rt.Rt.deadlineAfterMs(timeoutMs)
+ 
+ 
+ 
+ 
+ 
+   return tua_tcp_connect_port_async_cl(loop, wq, host, port, d, cb)
+ 
+   }
 
     // Callback signature: `fn(err:int, n:long)`.
-    fn write(loop: ptr, sock: ptr, data: string, timeoutMs: int, cb: (int, long) -> void) int {
-        let d = rt.Rt.deadlineAfterMs(timeoutMs)
-        return tua_tcp_write_str_async_cl(loop, sock, data, d, cb)
-    }
+ 
+ 
+  fn write(loop: ptr, sock: ptr, data: string, timeoutMs: int, cb: (int, long) -> void) int {
+ 
+ 
+ 
+ 
+ 
+   let d = rt.Rt.deadlineAfterMs(timeoutMs)
+ 
+ 
+ 
+ 
+ 
+   return tua_tcp_write_str_async_cl(loop, sock, data, d, cb)
+ 
+   }
 
     // Allocates a buffer and reads up to `max` bytes. Buffer must be freed via `rt.Rt.free`.
     // Callback signature: `fn(err:int, data:string, n:int)`.
-    fn read(loop: ptr, sock: ptr, max: int, timeoutMs: int, cb: (int, string, int) -> void) int {
-        let d = rt.Rt.deadlineAfterMs(timeoutMs)
-        return tua_tcp_read_alloc_async_cl(loop, sock, max, d, cb)
-    }
+ 
+ 
+  fn read(loop: ptr, sock: ptr, max: int, timeoutMs: int, cb: (int, string, int) -> void) int {
+ 
+ 
+ 
+ 
+ 
+   let d = rt.Rt.deadlineAfterMs(timeoutMs)
+ 
+ 
+ 
+ 
+ 
+   return tua_tcp_read_alloc_async_cl(loop, sock, max, d, cb)
+ 
+   }
 }

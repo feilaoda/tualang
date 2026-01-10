@@ -10,94 +10,208 @@ extern fn tua_llm_attn_decode_f32(out: bytes, outOff: long, q: bytes, qOff: long
 extern fn tua_llm_attn_decode_kv_bf16_f32(out: bytes, outOff: long, q: bytes, qOff: long, kv: bytes, kBase: long, vBase: long, layerBytes: long, tokenBytes: long, layer: int, pos: int, nHeads: int, nKvHeads: int, headDim: int, scale: float, scratch: bytes, scratchOff: long, scratchFloats: long) int
 
 private fn _u8eq(a: bytes, b: bytes) -> bool {
-    let n = bstd.Bytes.len(a)
-    if n != bstd.Bytes.len(b) { return false }
-    let i: long = 0L
-    while i < n {
-        let x, e0 = bstd.Bytes.getU8(a, i)
-        let y, e1 = bstd.Bytes.getU8(b, i)
-        if e0 != 0 || e1 != 0 { return false }
-        if x != y { return false }
+ 
+ 
+  let n = bstd.Bytes.len(a)
+ 
+ 
+  if n != bstd.Bytes.len(b) { return false }
+ 
+ 
+  let i: long = 0L
+ 
+ 
+  while i < n {
+ 
+ 
+ 
+ 
+ 
+   let x, e0 = bstd.Bytes.getU8(a, i)
+ 
+ 
+ 
+ 
+ 
+   let y, e1 = bstd.Bytes.getU8(b, i)
+ 
+ 
+ 
+ 
+ 
+   if e0 != 0 || e1 != 0 { return false }
+ 
+ 
+ 
+ 
+ 
+   if x != y { return false }
         i = i + 1L
-    }
-    return true
+ 
+   }
+ 
+ 
+  return true
 }
 
 fn main() {
     // Use the existing tiny BF16 safetensors fixture as a source of BF16 data.
-    let se, st = SafeTensors.parseMmap("tests/fixtures/qwen3_tied_lm/model.safetensors")
+ 
+ 
+  let st, se = SafeTensors.parseMmap("tests/fixtures/qwen3_tied_lm/model.safetensors")
     assert(se == 0)
     assert(st.data != null)
 
     // Read tensorInfo("model.embed_tokens.weight") to locate BF16 rows.
-    let ie, recAny = SafeTensors.tensorInfo(st, "model.embed_tokens.weight")
+ 
+ 
+  let recAny, ie = SafeTensors.tensorInfo(st, "model.embed_tokens.weight")
     assert(ie == 0)
     assert(recAny != null)
-    let rec: map = recAny
-    let dtAny: any = rec["dtype"].unwrap()
+ 
+ 
+  let rec: map = recAny
+ 
+ 
+  let dtAny: any = rec["dtype"].unwrap()
     assert((int)dtAny == 2) // BF16
-    let offAny: any = rec["dataOff"].unwrap()
-    let dataOff: long = (long)offAny
-    let base: long = 8L + st.headerLen
+ 
+ 
+  let offAny: any = rec["dataOff"].unwrap()
+ 
+ 
+  let dataOff: long = (long)offAny
+ 
+ 
+  let base: long = 8L + st.headerLen
 
     // Setup: 1 head, 1 kv head, head_dim=4, pos=3 (4 tokens in KV).
-    let headDim: int = 4
-    let pos: int = 3
-    let nTokens: int = pos + 1
+ 
+ 
+  let headDim: int = 4
+ 
+ 
+  let pos: int = 3
+ 
+ 
+  let nTokens: int = pos + 1
 
-    let tokenBytesF32: long = (long)headDim * 4L
-    let layerBytesF32: long = (long)nTokens * tokenBytesF32
-    let kvF32: bytes = bstd.Bytes.newLongUninit(2L * layerBytesF32)
+ 
+ 
+  let tokenBytesF32: long = (long)headDim * 4L
+ 
+ 
+  let layerBytesF32: long = (long)nTokens * tokenBytesF32
+ 
+ 
+  let kvF32: bytes = bstd.Bytes.newLongUninit(2L * layerBytesF32)
     assert(kvF32 != null)
 
-    let tokenBytesBF16: long = (long)headDim * 2L
-    let layerBytesBF16: long = (long)nTokens * tokenBytesBF16
-    let kvBF16: bytes = bstd.Bytes.newLongUninit(2L * layerBytesBF16)
+ 
+ 
+  let tokenBytesBF16: long = (long)headDim * 2L
+ 
+ 
+  let layerBytesBF16: long = (long)nTokens * tokenBytesBF16
+ 
+ 
+  let kvBF16: bytes = bstd.Bytes.newLongUninit(2L * layerBytesBF16)
     assert(kvBF16 != null)
 
     // Fill KV from embed rows: K uses rows [0..pos], V uses rows [1..pos+1].
-    let t: int = 0
-    while t <= pos {
-        let rowKbf16: long = (long)t * (long)headDim * 2L
-        let rowVbf16: long = (long)(t + 1) * (long)headDim * 2L
+ 
+ 
+  let t: int = 0
+ 
+ 
+  while t <= pos {
+ 
+ 
+ 
+ 
+ 
+   let rowKbf16: long = (long)t * (long)headDim * 2L
+ 
+ 
+ 
+ 
+ 
+   let rowVbf16: long = (long)(t + 1) * (long)headDim * 2L
 
         // Copy BF16 bytes into BF16 KV.
-        let kdstB: long = 0L + (long)t * tokenBytesBF16
-        let vdstB: long = layerBytesBF16 + (long)t * tokenBytesBF16
+ 
+ 
+ 
+ 
+ 
+   let kdstB: long = 0L + (long)t * tokenBytesBF16
+ 
+ 
+ 
+ 
+ 
+   let vdstB: long = layerBytesBF16 + (long)t * tokenBytesBF16
         assert(bstd.Bytes.copy(kvBF16, kdstB, st.data, base + dataOff + rowKbf16, tokenBytesBF16) == 0)
         assert(bstd.Bytes.copy(kvBF16, vdstB, st.data, base + dataOff + rowVbf16, tokenBytesBF16) == 0)
 
         // Convert BF16 rows into F32 KV.
-        let kdstF: long = 0L + (long)t * tokenBytesF32
-        let vdstF: long = layerBytesF32 + (long)t * tokenBytesF32
+ 
+ 
+ 
+ 
+ 
+   let kdstF: long = 0L + (long)t * tokenBytesF32
+ 
+ 
+ 
+ 
+ 
+   let vdstF: long = layerBytesF32 + (long)t * tokenBytesF32
         assert(tua_bytes_bf16_to_f32(st.data, base + dataOff + rowKbf16, kvF32, kdstF, (long)headDim) == 0)
         assert(tua_bytes_bf16_to_f32(st.data, base + dataOff + rowVbf16, kvF32, vdstF, (long)headDim) == 0)
         t = t + 1
-    }
+ 
+   }
 
     // q = row 0 converted to f32.
-    let q: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
+ 
+ 
+  let q: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
     assert(q != null)
     assert(tua_bytes_bf16_to_f32(st.data, base + dataOff + 0L, q, 0L, (long)headDim) == 0)
 
-    let outF: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
-    let outB: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
+ 
+ 
+  let outF: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
+ 
+ 
+  let outB: bytes = bstd.Bytes.newLongUninit(tokenBytesF32)
     assert(outF != null && outB != null)
 
-    let scratch: bytes = bstd.Bytes.newLongUninit((long)nTokens * 4L)
+ 
+ 
+  let scratch: bytes = bstd.Bytes.newLongUninit((long)nTokens * 4L)
     assert(scratch != null)
 
     // Reference: F32 KV.
-    let e0 = tua_llm_attn_decode_f32(outF, 0L, q, 0L, kvF32, 0L, layerBytesF32, layerBytesF32, tokenBytesF32, 0, pos, 1, 1, headDim, 1.0, scratch, 0L, (long)nTokens)
+ 
+ 
+  let e0 = tua_llm_attn_decode_f32(outF, 0L, q, 0L, kvF32, 0L, layerBytesF32, layerBytesF32, tokenBytesF32, 0, pos, 1, 1, headDim, 1.0, scratch, 0L, (long)nTokens)
     assert(e0 == 0)
 
     // Under test: BF16 KV.
-    let e1 = tua_llm_attn_decode_kv_bf16_f32(outB, 0L, q, 0L, kvBF16, 0L, layerBytesBF16, layerBytesBF16, tokenBytesBF16, 0, pos, 1, 1, headDim, 1.0, scratch, 0L, (long)nTokens)
+ 
+ 
+  let e1 = tua_llm_attn_decode_kv_bf16_f32(outB, 0L, q, 0L, kvBF16, 0L, layerBytesBF16, layerBytesBF16, tokenBytesBF16, 0, pos, 1, 1, headDim, 1.0, scratch, 0L, (long)nTokens)
     assert(e1 == 0)
 
     // Compare outputs after converting both to BF16 (tolerate bf16 rounding).
-    let outFbf16: bytes = bstd.Bytes.newLongUninit(tokenBytesBF16)
-    let outBbf16: bytes = bstd.Bytes.newLongUninit(tokenBytesBF16)
+ 
+ 
+  let outFbf16: bytes = bstd.Bytes.newLongUninit(tokenBytesBF16)
+ 
+ 
+  let outBbf16: bytes = bstd.Bytes.newLongUninit(tokenBytesBF16)
     assert(outFbf16 != null && outBbf16 != null)
     assert(tua_bytes_f32_to_bf16(outF, 0L, outFbf16, 0L, (long)headDim) == 0)
     assert(tua_bytes_f32_to_bf16(outB, 0L, outBbf16, 0L, (long)headDim) == 0)

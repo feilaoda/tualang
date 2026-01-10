@@ -1,6 +1,10 @@
 
 fn main() {
-    let m: map<string, int> = { "a": 1 }
-    let v = m["a"]
+ 
+ 
+  let m: map<string, int> = { "a": 1 }
+ 
+ 
+  let v = m["a"]
     assert(v == 1)
 }

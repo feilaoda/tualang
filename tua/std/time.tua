@@ -2,17 +2,36 @@ import "std/rt" as rt
 
 object Time {
     // Monotonic clock (nanoseconds).
-    fn monoNs() long {
-        return rt.Rt.monoNs()
-    }
+ 
+ 
+  fn monoNs() long {
+ 
+ 
+ 
+ 
+ 
+   return rt.Rt.monoNs()
+ 
+   }
 
     // Wall-clock time (nanoseconds since epoch, best-effort).
-    fn realNs() long {
-        return rt.Rt.realNs()
-    }
+ 
+ 
+  fn realNs() long {
+ 
+ 
+ 
+ 
+ 
+   return rt.Rt.realNs()
+ 
+   }
 
-    fn sleepMs(ms: int) {
+ 
+ 
+  fn sleepMs(ms: int) {
         rt.Rt.sleepMs(ms)
-    }
+ 
+   }
 }
 

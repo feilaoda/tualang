@@ -1,10 +1,16 @@
 fn foo() -> int,int {
-    return 1, 0;
+ 
+ 
+  return 1, 0;
 }
 
 fn main() -> int {
     // Guard must interrupt control flow.
-    let a = foo() ? { println("err"); }
-    return a;
+ 
+ 
+  let a = foo() ? { println("err"); }
+ 
+ 
+  return a;
 }
 

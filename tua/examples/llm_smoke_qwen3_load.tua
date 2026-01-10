@@ -2,13 +2,27 @@ import Qwen3 from "../packages/llm/qwen3"
 import LlmArgs from "../packages/llm/options"
 
 fn main(args: string[]) -> int {
-    let modelDir = "examples/models/qwen3-0.6b"
-    if args.len() >= 2 { modelDir = args[1] }
-    let oe, opts = LlmArgs.parseArgv(args)
-    if oe != 0 { println("bad args"); return 1 }
-    let e, st = Qwen3.loadState(modelDir, opts)
-    let _ = st
+ 
+ 
+  let modelDir = "examples/models/qwen3-0.6b"
+ 
+ 
+  if args.len() >= 2 { modelDir = args[1] }
+ 
+ 
+  let opts, oe = LlmArgs.parseArgv(args)
+ 
+ 
+  if oe != 0 { println("bad args"); return 1 }
+ 
+ 
+  let st, e = Qwen3.loadState(modelDir, opts)
+ 
+ 
+  let _ = st
     println("loadState e={}", e)
-    return 0
+ 
+ 
+  return 0
 }
 

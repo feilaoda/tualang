@@ -1,6 +1,8 @@
 
 fn main() {
-    let m: map<string, int> = { "a": 1 }
+ 
+ 
+  let m: map<string, int> = { "a": 1 }
     m["b"] = "hi"
     println(m.len())
 }

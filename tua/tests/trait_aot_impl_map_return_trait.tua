@@ -23,8 +23,12 @@ return Boy{ base: Base{ id: 6 }, extra3: 3 }
 
 
 fn main() {
-    let p: HasId = whos("girl")
+ 
+ 
+  let p: HasId = whos("girl")
     assert(p.id() == 5)
-    let p2: HasId = whos("boy")
+ 
+ 
+  let p2: HasId = whos("boy")
     assert(p2.id() == 6)
 }

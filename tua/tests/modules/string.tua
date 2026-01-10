@@ -1,4 +1,6 @@
 fn ok() -> int {
-    return 123
+ 
+ 
+  return 123
 }
 

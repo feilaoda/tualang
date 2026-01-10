@@ -14,43 +14,61 @@ import "std/utf8" as u
 // Invalid: overlong encoding of '/'
 
 fn main() {
-    let b1 = bstd.Bytes.fromString("abc")
+ 
+ 
+  let b1 = bstd.Bytes.fromString("abc")
     assert(u.Utf8.isValid(b1))
-    let e1, cp1, sz1 = u.Utf8.decode1(b1, 1L)
+ 
+ 
+  let cp1, sz1, e1 = u.Utf8.decode1(b1, 1L)
     assert(e1 == 0)
     assert(cp1 == 98) // 'b'
     assert(sz1 == 1L)
-    let b2 = bstd.Bytes.new(2)
+ 
+ 
+  let b2 = bstd.Bytes.new(2)
     bstd.Bytes.setU8(b2, 0L, 194)
     bstd.Bytes.setU8(b2, 1L, 162)
     assert(u.Utf8.isValid(b2))
-    let e2, cp2, sz2 = u.Utf8.decode1(b2, 0L)
+ 
+ 
+  let cp2, sz2, e2 = u.Utf8.decode1(b2, 0L)
     assert(e2 == 0)
     assert(cp2 == 162)
     assert(sz2 == 2L)
-    let b3 = bstd.Bytes.new(3)
+ 
+ 
+  let b3 = bstd.Bytes.new(3)
     bstd.Bytes.setU8(b3, 0L, 226)
     bstd.Bytes.setU8(b3, 1L, 130)
     bstd.Bytes.setU8(b3, 2L, 172)
     assert(u.Utf8.isValid(b3))
-    let e3, cp3, sz3 = u.Utf8.decode1(b3, 0L)
+ 
+ 
+  let cp3, sz3, e3 = u.Utf8.decode1(b3, 0L)
     assert(e3 == 0)
     assert(cp3 == 8364)
     assert(sz3 == 3L)
-    let b4 = bstd.Bytes.new(4)
+ 
+ 
+  let b4 = bstd.Bytes.new(4)
     bstd.Bytes.setU8(b4, 0L, 240)
     bstd.Bytes.setU8(b4, 1L, 159)
     bstd.Bytes.setU8(b4, 2L, 152)
     bstd.Bytes.setU8(b4, 3L, 128)
     assert(u.Utf8.isValid(b4))
-    let e4, cp4, sz4 = u.Utf8.decode1(b4, 0L)
+ 
+ 
+  let cp4, sz4, e4 = u.Utf8.decode1(b4, 0L)
     assert(e4 == 0)
     assert(cp4 == 128512)
     assert(sz4 == 4L)
     assert(!u.Utf8.isBoundary(b4, 1L))
     assert(u.Utf8.clampBoundaryBefore(b4, 1L) == 0L)
     assert(u.Utf8.clampBoundaryAfter(b4, 1L) == 4L)
-    let inv = bstd.Bytes.new(2)
+ 
+ 
+  let inv = bstd.Bytes.new(2)
     bstd.Bytes.setU8(inv, 0L, 192) // 0xC0
     bstd.Bytes.setU8(inv, 1L, 175) // 0xAF
     assert(!u.Utf8.isValid(inv))

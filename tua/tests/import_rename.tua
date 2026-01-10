@@ -4,8 +4,12 @@ import A as A2, User as User2 from "modules/rename_mod2"
 fn main() {
     assert(A1() == 1)
     assert(A2() == 2)
-    let u1 = User1(10)
-    let u2 = User2(20)
+ 
+ 
+  let u1 = User1(10)
+ 
+ 
+  let u2 = User2(20)
     assert(u1.id == 10)
     assert(u2.id == 20)
 }

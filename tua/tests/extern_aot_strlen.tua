@@ -5,7 +5,9 @@ import "std/rt" as rt
 
 fn main() {
     extern fn strlen(s: string) long
-    let n = strlen("hello")
+ 
+ 
+  let n = strlen("hello")
     assert(n == 5)
     rt.Rt.sleepMs(0)
 }

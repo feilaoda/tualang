@@ -1,6 +1,12 @@
 
 fn main() {
-    let a: int = 1
-    let b: u32 = 1
-    let c = a & b
+ 
+ 
+  let a: int = 1
+ 
+ 
+  let b: u32 = 1
+ 
+ 
+  let c = a & b
 }

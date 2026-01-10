@@ -4,9 +4,17 @@ struct Foo {
     x: string = "default"
     y: long = 0
 
-    fn len() long {
-        return strlen(x)
-    }
+ 
+ 
+  fn len() long {
+ 
+ 
+ 
+ 
+ 
+   return strlen(x)
+ 
+   }
 }
 
 let a = Foo{ x: "abc" }

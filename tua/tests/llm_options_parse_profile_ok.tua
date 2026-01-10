@@ -3,9 +3,15 @@
 import "../packages/llm/options" as o
 
 fn main(args: string[]) -> int {
-    let argv: string[] = {"x", "--profile"}
-    let e, opt = o.LlmArgs.parseArgv(argv)
+ 
+ 
+  let argv: string[] = {"x", "--profile"}
+ 
+ 
+  let opt, e = o.LlmArgs.parseArgv(argv)
     assert(e == 0)
     assert(opt.profile == 1)
-    return 0
+ 
+ 
+  return 0
 }

@@ -9,12 +9,18 @@ import "std/strconv" as strconv
 
 fn main() {
     extern fn strlen(s: string) long
-    let n = strlen("hello")
+ 
+ 
+  let n = strlen("hello")
     assert(n == 5)
-    let err, s = fs.Fs.realpath(".")
+ 
+ 
+  let s, err = fs.Fs.realpath(".")
     assert(err == 0)
     rt.Rt.free(s)
-    let t = strconv.Int.toString(7)
+ 
+ 
+  let t = strconv.Int.toString(7)
     assert(t == "7")
     rt.Rt.free(t)
 }

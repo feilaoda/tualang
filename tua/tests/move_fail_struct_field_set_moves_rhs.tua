@@ -5,8 +5,12 @@ struct Box {
 
 
 fn main() {
-    let m: map = {"a": 1}
-    let b: Box = Box{ m: {} }
+ 
+ 
+  let m: map = {"a": 1}
+ 
+ 
+  let b: Box = Box{ m: {} }
     b.m = m
     println(m.len())
 }

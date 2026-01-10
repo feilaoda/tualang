@@ -4,9 +4,17 @@ struct Point {
 }
 
 impl Point {
-    fn sum() -> int {
-        return this.x + this.y
-    }
+ 
+ 
+  fn sum() -> int {
+ 
+ 
+ 
+ 
+ 
+   return this.x + this.y
+ 
+   }
 }
 
 let p = Point(1, 2)

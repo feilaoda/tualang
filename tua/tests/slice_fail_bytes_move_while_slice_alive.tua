@@ -5,8 +5,14 @@ import "std/bytes" as bstd
 
 
 fn main() {
-    let b: bytes = bstd.Bytes.fromString("abc")
-    let s: Slice<byte> = b.slice(0L, 1L)
-    let b2 = b
+ 
+ 
+  let b: bytes = bstd.Bytes.fromString("abc")
+ 
+ 
+  let s: Slice<byte> = b.slice(0L, 1L)
+ 
+ 
+  let b2 = b
     assert(s.len() == 1L)
 }

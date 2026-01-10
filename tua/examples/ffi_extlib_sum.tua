@@ -1,9 +1,15 @@
 extern fn ext_sum_i64(ids: long[], outErr: &int) long
 
 fn main() {
-    let ids: long[] = {1L, 2L, 3L}
-    let e: int = 0
-    let sum = ext_sum_i64(ids, &e)
+ 
+ 
+  let ids: long[] = {1L, 2L, 3L}
+ 
+ 
+  let e: int = 0
+ 
+ 
+  let sum = ext_sum_i64(ids, &e)
     assert(e == 0)
     assert(sum == 6L)
 }

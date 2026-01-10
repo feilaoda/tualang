@@ -3,8 +3,12 @@ struct Foo {
 }
 
 fn main() {
-    let foo: Foo = Foo()
-    const r: &Foo = &foo
+ 
+ 
+  let foo: Foo = Foo()
+ 
+ 
+  const r: &Foo = &foo
     foo.x = 1
     println(r.x)
 }

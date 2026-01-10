@@ -1,17 +1,37 @@
 fn demo() -> int {
-    let x = 0
-    let a = fn() -> int {
+ 
+ 
+  let x = 0
+ 
+ 
+  let a = fn() -> int {
         x = x + 1
-        return x
-    }
-    let b = fn() -> int {
+ 
+ 
+ 
+ 
+ 
+   return x
+ 
+   }
+ 
+ 
+  let b = fn() -> int {
         x = x + 10
-        return x
-    }
+ 
+ 
+ 
+ 
+ 
+   return x
+ 
+   }
     println(a())
     println(b())
     println(a())
-    return 0
+ 
+ 
+  return 0
 }
 
 demo()

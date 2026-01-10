@@ -1,7 +1,11 @@
 
 fn main() {
-    let a = 1
-    let b = 2
+ 
+ 
+  let a = 1
+ 
+ 
+  let b = 2
     println("this {} is {}", a, b)
     print("a={},b={}", a, b)
     println("")

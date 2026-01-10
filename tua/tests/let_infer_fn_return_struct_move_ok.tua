@@ -6,7 +6,11 @@ fn make() -> S {
 
 
 fn main() {
-    let x = make()
-    let y = x
+ 
+ 
+  let x = make()
+ 
+ 
+  let y = x
     assert(y.a == 1)
 }

@@ -3,7 +3,9 @@ struct Foo {
 }
 
 fn main() {
-    const foo: Foo = Foo()
+ 
+ 
+  const foo: Foo = Foo()
     foo.x = 1
     assert(foo.x == 1)
 }

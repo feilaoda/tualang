@@ -209,7 +209,7 @@
     - 返回顺序采用 Go 风格：`(out1, out2, ..., err)`；调用侧推荐写法：`let out, err = f(...)`
     - 示例：`fn readFile(path:string) -> string, int`
     - 标准库遵循该约定的例子：`std/bytes.Bytes.getU8(b: bytes, idx: long) -> int, int`（返回的 u8 以 `int` 表示；`err` 为最后一个 `int`）
-    - 兼容性说明：历史 API 可能仍使用 `err` 作为第一个返回值，后续会逐步迁移到“`err` 最后”以统一与 Guard Block 语义
+    - 兼容性说明：本仓库标准库/官方 packages 已完成迁移；新代码不得使用“`err` 在前”的返回顺序
   - Guard Block（`? { ... }`，Status: Implemented）：
     - 语法：`callExpr ? { ... }`（仅允许对函数/方法调用使用）
     - 要求：`callExpr` 必须是**多返回**（返回值个数 >= 2），且最后一个返回类型必须为 `int`（错误码）

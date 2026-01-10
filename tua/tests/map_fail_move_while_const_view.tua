@@ -1,7 +1,13 @@
 
 fn main() {
-    let m: map = { "a": 1 }
-    const v = m
-    let n = m
+ 
+ 
+  let m: map = { "a": 1 }
+ 
+ 
+  const v = m
+ 
+ 
+  let n = m
     println(v.len() + n.len())
 }

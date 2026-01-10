@@ -1,23 +1,50 @@
 fn fib(n:int) long {
-    if n < 2 { return n }
-    let a:long = 0L
-    let b:long = 1L
-    let i = 2
-    for i = 2; i <= n; i++ {
-        let c:long = a + b
+ 
+ 
+  if n < 2 { return n }
+ 
+ 
+  let a:long = 0L
+ 
+ 
+  let b:long = 1L
+ 
+ 
+  let i = 2
+ 
+ 
+  for i = 2; i <= n; i++ {
+ 
+ 
+ 
+ 
+ 
+   let c:long = a + b
         a = b
         b = c
-    }
-    return b
+ 
+   }
+ 
+ 
+  return b
 }
 
 fn main() {
-    let reps = 200000
-    let i = 0
-    let acc:long = 0L
-    for i = 0; i < reps; i++ {
+ 
+ 
+  let reps = 200000
+ 
+ 
+  let i = 0
+ 
+ 
+  let acc:long = 0L
+ 
+ 
+  for i = 0; i < reps; i++ {
         acc = acc + fib(40)
-    }
+ 
+   }
     assert(acc > 0L)
     println(acc)
 }

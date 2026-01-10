@@ -1,13 +1,27 @@
 import Qwen3 from "../packages/llm/qwen3"
 
 fn main(args: string[]) -> int {
-    let modelDir = "examples/models/qwen3-0.6b"
-    if args.len() >= 2 { modelDir = args[1] }
-    let ce, cfg = Qwen3.loadConfig(modelDir + "/config.json")
+ 
+ 
+  let modelDir = "examples/models/qwen3-0.6b"
+ 
+ 
+  if args.len() >= 2 { modelDir = args[1] }
+ 
+ 
+  let cfg, ce = Qwen3.loadConfig(modelDir + "/config.json")
     println("loadConfig e={}", ce)
-    if ce != 0 { return 0 }
-    let we, w = Qwen3.loadWeightsF32Auto(modelDir, cfg)
-    let _ = w
+ 
+ 
+  if ce != 0 { return 0 }
+ 
+ 
+  let w, we = Qwen3.loadWeightsF32Auto(modelDir, cfg)
+ 
+ 
+  let _ = w
     println("loadWeightsF32Auto e={}", we)
-    return 0
+ 
+ 
+  return 0
 }

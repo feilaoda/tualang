@@ -4,13 +4,23 @@ enum RoleType {
 }
 
 object MathUtils {
-    fn add(a:int, b:int) int {
-        return a + b
-    }
+ 
+ 
+  fn add(a:int, b:int) int {
+ 
+ 
+ 
+ 
+ 
+   return a + b
+ 
+   }
 }
 
 struct Role {
-    const type: string = "Role"
+ 
+ 
+  const type: string = "Role"
 }
 
 println(MathUtils.add(1, 2))

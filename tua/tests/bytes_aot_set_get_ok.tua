@@ -5,15 +5,23 @@ import "std/bytes" as bstd
 
 
 fn main() {
-    let b = bstd.Bytes.fromString("abc")
+ 
+ 
+  let b = bstd.Bytes.fromString("abc")
     assert(b != null)
     assert(bstd.Bytes.isReadonly(b) == 0)
-    let v1, e1 = bstd.Bytes.getU8(b, 1L)
+ 
+ 
+  let v1, e1 = bstd.Bytes.getU8(b, 1L)
     assert(e1 == 0)
     assert(v1 == 98) // 'b'
-    let se = bstd.Bytes.setU8(b, 1L, 90) // 'Z'
+ 
+ 
+  let se = bstd.Bytes.setU8(b, 1L, 90) // 'Z'
     assert(se == 0)
-    let v2, e2 = bstd.Bytes.getU8(b, 1L)
+ 
+ 
+  let v2, e2 = bstd.Bytes.getU8(b, 1L)
     assert(e2 == 0)
     assert(v2 == 90)
 }

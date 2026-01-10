@@ -1,7 +1,13 @@
 
 fn main() {
-    let m: map<string, int> = { "a": 1 }
-    let v = m["z"]
-    let x = v.unwrap()
+ 
+ 
+  let m: map<string, int> = { "a": 1 }
+ 
+ 
+  let v = m["z"]
+ 
+ 
+  let x = v.unwrap()
     println(x)
 }

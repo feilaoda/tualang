@@ -3,7 +3,9 @@
 import "../packages/llm/options" as o
 
 fn main(args: string[]) -> int {
-    let e, opt = o.LlmArgs.parseArgv(args)
+ 
+ 
+  let opt, e = o.LlmArgs.parseArgv(args)
     assert(e == 0)
     assert(opt.threads == 0)
     assert(opt.weightsDtype == 0)
@@ -23,5 +25,7 @@ fn main(args: string[]) -> int {
     assert(opt.chat == 1)
     assert(opt.enableThinking == 1)
     assert(opt.profile == 0)
-    return 0
+ 
+ 
+  return 0
 }

@@ -6,16 +6,47 @@ extern fn tua_io_flush_stdout() int
 object Stdin {
     // Reads one line from stdin. On EOF: returns (0, null, 0).
     // Caller must free returned string via `rt.Rt.free`.
-    fn readLine() -> int, string, int {
-        let s: string = null
-        let n: int = 0
-        let e = tua_io_readline_alloc(&s, &n)
-        return e, s, n
-    }
+ 
+ 
+  fn readLine() -> string, int, int{
+ 
+ 
+ 
+ 
+ 
+   let s: string = null
+ 
+ 
+ 
+ 
+ 
+   let n: int = 0
+ 
+ 
+ 
+ 
+ 
+   let e = tua_io_readline_alloc(&s, &n)
+ 
+ 
+ 
+ 
+ 
+   return s, n, e
+ 
+   }
 }
 
 object Stdout {
-    fn flush() -> int {
-        return tua_io_flush_stdout()
-    }
+ 
+ 
+  fn flush() -> int {
+ 
+ 
+ 
+ 
+ 
+   return tua_io_flush_stdout()
+ 
+   }
 }

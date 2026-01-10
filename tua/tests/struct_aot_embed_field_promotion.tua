@@ -9,7 +9,9 @@ struct Child {
 
 
 fn main() {
-    let c: Child = Child{ base: Base{ id: 7 }, extra: 1 }
+ 
+ 
+  let c: Child = Child{ base: Base{ id: 7 }, extra: 1 }
     assert(c.id == 7)
     assert(c.base.id == 7)
     assert(c.extra == 1)
