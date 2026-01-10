@@ -1,4 +1,4 @@
-import "modules/string"
+import "../modules/string"
 
 fn main() {
   assert(ok() == 123)

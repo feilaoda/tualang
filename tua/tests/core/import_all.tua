@@ -1,4 +1,4 @@
-import "modules/import_mod"
+import "../modules/import_mod"
 
 fn main() {
   assert(import_mod.A() == 1)

@@ -1,5 +1,5 @@
-import A as A1, User as User1 from "modules/rename_mod1"
-import A as A2, User as User2 from "modules/rename_mod2"
+import A as A1, User as User1 from "../modules/rename_mod1"
+import A as A2, User as User2 from "../modules/rename_mod2"
 
 fn main() {
   assert(A1() == 1)

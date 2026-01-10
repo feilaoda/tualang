@@ -11,27 +11,38 @@ mkdir -p "$TMPDIR"
 
 make tuac >/dev/null
 
+files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  files+=("$f")
+done < <(find tests -type f -name '*.tua' -not -path 'tests/modules/*' -not -path 'tests/perf/*' | sort)
+
+if [[ "${#files[@]}" -eq 0 ]]; then
+  echo "No tests found under tests (excluding tests/modules and tests/perf)"
+  exit 1
+fi
+
 # If any tests request external libraries via `// tuac: ...`, build them once up-front.
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuaextbpe.a" ]]; then
     ./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c >/dev/null
   fi
 fi
 
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuallm.a" ]]; then
     ./tools/build_clib.sh tuallm packages/clib/llm/tua_llm.c packages/clib/llm/tua_llm_q4.c >/dev/null
   fi
 fi
 
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuajson.a" ]]; then
     ./tools/build_clib.sh tuajson packages/clib/json/tua_json.c >/dev/null
   fi
 fi
 
 llama_ok=0
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ -n "${LLAMA_PREFIX:-}" || -f "/usr/local/opt/llama.cpp/include/llama.h" || -f "/opt/homebrew/opt/llama.cpp/include/llama.h" ]]; then
     if [[ ! -f "$ROOT/build/clib/libtuaextllama.a" ]]; then
       if ./tools/build_llama_clib.sh >/dev/null 2>&1; then
@@ -60,8 +71,7 @@ finally:
     s.close()
 PY
 
-for f in tests/*.tua; do
-  [ -e "$f" ] || continue
+for f in "${files[@]}"; do
   total=$((total+1))
   base="$(basename "$f")"
   extra=""
@@ -203,10 +213,5 @@ for f in tests/*.tua; do
     fi
   fi
 done
-
-if [[ "$total" -eq 0 ]]; then
-  echo "No tests found in tests/*.tua"
-  exit 1
-fi
 
 exit "$fail"

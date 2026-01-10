@@ -1,4 +1,0 @@
-// tuac: --entry modules/entry_m2
-// expect-exit: 7
-import "modules/entry_m1" as m1
-import "modules/entry_m2" as m2

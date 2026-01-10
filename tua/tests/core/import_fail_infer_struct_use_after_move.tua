@@ -1,4 +1,4 @@
-import "modules/ret_struct_mod" as m
+import "../modules/ret_struct_mod" as m
 
 fn main() {
 

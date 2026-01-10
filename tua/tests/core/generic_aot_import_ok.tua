@@ -1,4 +1,4 @@
-import "modules/generic_lib.tua" as lib
+import "../modules/generic_lib.tua" as lib
 
 struct S { a: int }
 

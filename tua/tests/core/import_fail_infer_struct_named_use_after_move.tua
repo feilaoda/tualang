@@ -1,4 +1,4 @@
-import make from "modules/ret_struct_mod"
+import make from "../modules/ret_struct_mod"
 
 fn main() {
 

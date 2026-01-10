@@ -1,4 +1,4 @@
-import "modules/ns_enum" as m
+import "../modules/ns_enum" as m
 
 fn main() {
   assert(m.E.A == 0)
