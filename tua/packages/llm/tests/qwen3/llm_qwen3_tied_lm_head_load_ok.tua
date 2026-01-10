@@ -1,0 +1,17 @@
+// tuac: -L build/clib -l tuallm
+
+import "llm/qwen3" as q
+import LlmArgs, LlmOptions from "llm/options"
+
+fn main() {
+
+  let opt0: LlmOptions = LlmArgs.defaults()
+
+  let opt: LlmOptions = opt0
+  opt.kvMaxSeq = 8
+
+  let st, e = q.Qwen3.loadState("packages/llm/tests/fixtures/qwen3_tied_lm", opt)
+  assert(e == 0)
+  // `lm_head.weight` is missing in this fixture and must be tied to embeddings.
+  assert(st.wOffLmHead == st.wOffEmbed)
+}

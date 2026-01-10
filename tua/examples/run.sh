@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export TUA_STDLIB_DIR="$ROOT/std"
+export TUA_PACKAGE_DIR="${TUA_PACKAGE_DIR:-$ROOT/packages}"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <example.tua|path/to/file.tua> [args...]" >&2

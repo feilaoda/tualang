@@ -1,0 +1,177 @@
+// Build the external decode library:
+//   ./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c
+//
+// Run (JIT):
+//   TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextbpe packages/llm/examples/llm_tokenizer_bpe_decode3_perf.tua 20000 200
+
+import "std/strconv" as conv
+import "std/time" as time
+import BpeTokenizer from "llm/tokenizer_bpe"
+import BpeTokenizerExt from "llm/tokenizer_bpe_ext"
+
+extern fn strlen(s: string) long
+
+private fn buildIds(n: int) -> long[] {
+
+  let out: long[] = {}
+
+  let i: int = 0
+
+  while i < n {
+    // Token id 2 => "ab" in packages/llm/tests/fixtures/tokenizer_small.json
+    out.push(2L)
+    i = i + 1
+
+  }
+
+  return out
+}
+
+fn main(args: string[]) -> int {
+
+  let n: int = 20000
+
+  let iters: int = 200
+
+  if args.len() >= 2 {
+
+    let o = conv.Int.parse(args[1])
+
+    if o.isSome() { n = o.unwrap() }
+
+  }
+
+  if args.len() >= 3 {
+
+    let o2 = conv.Int.parse(args[2])
+
+    if o2.isSome() { iters = o2.unwrap() }
+
+  }
+
+  let tok, e = BpeTokenizer.loadFromTokenizerJson("packages/llm/tests/fixtures/tokenizer_small.json")
+
+  if e != 0 { println("load tokenizer failed"); return 1 }
+
+  let ids: long[] = buildIds(n)
+
+  // Warmup + correctness.
+
+  let w0, we0 = BpeTokenizer.decode(tok, ids)
+
+  if we0 != 0 { println("warmup decode failed"); return 1 }
+
+  let w1, we1 = BpeTokenizer.decode1(tok, ids)
+
+  if we1 != 0 { println("warmup decode1 failed"); return 1 }
+
+  let w2, we2 = BpeTokenizerExt.decode2(tok, ids)
+
+  if we2 != 0 { println("warmup decode2 failed (did you link/dlopen the external library?)"); return 1 }
+
+  if w0 != w1 { println("mismatch decode vs decode1"); return 1 }
+
+  if w0 != w2 { println("mismatch decode vs decode2"); return 1 }
+
+  let outBytes: long = strlen(w0)
+
+  // Time decode (runtime C).
+
+  let totalBytes0: long = 0L
+
+  let t0 = time.Time.monoNs()
+
+  let i0: int = 0
+
+  while i0 < iters {
+
+    let s, de = BpeTokenizer.decode(tok, ids)
+
+    if de != 0 { println("decode failed iter={}", i0); return 1 }
+    totalBytes0 = totalBytes0 + strlen(s)
+    i0 = i0 + 1
+
+  }
+
+  let t1 = time.Time.monoNs()
+
+  // Time decode1 (pure Tua).
+
+  let totalBytes1: long = 0L
+
+  let t2 = time.Time.monoNs()
+
+  let i1: int = 0
+
+  while i1 < iters {
+
+    let s, de = BpeTokenizer.decode1(tok, ids)
+
+    if de != 0 { println("decode1 failed iter={}", i1); return 1 }
+    totalBytes1 = totalBytes1 + strlen(s)
+    i1 = i1 + 1
+
+  }
+
+  let t3 = time.Time.monoNs()
+
+  // Time decode2 (external C library).
+
+  let totalBytes2: long = 0L
+
+  let t4 = time.Time.monoNs()
+
+  let i2: int = 0
+
+  while i2 < iters {
+
+    let s, de = BpeTokenizerExt.decode2(tok, ids)
+
+    if de != 0 { println("decode2 failed iter={}", i2); return 1 }
+    totalBytes2 = totalBytes2 + strlen(s)
+    i2 = i2 + 1
+
+  }
+
+  let t5 = time.Time.monoNs()
+
+  let dt0: long = t1 - t0
+
+  let dt1: long = t3 - t2
+
+  let dt2: long = t5 - t4
+
+  let tokCount: long = (long)n
+
+  let bytesPerCall: long = outBytes
+  println("ids={} bytesOut={} iters={}", tokCount, bytesPerCall, iters)
+
+  if dt0 > 0L {
+
+    let tokPerSec0: long = (((long)iters) * tokCount * 1000000000L) / dt0
+
+    let bytesPerSec0: long = (totalBytes0 * 1000000000L) / dt0
+    println("decode  dtMs={} tokPerSec={} bytesPerSec={}", dt0 / 1000000L, tokPerSec0, bytesPerSec0)
+
+  }
+
+  if dt1 > 0L {
+
+    let tokPerSec1: long = (((long)iters) * tokCount * 1000000000L) / dt1
+
+    let bytesPerSec1: long = (totalBytes1 * 1000000000L) / dt1
+    println("decode1 dtMs={} tokPerSec={} bytesPerSec={}", dt1 / 1000000L, tokPerSec1, bytesPerSec1)
+
+  }
+
+  if dt2 > 0L {
+
+    let tokPerSec2: long = (((long)iters) * tokCount * 1000000000L) / dt2
+
+    let bytesPerSec2: long = (totalBytes2 * 1000000000L) / dt2
+    println("decode2 dtMs={} tokPerSec={} bytesPerSec={}", dt2 / 1000000L, tokPerSec2, bytesPerSec2)
+
+  }
+
+  return 0
+}

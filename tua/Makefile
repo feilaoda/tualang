@@ -134,3 +134,4 @@ rt-net-smoke-run: rt-net-smoke
 
 test:
 	./tests/run.sh
+	./packages/run_tests.sh

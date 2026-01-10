@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,27 +11,38 @@ mkdir -p "$TMPDIR"
 
 make tuac >/dev/null
 
+files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  files+=("$f")
+done < <(find "$ROOT/packages" -type f -name '*.tua' -path '*/tests/*' | sort)
+
+if [[ "${#files[@]}" -eq 0 ]]; then
+  echo "No tests found under packages/*/tests"
+  exit 1
+fi
+
 # If any tests request external libraries via `// tuac: ...`, build them once up-front.
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuaextbpe.a" ]]; then
     ./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c >/dev/null
   fi
 fi
 
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuallm.a" ]]; then
     ./tools/build_clib.sh tuallm packages/clib/llm/tua_llm.c packages/clib/llm/tua_llm_q4.c >/dev/null
   fi
 fi
 
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuajson.a" ]]; then
     ./tools/build_clib.sh tuajson packages/clib/json/tua_json.c >/dev/null
   fi
 fi
 
 llama_ok=0
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" tests/*.tua >/dev/null 2>&1; then
+if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ -n "${LLAMA_PREFIX:-}" || -f "/usr/local/opt/llama.cpp/include/llama.h" || -f "/opt/homebrew/opt/llama.cpp/include/llama.h" ]]; then
     if [[ ! -f "$ROOT/build/clib/libtuaextllama.a" ]]; then
       if ./tools/build_llama_clib.sh >/dev/null 2>&1; then
@@ -60,8 +71,7 @@ finally:
     s.close()
 PY
 
-for f in tests/*.tua; do
-  [ -e "$f" ] || continue
+for f in "${files[@]}"; do
   total=$((total+1))
   base="$(basename "$f")"
   extra=""
@@ -106,7 +116,7 @@ for f in tests/*.tua; do
   fi
 
   if [[ "$llama_ok" -ne 1 && -n "$tuac_line" ]] && echo " $tuac_line " | grep -Eq "(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)"; then
-    echo "[SKIP] $base (llama.cpp not available)"
+    echo "[SKIP] $f (llama.cpp not available)"
     skip=$((skip+1))
     continue
   fi
@@ -119,21 +129,21 @@ for f in tests/*.tua; do
       "$out" >/dev/null 2>&1 || rc=$?
       if [[ -n "$expect_exit" ]]; then
         if [[ "$rc" -ne "$expect_exit" ]]; then
-          echo "[FAIL] $base (expected exit $expect_exit, got $rc)"
+          echo "[FAIL] $f (expected exit $expect_exit, got $rc)"
           fail=1
         else
-          echo "[PASS] $base"
+          echo "[PASS] $f"
         fi
       else
         if [[ "$rc" -ne 0 ]]; then
-          echo "[FAIL] $base (expected exit 0, got $rc)"
+          echo "[FAIL] $f (expected exit 0, got $rc)"
           fail=1
         else
-          echo "[PASS] $base"
+          echo "[PASS] $f"
         fi
       fi
     else
-      echo "[FAIL] $base"
+      echo "[FAIL] $f"
       fail=1
     fi
     rm -rf "$tmpd"
@@ -145,13 +155,13 @@ for f in tests/*.tua; do
     out="$tmpd/a.out"
     tmp="$(mktemp)"
     if ./bin/tuac ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>"$tmp"; then
-      echo "[FAIL] $base (expected failure, got success)"
+      echo "[FAIL] $f (expected failure, got success)"
       fail=1
     else
       if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
-        echo "[PASS] $base (expected failure)"
+        echo "[PASS] $f (expected failure)"
       else
-        echo "[FAIL] $base (expected failure, missing line info)"
+        echo "[FAIL] $f (expected failure, missing line info)"
         fail=1
       fi
     fi
@@ -163,13 +173,13 @@ for f in tests/*.tua; do
   if [[ "$expects_fail" -eq 1 ]]; then
     tmp="$(mktemp)"
     if ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>"$tmp"; then
-      echo "[FAIL] $base (expected failure, got success)"
+      echo "[FAIL] $f (expected failure, got success)"
       fail=1
     else
       if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
-        echo "[PASS] $base (expected failure)"
+        echo "[PASS] $f (expected failure)"
       else
-        echo "[FAIL] $base (expected failure, missing line info)"
+        echo "[FAIL] $f (expected failure, missing line info)"
         fail=1
       fi
     fi
@@ -178,7 +188,7 @@ for f in tests/*.tua; do
     case "$base" in
       std_rt_net_*)
         if [[ "$net_ok" -ne 1 ]]; then
-          echo "[SKIP] $base (network sandboxed)"
+          echo "[SKIP] $f (network sandboxed)"
           skip=$((skip+1))
           continue
         fi
@@ -188,24 +198,24 @@ for f in tests/*.tua; do
     ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>&1 || rc=$?
     if [[ -n "$expect_exit" ]]; then
       if [[ "$rc" -ne "$expect_exit" ]]; then
-        echo "[FAIL] $base (expected exit $expect_exit, got $rc)"
+        echo "[FAIL] $f (expected exit $expect_exit, got $rc)"
         fail=1
       else
-        echo "[PASS] $base"
+        echo "[PASS] $f"
       fi
     else
       if [[ "$rc" -ne 0 ]]; then
-        echo "[FAIL] $base"
+        echo "[FAIL] $f"
         fail=1
       else
-        echo "[PASS] $base"
+        echo "[PASS] $f"
       fi
     fi
   fi
 done
 
 if [[ "$total" -eq 0 ]]; then
-  echo "No tests found in tests/*.tua"
+  echo "No tests found under packages/*/tests"
   exit 1
 fi
 

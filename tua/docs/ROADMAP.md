@@ -291,7 +291,7 @@
 - [ ] 数学内核：优先“可用速度”，先接入系统 BLAS（macOS Accelerate），并保留可替换后端接口
 - [ ] KV cache：抽象接口 + 至少一种实现（layout/精度/内存上限可配置；为未来更多 KV 实现预留）
 - [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
-- [x] Runner：提供 `examples/llm_run_qwen3.tua`（最小 CLI：加载 tokenizer+模型、prefill+decode1 冒烟）
+- [x] Runner：提供 `packages/llm/examples/llm_run_qwen3.tua`（最小 CLI：加载 tokenizer+模型、prefill+decode1 冒烟）
 
 #### 11.5 R-llm-1：性能与量化
 - [ ] 量化：q4/q8（至少一种）+ 对应 dot kernel

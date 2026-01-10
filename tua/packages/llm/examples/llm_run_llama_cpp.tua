@@ -1,0 +1,567 @@
+import "std/time" as time
+import "std/term" as term
+import "std/rt" as rt
+import "std/bytes" as bstd
+import "std/strconv" as conv
+import "std/utf8" as u
+import LlmArgs, LlmOptions from "llm/options"
+import Qwen3Chat from "llm/qwen3_chat"
+
+// Requires linking an external library built from `packages/clib/llm/tua_extllama.c`:
+//   ./tools/build_llama_clib.sh
+//
+// Run example (JIT):
+//   TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextllama -L /usr/local/opt/llama.cpp/lib --link-arg=-Wl,-rpath,/usr/local/opt/llama.cpp/lib -l llama packages/llm/examples/llm_run_llama_cpp.tua examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf "Hello" --greedy --max-new-tokens 64 --threads 8
+//
+// Run REPL:
+//   TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextllama -L /usr/local/opt/llama.cpp/lib --link-arg=-Wl,-rpath,/usr/local/opt/llama.cpp/lib -l llama packages/llm/examples/llm_run_llama_cpp.tua examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf --repl --chat --threads 8
+
+extern fn tuaext_llama_backend_init()
+extern fn tuaext_llama_new(modelPath: string, nCtx: int, nThreads: int, nBatch: int, outErr: &int) -> ptr
+extern fn tuaext_llama_new2(modelPath: string, nCtx: int, nThreads: int, nBatch: int, nGpuLayers: int, outErr: &int) -> ptr
+extern fn tuaext_llama_free(h: ptr)
+extern fn tuaext_llama_vocab_size(h: ptr) int
+extern fn tuaext_llama_vocab_is_eog(h: ptr, tok: long) int
+extern fn tuaext_llama_sample_next(h: ptr, greedy: int, topK: int, topP: float, temperature: float, rngState: &long, outTok: &long) int
+extern fn tuaext_llama_find_token_id(h: ptr, text: string, outTok: &long) int
+extern fn tuaext_llama_detokenize(h: ptr, toks: long[], removeSpecial: int, unparseSpecial: int, outErr: &int) -> string
+extern fn tuaext_llama_reset(h: ptr, outErr: &int) int
+extern fn tuaext_llama_tokenize(h: ptr, text: string, addSpecial: int, parseSpecial: int, outErr: &int) -> long[]
+extern fn tuaext_llama_decode(h: ptr, toks: long[], outErr: &int) int
+
+// Sampling is performed inside llama.cpp wrapper to avoid per-token logits copying.
+
+private fn _emptyLongArray() -> long[] {
+
+  let out: long[] = {}
+
+  return out
+}
+
+private fn _argvHas(argv: string[], flag: string) -> bool {
+
+  if argv == null || flag == null { return false }
+
+  let i: int = 0
+
+  while i < argv.len() {
+
+    if argv[i] == flag { return true }
+    i = i + 1
+
+  }
+
+  return false
+}
+
+private fn _argvInt(argv: string[], flag: string) -> int, int {
+
+  if argv == null || flag == null { return 0, 1}
+
+  let i: int = 0
+
+  while i < argv.len() {
+
+    if argv[i] == flag {
+
+      if i + 1 >= argv.len() { return 0, 1}
+
+      let opt = conv.Int.parse(argv[i + 1])
+
+      if opt.isNone() { return 0, 1}
+
+      return opt.unwrap(), 0
+
+    }
+    i = i + 1
+
+  }
+
+  return 0, 1
+}
+
+private fn _imod(a: int, b: int) -> int {
+
+  return a - (a / b) * b
+}
+
+private fn _firstPromptArg(argv: string[]) -> string {
+  // argv[1] is model path. First non-flag arg after that is prompt.
+
+  if argv == null { return null }
+
+  let i: int = 2
+
+  while i < argv.len() {
+
+    let a = argv[i]
+
+    if a != null {
+
+      let bs = bstd.Bytes.fromString(a)
+
+      if bs != null && bstd.Bytes.len(bs) > 0L {
+
+        let b0, e0 = bstd.Bytes.getU8(bs, 0L)
+
+        if e0 == 0 && b0 != 45 { // '-'
+
+          return a
+
+        }
+
+      }
+
+    }
+    i = i + 1
+
+  }
+
+  return null
+}
+
+private fn _feedText(h: ptr, text: string, addSpecial: int, parseSpecial: int) -> int {
+
+  if text == null || text == "" { return 0 }
+
+  let te: int = 0
+
+  let toks: long[] = tuaext_llama_tokenize(h, text, addSpecial, parseSpecial, &te)
+
+  if te != 0 || toks == null || toks.len() == 0 { return 1 }
+
+  let de: int = 0
+
+  let rc = tuaext_llama_decode(h, toks, &de)
+
+  if de != 0 || rc < 0 { return 2 }
+
+  return 0
+}
+
+// Stop kinds:
+//   0 = not stop
+//   1 = <|im_end|>
+//   2 = EOG / endoftext / EOS
+private fn _stopKind(h: ptr, tok: long) -> int {
+
+  if tuaext_llama_vocab_is_eog(h, tok) != 0 { return 2 }
+
+  return 0
+}
+
+private fn _detokAndPrint(h: ptr, chunk: long[]) -> int, int {
+
+  if chunk == null || chunk.len() == 0 { return 0, 0 }
+
+  let de: int = 0
+
+  let s = tuaext_llama_detokenize(h, chunk, 0, 0, &de)
+
+  if de != 0 || s == null { return 0, 1}
+  print("{}", u.Utf8.lossyString(s))
+  rt.Rt.free(s)
+
+  let _ = term.Stdout.flush()
+
+  return chunk.len(), 0
+}
+
+private fn _gen(h: ptr, nVocab: int, opts: LlmOptions, startInThink: int, idThink: long, idThinkEnd: long, idImStart: long, idImEnd: long, idEot: long, idEos: long) -> int, int, int {
+
+  let rng: long = opts.seed
+
+  let outCount: int = 0
+
+  let visCount: int = 0
+
+  let inThink: int = startInThink
+
+  let stopKind: int = 0
+
+  let chunk: long[] = _emptyLongArray()
+
+  let start = time.Time.monoNs()
+
+  while outCount < opts.maxNewTokens {
+
+    let nextId: long = -1L
+
+    let greedy: int = 0
+
+    if opts.temperature == 0.0 || opts.topK <= 1 { greedy = 1 }
+
+    let se = tuaext_llama_sample_next(h, greedy, opts.topK, opts.topP, opts.temperature, &rng, &nextId)
+
+    if se != 0 { return outCount, stopKind, 2}
+
+    stopKind = _stopKind(h, nextId)
+
+    if stopKind != 0 {
+
+      let oneStop: long[] = { nextId }
+
+      let de0: int = 0
+
+      let rc0 = tuaext_llama_decode(h, oneStop, &de0)
+
+      if de0 != 0 || rc0 < 0 { return outCount, stopKind, 3}
+
+      let add0, pe0 = _detokAndPrint(h, chunk)
+
+      if pe0 != 0 { return outCount, stopKind, 5}
+      visCount = visCount + add0
+
+      break
+
+    }
+
+    let one: long[] = { nextId }
+
+    let de: int = 0
+
+    let rc = tuaext_llama_decode(h, one, &de)
+
+    if de != 0 || rc < 0 { return outCount, stopKind, 4}
+
+    // Handle special/control tokens by id to avoid per-token detokenize allocations.
+
+    if idThink >= 0L && nextId == idThink {
+      inThink = 1
+
+      let addA, peA = _detokAndPrint(h, chunk)
+
+      if peA != 0 { return outCount, stopKind, 5}
+      visCount = visCount + addA
+      chunk = _emptyLongArray()
+
+      if opts.enableThinking != 0 { println("<think>") }
+      outCount = outCount + 1
+
+      continue
+
+    }
+
+    if idThinkEnd >= 0L && nextId == idThinkEnd {
+      inThink = 0
+
+      let addB, peB = _detokAndPrint(h, chunk)
+
+      if peB != 0 { return outCount, stopKind, 5}
+      visCount = visCount + addB
+      chunk = _emptyLongArray()
+
+      if opts.enableThinking != 0 { println("</think>") }
+      outCount = outCount + 1
+
+      continue
+
+    }
+
+    if opts.enableThinking == 0 && inThink != 0 {
+      outCount = outCount + 1
+
+      continue
+
+    }
+    // Drop chat control tokens from visible output.
+
+    let isCtrl: bool = false
+
+    if idImStart >= 0L && nextId == idImStart { isCtrl = true }
+
+    if idImEnd >= 0L && nextId == idImEnd { isCtrl = true }
+
+    if idEot >= 0L && nextId == idEot { isCtrl = true }
+
+    if idEos >= 0L && nextId == idEos { isCtrl = true }
+
+    if isCtrl {
+      outCount = outCount + 1
+
+      continue
+
+    }
+
+    chunk.push(nextId)
+    outCount = outCount + 1
+
+    if chunk.len() >= 16 {
+
+      let addC, peC = _detokAndPrint(h, chunk)
+
+      if peC != 0 { return outCount, stopKind, 5}
+      visCount = visCount + addC
+      chunk = _emptyLongArray()
+
+    }
+
+  }
+
+  let addD, peD = _detokAndPrint(h, chunk)
+
+  if peD != 0 { return outCount, stopKind, 5}
+  visCount = visCount + addD
+
+  let end = time.Time.monoNs()
+
+  let secs: double = (double)(end - start) / 1000000000.0
+
+  let tokpsTotal: double = 0.0
+
+  let tokpsVis: double = 0.0
+
+  if secs > 0.0 {
+    tokpsTotal = (double)outCount / secs
+    tokpsVis = (double)visCount / secs
+
+  }
+  println("")
+  println("gen_tokens={} tok/s={} visible_tokens={} vis_tok/s={}", outCount, tokpsTotal, visCount, tokpsVis)
+
+  return outCount, stopKind, 0
+}
+
+fn main(args: string[]) -> int {
+
+  let modelPath = "examples/models/qwen3-4b-q4km/qwen3-4b-q4_k_m.gguf"
+
+  if args.len() >= 2 { modelPath = args[1] }
+
+  let prompt = _firstPromptArg(args)
+
+  let opts0, oe = LlmArgs.parseArgv(args)
+
+  if oe != 0 { println("bad args"); return 1 }
+
+  let opts: LlmOptions = opts0
+
+  if opts.maxNewTokens <= 1 { opts.maxNewTokens = 256 }
+
+  tuaext_llama_backend_init()
+
+  let nThreads: int = opts.threads
+
+  if nThreads <= 0 { nThreads = 4 }
+
+  let nCtx: int = opts.kvMaxSeq
+
+  if nCtx <= 0 { nCtx = 2048 }
+
+  let nBatch: int = 256
+
+  let gpuLayers: int = 0
+
+  let gl, ge0 = _argvInt(args, "--gpu-layers")
+
+  if ge0 == 0 { gpuLayers = gl }
+
+  let ce: int = 0
+
+  let h: ptr = null
+
+  if gpuLayers != 0 {
+    h = tuaext_llama_new2(modelPath, nCtx, nThreads, nBatch, gpuLayers, &ce)
+
+  } else {
+    h = tuaext_llama_new(modelPath, nCtx, nThreads, nBatch, &ce)
+
+  }
+
+  if ce != 0 || h == null { println("load llama.cpp model failed"); return 1 }
+
+  let nVocab = tuaext_llama_vocab_size(h)
+
+  if nVocab <= 0 { tuaext_llama_free(h); println("bad vocab"); return 1 }
+
+  // Resolve common special tokens once (avoid per-token string allocation).
+
+  let idThink: long = -1L
+
+  let idThinkEnd: long = -1L
+
+  let idImStart: long = -1L
+
+  let idImEnd: long = -1L
+
+  let idEot: long = -1L
+
+  let idEos: long = -1L
+
+  let _ = tuaext_llama_find_token_id(h, "<think>", &idThink)
+
+  let _ = tuaext_llama_find_token_id(h, "</think>", &idThinkEnd)
+
+  let _ = tuaext_llama_find_token_id(h, "<|im_start|>", &idImStart)
+
+  let _ = tuaext_llama_find_token_id(h, "<|im_end|>", &idImEnd)
+
+  let _ = tuaext_llama_find_token_id(h, "<|endoftext|>", &idEos)
+
+  let _ = tuaext_llama_find_token_id(h, "<|eot_id|>", &idEot)
+
+  let interactive: bool = _argvHas(args, "--repl") || prompt == null
+
+  let useChatTemplate: bool = opts.chat != 0
+
+  let sysPrompt: string = "You are a helpful assistant."
+
+  if interactive {
+
+    if useChatTemplate {
+      println("llama.cpp chat REPL. Commands: /exit /quit /reset")
+
+    } else {
+      println("llama.cpp raw REPL. Commands: /exit /quit /reset")
+
+    }
+
+    let needBos: int = 1
+
+    if useChatTemplate {
+
+      let e0 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+
+      if e0 != 0 { tuaext_llama_free(h); println("system prefill failed"); return 1 }
+      needBos = 0
+
+    }
+
+    while true {
+      print("You> ")
+
+      let _ = term.Stdout.flush()
+
+      let n, re, line = term.Stdin.readLine()
+
+      if re != 0 { tuaext_llama_free(h); println("readLine failed"); return 1 }
+
+      if line == null && n == 0 { println(""); break } // EOF
+
+      if line == null { continue }
+
+      if n == 0 { rt.Rt.free(line); continue }
+
+      let user: string = line
+
+      if user == "/exit" || user == "/quit" {
+        rt.Rt.free(line)
+
+        break
+
+      }
+
+      if user == "/reset" {
+
+        let xe: int = 0
+
+        let _ = tuaext_llama_reset(h, &xe)
+        needBos = 1
+
+        if useChatTemplate {
+
+          let e1 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+
+          if e1 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("system prefill failed"); return 1 }
+          needBos = 0
+
+        }
+        rt.Rt.free(line)
+        println("ok")
+
+        continue
+
+      }
+
+      if useChatTemplate {
+
+        let seg = Qwen3Chat.userTurn(user, opts.enableThinking != 0)
+
+        let e2 = _feedText(h, seg, needBos, 1)
+
+        if e2 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("prefill failed"); return 1 }
+        needBos = 0
+
+      } else {
+
+        let xe2: int = 0
+
+        let _ = tuaext_llama_reset(h, &xe2)
+        needBos = 1
+
+        let e3 = _feedText(h, user, needBos, 1)
+
+        if e3 != 0 { rt.Rt.free(line); tuaext_llama_free(h); println("prefill failed"); return 1 }
+        needBos = 0
+
+      }
+
+      rt.Rt.free(line)
+      println("Assistant>")
+
+      let _ = term.Stdout.flush()
+
+      let startInThink: int = 0
+
+      if useChatTemplate && opts.enableThinking != 0 { startInThink = 1 }
+
+      if startInThink != 0 { println("<think>") }
+
+      let _, sk, ge = _gen(h, nVocab, opts, startInThink, idThink, idThinkEnd, idImStart, idImEnd, idEot, idEos)
+
+      if ge != 0 { tuaext_llama_free(h); println("gen failed"); return 1 }
+
+      // If generation ended by EOS/EOT, reset to allow continued chatting.
+
+      if useChatTemplate && sk == 2 {
+
+        let xe3: int = 0
+
+        let _ = tuaext_llama_reset(h, &xe3)
+        needBos = 1
+
+        let e4 = _feedText(h, Qwen3Chat.systemTurn(sysPrompt), needBos, 1)
+
+        if e4 != 0 { tuaext_llama_free(h); println("system prefill failed"); return 1 }
+        needBos = 0
+
+      }
+
+    }
+
+    tuaext_llama_free(h)
+
+    return 0
+
+  }
+
+  // Single-turn.
+
+  let inputText: string = prompt
+
+  if useChatTemplate {
+    inputText = Qwen3Chat.singleWithSystem(sysPrompt, prompt, opts.enableThinking != 0)
+
+  }
+
+  let e = _feedText(h, inputText, 1, 1)
+
+  if e != 0 { tuaext_llama_free(h); println("prefill failed"); return 1 }
+  println("prompt={}", prompt)
+  print("gen_text=")
+
+  let _ = term.Stdout.flush()
+
+  let startInThink2: int = 0
+
+  if useChatTemplate && opts.enableThinking != 0 { startInThink2 = 1 }
+
+  if startInThink2 != 0 { print("<think>") }
+
+  let _, _, ge2 = _gen(h, nVocab, opts, startInThink2, idThink, idThinkEnd, idImStart, idImEnd, idEot, idEos)
+
+  if ge2 != 0 { tuaext_llama_free(h); println("gen failed"); return 1 }
+  tuaext_llama_free(h)
+
+  return 0
+}

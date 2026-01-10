@@ -71,7 +71,7 @@
 
 ## 5) 示例：为 tokenizer_bpe 提供 decode2（外部库）
 
-仓库示例实现：`examples/ffi_tuaext_bpe_decode.c`，导出符号：
+仓库示例实现：`packages/clib/llm/tua_extbpe.c`，导出符号：
 
 - `tuaext_bpe_decode_ids_to_string(ids: long[], idToToken: map<long, string>, outErr: &int) string`
 
@@ -79,5 +79,5 @@
 
 构建并跑性能对比：
 
-- `./tools/build_clib.sh tuaextbpe examples/ffi_tuaext_bpe_decode.c`
-- `TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextbpe examples/llm_tokenizer_bpe_decode3_perf.tua 20000 200`
+- `./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c`
+- `TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextbpe packages/llm/examples/llm_tokenizer_bpe_decode3_perf.tua 20000 200`

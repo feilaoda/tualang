@@ -23,7 +23,7 @@ run_case() {
   local i
   for ((i=1;i<=REPEAT;i++)); do
     local out
-    out="$(./bin/tuac examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" "${FLAGS_BASE[@]}" "${extra[@]}")"
+    out="$(./bin/tuac packages/llm/examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" "${FLAGS_BASE[@]}" "${extra[@]}")"
     local toks
     toks="$(echo "$out" | rg -n "tok/s=" | tail -n 1 | awk -F 'tok/s=' '{print $2}' | awk '{print $1}')"
     echo "$name\t$toks"

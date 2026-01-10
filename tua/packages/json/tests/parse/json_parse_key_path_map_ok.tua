@@ -1,0 +1,37 @@
+import "std/bytes" as bstd
+import "std/fs" as fs
+import "json" as json
+import "std/rt" as rt
+
+fn main() {
+
+  let data, _, fe = fs.Fs.readFile("packages/json/tests/fixtures/json_key_path_map.json")
+  assert(fe == 0)
+  assert(data != null)
+
+  let b = bstd.Bytes.fromString(data)
+  rt.Rt.free(data)
+
+  let m0, e0 = json.Json.parseKeyPathStringLongMap(b, "model.vocab")
+  assert(e0 == 0)
+  assert(m0 != null)
+
+  let m: map = m0
+  assert(m.len() == 2)
+
+  let oa = m["a"]
+  assert(oa.isSome())
+
+  let va: long = oa.unwrap()
+  assert(va == 1L)
+
+  let mbad, ebad = json.Json.parseKeyPathStringLongMap(b, "model.other")
+
+  let _ = mbad
+  assert(ebad == 1)
+
+  let mn, en = json.Json.parseKeyPathStringLongMap(b, "model.missing")
+
+  let _ = mn
+  assert(en == 2)
+}

@@ -13,5 +13,4 @@ PROMPT="${2:-Hello}"
 shift $(( $# >= 1 ? 1 : 0 )) || true
 shift $(( $# >= 1 ? 1 : 0 )) || true
 
-exec ./bin/tuac examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" "$@"
-
+exec ./bin/tuac packages/llm/examples/llm_run_qwen3.tua "$MODEL_DIR" "$PROMPT" "$@"

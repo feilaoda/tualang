@@ -26,4 +26,4 @@ fi
 
 export CFLAGS="-O3 -fPIC -I\"$TUA_SRC_DIR\" -I\"$LLAMA_PREFIX/include\""
 
-exec "$ROOT/tools/build_clib.sh" tuaextllama "$ROOT/examples/ffi_tuaext_llama_simple.c"
+exec "$ROOT/tools/build_clib.sh" tuaextllama "$ROOT/packages/clib/llm/tua_extllama.c"

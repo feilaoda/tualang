@@ -1,0 +1,26 @@
+import "std/bytes" as bstd
+import "std/fs" as fs
+import "json" as json
+import "std/rt" as rt
+
+fn main() {
+
+  let data, _, fe = fs.Fs.readFile("packages/json/tests/fixtures/json_key_path_string.json")
+  assert(fe == 0)
+  assert(data != null)
+
+  let b = bstd.Bytes.fromString(data)
+  rt.Rt.free(data)
+
+  let v1, e1 = json.Json.scanKeyPathString(b, "a.b.c")
+  assert(e1 == 0)
+  assert(v1 == "ok")
+
+  let v2, e2 = json.Json.scanKeyPathString(b, "a.b.z")
+  assert(e2 == 2)
+  assert(v2 == null)
+
+  let v3, e3 = json.Json.scanKeyPathString(b, "d.x")
+  assert(e3 == 1)
+  assert(v3 == null)
+}

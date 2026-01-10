@@ -1,0 +1,78 @@
+import "std/bytes" as bstd
+import "std/strconv" as conv
+import "std/time" as t
+import "llm/ops_accelerate" as acc
+import "llm/ops" as ops
+
+extern fn tua_bytes_data_at(b: bytes, off: long) -> ptr
+
+fn main(args: string[]) -> int {
+
+  let m: int = 1024
+
+  let n: int = 1024
+
+  let k: int = 1024
+
+  let iters: int = 10
+
+  if args.len() >= 5 {
+
+    let om = conv.Int.parse(args[1])
+
+    if om.isSome() { m = om.unwrap() }
+
+    let on = conv.Int.parse(args[2])
+
+    if on.isSome() { n = on.unwrap() }
+
+    let ok = conv.Int.parse(args[3])
+
+    if ok.isSome() { k = ok.unwrap() }
+
+    let oi = conv.Int.parse(args[4])
+
+    if oi.isSome() { iters = oi.unwrap() }
+
+  }
+
+  if m <= 0 || n <= 0 || k <= 0 || iters <= 0 { return 1 }
+
+  let aBytes = bstd.Bytes.newLong((long)m * (long)k * 4L)
+
+  let bBytes = bstd.Bytes.newLong((long)k * (long)n * 4L)
+
+  let cBytes = bstd.Bytes.newLong((long)m * (long)n * 4L)
+
+  let aPtr = tua_bytes_data_at(aBytes, 0L)
+
+  let bPtr = tua_bytes_data_at(bBytes, 0L)
+
+  let cPtr = tua_bytes_data_at(cBytes, 0L)
+
+  let be = acc.AccelerateOps()
+  be.setThreads(0)
+
+  // Warmup
+  be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none, m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
+
+  let start = t.Time.monoNs()
+
+  for i = 0; i < iters; i++ {
+    be.gemmF32((int)ops.OpTranspose.none, (int)ops.OpTranspose.none, m, n, k, 1.0, aPtr, k, bPtr, n, 0.0, cPtr, n)
+
+  }
+
+  let end = t.Time.monoNs()
+
+  let dt = end - start
+
+  let flops: double = (double)(2L * (long)m * (long)n * (long)k * (long)iters)
+
+  let secs: double = (double)dt / 1000000000.0
+
+  let gflops: double = (flops / secs) / 1000000000.0
+  println("gemm m={} n={} k={} iters={} time_ns={} gflops={}", m, n, k, iters, dt, gflops)
+
+  return 0
+}

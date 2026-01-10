@@ -1,0 +1,715 @@
+import "std/rt" as rt
+import "std/term" as term
+import "std/utf8" as u
+import "std/bytes" as bstd
+import "std/time" as time
+
+import BpeTokenizer from "llm/tokenizer_bpe"
+import Qwen3Chat from "llm/qwen3_chat"
+import Qwen3, Qwen3Infer, Qwen3Config from "llm/qwen3"
+import LlmArgs, LlmOptions from "llm/options"
+
+private fn _appendAll(dst: long[], src: long[]) -> int {
+
+  if src == null { return 0 }
+
+  let i: int = 0
+
+  while i < src.len() {
+    dst.push(src[i])
+    i = i + 1
+
+  }
+
+  return 0
+}
+
+private fn _argvHas(args: string[], flag: string) -> bool {
+
+  if args == null || flag == null { return false }
+
+  let i: int = 0
+
+  while i < args.len() {
+
+    if args[i] == flag { return true }
+    i = i + 1
+
+  }
+
+  return false
+}
+
+private fn _findSubseq(hay: long[], needle: long[]) -> int {
+
+  if hay == null || needle == null { return -1 }
+
+  if needle.len() == 0 { return 0 }
+
+  if hay.len() < needle.len() { return -1 }
+
+  let i: int = 0
+
+  while i <= hay.len() - needle.len() {
+
+    let j: int = 0
+
+    let ok: int = 1
+
+    while j < needle.len() {
+
+      if hay[i + j] != needle[j] { ok = 0; break }
+      j = j + 1
+
+    }
+
+    if ok != 0 { return i }
+    i = i + 1
+
+  }
+
+  return -1
+}
+
+private fn _copyRange(src: long[], start: int, end: int) -> long[] {
+
+  if src == null { return null }
+
+  let out: long[] = {}
+
+  let s: int = start
+
+  let e: int = end
+
+  if s < 0 { s = 0 }
+
+  if e > src.len() { e = src.len() }
+
+  let i: int = s
+
+  while i < e {
+    out.push(src[i])
+    i = i + 1
+
+  }
+
+  return out
+}
+
+private fn _ringIndex(head: int, cap: int, rel: int) -> int {
+  // rel can be negative. Returns (head + rel) mod cap.
+
+  let idx: int = head + rel
+
+  while idx < 0 { idx = idx + cap }
+
+  while idx >= cap { idx = idx - cap }
+
+  return idx
+}
+
+private fn _ringMatchStartTok(ringB: long[], ringTok: long[], head: int, count: int, pat: long[]) -> int {
+
+  if ringB == null || ringTok == null || pat == null { return -1 }
+
+  let cap: int = ringB.len()
+
+  if cap <= 0 { return -1 }
+
+  if count < pat.len() { return -1 }
+
+  let m: int = pat.len()
+  // pattern occupies positions [head-m, head)
+
+  let j: int = 0
+
+  while j < m {
+
+    let idx: int = _ringIndex(head, cap, -m + j)
+
+    if ringB[idx] != pat[j] { return -1 }
+    j = j + 1
+
+  }
+
+  let startIdx: int = _ringIndex(head, cap, -m)
+
+  return (int)ringTok[startIdx]
+}
+
+private fn _findPlainStopTok(tok: TokenizerBpe, ids: long[]) -> int {
+  // Find the token index where a next-turn marker begins (e.g. "\nUser:"),
+  // by scanning decoded *bytes* (not token ids) with a small rolling window.
+
+  if tok == null || ids == null { return -1 }
+
+  // Patterns in bytes.
+  // Stop markers for models that keep emitting role labels.
+
+  let pUser: long[] = { 10L, 85L, 115L, 101L, 114L, 58L } // "\nUser:"
+
+  let pUserSp: long[] = { 10L, 32L, 85L, 115L, 101L, 114L, 58L } // "\n User:"
+
+  let pUserFull: long[] = { 10L, 85L, 115L, 101L, 114L, 239L, 188L, 154L } // "\nUser：" (U+FF1A)
+
+  let pEscUser: long[] = { 92L, 110L, 85L, 115L, 101L, 114L, 58L } // "\\nUser:"
+
+  let pYou: long[] = { 10L, 89L, 111L, 117L, 58L } // "\nYou:"
+
+  let pAssistant: long[] = { 10L, 65L, 115L, 115L, 105L, 115L, 116L, 97L, 110L, 116L, 58L } // "\nAssistant:"
+
+  let cap: int = 64
+
+  let ringB: long[] = {}
+
+  let ringTok: long[] = {}
+
+  let k: int = 0
+
+  while k < cap {
+    ringB.push(0L)
+    ringTok.push(0L)
+    k = k + 1
+
+  }
+
+  let head: int = 0
+
+  let count: int = 0
+
+  let i: int = 0
+
+  while i < ids.len() {
+
+    let id: long = ids[i]
+    // Decode the single token id and scan its UTF-8 bytes.
+
+    let one: long[] = { id }
+
+    let s, de = BpeTokenizer.decode(tok, one)
+
+    if de == 0 && s != null {
+
+      let bb: bytes = bstd.Bytes.fromString(s)
+
+      let n: long = bstd.Bytes.len(bb)
+
+      let off: long = 0L
+
+      while off < n {
+
+        let bv, be = bstd.Bytes.getU8(bb, off)
+
+        if be != 0 { break }
+
+        let bval: long = (long)bv
+        ringB[head] = bval
+        ringTok[head] = (long)i
+        head = head + 1
+
+        if head >= cap { head = 0 }
+
+        if count < cap { count = count + 1 }
+
+        // Stop on role labels, but only after some generated tokens to avoid cutting too early.
+
+        let minUserTok: int = 4
+
+        let minYouTok: int = 32
+
+        let s0 = _ringMatchStartTok(ringB, ringTok, head, count, pUser)
+
+        if s0 >= minUserTok { return s0 }
+
+        let s1 = _ringMatchStartTok(ringB, ringTok, head, count, pUserSp)
+
+        if s1 >= minUserTok { return s1 }
+
+        let s2 = _ringMatchStartTok(ringB, ringTok, head, count, pUserFull)
+
+        if s2 >= minUserTok { return s2 }
+
+        let s3 = _ringMatchStartTok(ringB, ringTok, head, count, pEscUser)
+
+        if s3 >= minUserTok { return s3 }
+
+        let s4 = _ringMatchStartTok(ringB, ringTok, head, count, pYou)
+
+        if s4 >= minYouTok { return s4 }
+
+        let s5 = _ringMatchStartTok(ringB, ringTok, head, count, pAssistant)
+
+        if s5 >= minYouTok { return s5 }
+
+        off = off + 1L
+
+      }
+
+    }
+    i = i + 1
+
+  }
+
+  return -1
+}
+
+private fn _filterForPrint(ids: long[], dropThinkBlocks: bool) -> long[] {
+
+  if ids == null { return null }
+  // Remove chat/tool control tokens, and optionally drop <think>...</think>.
+
+  let out: long[] = {}
+
+  let inThink: int = 0
+
+  let i: int = 0
+
+  while i < ids.len() {
+
+    let id: long = ids[i]
+
+    if dropThinkBlocks {
+
+      if id == 151667L { inThink = 1; i = i + 1; continue } // <think>
+
+      if id == 151668L { inThink = 0; i = i + 1; continue } // </think>
+
+      if inThink != 0 { i = i + 1; continue }
+
+    }
+    // Always drop control markers if they appear in the output.
+    // <|endoftext|>, <|im_start|>, <|im_end|>
+
+    if id == 151643L || id == 151644L || id == 151645L { i = i + 1; continue }
+    // Tool/multimodal/FIM tags (we don't support them yet).
+
+    if id >= 151646L && id <= 151666L { i = i + 1; continue }
+    out.push(id)
+    i = i + 1
+
+  }
+
+  return out
+}
+
+private fn _splitThink(ids: long[]) -> long[], long[], int {
+  // Returns (reasoningIds, answerIds, hasThink)
+
+  if ids == null { return null, null, 0 }
+
+  let think: long = 151667L
+
+  let endThink: long = 151668L
+
+  let r: long[] = {}
+
+  let a: long[] = {}
+
+  let sawThink: int = 0
+
+  let inThink: int = 0
+
+  let closedThink: int = 0
+
+  let i: int = 0
+
+  while i < ids.len() {
+
+    let id: long = ids[i]
+
+    if id == think {
+      sawThink = 1
+      inThink = 1
+      i = i + 1
+
+      continue
+
+    }
+
+    if id == endThink && inThink != 0 {
+      inThink = 0
+      closedThink = 1
+      i = i + 1
+
+      continue
+
+    }
+
+    if inThink != 0 {
+      r.push(id)
+
+    } else {
+
+      if sawThink == 0 || closedThink != 0 {
+        a.push(id)
+
+      }
+
+    }
+    i = i + 1
+
+  }
+
+  return r, a, sawThink
+}
+
+private fn _emptyLongArray() -> long[] {
+
+  let out: long[] = {}
+
+  return out
+}
+
+private fn _appendSystem(history: long[], tok: TokenizerBpe, useChatTemplate: bool, sysPrompt: string) -> int {
+
+  if history == null { return 1 }
+
+  if tok == null { return 1 }
+
+  if sysPrompt == null { return 0 }
+
+  let sysText: string = sysPrompt + "\n"
+
+  if useChatTemplate {
+    sysText = Qwen3Chat.systemTurn(sysPrompt)
+
+  }
+
+  let ids0, e = BpeTokenizer.encode(tok, sysText)
+
+  if e == 0 {
+
+    let ids: long[] = ids0
+    _appendAll(history, ids)
+
+  }
+
+  return e
+}
+
+fn main(args: string[]) -> int {
+
+  let modelDir = "examples/models/qwen3-0.6b"
+
+  if args.len() >= 2 { modelDir = args[1] }
+
+  let opts0, oe = LlmArgs.parseArgv(args)
+
+  if oe != 0 { println("bad args"); return 1 }
+
+  let opts: LlmOptions = opts0
+  // REPL-friendly default: if the caller didn't specify `--max-new-tokens`, `LlmArgs.defaults()` is 1.
+
+  if opts.maxNewTokens <= 1 { opts.maxNewTokens = 256 }
+
+  let enableThinking: bool = opts.enableThinking != 0
+
+  let useChatTemplate: bool = false
+
+  if _argvHas(args, "--chat") {
+    useChatTemplate = true
+
+  } else if _argvHas(args, "--raw") {
+    useChatTemplate = false
+
+  } else {
+    // Default to a plain-text chat prompt for better behavior on base models.
+    useChatTemplate = false
+
+  }
+
+  let tok, te = BpeTokenizer.loadFromTokenizerJson(modelDir + "/tokenizer.json")
+
+  if te != 0 { println("load tokenizer failed"); return 1 }
+
+  let st, me = Qwen3.loadState(modelDir, opts)
+
+  if me != 0 { println("load model failed"); return 1 }
+
+  // Stop tokens are handled inside `generateChatTurn`; keep cfg for completeness.
+
+  let cfg: Qwen3Config = st.cfg
+
+  let _ = cfg
+
+  // Maintain full history as token ids; per turn we will prefill from scratch.
+
+  let history: long[] = _emptyLongArray()
+  // Default system prompt (can be customized later).
+
+  let sysPrompt: string = "You are a helpful assistant."
+
+  let _ = _appendSystem(history, tok, useChatTemplate, sysPrompt)
+
+  if useChatTemplate {
+    println("Qwen3 chat REPL (qwen-template). Commands: /exit /quit /reset")
+
+  } else {
+    println("Qwen3 chat REPL (plain). Commands: /exit /quit /reset")
+
+  }
+
+  while true {
+    print("You> ")
+
+    let n, re, line = term.Stdin.readLine()
+
+    if re != 0 { println("readLine failed"); return 1 }
+
+    if line == null && n == 0 { println(""); break } // EOF
+
+    if line == null { continue }
+
+    if n == 0 { rt.Rt.free(line); continue }
+
+    let user: string = line
+
+    if user == "/exit" || user == "/quit" {
+      rt.Rt.free(line)
+
+      break
+
+    }
+
+    if user == "/reset" {
+      history = _emptyLongArray()
+
+      let _ = _appendSystem(history, tok, useChatTemplate, sysPrompt)
+      rt.Rt.free(line)
+      println("ok")
+
+      continue
+
+    }
+
+    if useChatTemplate {
+
+      let segText = Qwen3Chat.userTurn(user, enableThinking)
+
+      let segIds0, ee = BpeTokenizer.encode(tok, segText)
+
+      if ee != 0 { println("encode failed"); rt.Rt.free(line); return 1 }
+
+      let segIds: long[] = segIds0
+
+      let promptIds: long[] = {}
+      _appendAll(promptIds, history)
+      _appendAll(promptIds, segIds)
+
+      // Stream the assistant response.
+      println("Assistant>")
+
+      let stopIds: long[] = {}
+
+      let imEnd, ie = BpeTokenizer.addedId(tok, "<|im_end|>")
+
+      if ie == 0 { stopIds.push(imEnd) }
+
+      let eot, ie2 = BpeTokenizer.addedId(tok, "<|endoftext|>")
+
+      if ie2 == 0 { stopIds.push(eot) }
+
+      // Ban control/tool/multimodal tokens to keep chat output clean.
+
+      let banIds: long[] = {
+        151644L, // <|im_start|>
+        151643L, // <|endoftext|>
+        151646L, 151647L, 151648L, 151649L, 151650L, 151651L, // object/box/quad refs
+        151652L, 151653L, 151654L, 151655L, 151656L,          // vision/image/video pads
+        151657L, 151658L,                                      // tool_call
+        151665L, 151666L,                                      // tool_response
+        151659L, 151660L, 151661L, 151662L,                    // FIM
+        151663L, 151664L,                                      // repo/file_sep
+
+      }
+
+      if opts.enableThinking == 0 {
+        banIds.push(151667L) // <think>
+        banIds.push(151668L) // </think>
+
+      }
+
+      let minStop: int = 4
+
+      let g, ge = Qwen3Infer.genStopsInit(st, promptIds, opts, stopIds, banIds, minStop)
+
+      if ge != 0 { println("run failed"); rt.Rt.free(line); return 1 }
+
+      let start = time.Time.monoNs()
+
+      let chunk: long[] = _emptyLongArray()
+
+      let inThink: int = 0
+
+      while true {
+
+        let nextId, done, se = Qwen3Infer.genStopsNext(st, g, opts)
+
+        if se != 0 { println("run failed"); rt.Rt.free(line); return 1 }
+
+        if done != 0 { break }
+
+        if nextId == 151667L { // <think>
+
+          if enableThinking && inThink == 0 { println("[think]"); inThink = 1 }
+
+          continue
+
+        }
+
+        if nextId == 151668L { // </think>
+
+          if enableThinking && inThink != 0 { println("[/think]"); inThink = 0 }
+
+          continue
+
+        }
+
+        if enableThinking && inThink != 0 { continue } // hide raw think content; keep it in history
+
+        chunk.push(nextId)
+
+        if chunk.len() >= 8 {
+
+          let text, de = BpeTokenizer.decode(tok, chunk)
+
+          if de != 0 { println("decode failed"); rt.Rt.free(line); return 1 }
+          print("{}", u.Utf8.lossyString(text))
+
+          let _ = term.Stdout.flush()
+          chunk = _emptyLongArray()
+
+        }
+
+      }
+
+      if chunk.len() > 0 {
+
+        let text2, de2 = BpeTokenizer.decode(tok, chunk)
+
+        if de2 != 0 { println("decode failed"); rt.Rt.free(line); return 1 }
+        print("{}", u.Utf8.lossyString(text2))
+
+        let _ = term.Stdout.flush()
+
+      }
+
+      let end = time.Time.monoNs()
+
+      let dt: long = end - start
+
+      let secs: double = (double)dt / 1000000000.0
+
+      let tokps: double = 0.0
+
+      let genOut: long[] = g.out
+
+      let genTokens: int = genOut.len()
+
+      if secs > 0.0 { tokps = (double)genTokens / secs }
+      println("\n[gen_tokens={} tok/s={}]", genTokens, tokps)
+
+      // Update history: append the user turn segment and the assistant response, then close with <|im_end|>\n.
+      _appendAll(history, segIds)
+      _appendAll(history, g.out)
+
+      let sufText = Qwen3Chat.assistantClose()
+
+      let sufIds0, se = BpeTokenizer.encode(tok, sufText)
+
+      if se == 0 {
+
+        let sufIds: long[] = sufIds0
+        _appendAll(history, sufIds)
+
+      }
+
+    } else {
+
+      let segText = "\nUser: " + user + "\nAssistant:"
+
+      let segIds0, ee = BpeTokenizer.encode(tok, segText)
+
+      if ee != 0 { println("encode failed"); rt.Rt.free(line); return 1 }
+
+      let segIds: long[] = segIds0
+
+      let promptIds: long[] = {}
+      _appendAll(promptIds, history)
+      _appendAll(promptIds, segIds)
+
+      println("Assistant>")
+
+      let stopIds: long[] = { 151643L, 151645L } // <|endoftext|>, <|im_end|>
+
+      let banIds: long[] = { 151644L, 151657L, 151658L, 151665L, 151666L } // <|im_start|>, tool tokens
+
+      let g, ge = Qwen3Infer.genStopsInit(st, promptIds, opts, stopIds, banIds, 16)
+
+      if ge != 0 { println("run failed"); rt.Rt.free(line); return 1 }
+
+      let start = time.Time.monoNs()
+
+      let chunk: long[] = _emptyLongArray()
+
+      while true {
+
+        let nextId, done, se = Qwen3Infer.genStopsNext(st, g, opts)
+
+        if se != 0 { println("run failed"); rt.Rt.free(line); return 1 }
+
+        if done != 0 { break }
+        chunk.push(nextId)
+
+        if chunk.len() >= 8 {
+
+          let text, de = BpeTokenizer.decode(tok, chunk)
+
+          if de != 0 { println("decode failed"); rt.Rt.free(line); return 1 }
+          print("{}", u.Utf8.lossyString(text))
+
+          let _ = term.Stdout.flush()
+          chunk = _emptyLongArray()
+
+        }
+
+      }
+
+      if chunk.len() > 0 {
+
+        let text2, de2 = BpeTokenizer.decode(tok, chunk)
+
+        if de2 != 0 { println("decode failed"); rt.Rt.free(line); return 1 }
+        print("{}", u.Utf8.lossyString(text2))
+
+        let _ = term.Stdout.flush()
+
+      }
+
+      let end = time.Time.monoNs()
+
+      let dt: long = end - start
+
+      let secs: double = (double)dt / 1000000000.0
+
+      let tokps: double = 0.0
+
+      let genOut: long[] = g.out
+
+      let genTokens: int = genOut.len()
+
+      if secs > 0.0 { tokps = (double)genTokens / secs }
+      println("\n[gen_tokens={} tok/s={}]", genTokens, tokps)
+
+      // Update history: append the prompt segment and the generated assistant text.
+      _appendAll(history, segIds)
+      _appendAll(history, g.out)
+
+    }
+
+    rt.Rt.free(line)
+
+  }
+
+  return 0
+}
