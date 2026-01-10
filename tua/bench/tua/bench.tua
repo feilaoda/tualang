@@ -4,6 +4,11 @@ import "std/fs" as fs
 import "std/rt" as rt
 import "std/strconv" as conv
 import "json" as json
+import IntIntMap, IntIntMaps from "map/int_int_map"
+
+struct Foo {
+  a: int
+}
 
 private fn parseIntArg(s: string, def: int) -> int {
 
@@ -169,6 +174,71 @@ private fn benchMapLookup(iters: long, m: map<int, int>, mod: int) -> long {
   return acc
 }
 
+private fn makeMapFoo(size: int) -> map<int, Foo> {
+
+  let m: map<int, Foo> = {}
+
+  for i = 0; i < size; i++ {
+    m[i] = Foo{ a: (i * 2) + 1 }
+
+  }
+
+  return m
+}
+
+private fn benchMapLookupFoo(iters: long, m: map<int, Foo>, mod: int) -> long {
+
+  let acc: long = 0L
+
+  let x: long = 1L
+
+  let mask: long = (long)(mod - 1)
+
+  for i = 0L; i < iters; i++ {
+    x = (x * 1103515245L + 12345L) & 2147483647L
+
+    let k: int = (int)(x & mask)
+    let r = m.get(k).unwrap()
+    acc = acc + (long)r.a
+
+  }
+
+  return acc
+}
+
+private fn makeIntIntMap(size: int, capPow2: int) -> IntIntMap {
+
+  let m, e = IntIntMaps.new(capPow2)
+
+  if e != 0 { return m }
+
+  for i = 0; i < size; i++ {
+    m.set(i, (i * 2) + 1)
+
+  }
+
+  return m
+}
+
+private fn benchIntIntMapLookup(iters: long, m: IntIntMap, mod: int) -> long {
+
+  let acc: long = 0L
+
+  let x: long = 1L
+
+  let mask: long = (long)(mod - 1)
+
+  for i = 0L; i < iters; i++ {
+    x = (x * 1103515245L + 12345L) & 2147483647L
+
+    let k: int = (int)(x & mask)
+    acc = acc + (long)m.getPresent(k)
+
+  }
+
+  return acc
+}
+
 private fn loadJsonBytes(path: string) -> bytes {
 
   let data, n, e = fs.Fs.readFile(path)
@@ -272,6 +342,33 @@ private fn runAll() -> int {
   let tm1 = nowNs()
   report("tua/map_lookup_8k", itersLookup, tm1 - tm0, sm)
 
+  let mf = makeMapFoo(8192)
+
+  let tf0 = nowNs()
+
+  let sf = benchMapLookupFoo(itersLookup, mf, 8192)
+
+  let tf1 = nowNs()
+  report("tua/map_lookup_foo_8k", itersLookup, tf1 - tf0, sf)
+
+  let m2: IntIntMap = makeIntIntMap(8192, 16384)
+
+  if !m2.isNull() {
+
+    let tm2 = nowNs()
+
+    let sm2 = benchIntIntMapLookup(itersLookup, m2, 8192)
+
+    let tm3 = nowNs()
+    report("tua/intintmap_lookup_8k", itersLookup, tm3 - tm2, sm2)
+
+    m2.free()
+
+  } else {
+    println("tua/intintmap_lookup_8k skipped (alloc failed)")
+
+  }
+
   // 5) JSON scan (top-level long)
 
   let jb = loadJsonBytes("bench/data/scan_top_level.json")
@@ -355,6 +452,40 @@ fn main(args: string[]) -> int {
 
     let t1 = nowNs()
     report("tua/map_lookup_8k", iters, t1 - t0, s)
+
+    return 0
+
+  }
+
+  if name == "map_lookup_foo" {
+
+    let m = makeMapFoo(8192)
+
+    let t0 = nowNs()
+
+    let s = benchMapLookupFoo(iters, m, 8192)
+
+    let t1 = nowNs()
+    report("tua/map_lookup_foo_8k", iters, t1 - t0, s)
+
+    return 0
+
+  }
+
+  if name == "intintmap_lookup" {
+
+    let m: IntIntMap = makeIntIntMap(8192, 16384)
+
+    if m.isNull() { return 2 }
+
+    let t0 = nowNs()
+
+    let s = benchIntIntMapLookup(iters, m, 8192)
+
+    let t1 = nowNs()
+    report("tua/intintmap_lookup_8k", iters, t1 - t0, s)
+
+    m.free()
 
     return 0
 

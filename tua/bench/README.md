@@ -9,6 +9,8 @@
 - `bytes_scan_1m`：扫描 1 MiB bytes 统计某个字节出现次数
 - `bytes_scan_1m_slice`：扫描 1 MiB `Slice<byte>`（避免每字节 FFI/getU8）
 - `map_lookup_8k`：8k 键空间的随机查表（Tua: `map<int,int>`；C: 线性探测哈希表）
+- `map_lookup_foo_8k`：8k 键空间的随机查表（Tua: `map<int,Foo>`；C: 线性探测哈希表（值为 `{a:int}`））
+- `intintmap_lookup_8k`：8k 键空间的随机查表（Tua: `packages/map/IntIntMap`；C: 同 `map_lookup_8k` 基线）
 - `json_scan_top_long`：扫描 JSON 顶层字段 `id`（输入：`bench/data/scan_top_level.json`）
 
 ## 运行

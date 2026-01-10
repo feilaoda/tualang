@@ -103,6 +103,41 @@ static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_bytes_free", fty);
 }
 
+static LLVMValueRef getOrCreateTuaStrRetain(Compiler* compiler) {
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_retain");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_retain", fty);
+}
+
+static Expr* unwrapGroupingExprLocal(Expr* e) {
+    Expr* cur = e;
+    while (cur && cur->type == EXPR_GROUPING) cur = ((GroupingExpr*)cur)->expression;
+    return cur;
+}
+
+static int exprIsBorrowedStringSource(Compiler* compiler, Expr* e) {
+    if (!compiler || !e) return 0;
+    Expr* base = unwrapGroupingExprLocal(e);
+    if (!base) return 0;
+    // NOTE: do not rely on `inferredType == TYPE_STRING` here.
+    // In some contexts (notably object methods + array indexing), inference can be conservative,
+    // but the destination type is still `string` and the source is still a borrowed string.
+    // Missing this retain can cause UAF when the local string is dropped.
+    if (base->type == EXPR_VARIABLE || base->type == EXPR_GET) return 1;
+    if (base->type == EXPR_INDEX) {
+        IndexExpr* ix = (IndexExpr*)base;
+        Expr* obj = unwrapGroupingExprLocal(ix->object);
+        if (obj && obj->type == EXPR_VARIABLE) {
+            VariableRef rv = findVariableExpr(compiler, obj);
+            if (rv.value && rv.isArray) return 1;
+        }
+    }
+    return 0;
+}
+
 static LLVMValueRef getOrCreateBoxDropFn(Compiler* compiler, LLVMTypeRef valueType, Type* astType, TraitInfo* traitInfo, int isMapHint, int isArrayHint, int isBytesHint) {
     if (!compiler || !valueType) return NULL;
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
@@ -1647,6 +1682,20 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
             }
             initValue = nv ? nv : castIfNeeded(compiler, initValue, valueType);
         }
+
+        // String copy semantics: retain when initializing from a borrowed string value.
+        {
+            TypeKind dstK = stmt->type ? stmt->type->kind : (stmt->initializer ? stmt->initializer->inferredType : TYPE_ANY);
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (dstK == TYPE_STRING && valueType == i8ptr && initValue && exprIsBorrowedStringSource(compiler, stmt->initializer)) {
+                LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                if (retFn) {
+                    LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                    LLVMBuildCall2(compiler->builder, fty, retFn, &initValue, 1, "");
+                }
+            }
+        }
+
         if (shouldBox) {
             LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
             LLVMValueRef dropFn = (!isConstView)

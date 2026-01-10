@@ -1,0 +1,10 @@
+fn main() {
+  let s: string = "你好啊"
+  assert(s.len() == 3)
+  assert(s.byteLen() == 9L)
+
+  let n: string = null
+  assert(n.len() == 0)
+  assert(n.byteLen() == 0L)
+}
+

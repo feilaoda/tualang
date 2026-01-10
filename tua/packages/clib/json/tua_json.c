@@ -4,6 +4,7 @@
 #include "tua_array.h"
 #include "tua_bytes.h"
 #include "tua_map.h"
+#include "tua_str.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -150,7 +151,11 @@ static int decode_string_alloc(tua_bytes* b, const uint8_t* p, int64_t n, int64_
         return 1;
     }
     buf[o] = '\0';
-    *out = buf;
+    // Convert to managed string (best-effort UTF-8 with U+FFFD replacement).
+    char* s = tua_str_from_utf8_bytes_replace((const uint8_t*)buf, o);
+    tua_free(buf);
+    if (!s) return 1;
+    *out = s;
     (void)b;
     (void)n;
     return 0;
@@ -562,7 +567,7 @@ static void free_string_array_and_contents(tua_array* arr) {
     if (arr->elem_size == (int64_t)sizeof(char*) && arr->data && arr->len > 0) {
         char** ss = (char**)arr->data;
         for (int64_t i = 0; i < arr->len; i++) {
-            if (ss[i]) tua_free(ss[i]);
+            if (ss[i]) tua_str_release(ss[i]);
         }
     }
     tua_array_free(arr);
@@ -596,7 +601,7 @@ int32_t tua_json_scan_top_level_string(tua_bytes* b, const char* key, char** out
         if (decode_string_alloc(b, p, n, rawOff, vendq, &s) != 0) return 1;
     }
     if (check_object_value_boundary(p, n, vendq + 1) != 0) {
-        tua_free(s);
+        tua_str_release(s);
         return 1;
     }
     *out_str = s;
@@ -726,7 +731,7 @@ int32_t tua_json_scan_key_path_string(tua_bytes* b, const char* path, char** out
         if (decode_string_alloc(b, p, n, rawOff, vendq, &s) != 0) return 1;
     }
     if (check_object_value_boundary(p, n, vendq + 1) != 0) {
-        tua_free(s);
+        tua_str_release(s);
         return 1;
     }
     *out_str = s;
@@ -841,14 +846,14 @@ int32_t tua_json_parse_key_path_string_long_map(tua_bytes* b, const char* path, 
 
         skip_ws(p, n, &i);
         if (i >= n || p[i] != ':') {
-            tua_free(keyStr);
+            tua_str_release(keyStr);
             tua_map_free(m);
             return 1;
         }
         i++;
         skip_ws(p, n, &i);
         if (i >= n) {
-            tua_free(keyStr);
+            tua_str_release(keyStr);
             tua_map_free(m);
             return 1;
         }
@@ -856,18 +861,18 @@ int32_t tua_json_parse_key_path_string_long_map(tua_bytes* b, const char* path, 
         int64_t endPos = 0;
         int64_t v = 0;
         if (parse_int64_strict(p, n, i, &v, &endPos) != 0) {
-            tua_free(keyStr);
+            tua_str_release(keyStr);
             tua_map_free(m);
             return 1;
         }
         if (check_object_value_boundary(p, n, endPos) != 0) {
-            tua_free(keyStr);
+            tua_str_release(keyStr);
             tua_map_free(m);
             return 1;
         }
 
         tua_map_set(m, make_string_value(keyStr), make_long_value(v));
-        tua_free(keyStr);
+        tua_str_release(keyStr);
 
         i = endPos;
         skip_ws(p, n, &i);
@@ -1075,27 +1080,27 @@ int32_t tua_json_parse_key_path_bpe_merges_pair_maps(
         {
             int64_t endq = 0;
             int hasEsc = 0;
-            if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_free(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+            if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_str_release(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
             i = endq + 1;
         }
 
         skip_ws(p, n, &i);
-        if (i >= n || p[i] != ',') { tua_free(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        if (i >= n || p[i] != ',') { tua_str_release(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
         i++; // skip ','
         skip_ws(p, n, &i);
-        if (i >= n || p[i] != '"') { tua_free(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        if (i >= n || p[i] != '"') { tua_str_release(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
 
         char* bstr = NULL;
-        if (parse_string_value_at(p, n, i, b, &bstr) != 0) { tua_free(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        if (parse_string_value_at(p, n, i, b, &bstr) != 0) { tua_str_release(a); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
         {
             int64_t endq = 0;
             int hasEsc = 0;
-            if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_free(a); tua_free(bstr); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+            if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_str_release(a); tua_str_release(bstr); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
             i = endq + 1;
         }
 
         skip_ws(p, n, &i);
-        if (i >= n || p[i] != ']') { tua_free(a); tua_free(bstr); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
+        if (i >= n || p[i] != ']') { tua_str_release(a); tua_str_release(bstr); tua_map_free(rankMap); tua_map_free(mergeIdMap); return 1; }
         i++; // skip ']'
 
         // Lookup ids in vocab.
@@ -1106,8 +1111,8 @@ int32_t tua_json_parse_key_path_bpe_merges_pair_maps(
         int64_t idA = okA ? value_to_i64_strict(vA) : INT64_MIN;
         int64_t idB = okB ? value_to_i64_strict(vB) : INT64_MIN;
         if (!okA || !okB || idA == INT64_MIN || idB == INT64_MIN) {
-            tua_free(a);
-            tua_free(bstr);
+            tua_str_release(a);
+            tua_str_release(bstr);
             tua_map_free(rankMap);
             tua_map_free(mergeIdMap);
             return 1;
@@ -1119,9 +1124,9 @@ int32_t tua_json_parse_key_path_bpe_merges_pair_maps(
         tua_value vM = tua_map_get_with_ok(vocab, make_string_value(merged), &okM);
         int64_t idM = okM ? value_to_i64_strict(vM) : INT64_MIN;
         if (!okM || idM == INT64_MIN) {
-            free(merged);
-            tua_free(a);
-            tua_free(bstr);
+            tua_str_release(merged);
+            tua_str_release(a);
+            tua_str_release(bstr);
             tua_map_free(rankMap);
             tua_map_free(mergeIdMap);
             return 1;
@@ -1132,9 +1137,9 @@ int32_t tua_json_parse_key_path_bpe_merges_pair_maps(
         tua_map_set(rankMap, make_long_value(keyS), make_long_value(rank));
         tua_map_set(mergeIdMap, make_long_value(keyS), make_long_value(idM));
 
-        free(merged);
-        tua_free(a);
-        tua_free(bstr);
+        tua_str_release(merged);
+        tua_str_release(a);
+        tua_str_release(bstr);
 
         rank++;
         skip_ws(p, n, &i);
@@ -1190,10 +1195,10 @@ int32_t tua_json_parse_top_level_added_tokens_content_id_map(tua_bytes* b, tua_m
         if (p[i] != '}') {
             for (;;) {
                 skip_ws(p, n, &i);
-                if (i >= n || p[i] != '"') { tua_free(content); tua_map_free(m); return 1; }
+                if (i >= n || p[i] != '"') { tua_str_release(content); tua_map_free(m); return 1; }
                 int64_t kEndq = 0;
                 int kHasEsc = 0;
-                if (parse_string_end(p, n, i, &kEndq, &kHasEsc) != 0) { tua_free(content); tua_map_free(m); return 1; }
+                if (parse_string_end(p, n, i, &kEndq, &kHasEsc) != 0) { tua_str_release(content); tua_map_free(m); return 1; }
                 // Only keys "id" and "content" matter; compare without allocating if no escape.
                 int isId = 0;
                 int isContent = 0;
@@ -1207,45 +1212,45 @@ int32_t tua_json_parse_top_level_added_tokens_content_id_map(tua_bytes* b, tua_m
                 }
                 i = kEndq + 1;
                 skip_ws(p, n, &i);
-                if (i >= n || p[i] != ':') { tua_free(content); tua_map_free(m); return 1; }
+                if (i >= n || p[i] != ':') { tua_str_release(content); tua_map_free(m); return 1; }
                 i++;
                 skip_ws(p, n, &i);
-                if (i >= n) { tua_free(content); tua_map_free(m); return 1; }
+                if (i >= n) { tua_str_release(content); tua_map_free(m); return 1; }
 
                 if (isId) {
                     int64_t endPos = 0;
                     int64_t v = 0;
-                    if (parse_int64_strict(p, n, i, &v, &endPos) != 0) { tua_free(content); tua_map_free(m); return 1; }
+                    if (parse_int64_strict(p, n, i, &v, &endPos) != 0) { tua_str_release(content); tua_map_free(m); return 1; }
                     id = v;
                     i = endPos;
                 } else if (isContent) {
-                    if (p[i] != '"') { tua_free(content); tua_map_free(m); return 1; }
-                    if (content) { tua_free(content); content = NULL; }
+                    if (p[i] != '"') { tua_str_release(content); tua_map_free(m); return 1; }
+                    if (content) { tua_str_release(content); content = NULL; }
                     if (parse_string_value_at(p, n, i, b, &content) != 0) { tua_map_free(m); return 1; }
                     int64_t endq = 0;
                     int hasEsc = 0;
-                    if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_free(content); tua_map_free(m); return 1; }
+                    if (parse_string_end(p, n, i, &endq, &hasEsc) != 0) { tua_str_release(content); tua_map_free(m); return 1; }
                     i = endq + 1;
                 } else {
-                    if (skip_value(p, n, &i, 0) != 0) { tua_free(content); tua_map_free(m); return 1; }
+                    if (skip_value(p, n, &i, 0) != 0) { tua_str_release(content); tua_map_free(m); return 1; }
                 }
 
                 skip_ws(p, n, &i);
-                if (i >= n) { tua_free(content); tua_map_free(m); return 1; }
+                if (i >= n) { tua_str_release(content); tua_map_free(m); return 1; }
                 if (p[i] == ',') { i++; continue; }
                 if (p[i] == '}') break;
-                tua_free(content);
+                tua_str_release(content);
                 tua_map_free(m);
                 return 1;
             }
         }
-        if (i >= n || p[i] != '}') { tua_free(content); tua_map_free(m); return 1; }
+        if (i >= n || p[i] != '}') { tua_str_release(content); tua_map_free(m); return 1; }
         i++; // '}'
 
         if (content && id != INT64_MIN) {
             tua_map_set(m, make_string_value(content), make_long_value(id));
         }
-        if (content) tua_free(content);
+        if (content) tua_str_release(content);
 
         skip_ws(p, n, &i);
         if (i >= n) { tua_map_free(m); return 1; }

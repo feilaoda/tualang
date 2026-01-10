@@ -14,10 +14,17 @@ if [ ! -x "$ROOT/bin/tuac" ]; then
   make -C "$ROOT" tuac
 fi
 
+if [[ ! -f "$ROOT/build/clib/libtuaintmap.a" ]]; then
+  echo "[build] c lib (tuaintmap)"
+  "$ROOT/tools/build_clib.sh" tuaintmap "$ROOT/packages/clib/map/tua_intintmap.c" >/dev/null
+fi
+
 echo "[build] tua bench (AOT)"
 TUAC_FLAGS=(
   --llvm-O3
   --no-loc
+  -L "$ROOT/build/clib"
+  -l tuaintmap
 )
 "$ROOT/bin/tuac" "${TUAC_FLAGS[@]}" --output "$BIN_DIR/bench_tua" "$BENCH_DIR/tua/bench.tua"
 
@@ -26,6 +33,8 @@ TUAC_NATIVE_FLAGS=(
   --llvm-O3
   --no-loc
   --llvm-native
+  -L "$ROOT/build/clib"
+  -l tuaintmap
 )
 "$ROOT/bin/tuac" "${TUAC_NATIVE_FLAGS[@]}" --output "$BIN_DIR/bench_tua_native" "$BENCH_DIR/tua/bench.tua"
 
@@ -34,6 +43,8 @@ TUAC_UNCHECKED_FLAGS=(
   --llvm-O3
   --no-loc
   --unchecked-index
+  -L "$ROOT/build/clib"
+  -l tuaintmap
 )
 "$ROOT/bin/tuac" "${TUAC_UNCHECKED_FLAGS[@]}" --output "$BIN_DIR/bench_tua_unchecked" "$BENCH_DIR/tua/bench.tua"
 

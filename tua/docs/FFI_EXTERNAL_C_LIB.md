@@ -64,7 +64,8 @@
 
 ## 4) 约定提醒
 
-- `string` 在 C ABI 下是 `const char*`（通常由 `malloc` 生成；当前运行时不会自动回收，尽量走 `bytes`/`*_free` 这类显式释放协议）
+- `string` 在 C ABI 下是 `const char*`（UTF-8；语义为不可变值语义；运行时实现计划升级为自动管理的 string 类型，见 `docs/SPEC.md`。在语义冻结前，跨 ABI 的“谁负责释放”必须在函数文档中明确）
+- 推荐：FFI 新接口优先用“带长度”的类型（例如 `Slice<byte>`），形如 `{uint8_t* data, int64_t len}`，避免 `strlen` 开销/内嵌 NUL/编码歧义
 - `bytes` 是 `tua_bytes*`，`map` 是 `tua_map*`，`ptr` 是 `void*`
 - `extern fn` 默认按“借用”语义使用传入的 `map/array/bytes/string`（callee 不应释放传入对象），除非你明确设计为“接管所有权”
 

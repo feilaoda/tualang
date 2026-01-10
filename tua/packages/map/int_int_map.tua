@@ -1,0 +1,57 @@
+// IntIntMap: a specialized int->int hash table for performance experiments.
+// Backed by a small C linear-probing table in `packages/clib/map/tua_intintmap.c`.
+
+extern fn tua_iimap_new(capPow2: int) ptr
+extern fn tua_iimap_free(h: ptr)
+extern fn tua_iimap_set(h: ptr, key: int, value: int)
+extern fn tua_iimap_get(h: ptr, key: int, out: &int) int
+extern fn tua_iimap_get_present(h: ptr, key: int) int
+extern fn tua_panic(msg: string)
+
+struct IntIntMap {
+  h: ptr
+}
+
+object IntIntMaps {
+  fn new(capPow2: int) -> IntIntMap, int {
+    let out = IntIntMap{ h: null }
+    if capPow2 <= 0 { return out, 1 }
+    let h = tua_iimap_new(capPow2)
+    if h == null { return out, 1 }
+    out.h = h
+    return out, 0
+  }
+}
+
+impl IntIntMap {
+  fn isNull() bool {
+    return this.h == null
+  }
+
+  fn free() {
+    if this.h != null {
+      tua_iimap_free(this.h)
+      this.h = null
+    }
+  }
+
+  fn set(key: int, value: int) {
+    if this.h == null { tua_panic("IntIntMap.set on null") }
+    tua_iimap_set(this.h, key, value)
+  }
+
+  fn get(key: int) int {
+    if this.h == null { tua_panic("IntIntMap.get on null") }
+    let out: int = 0
+    let ok = tua_iimap_get(this.h, key, &out)
+    if ok == 0 { tua_panic("IntIntMap.get missing key") }
+    return out
+  }
+
+  // Fast path: returns the value and assumes the key exists.
+  // If the key is missing, it returns 0.
+  fn getPresent(key: int) int {
+    if this.h == null { tua_panic("IntIntMap.getPresent on null") }
+    return tua_iimap_get_present(this.h, key)
+  }
+}

@@ -100,6 +100,14 @@ char* tua_value_to_string(tua_value v);
 // Returns 1 on success and writes to `out`, otherwise returns 0 and leaves `out` unchanged.
 int32_t tua_parse_int(const char* s, int32_t* out);
 
+// String runtime helpers (see `src/tua_str.c`).
+int64_t tua_str_byte_len(const char* s);
+int32_t tua_str_len(const char* s);
+int32_t tua_str_eq(const char* a, const char* b);
+uint32_t tua_str_hash32(const char* s);
+void tua_str_retain(const char* s);
+void tua_str_release(const char* s);
 char* tua_str_concat(const char* a, const char* b);
+char* tua_str_substring(const char* s, int32_t i);
 
 #endif

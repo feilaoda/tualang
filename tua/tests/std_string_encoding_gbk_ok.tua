@@ -1,0 +1,39 @@
+import "std/scalar"
+import "std/bytes" as bstd
+
+fn main() {
+  // "你好啊" in GBK: C4 E3 BA C3 B0 A1
+  let b: bytes = bstd.Bytes.new(6)
+  assert(b.setU8(0L, 196) == 0)
+  assert(b.setU8(1L, 227) == 0)
+  assert(b.setU8(2L, 186) == 0)
+  assert(b.setU8(3L, 195) == 0)
+  assert(b.setU8(4L, 176) == 0)
+  assert(b.setU8(5L, 161) == 0)
+
+  let s, e = String.fromBytes(b, "gbk")
+  assert(e == 0)
+  assert(s == "你好啊")
+
+  let s2: string = "你好啊"
+  let b2, e2 = s2.toBytesEnc("GBK")
+  assert(e2 == 0)
+  assert(bstd.Bytes.len(b2) == 6L)
+  let v0, e0 = bstd.Bytes.getU8(b2, 0L)
+  let v1, e1 = bstd.Bytes.getU8(b2, 1L)
+  let v2, e2b = bstd.Bytes.getU8(b2, 2L)
+  let v3, e3 = bstd.Bytes.getU8(b2, 3L)
+  let v4, e4 = bstd.Bytes.getU8(b2, 4L)
+  let v5, e5 = bstd.Bytes.getU8(b2, 5L)
+  assert(e0 == 0 && e1 == 0 && e2b == 0 && e3 == 0 && e4 == 0 && e5 == 0)
+  assert(v0 == 196 && v1 == 227 && v2 == 186 && v3 == 195 && v4 == 176 && v5 == 161)
+
+  // Unrepresentable codepoint -> '?' (0x3F)
+  let sx: string = "😀"
+  let bx, ex = sx.toBytesEnc("GBK")
+  assert(ex == 0)
+  assert(bstd.Bytes.len(bx) == 1L)
+  let q, eq = bstd.Bytes.getU8(bx, 0L)
+  assert(eq == 0)
+  assert(q == 63)
+}

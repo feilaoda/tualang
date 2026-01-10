@@ -25,17 +25,20 @@ ifeq ($(UNAME_S),Darwin)
 	RT_DEFS = -DTUA_OS_DARWIN=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_KQUEUE=1
 	# JITed Tua code resolves runtime symbols from the host process; force-load the archive.
 	RT_LINK = -Wl,-force_load,bin/libtuart.a
-	TUAC_EXTRA_LIBS = -framework Accelerate
+	RT_EXTRA_LIBS = -liconv
+	TUAC_EXTRA_LIBS = -framework Accelerate $(RT_EXTRA_LIBS)
 else ifeq ($(UNAME_S),Linux)
 	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_epoll.c
 	RT_DEFS = -DTUA_OS_LINUX=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_EPOLL=1
 	RT_LINK = -Wl,--whole-archive bin/libtuart.a -Wl,--no-whole-archive
-	TUAC_EXTRA_LIBS = -ldl
+	RT_EXTRA_LIBS =
+	TUAC_EXTRA_LIBS = -ldl $(RT_EXTRA_LIBS)
 else
 	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_poll.c
 	RT_DEFS = -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_POLL=1
 	RT_LINK = bin/libtuart.a
-	TUAC_EXTRA_LIBS =
+	RT_EXTRA_LIBS =
+	TUAC_EXTRA_LIBS = $(RT_EXTRA_LIBS)
 endif
 
 RT_CFLAGS = -I./src -Wall $(RT_DEFS)
@@ -43,6 +46,7 @@ RT_SRCS = \
 	src/tua_map.c \
 	src/tua_array.c \
 	src/tua_bytes.c \
+	src/tua_str.c \
 	src/rt/rt_alloc.c \
 	src/rt/rt_box.c \
 	src/rt/rt_cancel.c \
@@ -97,7 +101,7 @@ bin/libtuart.a: $(RT_OBJS) Makefile
 librt: bin/libtuart.a
 
 bin/rt-smoke: bin/libtuart.a tests/rt_smoke.c
-	$(CC) $(RT_CFLAGS) tests/rt_smoke.c bin/libtuart.a -pthread -o $@
+	$(CC) $(RT_CFLAGS) tests/rt_smoke.c bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o $@
 
 rt-smoke: bin/rt-smoke
 
@@ -105,7 +109,7 @@ rt-smoke-run: rt-smoke
 	./bin/rt-smoke
 
 bin/rt-fs-smoke: bin/libtuart.a tests/rt_fs_async_smoke.c
-	$(CC) $(RT_CFLAGS) tests/rt_fs_async_smoke.c bin/libtuart.a -pthread -o $@
+	$(CC) $(RT_CFLAGS) tests/rt_fs_async_smoke.c bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o $@
 
 rt-fs-smoke: bin/rt-fs-smoke
 
@@ -113,7 +117,7 @@ rt-fs-smoke-run: rt-fs-smoke
 	./bin/rt-fs-smoke
 
 bin/rt-fs2-smoke: bin/libtuart.a tests/rt_fs_stat_readdir_smoke.c
-	$(CC) $(RT_CFLAGS) tests/rt_fs_stat_readdir_smoke.c bin/libtuart.a -pthread -o $@
+	$(CC) $(RT_CFLAGS) tests/rt_fs_stat_readdir_smoke.c bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o $@
 
 rt-fs2-smoke: bin/rt-fs2-smoke
 
@@ -121,7 +125,7 @@ rt-fs2-smoke-run: rt-fs2-smoke
 	./bin/rt-fs2-smoke
 
 bin/rt-net-smoke: bin/libtuart.a tests/rt_net_smoke.c
-	$(CC) $(RT_CFLAGS) tests/rt_net_smoke.c bin/libtuart.a -pthread -o $@
+	$(CC) $(RT_CFLAGS) tests/rt_net_smoke.c bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o $@
 
 rt-net-smoke: bin/rt-net-smoke
 

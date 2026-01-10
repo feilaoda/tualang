@@ -2,6 +2,7 @@
 
 #include "rt/rt_alloc.h"
 #include "rt/rt_fs.h"
+#include "tua_str.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -31,6 +32,13 @@ static void tua_bytes_drop_mmap(void* ctx, uint8_t* data, int64_t len) {
     (void)data;
     (void)len;
     tua_fs_mmap_close((tua_mmap_t*)ctx);
+}
+
+static void tua_bytes_drop_str_view(void* ctx, uint8_t* data, int64_t len) {
+    (void)data;
+    (void)len;
+    const char* s = (const char*)ctx;
+    tua_str_release(s);
 }
 
 tua_bytes* tua_bytes_new(int64_t len) {
@@ -98,9 +106,28 @@ tua_bytes* tua_bytes_from_copy(const void* data, int64_t len) {
 
 tua_bytes* tua_bytes_from_string_copy(const char* s) {
     if (!s) return tua_bytes_new(0);
-    size_t n = strlen(s);
-    if (n > (size_t)LLONG_MAX) return NULL;
-    return tua_bytes_from_copy(s, (int64_t)n);
+    int64_t n = tua_str_byte_len(s);
+    if (n < 0) return NULL;
+    return tua_bytes_from_copy(s, n);
+}
+
+tua_bytes* tua_bytes_from_string_view(const char* s) {
+    if (!s) return tua_bytes_new(0);
+    int64_t n = tua_str_byte_len(s);
+    if (n < 0) return NULL;
+    if (n == 0) return tua_bytes_new(0);
+
+    tua_bytes* b = (tua_bytes*)tua_malloc(sizeof(tua_bytes));
+    if (!b) return NULL;
+    memset(b, 0, sizeof(*b));
+    b->len = n;
+    b->cap = n;
+    b->data = (uint8_t*)tua_str_ptr(s);
+    b->readonly = 1;
+    b->drop_ctx = (void*)s;
+    b->drop_fn = tua_bytes_drop_str_view;
+    tua_str_retain(s);
+    return b;
 }
 
 tua_err_t tua_bytes_mmap_file(const char* path_utf8, tua_bytes** out_bytes) {
@@ -193,21 +220,11 @@ tua_err_t tua_bytes_copy(tua_bytes* dst, int64_t dst_off, tua_bytes* src, int64_
 
 char* tua_str_from_bytes_copy(tua_bytes* b, int64_t off, int64_t len) {
     if (len < 0) return NULL;
-    if (len == 0) {
-        char* out = (char*)malloc(1);
-        if (!out) tua_panic("out of memory");
-        out[0] = '\0';
-        return out;
-    }
+    if (len == 0) return tua_str_from_utf8_bytes_replace(NULL, 0);
     if (!b || !b->data) return NULL;
     if (off < 0 || off > b->len) return NULL;
     if (off + len > b->len) return NULL;
-    if ((uint64_t)len > (uint64_t)SIZE_MAX - 1) return NULL;
-    char* out = (char*)malloc((size_t)len + 1);
-    if (!out) tua_panic("out of memory");
-    memcpy(out, b->data + off, (size_t)len);
-    out[(size_t)len] = '\0';
-    return out;
+    return tua_str_from_utf8_bytes_replace(b->data + off, len);
 }
 
 void* tua_str_ptr(const char* s) {

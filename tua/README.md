@@ -76,7 +76,7 @@ x: long = 123
 - `bool`
 - `int`（i32）, `long`（i64）
 - `float`（f32）, `double`（f64）
-- `string`（UTF-8，当前实现为 `char*` 约定）
+- `string`（UTF-8；语义为不可变值语义；运行时实现计划升级为自动管理的 string 类型，见 `docs/SPEC.md`）
 - `ptr`（不透明指针/句柄）
 - 无符号整数：`u8/u16/u32/u64/usize`（以及 `isize`）
 - 数组：`T[]` / `T[N]`

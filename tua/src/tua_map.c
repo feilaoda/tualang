@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tua_str.h"
+
 	// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
 
 typedef enum {
@@ -21,7 +23,7 @@ typedef struct {
     uint32_t hash;
     union {
         int64_t i;
-        char* s;
+        char* s; // points to a Tua string (`char*` with optional managed header)
     } k;
     tua_value v;
 } MapEntry;
@@ -76,20 +78,28 @@ static uint32_t hash_u64(uint64_t x) {
     return (uint32_t)(x ^ (x >> 32));
 }
 
-static uint32_t hash_cstr(const char* s) {
-    // FNV-1a 32-bit
-    uint32_t h = 2166136261u;
-    for (const unsigned char* p = (const unsigned char*)s; p && *p; p++) {
-        h ^= *p;
-        h *= 16777619u;
+static uint32_t hash_u32(uint32_t x) {
+    // 32-bit mix (same as bench/c/bench.c).
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x ? x : 1u;
+}
+
+static uint32_t hash_i64(int64_t v) {
+    // Fast path for small / i32-range keys (common for dense key spaces).
+    if (v >= (int64_t)INT32_MIN && v <= (int64_t)INT32_MAX) {
+        return hash_u32((uint32_t)(int32_t)v);
     }
-    return h ? h : 1u;
+    return hash_u64((uint64_t)v);
 }
 
 static int key_equals(const MapEntry* e, KeyKind kind, int64_t ikey, const char* skey) {
     if (!e || e->kind != kind) return 0;
     if (kind == KEY_INT) return e->k.i == ikey;
-    if (kind == KEY_STRING) return strcmp(e->k.s, skey) == 0;
+    if (kind == KEY_STRING) return tua_str_eq(e->k.s, skey) == 1;
     return 0;
 }
 
@@ -103,9 +113,20 @@ static size_t find_slot(tua_map* m, KeyKind kind, uint32_t hash, int64_t ikey, c
             if (found) *found = 0;
             return i;
         }
-        if (e->kind != KEY_TOMBSTONE && e->hash == hash && key_equals(e, kind, ikey, skey)) {
-            if (found) *found = 1;
-            return i;
+        if (e->kind != KEY_TOMBSTONE) {
+            if (kind == KEY_INT) {
+                // For int keys, key compare is cheap; avoid loading/comparing stored hash.
+                if (e->kind == KEY_INT && e->k.i == ikey) {
+                    if (found) *found = 1;
+                    return i;
+                }
+            } else {
+                // For string keys, hash compare avoids expensive strcmp most of the time.
+                if (e->hash == hash && key_equals(e, kind, ikey, skey)) {
+                    if (found) *found = 1;
+                    return i;
+                }
+            }
         }
         i = (i + 1) & mask;
     }
@@ -124,9 +145,18 @@ static size_t find_slot_for_insert(tua_map* m, KeyKind kind, uint32_t hash, int6
         }
         if (e->kind == KEY_TOMBSTONE) {
             if (firstTombstone == (size_t)(-1)) firstTombstone = i;
-        } else if (e->hash == hash && key_equals(e, kind, ikey, skey)) {
-            if (found) *found = 1;
-            return i;
+        } else {
+            if (kind == KEY_INT) {
+                if (e->kind == KEY_INT && e->k.i == ikey) {
+                    if (found) *found = 1;
+                    return i;
+                }
+            } else {
+                if (e->hash == hash && key_equals(e, kind, ikey, skey)) {
+                    if (found) *found = 1;
+                    return i;
+                }
+            }
         }
         i = (i + 1) & mask;
     }
@@ -196,7 +226,7 @@ static void decode_key(tua_value key, KeyKind* kind, uint32_t* hash, int64_t* ik
         // Normalize int/long keys to int64 domain.
         int64_t v = (int64_t)key.payload;
         *kind = KEY_INT;
-        *hash = hash_u64((uint64_t)v);
+        *hash = hash_i64(v);
         if (ikey) *ikey = v;
         return;
     }
@@ -207,7 +237,7 @@ static void decode_key(tua_value key, KeyKind* kind, uint32_t* hash, int64_t* ik
             s = "";
         }
         *kind = KEY_STRING;
-        *hash = hash_cstr(s);
+        *hash = tua_str_hash32(s);
         if (skey) *skey = s;
         return;
     }
@@ -295,13 +325,17 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value) {
         if (kind == KEY_INT) {
             e->k.i = ikey;
         } else if (kind == KEY_STRING) {
-            e->k.s = strdup(skey ? skey : "");
-            if (!e->k.s) tua_panic("out of memory");
+            e->k.s = (char*)(skey ? skey : "");
+            tua_str_retain(e->k.s);
         }
         map->count++;
+        e->v.tag = TUA_VAL_NIL;
+        e->v.payload = 0;
     }
 
     // Overwrite semantics: later entries win.
+    if (e->v.tag == TUA_VAL_STRING) tua_str_release((const char*)(uintptr_t)e->v.payload);
+    if (value.tag == TUA_VAL_STRING) tua_str_retain((const char*)(uintptr_t)value.payload);
     e->v = value;
 }
 
@@ -318,10 +352,8 @@ int32_t tua_map_delete(tua_map* map, tua_value key) {
     if (!found) return 0;
 
     MapEntry* e = &map->entries[slot];
-    if (e->kind == KEY_STRING && e->k.s) {
-        free(e->k.s);
-        e->k.s = NULL;
-    }
+    if (e->kind == KEY_STRING) tua_str_release(e->k.s);
+    if (e->v.tag == TUA_VAL_STRING) tua_str_release((const char*)(uintptr_t)e->v.payload);
 
     e->kind = KEY_TOMBSTONE;
     e->hash = 0;
@@ -339,10 +371,8 @@ void tua_map_clear(tua_map* map) {
     if (!map->entries || map->capacity == 0) return;
     for (size_t i = 0; i < map->capacity; i++) {
         MapEntry* e = &map->entries[i];
-        if (e->kind == KEY_STRING && e->k.s) {
-            free(e->k.s);
-            e->k.s = NULL;
-        }
+        if (e->kind == KEY_STRING) tua_str_release(e->k.s);
+        if (e->v.tag == TUA_VAL_STRING) tua_str_release((const char*)(uintptr_t)e->v.payload);
         e->kind = KEY_EMPTY;
         e->hash = 0;
         e->k.i = 0;
@@ -412,10 +442,8 @@ void tua_map_free(tua_map* map) {
     if (map->entries && map->capacity > 0) {
         for (size_t i = 0; i < map->capacity; i++) {
             MapEntry* e = &map->entries[i];
-            if (e->kind == KEY_STRING && e->k.s) {
-                free(e->k.s);
-                e->k.s = NULL;
-            }
+            if (e->kind == KEY_STRING) tua_str_release(e->k.s);
+            if (e->v.tag == TUA_VAL_STRING) tua_str_release((const char*)(uintptr_t)e->v.payload);
         }
         free(map->entries);
         map->entries = NULL;
@@ -449,8 +477,12 @@ void tua_print_value(tua_value value, int32_t newline) {
         }
         case TUA_VAL_STRING: {
             const char* s = (const char*)(uintptr_t)value.payload;
-            if (!s) fputs("null", stdout);
-            else fputs(s, stdout);
+            if (!s) {
+                fputs("null", stdout);
+            } else {
+                int64_t n = tua_str_byte_len(s);
+                if (n > 0) fwrite(s, 1, (size_t)n, stdout);
+            }
             break;
         }
         case TUA_VAL_PTR:
@@ -461,19 +493,6 @@ void tua_print_value(tua_value value, int32_t newline) {
         }
     }
     if (newline) fputc('\n', stdout);
-}
-
-char* tua_str_concat(const char* a, const char* b) {
-    const char* na = a ? a : "null";
-    const char* nb = b ? b : "null";
-    size_t la = strlen(na);
-    size_t lb = strlen(nb);
-    char* out = (char*)malloc(la + lb + 1);
-    if (!out) tua_panic("out of memory");
-    memcpy(out, na, la);
-    memcpy(out + la, nb, lb);
-    out[la + lb] = '\0';
-    return out;
 }
 
 void tua_assert_fail(const char* msg, int32_t line) {
@@ -532,7 +551,11 @@ int32_t tua_value_to_bool(tua_value v) {
 }
 
 char* tua_value_to_string(tua_value v) {
-    if (v.tag == TUA_VAL_STRING) return (char*)(uintptr_t)v.payload;
+    if (v.tag == TUA_VAL_STRING) {
+        const char* s = (const char*)(uintptr_t)v.payload;
+        tua_str_retain(s);
+        return (char*)s;
+    }
     if (v.tag == TUA_VAL_NIL) return NULL;
     tua_panic("cannot convert value to string");
     return NULL;

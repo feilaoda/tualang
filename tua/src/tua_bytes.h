@@ -19,6 +19,10 @@ tua_bytes* tua_bytes_from_copy(const void* data, int64_t len);
 
 // Convenience: copies bytes from a NUL-terminated string.
 tua_bytes* tua_bytes_from_string_copy(const char* s);
+// Creates a read-only `bytes` view over `string` UTF-8 bytes (no copy).
+// The returned bytes retains the input string and releases it on drop.
+// `null` yields an empty bytes handle.
+tua_bytes* tua_bytes_from_string_view(const char* s);
 
 // Memory-maps a file read-only into a `bytes` handle.
 // On success, returned bytes will unmap on drop/free.

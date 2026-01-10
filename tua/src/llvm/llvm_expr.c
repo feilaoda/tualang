@@ -479,6 +479,15 @@ static LLVMValueRef getOrCreateStrcmp(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "strcmp", fnType);
 }
 
+static LLVMValueRef getOrCreateTuaStrEq(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_str_eq");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[2] = { i8ptr, i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_eq", fnType);
+}
+
 static LLVMValueRef getOrCreateTuaStrConcat(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_str_concat");
     if (existing) return existing;
@@ -486,6 +495,48 @@ static LLVMValueRef getOrCreateTuaStrConcat(Compiler* compiler) {
     LLVMTypeRef params[2] = { i8ptr, i8ptr };
     LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 2, 0);
     return LLVMAddFunction(compiler->module, "tua_str_concat", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaStrRetain(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_str_retain");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_retain", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaStrRelease(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_str_release");
+    if (existing) return existing;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fnType = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_release", fnType);
+}
+
+static Expr* unwrapGroupingExprLocal(Expr* e) {
+    Expr* cur = e;
+    while (cur && cur->type == EXPR_GROUPING) cur = ((GroupingExpr*)cur)->expression;
+    return cur;
+}
+
+static int exprIsBorrowedStringSource(Compiler* compiler, Expr* e) {
+    if (!compiler || !e) return 0;
+    Expr* base = unwrapGroupingExprLocal(e);
+    if (!base) return 0;
+    // Do not depend on `inferredType == TYPE_STRING` here; inference can be conservative in
+    // some contexts, but string assignments still require copy/retain semantics.
+    if (base->type == EXPR_VARIABLE || base->type == EXPR_GET) return 1;
+    if (base->type == EXPR_INDEX) {
+        IndexExpr* ix = (IndexExpr*)base;
+        Expr* obj = unwrapGroupingExprLocal(ix->object);
+        if (obj && obj->type == EXPR_VARIABLE) {
+            VariableRef rv = findVariableExpr(compiler, obj);
+            if (rv.value && rv.isArray) return 1;
+        }
+    }
+    return 0;
 }
 
 // Allocas inserted into non-entry blocks grow the stack dynamically when the block is executed in a loop.
@@ -745,6 +796,61 @@ static LLVMValueRef getOrCreateTuaValueToString(Compiler* compiler) {
     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
     LLVMTypeRef fnType = LLVMFunctionType(i8ptr, params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_value_to_string", fnType);
+}
+
+static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
+
+static LLVMValueRef decodeScalarFromTuaValueUnchecked(Compiler* compiler, LLVMValueRef tv, TypeKind kind, LLVMTypeRef targetType) {
+    if (!compiler || !tv || !targetType) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    if (LLVMTypeOf(tv) != vt) return castToType(compiler, tv, targetType);
+
+    LLVMValueRef payload = LLVMBuildExtractValue(builder, tv, 1, "tv_pay");
+
+    if (typeKindIsInt(kind) || kind == TYPE_BYTE) {
+        // Integers/bytes are stored in payload bits; just truncate/extend to the requested width.
+        LLVMTypeKind tk = LLVMGetTypeKind(targetType);
+        if (tk == LLVMIntegerTypeKind) {
+            unsigned bits = LLVMGetIntTypeWidth(targetType);
+            if (bits < 64) return LLVMBuildTrunc(builder, payload, targetType, "tv_i");
+            if (bits > 64) return LLVMBuildSExt(builder, payload, targetType, "tv_isx");
+            return payload;
+        }
+        // Fallback: cast i64 payload to target type.
+        return castToType(compiler, payload, targetType);
+    }
+
+    if (kind == TYPE_BOOL) {
+        LLVMTypeRef i1 = LLVMInt1TypeInContext(context);
+        LLVMValueRef b1 = LLVMBuildTrunc(builder, payload, i1, "tv_b1");
+        return castToType(compiler, b1, targetType);
+    }
+
+    if (kind == TYPE_STRING) {
+        LLVMValueRef p = LLVMBuildIntToPtr(builder, payload, i8ptr, "tv_s");
+        return castToType(compiler, p, targetType);
+    }
+
+    if (kind == TYPE_DOUBLE) {
+        LLVMValueRef bits = castToType(compiler, payload, i64);
+        LLVMValueRef d = LLVMBuildBitCast(builder, bits, LLVMDoubleTypeInContext(context), "tv_d");
+        return castToType(compiler, d, targetType);
+    }
+
+    if (kind == TYPE_FLOAT) {
+        LLVMValueRef bits = castToType(compiler, payload, i64);
+        LLVMValueRef d = LLVMBuildBitCast(builder, bits, LLVMDoubleTypeInContext(context), "tv_df64");
+        LLVMValueRef f = LLVMBuildFPTrunc(builder, d, LLVMFloatTypeInContext(context), "tv_f32");
+        return castToType(compiler, f, targetType);
+    }
+
+    // Fallback to existing generic cast.
+    return castFromTuaValue(compiler, tv, targetType);
 }
 
 static LLVMValueRef castFromTuaValue(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType) {
@@ -1688,45 +1794,13 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
     if ((expr->operator.type == TOKEN_EQ || expr->operator.type == TOKEN_NEQ) &&
         leftKind == LLVMPointerTypeKind && rightKind == LLVMPointerTypeKind &&
         leftType == i8ptr && rightType == i8ptr) {
-        LLVMValueRef nullPtr = LLVMConstNull(i8ptr);
-        LLVMValueRef leftNull = LLVMBuildICmp(builder, LLVMIntEQ, left, nullPtr, "l_null");
-        LLVMValueRef rightNull = LLVMBuildICmp(builder, LLVMIntEQ, right, nullPtr, "r_null");
-        LLVMValueRef eitherNull = LLVMBuildOr(builder, leftNull, rightNull, "either_null");
-        LLVMValueRef bothNull = LLVMBuildAnd(builder, leftNull, rightNull, "both_null");
-
-        LLVMValueRef fn = compiler->current->func;
-        LLVMBasicBlockRef nullBB = LLVMAppendBasicBlock(fn, "str.null");
-        LLVMBasicBlockRef cmpBB = LLVMAppendBasicBlock(fn, "str.cmp");
-        LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "str.cont");
-
-        LLVMBuildCondBr(builder, eitherNull, nullBB, cmpBB);
-
-        LLVMPositionBuilderAtEnd(builder, nullBB);
-        LLVMValueRef nullRes = bothNull;
-        if (expr->operator.type == TOKEN_NEQ) {
-            nullRes = LLVMBuildNot(builder, bothNull, "null_neq");
-        }
-        LLVMBuildBr(builder, contBB);
-
-        LLVMPositionBuilderAtEnd(builder, cmpBB);
-        LLVMValueRef strcmpFn = getOrCreateStrcmp(compiler);
-        LLVMTypeRef strcmpType = LLVMGlobalGetValueType(strcmpFn);
+        LLVMValueRef eqFn = getOrCreateTuaStrEq(compiler);
+        LLVMTypeRef eqType = LLVMGlobalGetValueType(eqFn);
         LLVMValueRef args2[2] = { left, right };
-        LLVMValueRef cmp = LLVMBuildCall2(builder, strcmpType, strcmpFn, args2, 2, "strcmp");
-        LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
-        LLVMValueRef strRes = NULL;
-        if (expr->operator.type == TOKEN_EQ) {
-            strRes = LLVMBuildICmp(builder, LLVMIntEQ, cmp, zero, "streq");
-        } else {
-            strRes = LLVMBuildICmp(builder, LLVMIntNE, cmp, zero, "strneq");
-        }
-        LLVMBuildBr(builder, contBB);
-
-        LLVMPositionBuilderAtEnd(builder, contBB);
-        LLVMValueRef phi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(context), "str_phi");
-        LLVMAddIncoming(phi, &nullRes, &nullBB, 1);
-        LLVMAddIncoming(phi, &strRes, &cmpBB, 1);
-        return phi;
+        LLVMValueRef r32 = LLVMBuildCall2(builder, eqType, eqFn, args2, 2, "streq32");
+        LLVMValueRef one = LLVMConstInt(LLVMInt32TypeInContext(context), 1, 0);
+        LLVMIntPredicate pred = (expr->operator.type == TOKEN_EQ) ? LLVMIntEQ : LLVMIntNE;
+        return LLVMBuildICmp(builder, pred, r32, one, "streq");
     }
 
     // Pointer equality for non-string pointers (including `Ref<T> == null`).
@@ -1774,36 +1848,12 @@ LLVMValueRef emitBinaryExpr(Compiler* compiler, BinaryExpr* expr) {
         if (innerKind == LLVMIntegerTypeKind || innerKind == LLVMPointerTypeKind) {
             if (innerKind == LLVMPointerTypeKind && innerTy == i8ptr) {
                 // string content equality for Option<string>
-                LLVMValueRef nullPtr = LLVMConstNull(i8ptr);
-                LLVMValueRef lNull = LLVMBuildICmp(builder, LLVMIntEQ, vL, nullPtr, "osl_null");
-                LLVMValueRef rNull = LLVMBuildICmp(builder, LLVMIntEQ, vR, nullPtr, "osr_null");
-                LLVMValueRef eitherNull = LLVMBuildOr(builder, lNull, rNull, "os_either_null");
-                LLVMValueRef bothNull = LLVMBuildAnd(builder, lNull, rNull, "os_both_null");
-
-                LLVMBasicBlockRef snullBB = LLVMAppendBasicBlock(fn, "opt.str.null");
-                LLVMBasicBlockRef scmpBB = LLVMAppendBasicBlock(fn, "opt.str.cmp");
-                LLVMBasicBlockRef scontBB = LLVMAppendBasicBlock(fn, "opt.str.cont");
-
-                LLVMBuildCondBr(builder, eitherNull, snullBB, scmpBB);
-
-                LLVMPositionBuilderAtEnd(builder, snullBB);
-                LLVMValueRef nullRes = bothNull;
-                LLVMBuildBr(builder, scontBB);
-
-                LLVMPositionBuilderAtEnd(builder, scmpBB);
-                LLVMValueRef strcmpFn = getOrCreateStrcmp(compiler);
-                LLVMTypeRef strcmpType = LLVMGlobalGetValueType(strcmpFn);
+                LLVMValueRef eqFn = getOrCreateTuaStrEq(compiler);
+                LLVMTypeRef eqType = LLVMGlobalGetValueType(eqFn);
                 LLVMValueRef args2[2] = { vL, vR };
-                LLVMValueRef cmp = LLVMBuildCall2(builder, strcmpType, strcmpFn, args2, 2, "strcmp");
-                LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
-                LLVMValueRef strEq = LLVMBuildICmp(builder, LLVMIntEQ, cmp, zero, "os_streq");
-                LLVMBuildBr(builder, scontBB);
-
-                LLVMPositionBuilderAtEnd(builder, scontBB);
-                LLVMValueRef phi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(context), "os_phi");
-                LLVMAddIncoming(phi, &nullRes, &snullBB, 1);
-                LLVMAddIncoming(phi, &strEq, &scmpBB, 1);
-                payloadEq = phi;
+                LLVMValueRef r32 = LLVMBuildCall2(builder, eqType, eqFn, args2, 2, "os_eq32");
+                LLVMValueRef one = LLVMConstInt(LLVMInt32TypeInContext(context), 1, 0);
+                payloadEq = LLVMBuildICmp(builder, LLVMIntEQ, r32, one, "os_eq");
             } else {
                 payloadEq = LLVMBuildICmp(builder, LLVMIntEQ, vL, vR, "opt_v_eq");
             }
@@ -2729,6 +2779,133 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     return opt;
 }
 
+LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr) {
+    if (!compiler || !expr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+
+    // Only map indexing is supported here (array indexing already panics on OOB and doesn't return Option).
+    LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
+    if (!keyExpr) return NULL;
+
+    VariableRef recvVar = (VariableRef){0};
+    int isMap = 0;
+    if (expr->object && expr->object->type == EXPR_VARIABLE) {
+        recvVar = findVariableExpr(compiler, expr->object);
+        if (recvVar.value) {
+            isMap = recvVar.isMap ? 1 : 0;
+        }
+    }
+    if (!isMap) return NULL;
+
+    // Load receiver pointer from the variable slot.
+    LLVMValueRef obj = NULL;
+    if (recvVar.value && recvVar.type) {
+        if (recvVar.isBoxed) {
+            if (!recvVar.boxPtrType) {
+                compilerErrorAt(compiler, expr->base.token.line, "missing boxed pointer type metadata");
+                return NULL;
+            }
+            LLVMValueRef cell = LLVMBuildLoad2(builder, recvVar.boxPtrType, recvVar.value, "cell");
+            obj = LLVMBuildLoad2(builder, recvVar.type, cell, "recv");
+        } else {
+            obj = LLVMBuildLoad2(builder, recvVar.type, recvVar.value, "recv");
+        }
+    }
+    if (!obj) return NULL;
+
+    // Typed map key check.
+    if (recvVar.isTypedMap && recvVar.mapKeyType) {
+        if (!typedMapKeyCompatible(compiler, recvVar.mapKeyType, keyExpr)) {
+            compilerErrorAt(compiler, expr->index ? expr->index->token.line : expr->base.token.line,
+                            "typed map key type mismatch");
+            return NULL;
+        }
+    }
+
+    TypeKind keyK = expr->index ? expr->index->inferredType : TYPE_ANY;
+    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr, keyK);
+    if (!key) return NULL;
+
+    // Determine the value type for typed maps (scalar-only for `m[k]` reads).
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+    LLVMTypeRef innerType = vt;
+    TypeKind innerKind = TYPE_ANY;
+    if (recvVar.isTypedMap && recvVar.mapValueType) {
+        innerType = recvVar.mapValueType;
+        innerKind = recvVar.mapValueKind;
+        int scalarKind =
+            innerKind == TYPE_STRING ||
+            innerKind == TYPE_BOOL ||
+            innerKind == TYPE_INT ||
+            innerKind == TYPE_LONG ||
+            innerKind == TYPE_FLOAT ||
+            innerKind == TYPE_DOUBLE ||
+            innerKind == TYPE_I8 ||
+            innerKind == TYPE_I16 ||
+            innerKind == TYPE_U8 ||
+            innerKind == TYPE_U16 ||
+            innerKind == TYPE_U32 ||
+            innerKind == TYPE_U64 ||
+            innerKind == TYPE_USIZE ||
+            innerKind == TYPE_ISIZE ||
+            innerKind == TYPE_BYTE;
+        if (!scalarKind && innerType != vt) {
+            compilerErrorAt(
+                compiler,
+                expr->base.token.line,
+                "typed map index read is not supported for non-scalar values; use get/getMut"
+            );
+            return NULL;
+        }
+    }
+
+    // Typed maps with non-`any` values cannot store `nil`, so we can use `tua_map_get` and
+    // treat `nil` as "missing" (faster than `get_with_ok`).
+    LLVMValueRef tv = NULL;
+    LLVMValueRef ok = NULL;
+    if (innerType != vt) {
+        LLVMValueRef getFn = getOrCreateTuaMapGet(compiler);
+        LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
+        LLVMValueRef args2[2] = { obj, key };
+        tv = LLVMBuildCall2(builder, getType, getFn, args2, 2, "mget");
+        LLVMValueRef tag = LLVMBuildExtractValue(builder, tv, 0, "mget_tag");
+        LLVMValueRef isNil = LLVMBuildICmp(builder, LLVMIntEQ, tag, LLVMConstInt(LLVMInt32TypeInContext(compiler->context), 0, 0), "mget_nil");
+        ok = LLVMBuildNot(builder, LLVMBuildTrunc(builder, isNil, LLVMInt1TypeInContext(compiler->context), "mget_nil1"), "mget_ok");
+    } else {
+        LLVMValueRef okPtr = buildEntryAlloca(compiler, LLVMInt32TypeInContext(compiler->context), "mokptr");
+        LLVMValueRef getFn = getOrCreateTuaMapGetWithOk(compiler);
+        LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
+        LLVMValueRef args3[3] = { obj, key, okPtr };
+        tv = LLVMBuildCall2(builder, getType, getFn, args3, 3, "mget");
+        LLVMValueRef ok32 = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(compiler->context), okPtr, "mok32");
+        ok = LLVMBuildTrunc(builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+    }
+
+    // Decode payload before branching so it dominates the continuation block.
+    LLVMValueRef outV = NULL;
+    if (innerType == vt) {
+        outV = tv;
+    } else {
+        outV = decodeScalarFromTuaValueUnchecked(compiler, tv, innerKind, innerType);
+    }
+    if (!outV) return NULL;
+
+    LLVMValueRef fn = compiler->current->func;
+    LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "idx.unwrap.ok");
+    LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "idx.unwrap.none");
+    LLVMBuildCondBr(builder, ok, okBB, badBB);
+
+    LLVMPositionBuilderAtEnd(builder, badBB);
+    LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+    LLVMTypeRef panicType = LLVMGlobalGetValueType(panicFn);
+    LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "unwrap on None", "panicmsg");
+    LLVMBuildCall2(builder, panicType, panicFn, &msg, 1, "");
+    LLVMBuildUnreachable(builder);
+
+    LLVMPositionBuilderAtEnd(builder, okBB);
+    return outV;
+}
+
 LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
     if (!compiler || !expr) return NULL;
     LLVMBuilderRef builder = compiler->builder;
@@ -3117,6 +3294,23 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
                         return NULL;
                     }
                     value = castToType(compiler, value, fType);
+                    // String field assignment: release old, retain new when copying from a borrowed source.
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    if (fType == i8ptr) {
+                        LLVMValueRef oldv = LLVMBuildLoad2(compiler->builder, i8ptr, fieldPtr, "old_f_s");
+                        LLVMValueRef relFn = getOrCreateTuaStrRelease(compiler);
+                        if (relFn) {
+                            LLVMTypeRef fty = LLVMGlobalGetValueType(relFn);
+                            LLVMBuildCall2(compiler->builder, fty, relFn, &oldv, 1, "");
+                        }
+                        if (exprIsBorrowedStringSource(compiler, expr->value)) {
+                            LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                            if (retFn) {
+                                LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                                LLVMBuildCall2(compiler->builder, fty, retFn, &value, 1, "");
+                            }
+                        }
+                    }
                     LLVMBuildStore(compiler->builder, value, fieldPtr);
                     return value;
                 }
@@ -3160,6 +3354,35 @@ LLVMValueRef emitAssignExpr(Compiler* compiler, AssignExpr* expr) {
             nv = castNumericToKind(compiler, value, srcK, dstK);
         }
         value = nv ? nv : castToType(compiler, value, var.type);
+    }
+
+    // String overwrite/copy semantics (ref-counted, best-effort).
+    if (var.typeKind == TYPE_STRING) {
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        if (var.type == i8ptr) {
+            LLVMValueRef oldv = NULL;
+            if (var.isBoxed) {
+                if (!var.boxPtrType) return NULL;
+                LLVMValueRef ptr = LLVMBuildLoad2(compiler->builder, var.boxPtrType, var.value, "old_boxptr");
+                oldv = LLVMBuildLoad2(compiler->builder, var.type, ptr, "old_s");
+            } else {
+                oldv = LLVMBuildLoad2(compiler->builder, var.type, var.value, "old_s");
+            }
+
+            LLVMValueRef relFn = getOrCreateTuaStrRelease(compiler);
+            if (relFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(relFn);
+                LLVMBuildCall2(compiler->builder, fty, relFn, &oldv, 1, "");
+            }
+
+            if (exprIsBorrowedStringSource(compiler, expr->value)) {
+                LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                if (retFn) {
+                    LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                    LLVMBuildCall2(compiler->builder, fty, retFn, &value, 1, "");
+                }
+            }
+        }
     }
 
     // Drop old container value on overwrite (RAII, best-effort).
@@ -4262,6 +4485,24 @@ LLVMValueRef emitSetExpr(Compiler* compiler, SetExpr* expr) {
 
     LLVMValueRef rhs = compileExpr(compiler, expr->value);
     rhs = castToType(compiler, rhs, fType);
+
+    // String field assignment: release old, retain new when copying from a borrowed source.
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    if (fType == i8ptr) {
+        LLVMValueRef oldv = LLVMBuildLoad2(compiler->builder, i8ptr, fieldPtr, "old_s");
+        LLVMValueRef relFn = getOrCreateTuaStrRelease(compiler);
+        if (relFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(relFn);
+            LLVMBuildCall2(compiler->builder, fty, relFn, &oldv, 1, "");
+        }
+        if (exprIsBorrowedStringSource(compiler, expr->value)) {
+            LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+            if (retFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                LLVMBuildCall2(compiler->builder, fty, retFn, &rhs, 1, "");
+            }
+        }
+    }
     LLVMBuildStore(compiler->builder, rhs, fieldPtr);
 
     // Move semantics for container handles assigned into struct fields:

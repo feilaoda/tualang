@@ -12,6 +12,25 @@ static LLVMTypeRef getPrintfType(Compiler* compiler);
 static LLVMValueRef castForPrintf(Compiler* compiler, LLVMValueRef value);
 static const char* formatForValue(LLVMValueRef value, int addNewline);
 
+// Allocas inserted into non-entry blocks grow the stack dynamically when the block is executed in a loop.
+// For temporaries created during call lowering (e.g. ok/out pointers for runtime helpers), always allocate
+// in the function entry block.
+static LLVMValueRef buildEntryAlloca(Compiler* compiler, LLVMTypeRef ty, const char* name) {
+    if (!compiler || !ty) return NULL;
+    if (!compiler->current || !compiler->current->func) {
+        return LLVMBuildAlloca(compiler->builder, ty, name ? name : "");
+    }
+    LLVMValueRef fn = compiler->current->func;
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+    LLVMValueRef firstInst = LLVMGetFirstInstruction(entry);
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(compiler->context);
+    if (firstInst) LLVMPositionBuilderBefore(b, firstInst);
+    else LLVMPositionBuilderAtEnd(b, entry);
+    LLVMValueRef slot = LLVMBuildAlloca(b, ty, name ? name : "");
+    LLVMDisposeBuilder(b);
+    return slot;
+}
+
 static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
     if (!compiler) return NULL;
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_box_dec");
@@ -20,6 +39,47 @@ static LLVMValueRef getOrCreateTuaBoxDec(Compiler* compiler) {
     LLVMTypeRef params[1] = { i8ptr };
     LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_box_dec", fty);
+}
+
+static LLVMValueRef getOrCreateTuaStrRetain(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_retain");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_retain", fty);
+}
+
+static LLVMValueRef getOrCreateTuaStrLen(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_len");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMInt32TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_len", fty);
+}
+
+static LLVMValueRef getOrCreateTuaStrByteLen(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_byte_len");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMInt64TypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_byte_len", fty);
+}
+
+static LLVMValueRef getOrCreateTuaStrSubstring(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_substring");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i8ptr, i32 };
+    LLVMTypeRef fty = LLVMFunctionType(i8ptr, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_substring", fty);
 }
 
 static int exprIsMoveArg(Expr* e) {
@@ -34,6 +94,22 @@ static int exprIsVarArg(Expr* e) {
     Expr* a = unwrapGroupingExpr(e);
     if (!a) return 0;
     return a->type == EXPR_VARIABLE;
+}
+
+static int exprIsBorrowedStringArg(Compiler* compiler, Expr* e) {
+    if (!compiler) return 0;
+    Expr* a = unwrapGroupingExpr(e);
+    if (!a || a->inferredType != TYPE_STRING) return 0;
+    if (a->type == EXPR_VARIABLE || a->type == EXPR_GET) return 1;
+    if (a->type == EXPR_INDEX) {
+        IndexExpr* ix = (IndexExpr*)a;
+        Expr* obj = unwrapGroupingExpr(ix->object);
+        if (obj && obj->type == EXPR_VARIABLE) {
+            VariableRef rv = findVariableExpr(compiler, obj);
+            if (rv.value && rv.isArray) return 1;
+        }
+    }
+    return 0;
 }
 
 static int endsWithRawN(const char* s, int len, const char* suffix) {
@@ -289,6 +365,24 @@ static LLVMValueRef emitPrintValue(Compiler* compiler, LLVMValueRef argValue, in
         LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
         LLVMValueRef nl = LLVMConstInt(LLVMInt32TypeInContext(context), newline ? 1 : 0, 0);
         LLVMValueRef args2[2] = { argValue, nl };
+        LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "");
+        return LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+    }
+
+    // String: print via `tua_print_value` so embedded NUL bytes are supported.
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+    if (LLVMTypeOf(argValue) == i8ptr) {
+        LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+        LLVMValueRef v = LLVMGetUndef(vt);
+        LLVMValueRef tagV = LLVMConstInt(LLVMInt32TypeInContext(context), 5u, 0);
+        LLVMValueRef p64 = LLVMBuildPtrToInt(compiler->builder, argValue, LLVMInt64TypeInContext(context), "p64");
+        v = LLVMBuildInsertValue(compiler->builder, v, tagV, 0, "t_tag");
+        v = LLVMBuildInsertValue(compiler->builder, v, p64, 1, "t_payload");
+
+        LLVMValueRef fn = getOrCreateTuaPrintValue(compiler);
+        LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
+        LLVMValueRef nl = LLVMConstInt(LLVMInt32TypeInContext(context), newline ? 1 : 0, 0);
+        LLVMValueRef args2[2] = { v, nl };
         LLVMBuildCall2(compiler->builder, fnType, fn, args2, 2, "");
         return LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
     }
@@ -1490,7 +1584,7 @@ static LLVMValueRef compileCallArgForParam(Compiler* compiler, Expr* argExpr, LL
                     compilerErrorAtToken(compiler, &a->token, "trait object conversion requires a struct value");
                     return NULL;
                 }
-                LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, concreteTy, "to_tmp");
+                LLVMValueRef tmp = buildEntryAlloca(compiler, concreteTy, "to_tmp");
                 LLVMBuildStore(compiler->builder, v, tmp);
                 dataAddr = tmp;
             }
@@ -1511,7 +1605,16 @@ static LLVMValueRef compileCallArgForParam(Compiler* compiler, Expr* argExpr, LL
 
     // If the argument already produces a pointer value (string/map/array/&T/etc), pass it directly.
     if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind) {
-        return castValueToType(compiler, v, paramType);
+        LLVMValueRef out = castValueToType(compiler, v, paramType);
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        if (paramType == i8ptr && out && LLVMTypeOf(out) == i8ptr && exprIsBorrowedStringArg(compiler, argExpr)) {
+            LLVMValueRef fn = getOrCreateTuaStrRetain(compiler);
+            if (fn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                LLVMBuildCall2(compiler->builder, fty, fn, &out, 1, "");
+            }
+        }
+        return out;
     }
 
     // Otherwise, the callee expects a pointer but the argument is a value (e.g. borrowing a struct by value).
@@ -1528,7 +1631,7 @@ static LLVMValueRef compileCallArgForParam(Compiler* compiler, Expr* argExpr, LL
         }
     }
 
-    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, LLVMTypeOf(v), "argtmp");
+    LLVMValueRef tmp = buildEntryAlloca(compiler, LLVMTypeOf(v), "argtmp");
     LLVMBuildStore(compiler->builder, v, tmp);
     LLVMValueRef p = tmp;
     if (LLVMTypeOf(p) != paramType) {
@@ -2004,7 +2107,7 @@ static LLVMValueRef emitStructConstructor(Compiler* compiler, StructInfo* info, 
     if (!compiler || !info) return NULL;
     int argCount = expr->arguments ? expr->arguments->length : 0;
     // Value semantics: build a stack temporary and return the loaded value.
-    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, info->type, "ctor_tmp");
+    LLVMValueRef tmp = buildEntryAlloca(compiler, info->type, "ctor_tmp");
     LLVMValueRef obj = tmp;
 
     // Initialize fields
@@ -2152,7 +2255,7 @@ LLVMValueRef emitStructInitExpr(Compiler* compiler, StructInitExpr* expr) {
     }
 
     // Value semantics: build a stack temporary and return the loaded value.
-    LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, info->type, "sinit_tmp");
+    LLVMValueRef tmp = buildEntryAlloca(compiler, info->type, "sinit_tmp");
     LLVMValueRef obj = tmp;
 
     for (int i = 0; i < fieldCount; i++) {
@@ -3259,6 +3362,19 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             return NULL;
         }
 
+        // Fast path: `m[k].unwrap()` where `m[k]` is a map index.
+        // Avoid building an intermediate Option value and then unwrapping it.
+        if (!hasTypeArgs && tokenEquals(&get->name, "unwrap") && get->object->type == EXPR_INDEX) {
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (got == 0) {
+                LLVMValueRef out = emitIndexExprUnwrapFast(compiler, (IndexExpr*)get->object);
+                if (out) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+            }
+        }
+
         // Namespace-qualified calls:
         // - `ns.Name(...)` where `ns` is imported via `import "path" as ns`
         // - `ns.Type.method(...)` for imported object/enum/struct static methods
@@ -3393,6 +3509,69 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 	            LLVMTypeRef recvType = LLVMTypeOf(recvVal);
 	            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
 
+                // String built-in methods on non-variable receivers:
+                // - `s.len() -> int`
+                // - `s.byteLen() -> long`
+                // - `s.substring(i: int) -> string`
+                {
+                    TypeKind k = get->object->inferredType;
+                    Type* it = inferTypeFromValueExpr(compiler, get->object);
+                    if (it) {
+                        k = it->kind;
+                        freeTypeTreeDeep(it);
+                    }
+                    if (k == TYPE_STRING) {
+                        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                        LLVMValueRef s = castValueToType(compiler, recvVal, i8ptr);
+                        if (tokenEquals(&get->name, "len")) {
+                            if (got != 0) {
+                                emitDebug("string.len expects 0 arguments\n");
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return NULL;
+                            }
+                            LLVMValueRef fn = getOrCreateTuaStrLen(compiler);
+                            LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                            LLVMValueRef args1[1] = { s };
+                            LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "slen");
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return out;
+                        }
+                        if (tokenEquals(&get->name, "byteLen")) {
+                            if (got != 0) {
+                                emitDebug("string.byteLen expects 0 arguments\n");
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return NULL;
+                            }
+                            LLVMValueRef fn = getOrCreateTuaStrByteLen(compiler);
+                            LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                            LLVMValueRef args1[1] = { s };
+                            LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "sblen");
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return out;
+                        }
+                        if (tokenEquals(&get->name, "substring")) {
+                            if (got != 1) {
+                                emitDebug("string.substring expects 1 argument\n");
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return NULL;
+                            }
+                            LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                            if (!idx) {
+                                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                                return NULL;
+                            }
+                            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+                            idx = castValueToType(compiler, idx, i32);
+                            LLVMValueRef fn = getOrCreateTuaStrSubstring(compiler);
+                            LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                            LLVMValueRef args2[2] = { s, idx };
+                            LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args2, 2, "ssub");
+                            if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                            return out;
+                        }
+                    }
+                }
+
 	            // `impl <scalar/array> { ... }` methods can also be called on non-variable receivers
 	            // when the receiver has a known inferred kind (or explicit type args are provided).
 	            {
@@ -3510,7 +3689,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     }
 
                     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
-                    LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, LLVMInt32TypeInContext(compiler->context), "mokptr");
+                    LLVMValueRef okPtr = buildEntryAlloca(compiler, LLVMInt32TypeInContext(compiler->context), "mokptr");
                     LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);
                     LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
                     LLVMValueRef args3[3] = { mapPtr, key, okPtr };
@@ -4083,7 +4262,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
                 LLVMValueRef arg0 = compileExpr(compiler, (Expr*)expr->arguments->head->data);
                 arg0 = castValueToType(compiler, arg0, elemTy);
-                LLVMValueRef tmp = LLVMBuildAlloca(compiler->builder, elemTy, "push_tmp");
+                LLVMValueRef tmp = buildEntryAlloca(compiler, elemTy, "push_tmp");
                 LLVMBuildStore(compiler->builder, arg0, tmp);
                 LLVMValueRef p = LLVMBuildBitCast(compiler->builder, tmp, LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0), "push_p");
 
@@ -4259,7 +4438,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return v8;
                 }
 
-                LLVMValueRef outSlot = LLVMBuildAlloca(compiler->builder, i32, "bout");
+                LLVMValueRef outSlot = buildEntryAlloca(compiler, i32, "bout");
                 LLVMValueRef fn = getOrCreateTuaBytesGetU8(compiler);
                 LLVMTypeRef fnType = LLVMGlobalGetValueType(fn);
                 LLVMValueRef args3[3] = { bytesPtr, idx, outSlot };
@@ -4737,7 +4916,7 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 }
 
                 LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
-                LLVMValueRef okPtr = LLVMBuildAlloca(compiler->builder, i32, "mokptr");
+                LLVMValueRef okPtr = buildEntryAlloca(compiler, i32, "mokptr");
                 LLVMValueRef gfn = getOrCreateTuaMapGetRefWithOk(compiler);
                 LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
                 LLVMValueRef args3[3] = { mapPtr, key, okPtr };
@@ -5071,6 +5250,70 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
 	                if (implOut) return implOut;
 	            }
 	        }
+
+            // String built-in methods (work even without `import "std/scalar"`):
+            // - `s.len() -> int`
+            // - `s.byteLen() -> long`
+            // - `s.substring(i: int) -> string`
+            if (recvVar.value && recvVar.typeKind == TYPE_STRING) {
+                unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+                LLVMValueRef recvVal = loadLocalValue(compiler, recvVar);
+                if (!recvVal) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                LLVMValueRef s = castValueToType(compiler, recvVal, i8ptr);
+
+                if (tokenEquals(&get->name, "len")) {
+                    if (got != 0) {
+                        emitDebug("string.len expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaStrLen(compiler);
+                    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { s };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "slen");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
+                if (tokenEquals(&get->name, "byteLen")) {
+                    if (got != 0) {
+                        emitDebug("string.byteLen expects 0 arguments\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef fn = getOrCreateTuaStrByteLen(compiler);
+                    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args1[1] = { s };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args1, 1, "sblen");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+
+                if (tokenEquals(&get->name, "substring")) {
+                    if (got != 1) {
+                        emitDebug("string.substring expects 1 argument\n");
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMValueRef idx = compileExpr(compiler, (Expr*)expr->arguments->head->data);
+                    if (!idx) {
+                        if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                        return NULL;
+                    }
+                    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+                    idx = castValueToType(compiler, idx, i32);
+                    LLVMValueRef fn = getOrCreateTuaStrSubstring(compiler);
+                    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                    LLVMValueRef args2[2] = { s, idx };
+                    LLVMValueRef out = LLVMBuildCall2(compiler->builder, fty, fn, args2, 2, "ssub");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+            }
 
 	        bool isInstance = recvVar.value != NULL && recvVar.typeName != NULL;
 	        bool isTraitDispatch = isInstance && recvVar.genericBoundTraitName != NULL && recvVar.genericBoundTraitNameLength > 0;

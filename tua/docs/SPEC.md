@@ -37,7 +37,20 @@
   - 其他：`bool/string/ptr/any/void`
   - `ptr`：裸指针（当前实现中等价于 `i8*`），主要用于运行时/FFI 句柄与不透明指针
   - `any`：动态值（当前实现中为 `tua_value`），用于 `map` 等“动态容器”的 value 存储
-  - 当前运行时表示：`string` 仍等价于 C 字符串指针（`i8*`）；“真正的 string 类型”见后续规划
+  - `string`（Frozen 语义；运行时表示 Status: Planned）：
+    - 值语义（无身份比较）：`==/!=` 按内容比较；语言不提供/不定义 `string` 的“指针身份相等”
+    - 不可变：任何“修改”都是生成新字符串（例如 `b += "x"` 等价于 `b = b + "x"`）
+    - 自动管理：由运行时自动释放；实现建议为不可变 + 引用计数（RC）+ `byteLen/codepointLen`（可选缓存 hash），以支持高性能 map key 与内存友好共享
+    - 逻辑语义：`string` 表示 Unicode 文本（codepoint 序列）
+    - 默认编码/存储：运行时内部以 UTF-8 作为规范存储（canonical UTF-8）
+    - `len()`：返回 Unicode codepoint 个数（例如 `"你好啊".len() == 3`）
+      - 性能（Frozen）：实现不要求在创建/拼接时预计算；允许在首次调用时按需扫描计算（可能为 O(n)）
+      - 可选优化（Planned）：实现可在首次计算后缓存结果，使后续 `len()` 为 O(1)
+    - `byteLen()`：返回 UTF-8 字节长度（例如 `"你好啊".byteLen() == 9`）；应为 O(1)
+    - 其他编码（Planned）：通过显式转换 API 在 `bytes/Slice<byte>` 与 `string` 之间编解码；`string` 本身不携带“当前编码”状态
+    - `null` 行为（Frozen）：当 `string == null` 时，`len()==0`、`byteLen()==0`、`asBytes()` 返回空 slice
+    - 允许包含 `U+0000`（NUL，Frozen）：`string` 可包含内嵌 NUL；因此与 C `char*` 互操作时可能发生截断，FFI 推荐使用 `Slice<byte>`（带长度）
+    - `null`：目前允许作为 `string` 的空值（兼容历史代码）；推荐在 API 设计中尽量返回空串或错误码，而不是用 `null` 表达“缺失”
 - 命名类型：`T`（用于 `struct T`；值类型，默认 move-only）
 - 引用值类型（Status: Partial）：
   - 当前实现：`&T`（LLVM 后端中表现为 `T*` 指针）
@@ -88,11 +101,31 @@
   - 逻辑运算（Frozen）：
     - `!x`：对 `x` 做 truthiness 转换得到 `bool` 后取反
     - `x && y` / `x || y`：两侧都先做 truthiness 转换为 `bool`，并进行短路求值；结果类型为 `bool`
-  - `string`（当前为 `i8*`）特殊规则（Frozen）：
-    - `string + string -> string`：字符串拼接；`null` 视为字符串 `"null"`（例如 `"x" + null == "xnull"`）
-    - `string == string` / `!=`：内容比较；若任一侧为 `null`，则仅当两侧都为 `null` 才相等
+  - `string` 特殊规则（Frozen）：
+    - `string + string -> string`：字符串拼接；返回新字符串（不就地修改）
+    - `string += string`：语法糖，等价于 `x = x + y`
+    - `string == string` / `!=`：内容比较（按 Unicode codepoint 序列相等；不做 Unicode 规范化）；若任一侧为 `null`，则仅当两侧都为 `null` 才相等
+    - `string + null` / `null + string`：`null` 视为 `"null"`（例如 `"x" + null == "xnull"`）
+    - `string.substring(i: int) -> string`（Implemented）：从第 `i` 个 codepoint 开始的子串；索引从 `0` 开始；`i` 可为负（从末尾反向计数）；越界为运行时错误（panic）；语义上返回新 `string`（实现可共享底层存储或拷贝）
+    - `i` 的单位与边界（Frozen，Planned）：
+      - `i` 按 codepoint 索引（与 `len()` 一致）
+      - 当 `i >= 0`：合法范围为 `0 <= i < len()`；`i >= len()` 为越界（panic）
+      - 当 `i < 0`：从末尾反向计数，等价于 `i = len() + i`（例如 `substring(-2)` 从倒数第 2 个 codepoint 开始）；若 `i < -len()` 则越界（panic）
+    - `string.asBytes() -> bytes`（Implemented）：返回字符串的只读 UTF-8 字节视图（no-copy；不保证 NUL 结尾；用于 FFI/bytes 算法）
+      - 语义（Frozen）：返回的 `bytes` 必须是只读；实现需保证其生命周期独立于原 `string`（例如内部 retain string，在 bytes drop 时 release）
+      - `string == null` 时返回空 `bytes`（len()==0）
+    - 编码转换（Implemented）：
+      - 支持编码：`"UTF-8"`、`"GBK"`（后续可扩展）
+      - 编码名称匹配（Frozen）：大小写不敏感；允许写作 `utf8/UTF8/utf-8/UTF-8` 等
+      - 不支持的编码（Frozen）：返回 `TUA_E_NOTSUP`（别名：`TUA_E_UNSUPPORTED`）
+      - 说明：当前语言不支持参数默认值/函数重载，因此 API 以显式命名区分
+      - `string.toBytesEnc(encoding: string) -> bytes, int`：将 `string` 按指定编码输出为字节序列；`encoding == null/""` 等价于 `"UTF-8"`
+      - `String.fromBytes(b: bytes, encoding: string) -> string, int`：按指定编码把字节序列解码为 `string`；`encoding == null/""` 等价于 `"UTF-8"`；遇到非法字节序列使用替换字符 `U+FFFD`，不视为错误
+      - `GBK` 编码策略（Frozen）：
+        - `fromBytes(...,"GBK")`：无法解码的字节/序列用 `U+FFFD` 替换
+        - `toBytesEnc("GBK")`：无法表示为 GBK 的 Unicode 字符用字节 `0x3F`（`'?'`）替换，不视为错误
   - 指针比较（Frozen）：
-    - 指针/引用类型（`ptr`、`string`、`map`、`Ref<T>` 等；过渡期 `&T` 亦同）仅允许 `==` / `!=` 比较（按指针值）
+    - 指针/引用类型（`ptr`、`map`、`Ref<T>` 等；过渡期 `&T` 亦同）仅允许 `==` / `!=` 比较（按指针值）
     - 有序比较（`< <= > >=`）对指针/引用类型无定义，视为编译错误
 - 位运算/移位（Status: Implemented，高优先级）
   - 目标：提供 PRNG/bytes/量化等所需的确定性 bit-level 计算能力
@@ -638,6 +671,10 @@
   - `string == null`：当且仅当该 `string` 值为 `null` 指针时为 `true`（`!=` 反之）
   - 非 `string` 的指针/引用与 `null` 比较：`p == null` 等价于“指针值为 0”（`!=` 反之）
 
+#### 9.3.1 运行时错误码（补充，Status: Implemented）
+- 本仓库约定错误码来自 `src/rt/rt_err.h`：
+  - `TUA_E_NOTSUP`：不支持（例如不支持的编码名）；在文档中也可称为 `TUA_E_UNSUPPORTED`（语义别名）
+
 #### 9.4 运行时错误定位（Status: Partial）
 - 运行时错误会输出 best-effort 行号（用于定位 `unwrap(None)`、对 `null map` 读写等）。
 - 规划：统一诊断格式为 `file:line:col: ...` 并增加栈回溯。
@@ -656,6 +693,11 @@
 - 未实现（Planned）：
   - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；跨线程数据竞争规则
 
+#### 10.x `string` 与并发（Frozen，Status: Planned）
+- `string` 采用引用计数（RC）实现自动管理时，默认 **非线程安全**（非原子 refcount）：
+  - 线程内：按值传递/赋值/返回允许共享底层存储（retain/release）
+  - 跨线程：语言不保证安全；需要由上层自行保证不发生并发 retain/release（或未来引入线程安全 string/原子 RC 后再冻结）
+
 #### 10.1 总体原则（Frozen）
 - 编译期阻止所有内存安全问题：悬垂引用/重复释放/数据竞争
 - 不引入运行时 GC（无 stop-the-world）
@@ -665,7 +707,7 @@
 #### 10.2 所有权与移动（Status: Partial）
 - 默认：**所有权唯一且不可复制（move-only）**；赋值会转移所有权：
   - `let b = a` 会移动 `a -> b`，`a` 之后不可再用（编译期报错）
-- 例外（Copy types，Status: Implemented）：标量数值与 `bool` 等按值复制（不涉及释放），其余类型默认 move-only
+- 例外（Copy types，Status: Implemented）：标量数值、`bool`、`string` 按值复制（`string` 为 RC 共享，不涉及 move），其余类型默认 move-only
 - 函数返回：返回值总是“拥有所有权”的值（不能返回对局部变量的引用）
   - 允许返回：新创建的值、从参数显式 move 进来的值
 
@@ -742,15 +784,15 @@
 - 标量：
   - `int/i32 -> int32_t`，`long/i64 -> int64_t`，`float/f32 -> float`，`double/f64 -> double`，`bool -> i1`（对外通常按 `int32_t` 约定）
   - `ptr -> void*`（不透明指针/句柄）
-  - `string -> char*`（UTF-8，当前约定为 NUL 结尾；`null` 表示空指针）
+  - `string -> char*`（UTF-8，约定为 NUL 结尾；`null` 表示空指针。若未来 `string` 升级为运行时对象，则该 `char*` 视为只读 data 指针，外部不得 `free`）
 - 引用：`Ref<T> -> T*`（过渡期 `&T` 等价 `Ref<T>`）
 - 动态值：`any -> tua_value`（见 `src/tua_map.h`）
 - 容器句柄：
   - `map -> tua_map*`（见 `src/tua_map.h`）
   - `T[]/T[N] -> tua_array*`（见 `src/tua_array.h`，其中 `elem_size/fixed_len` 描述元素大小与定长信息）
-- 二进制：
-  - `bytes -> tua_bytes*`（见 `src/tua_bytes.h`）
-  - `Slice<T> -> { T* data, int64_t len }`
+  - 二进制：
+    - `bytes -> tua_bytes*`（见 `src/tua_bytes.h`）
+    - `Slice<T> -> { T* data, int64_t len }`
 - `Option<T>`：当前实现为 `{ i1 ok, T payload }` 的二元结构体（Planned：冻结更严格的跨边界表示与 nil 规则）
 - 多返回：当前实现为“LLVM struct 返回”（JIT/AOT 具体 ABI 取决于平台对结构体返回的约定）
 
@@ -771,7 +813,9 @@
     - `map`：当前无通用 clone API；如需保存应在 `std` 层定义明确的复制策略或改为传入“业务层快照结构”
 - `string`（Frozen，现状兼容）：
   - `string` 对外是 `char*` 且默认按 borrow 处理：callee 仅可读取；不得写入、不得释放、不得保存到未来
-  - 若需要返回“拥有型字符串”，必须提供配套释放函数并在 `std` 层封装；在未冻结“真正 string 类型 + drop”之前，跨 ABI 建议优先返回 `bytes`/`Slice<byte>`（带长度）而不是裸 `char*`
+  - 若需要返回“拥有型字符串”，必须提供配套释放函数并在 `std` 层封装；在 `string` 升级为自动管理之前，跨 ABI 建议优先返回 `bytes`/`Slice<byte>`（带长度）而不是裸 `char*`
+  - Planned：若 `string` 采用 RC 运行时对象，可提供 `tua_str_retain/tua_str_release` 这类 API，使 C 侧在“需要保存到未来”时能显式 retain/release（具体 ABI 待冻结）
+  - 建议：新的 FFI 接口尽量用 `Slice<byte>`（带长度）作为入参/出参，避免 `strlen`/编码歧义/内嵌 NUL 等问题；需要拥有时在 Tua 侧显式构造 `string`（Planned）
 - 对于 `extern fn` 的 callback 参数：
   - 默认视为“借用回调值”；callee 不得直接 drop 参数本身
   - 若 callee 需要把回调保存到未来（escaping callback），必须显式 retain 一份，并在完成/取消/错误路径 release

@@ -557,6 +557,26 @@ static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_bytes_free", fty);
 }
 
+static LLVMValueRef getOrCreateTuaStrRetain(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_retain");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_retain", fty);
+}
+
+static LLVMValueRef getOrCreateTuaStrRelease(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_str_release");
+    if (fn) return fn;
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef params[1] = { i8ptr };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_str_release", fty);
+}
+
 static LLVMValueRef getOrCreateFree(Compiler* compiler) {
     if (!compiler) return NULL;
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "free");
@@ -662,10 +682,22 @@ static void emitDropForVar(Compiler* compiler, VariableRef var) {
     if (var.isBorrowed) return;
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
     int isClosure = (var.type == cloTy);
-    if (!var.isMap && !var.isArray && !var.isBytes && !var.isTraitObj && !isClosure) return;
+    int isString = (var.typeKind == TYPE_STRING);
+    if (!var.isMap && !var.isArray && !var.isBytes && !var.isTraitObj && !isClosure && !isString) return;
 
     LLVMValueRef cur = loadLocalVarValueForDrop(compiler, var, "drop_cur");
     if (!cur) return;
+
+    if (isString) {
+        LLVMValueRef relFn = getOrCreateTuaStrRelease(compiler);
+        if (relFn) {
+            LLVMTypeRef fty = LLVMGlobalGetValueType(relFn);
+            LLVMBuildCall2(compiler->builder, fty, relFn, &cur, 1, "");
+        }
+        LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+        storeLocalVarValueForDrop(compiler, var, LLVMConstNull(i8ptr));
+        return;
+    }
 
     if (var.isTraitObj) {
         if (!var.traitName || var.traitNameLength <= 0) return;
@@ -784,6 +816,19 @@ LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info)
 
         // Field pointer
         LLVMValueRef fieldPtr = LLVMBuildStructGEP2(compiler->builder, info->type, self, (unsigned)i, "fptr");
+
+        // string: release
+        if (f->type->kind == TYPE_STRING) {
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            LLVMValueRef cur = LLVMBuildLoad2(compiler->builder, i8ptr, fieldPtr, "scur");
+            LLVMValueRef relFn = getOrCreateTuaStrRelease(compiler);
+            if (relFn) {
+                LLVMTypeRef fty = LLVMGlobalGetValueType(relFn);
+                LLVMBuildCall2(compiler->builder, fty, relFn, &cur, 1, "");
+            }
+            LLVMBuildStore(compiler->builder, LLVMConstNull(i8ptr), fieldPtr);
+            continue;
+        }
 
         // map: free handle
         if (f->type->kind == TYPE_NAMED && f->type->name.length == 3 && memcmp(f->type->name.start, "map", 3) == 0) {
@@ -2872,6 +2917,32 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
                 node = node->next;
                 LLVMTypeRef want = LLVMStructGetTypeAtIndex(returnType, i);
                 v = castValueToType(compiler, v, want);
+                // Copy semantics for strings: retain when returning a borrowed string value.
+                // NOTE: do not depend on `inferredType == TYPE_STRING` here; inference can be conservative
+                // in some contexts (e.g. values filled via extern out-params), causing use-after-free when
+                // the returning scope drops locals.
+                LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                if (want == i8ptr && srcExpr) {
+                    Expr* base = srcExpr;
+                    while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+                    int borrowed = base && (base->type == EXPR_VARIABLE || base->type == EXPR_GET);
+                    if (!borrowed && base && base->type == EXPR_INDEX) {
+                        IndexExpr* ix = (IndexExpr*)base;
+                        Expr* obj = ix->object;
+                        while (obj && obj->type == EXPR_GROUPING) obj = ((GroupingExpr*)obj)->expression;
+                        if (obj && obj->type == EXPR_VARIABLE) {
+                            VariableRef rv = findVariableExpr(compiler, obj);
+                            if (rv.value && rv.isArray) borrowed = 1;
+                        }
+                    }
+                    if (borrowed) {
+                        LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                        if (retFn) {
+                            LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                            LLVMBuildCall2(compiler->builder, fty, retFn, &v, 1, "");
+                        }
+                    }
+                }
             }
             if (!v) {
                 LLVMTypeRef t = LLVMStructGetTypeAtIndex(returnType, i);
@@ -2892,9 +2963,57 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
         Expr* srcExpr = (Expr*)stmt->values->head->data;
         returnValue = compileExpr(compiler, srcExpr);
         moveOutOnReturnIfNeeded(compiler, srcExpr);
+        if (returnValue && returnType) {
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (returnType == i8ptr && srcExpr) {
+                Expr* base = srcExpr;
+                while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+                int borrowed = base && (base->type == EXPR_VARIABLE || base->type == EXPR_GET);
+                if (!borrowed && base && base->type == EXPR_INDEX) {
+                    IndexExpr* ix = (IndexExpr*)base;
+                    Expr* obj = ix->object;
+                    while (obj && obj->type == EXPR_GROUPING) obj = ((GroupingExpr*)obj)->expression;
+                    if (obj && obj->type == EXPR_VARIABLE) {
+                        VariableRef rv = findVariableExpr(compiler, obj);
+                        if (rv.value && rv.isArray) borrowed = 1;
+                    }
+                }
+                if (borrowed) {
+                    LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                    if (retFn) {
+                        LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                        LLVMBuildCall2(compiler->builder, fty, retFn, &returnValue, 1, "");
+                    }
+                }
+            }
+        }
     } else if (stmt->value != NULL) {
         returnValue = compileExpr(compiler, stmt->value);
         moveOutOnReturnIfNeeded(compiler, stmt->value);
+        if (returnValue && returnType) {
+            LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+            if (returnType == i8ptr && stmt->value) {
+                Expr* base = stmt->value;
+                while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+                int borrowed = base && (base->type == EXPR_VARIABLE || base->type == EXPR_GET);
+                if (!borrowed && base && base->type == EXPR_INDEX) {
+                    IndexExpr* ix = (IndexExpr*)base;
+                    Expr* obj = ix->object;
+                    while (obj && obj->type == EXPR_GROUPING) obj = ((GroupingExpr*)obj)->expression;
+                    if (obj && obj->type == EXPR_VARIABLE) {
+                        VariableRef rv = findVariableExpr(compiler, obj);
+                        if (rv.value && rv.isArray) borrowed = 1;
+                    }
+                }
+                if (borrowed) {
+                    LLVMValueRef retFn = getOrCreateTuaStrRetain(compiler);
+                    if (retFn) {
+                        LLVMTypeRef fty = LLVMGlobalGetValueType(retFn);
+                        LLVMBuildCall2(compiler->builder, fty, retFn, &returnValue, 1, "");
+                    }
+                }
+            }
+        }
     }
     if (returnValue == NULL) {
         returnValue = LLVMConstNull(returnType);

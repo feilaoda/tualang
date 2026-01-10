@@ -283,6 +283,82 @@ static int64_t bench_json_scan_top_long(int iters, const char* s, size_t n) {
     return acc;
 }
 
+typedef struct {
+    int key;
+    int a;
+    uint8_t used;
+} int_foo_entry;
+
+typedef struct {
+    int_foo_entry* entries;
+    int cap;
+} int_foo_map;
+
+static int_foo_map foo_map_new(int cap_pow2) {
+    int_foo_map m;
+    m.cap = cap_pow2;
+    m.entries = (int_foo_entry*)calloc((size_t)cap_pow2, sizeof(int_foo_entry));
+    return m;
+}
+
+static void foo_map_free(int_foo_map* m) {
+    free(m->entries);
+    m->entries = NULL;
+    m->cap = 0;
+}
+
+static void foo_map_set(int_foo_map* m, int key, int a) {
+    uint32_t h = hash_u32((uint32_t)key);
+    uint32_t mask = (uint32_t)m->cap - 1U;
+    uint32_t i = h & mask;
+    while (1) {
+        int_foo_entry* e = &m->entries[i];
+        if (!e->used || e->key == key) {
+            e->used = 1;
+            e->key = key;
+            e->a = a;
+            return;
+        }
+        i = (i + 1U) & mask;
+    }
+}
+
+static int foo_map_get(const int_foo_map* m, int key, int* out_a) {
+    uint32_t h = hash_u32((uint32_t)key);
+    uint32_t mask = (uint32_t)m->cap - 1U;
+    uint32_t i = h & mask;
+    while (1) {
+        const int_foo_entry* e = &m->entries[i];
+        if (!e->used) return 0;
+        if (e->key == key) {
+            *out_a = e->a;
+            return 1;
+        }
+        i = (i + 1U) & mask;
+    }
+}
+
+static int_foo_map make_foo_map_10k(void) {
+    int_foo_map m = foo_map_new(1 << 14); // 16384
+    for (int i = 0; i < 8192; i++) {
+        foo_map_set(&m, i, (i * 2) + 1);
+    }
+    return m;
+}
+
+static int64_t bench_map_lookup_foo(int64_t iters, const int_foo_map* m, int mod) {
+    int64_t acc = 0;
+    int64_t x = 1;
+    for (int64_t i = 0; i < iters; i++) {
+        x = (x * 1103515245LL + 12345LL) & 2147483647LL;
+        int k = (int)(x % (int64_t)mod);
+        int a = 0;
+        if (!foo_map_get(m, k, &a)) return -1;
+        acc += (int64_t)a;
+    }
+    return acc;
+}
+
 static int run_all(void) {
     int64_t iters_arith = 50000000LL;
     int64_t iters_lookup = 20000000LL;
@@ -324,6 +400,13 @@ static int run_all(void) {
     int64_t tm1 = now_ns();
     report("c/map_lookup_8k", iters_lookup, tm1 - tm0, sm);
     map_free(&m);
+
+    int_foo_map mf = make_foo_map_10k();
+    int64_t tf0 = now_ns();
+    int64_t sf = bench_map_lookup_foo(iters_lookup, &mf, 8192);
+    int64_t tf1 = now_ns();
+    report("c/map_lookup_foo_8k", iters_lookup, tf1 - tf0, sf);
+    foo_map_free(&mf);
 
     char* js = NULL;
     size_t jn = 0;
@@ -368,6 +451,25 @@ int main(int argc, char** argv) {
         int64_t t1 = now_ns();
         report("c/map_lookup_8k", iters, t1 - t0, s);
         map_free(&m);
+        return 0;
+    }
+    // Alias: compare against the same C map lookup baseline.
+    if (strcmp(name, "intintmap_lookup") == 0) {
+        int_int_map m = make_map_10k();
+        int64_t t0 = now_ns();
+        int64_t s = bench_map_lookup(iters, &m, 8192);
+        int64_t t1 = now_ns();
+        report("c/map_lookup_8k", iters, t1 - t0, s);
+        map_free(&m);
+        return 0;
+    }
+    if (strcmp(name, "map_lookup_foo") == 0) {
+        int_foo_map m = make_foo_map_10k();
+        int64_t t0 = now_ns();
+        int64_t s = bench_map_lookup_foo(iters, &m, 8192);
+        int64_t t1 = now_ns();
+        report("c/map_lookup_foo_8k", iters, t1 - t0, s);
+        foo_map_free(&m);
         return 0;
     }
     if (strcmp(name, "dot_f32") == 0) {
