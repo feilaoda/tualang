@@ -573,6 +573,72 @@ static FuncSigInfo* compilerRegisterFuncSig(Compiler* compiler, const char* qual
     return fs;
 }
 
+static CopyTypeInfo* compilerFindCopyType(Compiler* compiler, const char* qualified, int qualifiedLen) {
+    if (!compiler || !compiler->copyTypes || !qualified || qualifiedLen <= 0) return NULL;
+    for (ListNode* n = compiler->copyTypes->head; n != NULL; n = n->next) {
+        CopyTypeInfo* ci = (CopyTypeInfo*)n->data;
+        if (!ci) continue;
+        if (ci->qualifiedLen != qualifiedLen) continue;
+        if (memcmp(ci->qualified, qualified, (size_t)qualifiedLen) == 0) return ci;
+    }
+    return NULL;
+}
+
+static void compilerSetCopyType(Compiler* compiler, const char* qualified, int qualifiedLen, int isCopy) {
+    if (!compiler || !compiler->copyTypes || !qualified || qualifiedLen <= 0) return;
+    CopyTypeInfo* existing = compilerFindCopyType(compiler, qualified, qualifiedLen);
+    if (existing) {
+        existing->isCopy = isCopy ? 1 : 0;
+        return;
+    }
+    CopyTypeInfo* ci = (CopyTypeInfo*)malloc(sizeof(CopyTypeInfo));
+    ci->qualified = (char*)malloc((size_t)qualifiedLen + 1);
+    memcpy(ci->qualified, qualified, (size_t)qualifiedLen);
+    ci->qualified[qualifiedLen] = '\0';
+    ci->qualifiedLen = qualifiedLen;
+    ci->isCopy = isCopy ? 1 : 0;
+    listAppend(compiler->copyTypes, ci);
+}
+
+static int looksQualifiedName(const char* s, int len) {
+    if (!s || len <= 0) return 0;
+    for (int i = 0; i + 1 < len; i++) {
+        if (s[i] == '_' && s[i + 1] == '_') return 1;
+    }
+    return 0;
+}
+
+static int compilerIsCopyNamedType(Compiler* compiler, const char* name, int nameLen) {
+    if (!compiler || !name || nameLen <= 0) return 0;
+
+    // Direct match (already-qualified or global).
+    CopyTypeInfo* ci = compilerFindCopyType(compiler, name, nameLen);
+    if (ci) return ci->isCopy ? 1 : 0;
+
+    // Alias match: `from import Foo` yields `Foo` as a struct alias.
+    SymbolAlias* a = compilerFindAlias(compiler, name, nameLen);
+    if (a && a->kind == ALIAS_STRUCT) {
+        ci = compilerFindCopyType(compiler, a->qualified, a->qualifiedLen);
+        if (ci) return ci->isCopy ? 1 : 0;
+    }
+
+    // Module-local unqualified name: qualify and try again.
+    if (compiler->currentModulePrefix && !looksQualifiedName(name, nameLen)) {
+        const int sepLen = 2;
+        int ql = compiler->currentModulePrefixLen + sepLen + nameLen;
+        char* q = (char*)malloc((size_t)ql + 1);
+        memcpy(q, compiler->currentModulePrefix, (size_t)compiler->currentModulePrefixLen);
+        memcpy(q + compiler->currentModulePrefixLen, "__", (size_t)sepLen);
+        memcpy(q + compiler->currentModulePrefixLen + sepLen, name, (size_t)nameLen);
+        q[ql] = '\0';
+        ci = compilerFindCopyType(compiler, q, ql);
+        free(q);
+        if (ci) return ci->isCopy ? 1 : 0;
+    }
+
+    return 0;
+}
+
 static VarInfo* scopeFind(Scope* scope, const Token* name) {
     if (!scope || !name || !name->start || name->length <= 0) return NULL;
     for (Scope* s = scope; s != NULL; s = s->parent) {
@@ -702,19 +768,13 @@ static int scopeIsAncestor(Scope* ancestor, Scope* child) {
     return 0;
 }
 
-static int varIsMoveOnly(const VarInfo* v) {
+static int atIsMoveOnly(Compiler* compiler, AType* t, int isRef);
+
+static int varIsMoveOnly(Compiler* compiler, const VarInfo* v) {
     if (!v || !v->type) return 0;
     // Shared references are copyable; exclusive references are move-only to prevent aliasing.
     if (v->isRef) return v->refKind == 1 ? 1 : 0;
-    if (v->type->kind == AT_MAP || v->type->kind == AT_ARRAY) return 1;
-    if (v->type->kind == AT_SLICE) return 1; // v0: make Slice move-only to avoid silent copy extending borrow lifetime
-    if (v->type->kind == AT_FUNC) return 1; // closure values own env; move-only
-    if (v->type->kind == AT_NAMED) {
-        // `ptr` is treated as a raw pointer and remains copyable for now.
-        if (v->type->nameLen == 3 && memcmp(v->type->name, "ptr", 3) == 0) return 0;
-        return 1;
-    }
-    return 0;
+    return atIsMoveOnly(compiler, v->type, 0);
 }
 
 static void varInfoSetBorrowedFrom(VarInfo* v, const Token* owner, int ownerMut) {
@@ -736,7 +796,7 @@ static void varInfoSetBorrowedFrom(VarInfo* v, const Token* owner, int ownerMut)
 static void maybeMoveVar(Compiler* compiler, Scope* scope, const Token* name, const char* modulePath) {
     if (!scope || !name) return;
     VarInfo* src = scopeFind(scope, name);
-    if (!varIsMoveOnly(src)) return;
+    if (!varIsMoveOnly(compiler, src)) return;
     if (borrowHasAny(scope, name)) {
         analyzeErrorAt(
             compiler,
@@ -802,14 +862,18 @@ static void escapeCheckBorrowedValueAssign(
     }
 }
 
-static int atIsMoveOnly(AType* t, int isRef) {
+static int atIsMoveOnly(Compiler* compiler, AType* t, int isRef) {
     if (!t) return 0;
     if (isRef) return 0;
+    if (t->kind == AT_OPTION) {
+        return t->inner ? atIsMoveOnly(compiler, t->inner, 0) : 0;
+    }
     if (t->kind == AT_MAP || t->kind == AT_ARRAY) return 1;
     if (t->kind == AT_SLICE) return 1;
     if (t->kind == AT_FUNC) return 1;
     if (t->kind == AT_NAMED) {
         if (t->nameLen == 3 && memcmp(t->name, "ptr", 3) == 0) return 0;
+        if (compilerIsCopyNamedType(compiler, t->name, t->nameLen)) return 0;
         return 1;
     }
     return 0;
@@ -1216,9 +1280,351 @@ static FuncSigInfo* resolveImportedFuncSigFromCall(Compiler* compiler, CallExpr*
                 free(q);
                 return fs;
             }
+
+            // Import-all object/enum/struct names (e.g. `Bytes.len(...)`, `String.fromBytes(...)`).
+            if (a && (a->kind == ALIAS_OBJECT || a->kind == ALIAS_ENUM || a->kind == ALIAS_STRUCT)) {
+                const int sepLen = 2;
+                int ql = a->qualifiedLen + sepLen + get->name.length;
+                char* q = (char*)malloc((size_t)ql + 1);
+                memcpy(q, a->qualified, (size_t)a->qualifiedLen);
+                memcpy(q + a->qualifiedLen, "__", (size_t)sepLen);
+                memcpy(q + a->qualifiedLen + sepLen, get->name.start, (size_t)get->name.length);
+                q[ql] = '\0';
+                FuncSigInfo* fs = compilerFindFuncSig(compiler, q, ql);
+                free(q);
+                return fs;
+            }
         }
     }
     return NULL;
+}
+
+static int sigBuiltinNamedTypeToken(const Token* name) {
+    if (!name || !name->start || name->length <= 0) return 0;
+    if (name->length == 3 && memcmp(name->start, "any", 3) == 0) return 1;
+    if (name->length == 3 && memcmp(name->start, "map", 3) == 0) return 1;
+    if (name->length == 3 && memcmp(name->start, "ptr", 3) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "bytes", 5) == 0) return 1;
+    if (name->length == 5 && memcmp(name->start, "Slice", 5) == 0) return 1;
+    if (name->length == 6 && memcmp(name->start, "Option", 6) == 0) return 1;
+    return 0;
+}
+
+static int sigIsTypeParamName(const FuncStmt* fn, const Token* name) {
+    if (!fn || !name || !name->start || name->length <= 0) return 0;
+    for (ListNode* n = fn->typeParams ? fn->typeParams->head : NULL; n != NULL; n = n->next) {
+        TypeParamDecl* tp = (TypeParamDecl*)n->data;
+        if (!tp) continue;
+        if (tp->name.length != name->length) continue;
+        if (memcmp(tp->name.start, name->start, (size_t)name->length) == 0) return 1;
+    }
+    return 0;
+}
+
+static Type* sigCloneTypeQualified(Compiler* compiler, Type* t, const FuncStmt* fn) {
+    if (!t) return NULL;
+    Type* out = (Type*)calloc(1, sizeof(Type));
+    out->kind = t->kind;
+    out->name = t->name;
+    out->arrayLen = t->arrayLen;
+
+    switch (t->kind) {
+        case TYPE_REF:
+            out->inner = sigCloneTypeQualified(compiler, t->inner, fn);
+            break;
+        case TYPE_ARRAY:
+            out->inner = sigCloneTypeQualified(compiler, t->inner, fn);
+            break;
+        case TYPE_FUNC: {
+            if (t->paramTypes) {
+                out->paramTypes = listNew();
+                for (ListNode* n = t->paramTypes->head; n != NULL; n = n->next) {
+                    listAppend(out->paramTypes, sigCloneTypeQualified(compiler, (Type*)n->data, fn));
+                }
+            }
+            if (t->returnTypes) {
+                out->returnTypes = listNew();
+                for (ListNode* n = t->returnTypes->head; n != NULL; n = n->next) {
+                    listAppend(out->returnTypes, sigCloneTypeQualified(compiler, (Type*)n->data, fn));
+                }
+            }
+            break;
+        }
+        case TYPE_NAMED: {
+            // Always deep-clone generic args so nested named types get qualified too.
+            if (t->typeArgs) {
+                out->typeArgs = listNew();
+                for (ListNode* n = t->typeArgs->head; n != NULL; n = n->next) {
+                    listAppend(out->typeArgs, sigCloneTypeQualified(compiler, (Type*)n->data, fn));
+                }
+            }
+
+            // Builtin named types keep their surface name (e.g. Option/map/Slice/bytes/ptr).
+            if (sigBuiltinNamedTypeToken(&t->name)) break;
+            // Generic type parameters must remain unqualified (`T`, `U`, ...).
+            if (sigIsTypeParamName(fn, &t->name)) break;
+
+            // Prefer alias resolution for imported types.
+            SymbolAlias* a = compilerFindAlias(compiler, t->name.start, t->name.length);
+            if (a && (a->kind == ALIAS_STRUCT || a->kind == ALIAS_TRAIT || a->kind == ALIAS_ENUM || a->kind == ALIAS_OBJECT)) {
+                out->name.start = (char*)malloc((size_t)a->qualifiedLen + 1);
+                memcpy((char*)out->name.start, a->qualified, (size_t)a->qualifiedLen);
+                ((char*)out->name.start)[a->qualifiedLen] = '\0';
+                out->name.length = a->qualifiedLen;
+                break;
+            }
+
+            // Module-local qualification fallback.
+            int ql = 0;
+            char* q = compilerQualifyToken(compiler, &t->name, &ql);
+            if (q) {
+                out->name.start = q;
+                out->name.length = ql;
+                break;
+            }
+
+            // As a last resort, duplicate the token text to ensure stable storage.
+            out->name.start = (char*)malloc((size_t)t->name.length + 1);
+            memcpy((char*)out->name.start, t->name.start, (size_t)t->name.length);
+            ((char*)out->name.start)[t->name.length] = '\0';
+            out->name.length = t->name.length;
+            break;
+        }
+        default:
+            break;
+    }
+    return out;
+}
+
+static void funcSigSetReturnTypesFromFunc(Compiler* compiler, FuncSigInfo* fs, const FuncStmt* fn) {
+    if (!compiler || !fs || !fn) return;
+    if (fs->returnTypes) {
+        while (fs->returnTypes->length > 0) { listPop(fs->returnTypes); }
+    } else {
+        fs->returnTypes = listNew();
+    }
+    if (fn->returnTypes && fn->returnTypes->length > 0) {
+        for (ListNode* rn = fn->returnTypes->head; rn != NULL; rn = rn->next) {
+            Type* rt = (Type*)rn->data;
+            listAppend(fs->returnTypes, sigCloneTypeQualified(compiler, rt, fn));
+        }
+    } else if (fn->returnType) {
+        listAppend(fs->returnTypes, sigCloneTypeQualified(compiler, fn->returnType, fn));
+    }
+}
+
+static void registerObjectMethodFuncSigs(Compiler* compiler, const ObjectStmt* obj) {
+    if (!compiler || !obj || !obj->methods) return;
+    if (!obj->name.start || obj->name.length <= 0) return;
+
+    const int sepLen = 2;
+    const char* prefix = compiler->currentModulePrefix;
+    int prefixLen = compiler->currentModulePrefixLen;
+    int baseLen = prefix ? (prefixLen + sepLen + obj->name.length) : obj->name.length;
+    char* base = (char*)malloc((size_t)baseLen + 1);
+    if (prefix) {
+        memcpy(base, prefix, (size_t)prefixLen);
+        memcpy(base + prefixLen, "__", (size_t)sepLen);
+        memcpy(base + prefixLen + sepLen, obj->name.start, (size_t)obj->name.length);
+    } else {
+        memcpy(base, obj->name.start, (size_t)obj->name.length);
+    }
+    base[baseLen] = '\0';
+
+    for (ListNode* n = obj->methods->head; n != NULL; n = n->next) {
+        FuncStmt* m = (FuncStmt*)n->data;
+        if (!m || !m->name.start || m->name.length <= 0) continue;
+        if (!m->body) continue; // skip extern-only
+
+        int ql = baseLen + sepLen + m->name.length;
+        char* q = (char*)malloc((size_t)ql + 1);
+        memcpy(q, base, (size_t)baseLen);
+        memcpy(q + baseLen, "__", (size_t)sepLen);
+        memcpy(q + baseLen + sepLen, m->name.start, (size_t)m->name.length);
+        q[ql] = '\0';
+
+        FuncSigInfo* fs = compilerRegisterFuncSig(compiler, q, ql);
+        if (fs) funcSigSetReturnTypesFromFunc(compiler, fs, m);
+        free(q);
+    }
+    free(base);
+}
+
+static int implTargetBaseName(const Type* target, const char** outName, int* outLen) {
+    if (outName) *outName = NULL;
+    if (outLen) *outLen = 0;
+    if (!target) return 0;
+    const char* n = NULL;
+    int l = 0;
+    switch (target->kind) {
+        case TYPE_BOOL: n = "bool"; l = 4; break;
+        case TYPE_STRING: n = "string"; l = 6; break;
+        case TYPE_PTR: n = "ptr"; l = 3; break;
+        case TYPE_BYTE: n = "byte"; l = 4; break;
+        case TYPE_I8: n = "i8"; l = 2; break;
+        case TYPE_I16: n = "i16"; l = 3; break;
+        case TYPE_INT: n = "int"; l = 3; break;
+        case TYPE_LONG: n = "long"; l = 4; break;
+        case TYPE_ISIZE: n = "isize"; l = 5; break;
+        case TYPE_U8: n = "u8"; l = 2; break;
+        case TYPE_U16: n = "u16"; l = 3; break;
+        case TYPE_U32: n = "u32"; l = 3; break;
+        case TYPE_U64: n = "u64"; l = 3; break;
+        case TYPE_USIZE: n = "usize"; l = 5; break;
+        case TYPE_F16: n = "half"; l = 4; break;
+        case TYPE_BF16: n = "bfloat"; l = 6; break;
+        case TYPE_FLOAT: n = "float"; l = 5; break;
+        case TYPE_DOUBLE: n = "double"; l = 6; break;
+        case TYPE_NAMED:
+            if (target->name.start && target->name.length > 0) {
+                n = target->name.start;
+                l = target->name.length;
+            }
+            break;
+        default:
+            break;
+    }
+    if (!n || l <= 0) return 0;
+    if (outName) *outName = n;
+    if (outLen) *outLen = l;
+    return 1;
+}
+
+static void registerImplMethodFuncSigs(Compiler* compiler, const ImplStmt* im) {
+    if (!compiler || !im || !im->methods || !im->targetType) return;
+    if (im->typeParams && im->typeParams->length > 0) return; // generic impls are not directly compiled
+
+    const char* base = NULL;
+    int baseLen = 0;
+    if (!implTargetBaseName(im->targetType, &base, &baseLen)) return;
+
+    const int sepLen = 2;
+    for (ListNode* n = im->methods->head; n != NULL; n = n->next) {
+        FuncStmt* m = (FuncStmt*)n->data;
+        if (!m || !m->name.start || m->name.length <= 0) continue;
+        if (!m->body) continue; // skip extern-only
+
+        int ql = baseLen + sepLen + m->name.length;
+        char* q = (char*)malloc((size_t)ql + 1);
+        memcpy(q, base, (size_t)baseLen);
+        memcpy(q + baseLen, "__", (size_t)sepLen);
+        memcpy(q + baseLen + sepLen, m->name.start, (size_t)m->name.length);
+        q[ql] = '\0';
+
+        FuncSigInfo* fs = compilerRegisterFuncSig(compiler, q, ql);
+        if (fs) funcSigSetReturnTypesFromFunc(compiler, fs, m);
+        free(q);
+    }
+}
+
+static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char* modulePath);
+
+static int builtinMultiReturnCountForCall(Compiler* compiler, Scope* scope, CallExpr* call, const char* modulePath) {
+    (void)compiler;
+    if (!call || !call->callee) return 0;
+    if (call->callee->type != EXPR_GET) return 0;
+    GetExpr* get = (GetExpr*)call->callee;
+
+    // string impl helpers
+    AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
+    if (recvTy && recvTy->kind == AT_STRING) {
+        if (tokenTextEquals(&get->name, "toBytesEnc")) return 2; // bytes, int
+        return 0;
+    }
+
+    // object helpers: Bytes.*, String.*
+    if (get->object && get->object->type == EXPR_VARIABLE) {
+        VariableExpr* v = (VariableExpr*)get->object;
+        if (tokenTextEquals(&v->name, "Bytes")) {
+            if (tokenTextEquals(&get->name, "getU8")) return 2;   // int, int
+            if (tokenTextEquals(&get->name, "mmapFile")) return 2; // bytes, int
+            return 0;
+        }
+        if (tokenTextEquals(&v->name, "String")) {
+            if (tokenTextEquals(&get->name, "fromBytes")) return 2; // string, int
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static AType* builtinMultiReturnAtForCall(Compiler* compiler, Scope* scope, CallExpr* call, const char* modulePath, int index) {
+    if (!call || !call->callee) return atNew(AT_ANY);
+    if (call->callee->type != EXPR_GET) return atNew(AT_ANY);
+    GetExpr* get = (GetExpr*)call->callee;
+
+    AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
+    if (recvTy && recvTy->kind == AT_STRING) {
+        if (tokenTextEquals(&get->name, "toBytesEnc")) {
+            if (index == 0) return atNamed("bytes", 5);
+            return atNew(AT_INT);
+        }
+    }
+
+    if (get->object && get->object->type == EXPR_VARIABLE) {
+        VariableExpr* v = (VariableExpr*)get->object;
+        if (tokenTextEquals(&v->name, "Bytes")) {
+            if (tokenTextEquals(&get->name, "getU8")) {
+                return atNew(AT_INT);
+            }
+            if (tokenTextEquals(&get->name, "mmapFile")) {
+                if (index == 0) return atNamed("bytes", 5);
+                return atNew(AT_INT);
+            }
+        }
+        if (tokenTextEquals(&v->name, "String")) {
+            if (tokenTextEquals(&get->name, "fromBytes")) {
+                if (index == 0) return atNew(AT_STRING);
+                return atNew(AT_INT);
+            }
+        }
+    }
+
+    return atNew(AT_ANY);
+}
+
+static void atCanonicalNamed(
+    Compiler* compiler,
+    const char* name,
+    int nameLen,
+    const char** outName,
+    int* outLen,
+    char** outAlloc
+) {
+    if (outName) *outName = NULL;
+    if (outLen) *outLen = 0;
+    if (outAlloc) *outAlloc = NULL;
+    if (!name || nameLen <= 0) return;
+
+    if (!compiler) {
+        if (outName) *outName = name;
+        if (outLen) *outLen = nameLen;
+        return;
+    }
+
+    SymbolAlias* a = compilerFindAlias(compiler, name, nameLen);
+    if (a && (a->kind == ALIAS_STRUCT || a->kind == ALIAS_ENUM || a->kind == ALIAS_TRAIT || a->kind == ALIAS_OBJECT)) {
+        if (outName) *outName = a->qualified;
+        if (outLen) *outLen = a->qualifiedLen;
+        return;
+    }
+
+    if (compiler->currentModulePrefix && !looksQualifiedName(name, nameLen)) {
+        const int sepLen = 2;
+        int ql = compiler->currentModulePrefixLen + sepLen + nameLen;
+        char* q = (char*)malloc((size_t)ql + 1);
+        memcpy(q, compiler->currentModulePrefix, (size_t)compiler->currentModulePrefixLen);
+        memcpy(q + compiler->currentModulePrefixLen, "__", (size_t)sepLen);
+        memcpy(q + compiler->currentModulePrefixLen + sepLen, name, (size_t)nameLen);
+        q[ql] = '\0';
+        if (outAlloc) *outAlloc = q;
+        if (outName) *outName = q;
+        if (outLen) *outLen = ql;
+        return;
+    }
+
+    if (outName) *outName = name;
+    if (outLen) *outLen = nameLen;
 }
 
 static int atAssignable(Compiler* compiler, AType* to, AType* from) {
@@ -1254,9 +1660,18 @@ static int atAssignable(Compiler* compiler, AType* to, AType* from) {
             return 1;
         }
         if (to->kind == AT_NAMED) {
-            if (to->nameLen == from->nameLen && memcmp(to->name, from->name, (size_t)to->nameLen) == 0) {
-                return 1;
-            }
+            const char* tn = NULL;
+            int tnl = 0;
+            char* ta = NULL;
+            const char* fn = NULL;
+            int fnl = 0;
+            char* fa = NULL;
+            atCanonicalNamed(compiler, to->name, to->nameLen, &tn, &tnl, &ta);
+            atCanonicalNamed(compiler, from->name, from->nameLen, &fn, &fnl, &fa);
+            int same = (tn && fn && tnl == fnl && memcmp(tn, fn, (size_t)tnl) == 0);
+            if (ta) free(ta);
+            if (fa) free(fa);
+            if (same) return 1;
 
             // Trait object assignment: allow assigning a struct value to a trait-typed slot when
             // `impl Trait for Struct {}` exists. This models "interface values" without an explicit `dyn`.
@@ -1446,7 +1861,7 @@ static AType* inferArrayLiteral(Compiler* compiler, Scope* scope, ArrayLiteralEx
         if (elem0 && elem0->type == EXPR_VARIABLE) {
             VariableExpr* rv = (VariableExpr*)elem0;
             VarInfo* src = scopeFind(scope, &rv->name);
-            if (varIsMoveOnly(src)) {
+            if (varIsMoveOnly(compiler, src)) {
                 analyzeErrorAt(compiler, modulePath, rv->name.line, "fixed-length array fill requires a copyable value");
             }
         }
@@ -1493,7 +1908,7 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
         }
     }
 
-        // Map built-in method calls: m.get(k) / m.len() / ...
+    // Built-in method calls (map/Option/Ref/...).
     if (call->callee->type == EXPR_GET) {
         GetExpr* get = (GetExpr*)call->callee;
         AType* recvTy = inferExpr(compiler, scope, get->object, modulePath);
@@ -1687,6 +2102,71 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
                     }
                 }
                 return atNew(AT_INT);
+            }
+        }
+
+        // Built-in std scalar helpers (so common code doesn't become `any` due to missing call-sig modeling).
+        if (recvTy && recvTy->kind == AT_STRING) {
+            if (tokenTextEquals(&get->name, "len")) return atNew(AT_INT);
+            if (tokenTextEquals(&get->name, "byteLen")) return atNew(AT_LONG);
+            if (tokenTextEquals(&get->name, "substring")) return atNew(AT_STRING);
+            if (tokenTextEquals(&get->name, "asBytes")) return atNamed("bytes", 5);
+            if (tokenTextEquals(&get->name, "toBytes")) return atNamed("bytes", 5);
+            if (tokenTextEquals(&get->name, "toBytesEnc")) return atNamed("bytes", 5); // first return
+        }
+
+        // Built-in multi-return helpers: use the first return type in expression contexts.
+        int builtinRc = builtinMultiReturnCountForCall(compiler, scope, call, modulePath);
+        if (builtinRc > 0) {
+            return builtinMultiReturnAtForCall(compiler, scope, call, modulePath, 0);
+        }
+
+        // Best-effort: scalar/builtin `impl` methods (e.g. `string.asBytes()` => `string__asBytes(this)`).
+        // This enables type inference for `let b = s.asBytes()` without requiring explicit annotations.
+        {
+            const char* base = NULL;
+            int baseLen = 0;
+            if (recvTy) {
+                switch (recvTy->kind) {
+                    case AT_BOOL: base = "bool"; baseLen = 4; break;
+                    case AT_STRING: base = "string"; baseLen = 6; break;
+                    case AT_INT: base = "int"; baseLen = 3; break;
+                    case AT_LONG: base = "long"; baseLen = 4; break;
+                    case AT_ISIZE: base = "isize"; baseLen = 5; break;
+                    case AT_I8: base = "i8"; baseLen = 2; break;
+                    case AT_I16: base = "i16"; baseLen = 3; break;
+                    case AT_U8: base = "u8"; baseLen = 2; break;
+                    case AT_U16: base = "u16"; baseLen = 3; break;
+                    case AT_U32: base = "u32"; baseLen = 3; break;
+                    case AT_U64: base = "u64"; baseLen = 3; break;
+                    case AT_USIZE: base = "usize"; baseLen = 5; break;
+                    case AT_BYTE: base = "byte"; baseLen = 4; break;
+                    case AT_F16: base = "half"; baseLen = 4; break;
+                    case AT_BF16: base = "bfloat"; baseLen = 6; break;
+                    case AT_FLOAT: base = "float"; baseLen = 5; break;
+                    case AT_DOUBLE: base = "double"; baseLen = 6; break;
+                    case AT_NAMED:
+                        // Builtin named types like `bytes` also use `<TypeName>__<method>` lowering.
+                        if (recvTy->name && recvTy->nameLen > 0) { base = recvTy->name; baseLen = recvTy->nameLen; }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (base && baseLen > 0) {
+                const int sepLen = 2;
+                int ql = baseLen + sepLen + get->name.length;
+                char* q = (char*)malloc((size_t)ql + 1);
+                memcpy(q, base, (size_t)baseLen);
+                memcpy(q + baseLen, "__", (size_t)sepLen);
+                memcpy(q + baseLen + sepLen, get->name.start, (size_t)get->name.length);
+                q[ql] = '\0';
+                FuncSigInfo* fs = compilerFindFuncSig(compiler, q, ql);
+                free(q);
+                if (fs && fs->returnTypes) {
+                    if (fs->returnTypes->length == 0) return atNew(AT_VOID);
+                    return inferFuncSigReturnAt(compiler, fs, call, 0);
+                }
             }
         }
     }
@@ -2082,7 +2562,7 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 VarInfo* src = scopeFind(scope, &rv->name);
                 // Infer operand type before marking it moved.
                 AType* outTy = inferExpr(compiler, scope, u->right, modulePath);
-                if (src && varIsMoveOnly(src)) {
+                if (src && varIsMoveOnly(compiler, src)) {
                     if (borrowHasAny(scope, &rv->name)) {
                         analyzeErrorAt(
                             compiler,
@@ -2709,6 +3189,21 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 initTy = inferExpr(compiler, scope, v->initializer, modulePath);
             }
 
+            // Best-effort: materialize an AST type for inferred named results (e.g. `bytes`)
+            // so codegen doesn't fall back to `any` just because Expr.inferredType cannot carry a name.
+            if (!v->type && initTy && initTy->kind == AT_NAMED && initTy->name && initTy->nameLen > 0) {
+                Type* nt = (Type*)calloc(1, sizeof(Type));
+                nt->kind = TYPE_NAMED;
+                nt->name = (Token){TOKEN_IDENTIFIER, (char*)initTy->name, initTy->nameLen, v->name.line, v->name.col, 0};
+                nt->inner = NULL;
+                nt->typeArgs = NULL;
+                nt->paramTypes = NULL;
+                nt->returnTypes = NULL;
+                nt->arrayLen = -1;
+                v->type = nt;
+                annotated = atFromAstType(v->type);
+            }
+
             if (annotated && annotated->kind == AT_ARRAY && annotated->arrayLen < 0 && !v->initializer) {
                 analyzeErrorAt(compiler, modulePath, v->name.line, "dynamic array must have an initializer (use [] or [..])");
             }
@@ -2863,7 +3358,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             if (v->isConst && !isRefBinding && v->initializer && v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                if (varIsMoveOnly(src)) {
+                if (varIsMoveOnly(compiler, src)) {
                     isConstView = 1;
                     borrowCheckAndRecord(compiler, scope, &rv->name, 0, lastUseIndexOf(scope, &v->name), modulePath, v->name.line);
                 }
@@ -2874,7 +3369,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             if (!isConstView && v->initializer && v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                if (varIsMoveOnly(src)) {
+                if (varIsMoveOnly(compiler, src)) {
                     // `const s = r` for reference values is a shared reborrow, not a move.
                     if (!(isRefBinding && v->isConst && src && src->isRef)) {
                         if (borrowHasAny(scope, &rv->name)) {
@@ -3107,7 +3602,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
             if (fi->range && fi->range->type == EXPR_VARIABLE) {
                 VariableExpr* recv = (VariableExpr*)fi->range;
                 VarInfo* vi = scopeFind(scope, &recv->name);
-                if (vi && atIsMap(vi->type) && vi->type->value && atIsMoveOnly(vi->type->value, 0)) {
+                if (vi && atIsMap(vi->type) && vi->type->value && atIsMoveOnly(compiler, vi->type->value, 0)) {
                     // Exclusive borrow for the duration of the loop body.
                     borrowCheckAndRecord(compiler, loopScope, &recv->name, 1, INT_MAX, modulePath, fi->range->token.line);
                 }
@@ -3223,7 +3718,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         if (v && v->type == EXPR_VARIABLE) {
                             VariableExpr* ve = (VariableExpr*)v;
                             VarInfo* vi = scopeFind(scope, &ve->name);
-                            if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(vi)) {
+                            if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(compiler, vi)) {
                                 analyzeErrorAt(
                                     compiler,
                                     modulePath,
@@ -3247,7 +3742,7 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     if (r->value && r->value->type == EXPR_VARIABLE) {
                         VariableExpr* ve = (VariableExpr*)r->value;
                         VarInfo* vi = scopeFind(scope, &ve->name);
-                        if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(vi)) {
+                        if (vi && vi->isBorrowed && !vi->isRef && varIsMoveOnly(compiler, vi)) {
                             analyzeErrorAt(
                                 compiler,
                                 modulePath,
@@ -3358,6 +3853,8 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 callLike = unwrapGrouping(((GuardExpr*)callLike)->call);
             }
 
+            int builtinRc = 0;
+
             if (callLike && callLike->type == EXPR_CALL) {
                 CallExpr* c = (CallExpr*)callLike;
                 if (c->callee && c->callee->type == EXPR_VARIABLE) {
@@ -3383,14 +3880,18 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         callExpr = c;
                     }
                 }
+                if (!callReturns) {
+                    builtinRc = builtinMultiReturnCountForCall(compiler, scope, c, modulePath);
+                    if (builtinRc > 0) callExpr = c;
+                }
             }
 
             // Declaration: define names; Assignment: check against existing vars if known.
             if (d->isDeclaration && d->names) {
-                if (d->names->length > 1 && callReturns) {
-                    int rc = callReturns->length;
-                    if (isGuard) rc = rc - 1;
-                    if (rc != d->names->length) {
+                if (d->names->length > 1) {
+                    int rc = callReturns ? callReturns->length : builtinRc;
+                    if (isGuard && rc > 0) rc = rc - 1;
+                    if (rc > 0 && rc != d->names->length) {
                         analyzeErrorAt(compiler, modulePath, d->keyword.line, "destructuring arity mismatch");
                     }
                 }
@@ -3413,6 +3914,10 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
                         else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
                         }
+                    } else if (builtinRc > 0) {
+                        int rc = builtinRc;
+                        if (isGuard) rc = rc - 1;
+                        if (idx < rc) inferred = builtinMultiReturnAtForCall(compiler, scope, callExpr, modulePath, idx);
                     } else if (d->names->length == 1) {
                         // Best-effort: if rhs is Option and there is exactly 1 target, assign Option<T>.
                         inferred = rhs;
@@ -3431,10 +3936,10 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                     scopeDefine(scope, nameTok, chosen, d->isConst ? 1 : 0, isRefBinding, isRefBinding ? 0 : -1, 0, isRefBinding ? 1 : 0);
                 }
             } else if (!d->isDeclaration && d->names) {
-                if (d->names->length > 1 && callReturns) {
-                    int rc = callReturns->length;
-                    if (isGuard) rc = rc - 1;
-                    if (rc != d->names->length) {
+                if (d->names->length > 1) {
+                    int rc = callReturns ? callReturns->length : builtinRc;
+                    if (isGuard && rc > 0) rc = rc - 1;
+                    if (rc > 0 && rc != d->names->length) {
                         Token* first = (Token*)listGet(d->names, 0);
                         int line = first ? first->line : 1;
                         analyzeErrorAt(compiler, modulePath, line, "destructuring arity mismatch");
@@ -3464,6 +3969,10 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                         if (callFi) inferred = inferCallReturnAt(compiler, callFi, callExpr, idx);
                         else inferred = inferFuncSigReturnAt(compiler, callFs, callExpr, idx);
                         }
+                    } else if (builtinRc > 0) {
+                        int rc = builtinRc;
+                        if (isGuard) rc = rc - 1;
+                        if (idx < rc) inferred = builtinMultiReturnAtForCall(compiler, scope, callExpr, modulePath, idx);
                     }
                     if (vi && vi->type && !atAssignable(compiler, vi->type, inferred)) {
                         if (atIsOption(inferred) && !atIsOption(vi->type)) {
@@ -3720,6 +4229,169 @@ static int analyzeValidateModuleTopLevel(Compiler* compiler, List* statements) {
     return 1;
 }
 
+typedef struct CopyWork {
+    StructStmt* decl;
+    char* qualified;
+    int qualifiedLen;
+    int isCopy;
+} CopyWork;
+
+static CopyWork* copyWorkFind(List* works, const char* qualified, int qualifiedLen) {
+    if (!works || !qualified || qualifiedLen <= 0) return NULL;
+    for (ListNode* n = works->head; n != NULL; n = n->next) {
+        CopyWork* w = (CopyWork*)n->data;
+        if (!w) continue;
+        if (w->qualifiedLen != qualifiedLen) continue;
+        if (memcmp(w->qualified, qualified, (size_t)qualifiedLen) == 0) return w;
+    }
+    return NULL;
+}
+
+static int typeKindIsCopyScalar(TypeKind k) {
+    switch (k) {
+        case TYPE_BOOL:
+        case TYPE_BYTE:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_INT:
+        case TYPE_LONG:
+        case TYPE_ISIZE:
+        case TYPE_U8:
+        case TYPE_U16:
+        case TYPE_U32:
+        case TYPE_U64:
+        case TYPE_USIZE:
+        case TYPE_F8:
+        case TYPE_BF8:
+        case TYPE_F16:
+        case TYPE_BF16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_PTR:
+        case TYPE_STRING:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int typeIsCopyableForCopyWork(Compiler* compiler, List* works, Type* t) {
+    if (!t) return 0;
+    if (typeKindIsCopyScalar(t->kind)) return 1;
+    if (t->kind == TYPE_ANY) return 1;
+    if (t->kind == TYPE_VOID) return 1;
+    if (t->kind == TYPE_REF) return 1; // pointer-like
+    if (t->kind == TYPE_FUNC) return 0;
+    if (t->kind == TYPE_ARRAY) return 0; // owns heap buffer
+
+    if (t->kind == TYPE_NAMED) {
+        // Builtin named types.
+        if (t->name.length == 3 && memcmp(t->name.start, "ptr", 3) == 0) return 1;
+        if (t->name.length == 3 && memcmp(t->name.start, "map", 3) == 0) return 0;
+        if (t->name.length == 5 && memcmp(t->name.start, "bytes", 5) == 0) return 0;
+        if (t->name.length == 5 && memcmp(t->name.start, "Slice", 5) == 0) return 0;
+        if (t->name.length == 6 && memcmp(t->name.start, "Option", 6) == 0) {
+            Type* inner = NULL;
+            if (t->typeArgs && t->typeArgs->length == 1) inner = (Type*)t->typeArgs->head->data;
+            return typeIsCopyableForCopyWork(compiler, works, inner);
+        }
+
+        // Imported struct alias.
+        SymbolAlias* a = compilerFindAlias(compiler, t->name.start, t->name.length);
+        if (a && a->kind == ALIAS_STRUCT) {
+            CopyTypeInfo* ci = compilerFindCopyType(compiler, a->qualified, a->qualifiedLen);
+            return (ci && ci->isCopy) ? 1 : 0;
+        }
+
+        // Module-local struct name: qualify and check against module works and global table.
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &t->name, &ql);
+        if (q) {
+            CopyWork* w = copyWorkFind(works, q, ql);
+            if (w) {
+                free(q);
+                return w->isCopy ? 1 : 0;
+            }
+            CopyTypeInfo* ci = compilerFindCopyType(compiler, q, ql);
+            free(q);
+            return (ci && ci->isCopy) ? 1 : 0;
+        }
+
+        // Fallback: global (unqualified) lookup.
+        CopyTypeInfo* ci = compilerFindCopyType(compiler, t->name.start, t->name.length);
+        return (ci && ci->isCopy) ? 1 : 0;
+    }
+
+    return 0;
+}
+
+static void analyzeRegisterCopyTypesFromStructs(Compiler* compiler, List* statements) {
+    if (!compiler || !statements) return;
+
+    List* works = listNew();
+    for (ListNode* n = statements->head; n != NULL; n = n->next) {
+        Stmt* s = (Stmt*)n->data;
+        if (!s) continue;
+        if (s->type == STMT_PRIVATE) s = ((PrivateStmt*)s)->inner;
+        if (!s) continue;
+        if (s->type != STMT_STRUCT) continue;
+
+        StructStmt* st = (StructStmt*)s;
+        int ql = 0;
+        char* q = compilerQualifyToken(compiler, &st->name, &ql);
+        if (!q) {
+            ql = st->name.length;
+            q = (char*)malloc((size_t)ql + 1);
+            memcpy(q, st->name.start, (size_t)ql);
+            q[ql] = '\0';
+        }
+
+        CopyWork* w = (CopyWork*)malloc(sizeof(CopyWork));
+        w->decl = st;
+        w->qualified = q;
+        w->qualifiedLen = ql;
+        w->isCopy = 0;
+        listAppend(works, w);
+    }
+
+    // Fixpoint: infer copyability from fields (allows forward references within a module).
+    int changed = 1;
+    int iter = 0;
+    while (changed && iter < 64) {
+        iter++;
+        changed = 0;
+        for (ListNode* n = works->head; n != NULL; n = n->next) {
+            CopyWork* w = (CopyWork*)n->data;
+            if (!w || !w->decl) continue;
+            int ok = 1;
+            for (ListNode* fn = w->decl->fields ? w->decl->fields->head : NULL; fn != NULL; fn = fn->next) {
+                FieldDeclaration* f = (FieldDeclaration*)fn->data;
+                if (!f || !f->type) { ok = 0; break; }
+                if (!typeIsCopyableForCopyWork(compiler, works, f->type)) { ok = 0; break; }
+            }
+            if (ok != w->isCopy) {
+                w->isCopy = ok;
+                changed = 1;
+            }
+        }
+    }
+
+    // Persist into compiler table keyed by qualified struct name.
+    for (ListNode* n = works->head; n != NULL; n = n->next) {
+        CopyWork* w = (CopyWork*)n->data;
+        if (!w) continue;
+        compilerSetCopyType(compiler, w->qualified, w->qualifiedLen, w->isCopy);
+    }
+
+    for (ListNode* n = works->head; n != NULL; n = n->next) {
+        CopyWork* w = (CopyWork*)n->data;
+        if (!w) continue;
+        if (w->qualified) free(w->qualified);
+        free(w);
+    }
+    listFree(works);
+}
+
 int analyzeModule(
     Compiler* compiler,
     List* statements,
@@ -3751,6 +4423,12 @@ int analyzeModule(
             }
             return 0;
         }
+    }
+
+    // Record copyable struct types for move analysis (e.g. POD-only configs).
+    // v0: keep user code conservative (structs are move-only by default); only infer copy types for packages.
+    if (modulePath && (strstr(modulePath, "/packages/") || strstr(modulePath, "\\packages\\"))) {
+        analyzeRegisterCopyTypesFromStructs(compiler, statements);
     }
 
     // Pre-pass: register trait declarations so analyzer can treat `TraitName` as a first-class type
@@ -3891,7 +4569,7 @@ int analyzeModule(
                 int isRef = (p && p->type && p->type->kind == TYPE_REF) ? 1 : 0;
                 AType* pt = (p && p->type) ? atFromAstType(p->type) : atNew(AT_ANY);
                 fi->paramModes[i] = mode;
-                fi->paramIsMoveOnly[i] = atIsMoveOnly(pt, isRef);
+                fi->paramIsMoveOnly[i] = atIsMoveOnly(compiler, pt, isRef);
             }
         }
 
@@ -3957,22 +4635,31 @@ int analyzeModule(
                     fs->typeParamNameLens[i] = tp->name.length;
                 }
             }
-            // Return types (AST)
-            if (fs->returnTypes) {
-                // Clear existing (in case of duplicate register). We only append pointers; no frees.
-                while (fs->returnTypes->length > 0) { listPop(fs->returnTypes); }
-            }
-            if (!fs->returnTypes) fs->returnTypes = listNew();
-            if (fn->returnTypes && fn->returnTypes->length > 0) {
-                for (ListNode* rn = fn->returnTypes->head; rn != NULL; rn = rn->next) {
-                    Type* rt = (Type*)rn->data;
-                    listAppend(fs->returnTypes, rt);
-                }
-            } else if (fn->returnType) {
-                listAppend(fs->returnTypes, fn->returnType);
-            }
+            funcSigSetReturnTypesFromFunc(compiler, fs, fn);
         }
         if (q) free(q);
+    }
+
+    // Pre-pass: register object/impl method signatures for cross-module call inference.
+    // This enables inference for patterns like:
+    // - `let b = s.asBytes()` (impl string)
+    // - `let s, err = String.fromBytes(b, "UTF-8")` (object method)
+    for (ListNode* n = statements ? statements->head : NULL; n != NULL; n = n->next) {
+        Stmt* stmt = (Stmt*)n->data;
+        if (!stmt) continue;
+        if (stmt->type == STMT_IMPORT || stmt->type == STMT_FROM_IMPORT) continue;
+        if (stmt->type == STMT_PRIVATE) {
+            stmt = ((PrivateStmt*)stmt)->inner;
+            if (!stmt) continue;
+        }
+        if (stmt->type == STMT_OBJECT) {
+            registerObjectMethodFuncSigs(compiler, (ObjectStmt*)stmt);
+            continue;
+        }
+        if (stmt->type == STMT_IMPL) {
+            registerImplMethodFuncSigs(compiler, (ImplStmt*)stmt);
+            continue;
+        }
     }
 
     // Pre-scan module statements to compute statement-granular last-use indices for NLL borrow expiry.

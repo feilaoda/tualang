@@ -47,6 +47,7 @@ ANTLR 语法回归（只做 parse，不做编译/运行）：
 标准库目录：
 - 在仓库内直接运行 `./bin/tuac` 会自动找到 `./std`
 - 如果单独拷贝了 `tuac`，需要设置：`export TUA_STDLIB_DIR=/path/to/std`
+- `std/*` 会被自动导入（用户代码一般不需要写 `import "std/..."`；只有外部包/模块才需要显式 `import`）
 
 包搜索路径（用于 `import "json"` / `import "packages/json"` 这类“非相对导入”的查找）：
 - 设置：`export TUA_PACKAGE_DIR=/path/to/packages`（可用 `:` 分隔多个目录）

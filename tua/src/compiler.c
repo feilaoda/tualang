@@ -98,6 +98,7 @@ void initCompiler(Compiler* compiler) {
     compiler->multiReturns = listNew();
     compiler->wantMultiValue = 0;
     compiler->funcSigs = listNew();
+    compiler->copyTypes = listNew();
 
     compiler->boxAllLocals = 0;
     compiler->boxedLocals = NULL;
@@ -4284,11 +4285,75 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         retType = LLVMStructTypeInContext(compiler->context, rts, (unsigned)rc, 0);
         compilerRegisterMultiReturn(compiler, funcName, stmt->name.length, rc);
         free(rts);
+    } else if (stmt->returnTypes && stmt->returnTypes->length == 1) {
+        Type* t0 = (Type*)listGet(stmt->returnTypes, 0);
+        retType = typeToLLVMType(compiler, t0, true);
     } else {
         retType = typeToLLVMType(compiler, stmt->returnType, true);
     }
     LLVMTypeRef funcType = LLVMFunctionType(retType, paramTypes, (unsigned)paramCount, 0);
-    LLVMValueRef func = LLVMAddFunction(compiler->module, funcName, funcType);
+    LLVMValueRef func = NULL;
+
+    // `extern fn` declarations may appear in multiple modules (e.g. std prelude + user code).
+    // LLVM requires a single canonical declaration per symbol name; duplicates get auto-renamed
+    // (e.g. `atoi.1234`), which breaks AOT linking and can crash JIT. Reuse an existing prototype
+    // when present.
+    if (stmt->body == NULL) {
+        LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, funcName);
+        if (existing) {
+            // Reject redeclaring a definition as extern.
+            if (LLVMCountBasicBlocks(existing) > 0) {
+                compilerErrorAtToken(
+                    compiler,
+                    &stmt->name,
+                    "extern fn '%.*s' conflicts with an existing function definition",
+                    stmt->name.length,
+                    stmt->name.start
+                );
+                if (paramTypes) free(paramTypes);
+                free(funcName);
+                return;
+            }
+
+            LLVMTypeRef existingTy = LLVMGlobalGetValueType(existing);
+            char* a = LLVMPrintTypeToString(existingTy);
+            char* b = LLVMPrintTypeToString(funcType);
+            int same = (a && b && strcmp(a, b) == 0);
+            if (a) LLVMDisposeMessage(a);
+            if (b) LLVMDisposeMessage(b);
+            if (!same) {
+                compilerErrorAtToken(
+                    compiler,
+                    &stmt->name,
+                    "extern fn '%.*s' redeclared with a different signature",
+                    stmt->name.length,
+                    stmt->name.start
+                );
+                if (paramTypes) free(paramTypes);
+                free(funcName);
+                return;
+            }
+            func = existing;
+        } else {
+            func = LLVMAddFunction(compiler->module, funcName, funcType);
+        }
+    } else {
+        // Normal function definition: must be unique.
+        LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, funcName);
+        if (existing) {
+            compilerErrorAtToken(
+                compiler,
+                &stmt->name,
+                "duplicate function definition: %.*s",
+                stmt->name.length,
+                stmt->name.start
+            );
+            if (paramTypes) free(paramTypes);
+            free(funcName);
+            return;
+        }
+        func = LLVMAddFunction(compiler->module, funcName, funcType);
+    }
 
     // If this function returns a closure value (possibly nested), record the expected closure call signature(s)
     // so expressions like `makeAdder(1)(2)` and deeper chains like `bar(1)(2)(3)` can be compiled.
@@ -4487,6 +4552,7 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
         variable->value = slot;
         variable->type = valueType;
         variable->astType = pType ? pType : (p ? p->type : NULL);
+        variable->typeKind = pType ? pType->kind : (p && p->type ? p->type->kind : TYPE_ANY);
         variable->pointeeType = (pType && pType->kind == TYPE_REF)
                                     ? (pType->inner ? typeToLLVMType(compiler, pType->inner, false)
                                                     : LLVMInt32TypeInContext(compiler->context))

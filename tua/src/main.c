@@ -10,6 +10,12 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dirent.h>
+#endif
+
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
 #endif
@@ -61,7 +67,15 @@ typedef struct ModuleInfo {
     List* exports;    // List<ExportSymbol*>
     List* aliases;    // List<SymbolAlias*>
     ModuleState state;
+    int preludeApplied; // whether std prelude aliases were injected
 } ModuleInfo;
+
+typedef struct StdPreludeEntry {
+    // Import-like raw path (no `.tua`), e.g. `std/bytes`, `std/fs/async`.
+    char* raw;
+    int isTopLevel;   // `<std>/<name>.tua` (no subdir)
+    ModuleInfo* module;
+} StdPreludeEntry;
 
 typedef struct ModuleSystem {
     List* modules; // List<ModuleInfo*>
@@ -69,6 +83,9 @@ typedef struct ModuleSystem {
     int hadError;  // import/load-time errors
     char* stdDir;  // absolute path to `std/` directory (may be NULL)
     List* packageDirs; // List<char*> absolute package search roots (may be NULL)
+    List* stdPrelude;  // List<StdPreludeEntry*> (may be NULL)
+    int stdPreludeBuilt;
+    int buildingStdPrelude;
 } ModuleSystem;
 
 typedef struct ExternDecl {
@@ -512,6 +529,125 @@ static int pathIsDir(const char* path) {
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
+static int endsWithSuffix(const char* s, const char* suffix) {
+    if (!s || !suffix) return 0;
+    size_t n = strlen(s);
+    size_t m = strlen(suffix);
+    if (m > n) return 0;
+    return memcmp(s + (n - m), suffix, m) == 0;
+}
+
+static char* joinRelPath(const char* prefix, const char* name) {
+    if (!name) return NULL;
+    if (!prefix || prefix[0] == '\0') return dupCStringN(name, (int)strlen(name));
+    size_t a = strlen(prefix);
+    size_t b = strlen(name);
+    char* out = (char*)malloc(a + 1 + b + 1);
+    memcpy(out, prefix, a);
+    out[a] = '/';
+    memcpy(out + a + 1, name, b);
+    out[a + 1 + b] = '\0';
+    return out;
+}
+
+static void scanStdDirRecursive(const char* dirAbs, const char* relPrefix, List* outRelFiles) {
+    if (!dirAbs || !outRelFiles) return;
+
+#if defined(_WIN32)
+    // Minimal Win32 implementation: scan only direct children using FindFirstFile,
+    // recursing into subdirectories.
+    char* pattern = joinPath(dirAbs, "*");
+    WIN32_FIND_DATAA ffd;
+    HANDLE h = FindFirstFileA(pattern, &ffd);
+    free(pattern);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        const char* name = ffd.cFileName;
+        if (!name || name[0] == '\0') continue;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        if (name[0] == '.') continue;
+
+        char* childAbs = joinPath(dirAbs, name);
+        if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            char* childRel = joinRelPath(relPrefix, name);
+            scanStdDirRecursive(childAbs, childRel, outRelFiles);
+            free(childRel);
+            free(childAbs);
+            continue;
+        }
+        if (!endsWithSuffix(name, ".tua")) {
+            free(childAbs);
+            continue;
+        }
+        char* rel = joinRelPath(relPrefix, name);
+        listAppend(outRelFiles, rel);
+        free(childAbs);
+    } while (FindNextFileA(h, &ffd));
+    FindClose(h);
+#else
+    DIR* d = opendir(dirAbs);
+    if (!d) return;
+    for (;;) {
+        struct dirent* ent = readdir(d);
+        if (!ent) break;
+        const char* name = ent->d_name;
+        if (!name || name[0] == '\0') continue;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        if (name[0] == '.') continue;
+
+        char* childAbs = joinPath(dirAbs, name);
+        struct stat st;
+        if (stat(childAbs, &st) != 0) {
+            free(childAbs);
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            char* childRel = joinRelPath(relPrefix, name);
+            scanStdDirRecursive(childAbs, childRel, outRelFiles);
+            free(childRel);
+            free(childAbs);
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !endsWithSuffix(name, ".tua")) {
+            free(childAbs);
+            continue;
+        }
+
+        char* rel = joinRelPath(relPrefix, name);
+        listAppend(outRelFiles, rel);
+        free(childAbs);
+    }
+    closedir(d);
+#endif
+}
+
+static char* stdRawFromRelTua(const char* relTua, int* outIsTopLevel) {
+    if (outIsTopLevel) *outIsTopLevel = 0;
+    if (!relTua) return NULL;
+    size_t n = strlen(relTua);
+    if (n < 4 || memcmp(relTua + (n - 4), ".tua", 4) != 0) return NULL;
+    size_t stemLen = n - 4;
+    int top = 1;
+    for (size_t i = 0; i < stemLen; i++) {
+        if (relTua[i] == '/' || relTua[i] == '\\') {
+            top = 0;
+            break;
+        }
+    }
+    if (outIsTopLevel) *outIsTopLevel = top;
+
+    char* raw = (char*)malloc(4 + stemLen + 1);
+    memcpy(raw, "std/", 4);
+    memcpy(raw + 4, relTua, stemLen);
+    raw[4 + stemLen] = '\0';
+    for (size_t i = 0; i < 4 + stemLen; i++) {
+        if (raw[i] == '\\') raw[i] = '/';
+    }
+    return raw;
+}
+
 static char* discoverStdDir(const char* argv0) {
     const char* env = getenv("TUA_STDLIB_DIR");
     if (env && env[0] != '\0') return canonicalizePath(env);
@@ -562,6 +698,109 @@ static List* discoverPackageDirs(void) {
         return NULL;
     }
     return out;
+}
+
+static char* defaultNamespaceFromImportRaw(const char* raw);
+
+static void moduleApplyStdPreludeToModule(ModuleSystem* sys, ModuleInfo* module) {
+    if (!sys || !module) return;
+    if (!sys->stdPrelude || sys->stdPrelude->length <= 0) return;
+    if (module->preludeApplied) return;
+    if (!module->aliases) module->aliases = listNew();
+
+    for (ListNode* pn = sys->stdPrelude->head; pn != NULL; pn = pn->next) {
+        StdPreludeEntry* pe = (StdPreludeEntry*)pn->data;
+        if (!pe || !pe->module) continue;
+        if (pe->module == module) continue;
+
+        // Create default namespace only for top-level std modules (avoid collisions like `fs/async` vs `time/async`).
+        if (pe->isTopLevel && pe->raw) {
+            char* defaultNs = defaultNamespaceFromImportRaw(pe->raw);
+            if (defaultNs && defaultNs[0] != '\0') {
+                int nsLen = (int)strlen(defaultNs);
+                if (!moduleHasAliasFor(module, defaultNs, nsLen)) {
+                    SymbolAlias* a = malloc(sizeof(SymbolAlias));
+                    a->local = defaultNs; // transfer ownership
+                    a->localLen = nsLen;
+                    a->qualified = dupCStringN(pe->module->prefix, pe->module->prefixLen);
+                    a->qualifiedLen = pe->module->prefixLen;
+                    a->kind = ALIAS_MODULE;
+                    listAppend(module->aliases, a);
+                    defaultNs = NULL;
+                }
+            }
+            if (defaultNs) free(defaultNs);
+        }
+
+        // Import-all: bring every non-private exported symbol into current module scope.
+        for (ListNode* en = pe->module->exports ? pe->module->exports->head : NULL; en != NULL; en = en->next) {
+            ExportSymbol* ex = (ExportSymbol*)en->data;
+            if (!ex || ex->isPrivate) continue;
+            if (!ex->name || ex->nameLen <= 0) continue;
+            if (moduleHasAliasFor(module, ex->name, ex->nameLen)) continue;
+
+            SymbolAlias* a = malloc(sizeof(SymbolAlias));
+            a->local = dupCStringN(ex->name, ex->nameLen);
+            a->localLen = ex->nameLen;
+            a->qualified = dupCStringN(ex->qualified, ex->qualifiedLen);
+            a->qualifiedLen = ex->qualifiedLen;
+            switch (ex->kind) {
+                case EXPORT_FUNC: a->kind = ALIAS_FUNC; break;
+                case EXPORT_STRUCT: a->kind = ALIAS_STRUCT; break;
+                case EXPORT_TRAIT: a->kind = ALIAS_TRAIT; break;
+                case EXPORT_ENUM: a->kind = ALIAS_ENUM; break;
+                case EXPORT_OBJECT: a->kind = ALIAS_OBJECT; break;
+            }
+            listAppend(module->aliases, a);
+        }
+    }
+
+    module->preludeApplied = 1;
+}
+
+static void moduleSystemEnsureStdPrelude(ModuleSystem* sys) {
+    if (!sys || sys->stdPreludeBuilt) return;
+    sys->stdPreludeBuilt = 1;
+    if (!sys->stdDir) return;
+
+    sys->buildingStdPrelude = 1;
+    if (!sys->stdPrelude) sys->stdPrelude = listNew();
+
+    List* relFiles = listNew();
+    scanStdDirRecursive(sys->stdDir, "", relFiles);
+
+    for (ListNode* n = relFiles->head; n != NULL; n = n->next) {
+        char* rel = (char*)n->data;
+        if (!rel || rel[0] == '\0') continue;
+
+        char* abs = joinPath(sys->stdDir, rel);
+        ModuleInfo* m = moduleLoad(sys, abs);
+        free(abs);
+        if (!m) continue;
+
+        int top = 0;
+        char* raw = stdRawFromRelTua(rel, &top);
+        if (!raw) continue;
+
+        StdPreludeEntry* pe = (StdPreludeEntry*)malloc(sizeof(*pe));
+        pe->raw = raw;
+        pe->isTopLevel = top;
+        pe->module = m;
+        listAppend(sys->stdPrelude, pe);
+    }
+
+    for (ListNode* n = relFiles->head; n != NULL; n = n->next) {
+        free(n->data);
+    }
+    listFree(relFiles);
+
+    sys->buildingStdPrelude = 0;
+
+    // Now that the prelude list is complete, inject it into the already-loaded std modules as well.
+    for (ListNode* n = sys->order->head; n != NULL; n = n->next) {
+        ModuleInfo* m = (ModuleInfo*)n->data;
+        moduleApplyStdPreludeToModule(sys, m);
+    }
 }
 
 static VariableRef* findCurrentVarByName(Compiler* compiler, const char* name) {
@@ -1030,6 +1269,7 @@ static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path) {
     module->source = readFile(canonical);
     module->aliases = listNew();
     module->state = MODULE_LOADING;
+    module->preludeApplied = 0;
 
     int prefixLen = 0;
     module->prefix = sanitizeModulePrefix(canonical, &prefixLen);
@@ -1053,6 +1293,10 @@ static ModuleInfo* moduleLoad(ModuleSystem* sys, const char* path) {
     listAppend(sys->modules, module);
 
     moduleScanImports(sys, module);
+
+    if (sys && sys->stdPreludeBuilt && !sys->buildingStdPrelude) {
+        moduleApplyStdPreludeToModule(sys, module);
+    }
 
     module->state = MODULE_LOADED;
     listAppend(sys->order, module);
@@ -1729,6 +1973,8 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 #if defined(__APPLE__)
     // Framework links (e.g. Accelerate) are appended conditionally.
     if (needLlm) cap += 2;
+    // Runtime string encoding uses iconv on macOS.
+    cap += 1;
 #endif
 #if defined(TUA_LLM_USE_GGML)
     // Propagate ggml-backed quant kernels to AOT builds.
@@ -1797,6 +2043,9 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         args[n++] = (char*)"-framework";
         args[n++] = (char*)"Accelerate";
     }
+
+    // Runtime string encoding conversion depends on libiconv on macOS.
+    args[n++] = (char*)"-liconv";
 #endif
 
 #if defined(TUA_LLM_USE_GGML)
@@ -2880,6 +3129,12 @@ int main(int argc, char* argv[]) {
     sys.hadError = 0;
     sys.stdDir = discoverStdDir(argv[0]);
     sys.packageDirs = discoverPackageDirs();
+    sys.stdPrelude = NULL;
+    sys.stdPreludeBuilt = 0;
+    sys.buildingStdPrelude = 0;
+
+    // Std prelude: load all std modules up-front so user modules don't need `import "std/..."`.
+    moduleSystemEnsureStdPrelude(&sys);
 
     char* entryPath = ensureTuaExt(dupCStringN(srcPath, (int)strlen(srcPath)));
     ModuleInfo* entryModule = moduleLoad(&sys, entryPath);

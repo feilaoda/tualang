@@ -67,6 +67,8 @@ typedef struct Compiler{
     // Keyed by qualified name (e.g. `mod__f`), populated by analyzeModule() as modules are analyzed
     // in dependency-first order.
     List* funcSigs; // List<FuncSigInfo*>
+    // Analyzer: qualified struct name -> copyability (POD-ish structs can be copied without moves).
+    List* copyTypes; // List<CopyTypeInfo*>
 
     // Closure / lambda (LLVM JIT path)
     int boxAllLocals;        // when true, locals/params stored in heap boxes
@@ -176,6 +178,12 @@ typedef struct FuncSigInfo {
     int* typeParamNameLens;
     List* returnTypes;       // List<Type*>, len==0 => void
 } FuncSigInfo;
+
+typedef struct CopyTypeInfo {
+    char* qualified;
+    int qualifiedLen;
+    int isCopy;
+} CopyTypeInfo;
 
 typedef struct ClosureSig {
     char* name;
