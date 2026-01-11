@@ -12,6 +12,8 @@
 #include "debug.h"
 #include "llvm/llvm.h"
 
+#include "tuac_alloc.h"
+
 #define compilerDebug(...) debug(__VA_ARGS__)
 
 static LLVMTypeRef typeToLLVMType(Compiler* compiler, Type* type, bool defaultToVoid);

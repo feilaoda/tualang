@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "tuac_alloc.h"
+
 char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
     if (file == NULL) {
@@ -121,4 +123,3 @@ int fileExists(const char* path) {
     if (!path || path[0] == '\0') return 0;
     return access(path, F_OK) == 0;
 }
-

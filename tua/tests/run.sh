@@ -9,7 +9,11 @@ export TUA_PACKAGE_DIR="${TUA_PACKAGE_DIR:-$ROOT/packages}"
 export TMPDIR="$ROOT/build/tmp"
 mkdir -p "$TMPDIR"
 
-make tuac >/dev/null
+TUA_TUAC="${TUA_TUAC:-$ROOT/bin/tuac}"
+if [[ "$TUA_TUAC" == "$ROOT/bin/tuac" ]]; then
+  make tuac >/dev/null
+fi
+TUA_TEST_QUIET="${TUA_TEST_QUIET:-1}"
 
 files=()
 while IFS= read -r f; do
@@ -124,9 +128,20 @@ for f in "${files[@]}"; do
   if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 0 ]]; then
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
-    if ./bin/tuac ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>&1; then
+    if [[ "$TUA_TEST_QUIET" -eq 1 ]]; then
+      compile_ok=0
+      "$TUA_TUAC" ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>&1 && compile_ok=1
+    else
+      compile_ok=0
+      "$TUA_TUAC" ${args[@]+"${args[@]}"} --output "$out" "$f" && compile_ok=1
+    fi
+    if [[ "$compile_ok" -eq 1 ]]; then
       rc=0
-      "$out" >/dev/null 2>&1 || rc=$?
+      if [[ "$TUA_TEST_QUIET" -eq 1 ]]; then
+        "$out" >/dev/null 2>&1 || rc=$?
+      else
+        "$out" || rc=$?
+      fi
       if [[ -n "$expect_exit" ]]; then
         if [[ "$rc" -ne "$expect_exit" ]]; then
           echo "[FAIL] $base (expected exit $expect_exit, got $rc)"
@@ -154,15 +169,29 @@ for f in "${files[@]}"; do
     tmpd="$(mktemp -d "${TMPDIR:-/tmp}/tuac_aot_XXXXXX")"
     out="$tmpd/a.out"
     tmp="$(mktemp)"
-    if ./bin/tuac ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>"$tmp"; then
-      echo "[FAIL] $base (expected failure, got success)"
-      fail=1
-    else
-      if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
-        echo "[PASS] $base (expected failure)"
-      else
-        echo "[FAIL] $base (expected failure, missing line info)"
+    if [[ "$TUA_TEST_QUIET" -eq 1 ]]; then
+      if "$TUA_TUAC" ${args[@]+"${args[@]}"} --output "$out" "$f" >/dev/null 2>"$tmp"; then
+        echo "[FAIL] $base (expected failure, got success)"
         fail=1
+      else
+        if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
+          echo "[PASS] $base (expected failure)"
+        else
+          echo "[FAIL] $base (expected failure, missing line info)"
+          fail=1
+        fi
+      fi
+    else
+      if "$TUA_TUAC" ${args[@]+"${args[@]}"} --output "$out" "$f" 2>"$tmp"; then
+        echo "[FAIL] $base (expected failure, got success)"
+        fail=1
+      else
+        if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
+          echo "[PASS] $base (expected failure)"
+        else
+          echo "[FAIL] $base (expected failure, missing line info)"
+          fail=1
+        fi
       fi
     fi
     rm -f "$tmp"
@@ -172,15 +201,29 @@ for f in "${files[@]}"; do
 
   if [[ "$expects_fail" -eq 1 ]]; then
     tmp="$(mktemp)"
-    if ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>"$tmp"; then
-      echo "[FAIL] $base (expected failure, got success)"
-      fail=1
-    else
-      if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
-        echo "[PASS] $base (expected failure)"
-      else
-        echo "[FAIL] $base (expected failure, missing line info)"
+    if [[ "$TUA_TEST_QUIET" -eq 1 ]]; then
+      if "$TUA_TUAC" ${args[@]+"${args[@]}"} "$f" >/dev/null 2>"$tmp"; then
+        echo "[FAIL] $base (expected failure, got success)"
         fail=1
+      else
+        if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
+          echo "[PASS] $base (expected failure)"
+        else
+          echo "[FAIL] $base (expected failure, missing line info)"
+          fail=1
+        fi
+      fi
+    else
+      if "$TUA_TUAC" ${args[@]+"${args[@]}"} "$f" 2>"$tmp"; then
+        echo "[FAIL] $base (expected failure, got success)"
+        fail=1
+      else
+        if grep -Eq ":[0-9]+(:[0-9]+)?: error:|error:[0-9]+(:[0-9]+)?:" "$tmp"; then
+          echo "[PASS] $base (expected failure)"
+        else
+          echo "[FAIL] $base (expected failure, missing line info)"
+          fail=1
+        fi
       fi
     fi
     rm -f "$tmp"
@@ -195,7 +238,11 @@ for f in "${files[@]}"; do
         ;;
     esac
     rc=0
-    ./bin/tuac ${args[@]+"${args[@]}"} "$f" >/dev/null 2>&1 || rc=$?
+    if [[ "$TUA_TEST_QUIET" -eq 1 ]]; then
+      "$TUA_TUAC" ${args[@]+"${args[@]}"} "$f" >/dev/null 2>&1 || rc=$?
+    else
+      "$TUA_TUAC" ${args[@]+"${args[@]}"} "$f" || rc=$?
+    fi
     if [[ -n "$expect_exit" ]]; then
       if [[ "$rc" -ne "$expect_exit" ]]; then
         echo "[FAIL] $base (expected exit $expect_exit, got $rc)"

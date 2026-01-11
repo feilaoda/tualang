@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <stdio.h> 
 
+#include "tuac_alloc.h"
+
 static const char* StmtTypeNames[] = {
     "EXPR",
     "VAR",

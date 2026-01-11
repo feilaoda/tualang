@@ -4,6 +4,8 @@
 #include "tuac_codegen.h"
 
 #include "debug.h"
+
+#include "tuac_alloc.h"
 void compileModuleIntoMain(Compiler* compiler, ModuleInfo* module) {
     compiler->currentFilePath = module->path;
     compiler->currentModulePrefix = module->prefix;

@@ -6,6 +6,8 @@
 #include "debug.h"
 #include "list.h"
 
+#include "tuac_alloc.h"
+
 // Debug trace helpers
 #ifdef DEBUG
 int traceId = 0;

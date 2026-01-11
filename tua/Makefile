@@ -3,6 +3,7 @@ LLVM_CONFIG ?= /usr/local/opt/llvm/bin/llvm-config
 LLVM_CFLAGS = $(shell $(LLVM_CONFIG) --cflags)
 LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags)
 LLVM_LIBS = $(shell $(LLVM_CONFIG) --libs --system-libs)
+LLVM_BINDIR = $(shell $(LLVM_CONFIG) --bindir)
 
 CFLAGS = $(LLVM_CFLAGS) -I./src -Wall
 LDFLAGS = $(LLVM_LDFLAGS)
@@ -49,6 +50,7 @@ RT_SRCS = \
 	src/tua_bytes.c \
 	src/tua_str.c \
 	src/rt/rt_alloc.c \
+	src/rt/rt_config.c \
 	src/rt/rt_box.c \
 	src/rt/rt_cancel.c \
 	src/rt/rt_err.c \
@@ -66,6 +68,7 @@ RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
 
 .PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run
 .PHONY: test
+.PHONY: tuac-asan tuac-ubsan test-asan test-ubsan
 
 tuac: bin/libtuart.a
 		$(CC) $(CFLAGS) -O2 \
@@ -80,15 +83,21 @@ tuac-debug: bin/libtuart.a
 			$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
 
 tuac-asan:
-		$(CC) $(CFLAGS) -O0 -g -DDEBUG -fsanitize=address -fno-omit-frame-pointer \
-			src/main.c src/tuac_cli.c src/tuac_frontend.c src/tuac_codegen.c src/tuac_backend.c src/tuac_fs.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
-			src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c \
-			$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac
+			$(CC) $(CFLAGS) -O0 -g -fsanitize=address -fno-omit-frame-pointer \
+				src/main.c src/tuac_cli.c src/tuac_frontend.c src/tuac_codegen.c src/tuac_backend.c src/tuac_fs.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
+				src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c \
+				$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac-asan
 
-tuaparse:
+tuac-ubsan:
+			$(CC) $(CFLAGS) -O0 -g -fsanitize=undefined -fno-omit-frame-pointer \
+				src/main.c src/tuac_cli.c src/tuac_frontend.c src/tuac_codegen.c src/tuac_backend.c src/tuac_fs.c src/llvm/llvm.c src/llvm/llvm_var.c src/llvm/llvm_for.c src/llvm/llvm_while.c src/llvm/llvm_loop.c src/llvm/llvm_goto.c src/llvm/llvm_if.c src/llvm/llvm_expr.c src/llvm/llvm_call.c \
+				src/debug.c src/lexer.c src/parser.c src/compiler.c src/analyzer.c src/list.c \
+				$(RT_LINK) -pthread $(LDFLAGS) $(LIBS) $(TUAC_EXTRA_LIBS) -o bin/tuac-ubsan
+
+tuaparse: bin/libtuart.a
 	$(CC) -I./src -Wall -O0 -g \
 		src/tuaparse.c src/lexer.c src/parser.c src/list.c src/debug.c \
-		-o bin/tuaparse
+		bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o bin/tuaparse
 
 bin/obj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -135,4 +144,10 @@ rt-net-smoke-run: rt-net-smoke
 
 test:
 	./tests/run.sh
+
+test-asan: tuac-asan
+	TUA_TUAC=./bin/tuac-asan TUA_TEST_QUIET=1 ASAN_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/asan_tuac ./tests/run.sh
+
+test-ubsan: tuac-ubsan
+	TUA_TUAC=./bin/tuac-ubsan TUA_TEST_QUIET=1 LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/ubsan_tuac ./tests/run.sh
 	./packages/run_tests.sh

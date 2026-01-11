@@ -18,6 +18,8 @@
 #include "analyzer.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static int strHasSharedLibSuffix(const char* p) {
     if (!p) return 0;
 #if defined(_WIN32)

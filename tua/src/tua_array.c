@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rt/rt_alloc.h"
+
 tua_array* tua_array_new(int64_t len, int64_t cap, int64_t elem_size, int64_t fixed_len) {
     if (elem_size <= 0) tua_panic("invalid array element size");
     if (fixed_len >= 0) {
@@ -14,7 +16,7 @@ tua_array* tua_array_new(int64_t len, int64_t cap, int64_t elem_size, int64_t fi
     if (len < 0) tua_panic("invalid array length");
     if (cap < len) cap = len;
 
-    tua_array* a = (tua_array*)malloc(sizeof(tua_array));
+    tua_array* a = (tua_array*)tua_malloc(sizeof(tua_array));
     if (!a) tua_panic("out of memory");
 
     a->len = len;
@@ -28,7 +30,7 @@ tua_array* tua_array_new(int64_t len, int64_t cap, int64_t elem_size, int64_t fi
     }
 
     size_t bytes = (size_t)cap * (size_t)elem_size;
-    void* buf = calloc(1, bytes);
+    void* buf = tua_calloc(1, bytes);
     if (!buf) tua_panic("out of memory");
     a->data = buf;
     return a;
@@ -36,7 +38,7 @@ tua_array* tua_array_new(int64_t len, int64_t cap, int64_t elem_size, int64_t fi
 
 tua_array* tua_array_clone(tua_array* a) {
     if (!a) tua_panic("null array");
-    tua_array* b = (tua_array*)malloc(sizeof(tua_array));
+    tua_array* b = (tua_array*)tua_malloc(sizeof(tua_array));
     if (!b) tua_panic("out of memory");
     b->len = a->len;
     b->cap = a->cap;
@@ -49,7 +51,7 @@ tua_array* tua_array_clone(tua_array* a) {
     }
 
     size_t bytes = (size_t)a->cap * (size_t)a->elem_size;
-    void* buf = malloc(bytes);
+    void* buf = tua_malloc(bytes);
     if (!buf) tua_panic("out of memory");
     if (a->data) memcpy(buf, a->data, bytes);
     else memset(buf, 0, bytes);
@@ -72,7 +74,7 @@ int64_t tua_array_push(tua_array* a, const void* elem) {
 
         size_t oldBytes = (size_t)a->cap * (size_t)a->elem_size;
         size_t newBytes = (size_t)newCap * (size_t)a->elem_size;
-        void* newData = realloc(a->data, newBytes);
+        void* newData = tua_realloc(a->data, newBytes);
         if (!newData) tua_panic("out of memory");
         if (newBytes > oldBytes) {
             memset((char*)newData + oldBytes, 0, newBytes - oldBytes);
@@ -90,7 +92,7 @@ int64_t tua_array_push(tua_array* a, const void* elem) {
 
 void tua_array_free(tua_array* a) {
     if (!a) return;
-    free(a->data);
+    tua_free(a->data);
     a->data = NULL;
-    free(a);
+    tua_free(a);
 }

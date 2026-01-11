@@ -7,6 +7,8 @@
 #include "debug.h"
 #include "llvm.h"
 
+#include "tuac_alloc.h"
+
 
 VariableRef findVariable(List* variables, const char* name) {
     for (int i = variables->length - 1; i >= 0; i--) {

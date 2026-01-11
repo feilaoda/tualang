@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rt/rt_alloc.h"
+#include "rt/rt_config.h"
 #include "tua_str.h"
 
 		// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
@@ -70,18 +72,28 @@ void tua_panic(const char* msg) {
     const char* file = tua_current_file;
     int32_t line = tua_current_line;
     int32_t col = tua_current_col;
+
+    char buf[1024];
+    const char* m = msg ? msg : "(null)";
     if (file && line > 0 && col > 0) {
-        fprintf(stderr, "%s:%d:%d: error: %s\n", file, (int)line, (int)col, msg ? msg : "(null)");
+        snprintf(buf, sizeof(buf), "%s:%d:%d: error: %s\n", file, (int)line, (int)col, m);
     } else if (file && line > 0) {
-        fprintf(stderr, "%s:%d: error: %s\n", file, (int)line, msg ? msg : "(null)");
+        snprintf(buf, sizeof(buf), "%s:%d: error: %s\n", file, (int)line, m);
     } else if (line > 0 && col > 0) {
-        fprintf(stderr, "error:%d:%d: %s\n", (int)line, (int)col, msg ? msg : "(null)");
+        snprintf(buf, sizeof(buf), "error:%d:%d: %s\n", (int)line, (int)col, m);
     } else if (line > 0) {
-        fprintf(stderr, "error:%d: %s\n", (int)line, msg ? msg : "(null)");
+        snprintf(buf, sizeof(buf), "error:%d: %s\n", (int)line, m);
     } else {
-        fprintf(stderr, "error: %s\n", msg ? msg : "(null)");
+        snprintf(buf, sizeof(buf), "error: %s\n", m);
     }
-    fflush(stderr);
+
+    tua_config cfg = tua_rt_get_config();
+    if (cfg.panic) {
+        cfg.panic(cfg.panic_ud, buf);
+    } else {
+        fputs(buf, stderr);
+        fflush(stderr);
+    }
     exit(1);
 }
 
@@ -183,7 +195,7 @@ static void map_rehash(tua_map* m, size_t newCap) {
     MapEntry* old = m->entries;
     size_t oldCap = m->capacity;
 
-    MapEntry* entries = (MapEntry*)calloc(newCap, sizeof(MapEntry));
+    MapEntry* entries = (MapEntry*)tua_calloc(newCap, sizeof(MapEntry));
     if (!entries) tua_panic("out of memory");
 
     m->entries = entries;
@@ -206,14 +218,14 @@ static void map_rehash(tua_map* m, size_t newCap) {
         m->count++;
     }
 
-    free(old);
+        tua_free(old);
 }
 
 static void ensure_capacity(tua_map* m) {
     if (!m) tua_panic("invalid map");
     if (m->capacity == 0) {
         m->capacity = 16;
-        m->entries = (MapEntry*)calloc(m->capacity, sizeof(MapEntry));
+        m->entries = (MapEntry*)tua_calloc(m->capacity, sizeof(MapEntry));
         if (!m->entries) tua_panic("out of memory");
         return;
     }
@@ -263,7 +275,7 @@ static void decode_key(tua_value key, KeyKind* kind, uint32_t* hash, int64_t* ik
 }
 
 tua_map* tua_map_new(void) {
-    tua_map* m = (tua_map*)calloc(1, sizeof(tua_map));
+    tua_map* m = (tua_map*)tua_calloc(1, sizeof(tua_map));
     if (!m) tua_panic("out of memory");
     m->kind = (uint32_t)TUA_MAP_KIND_GENERIC;
     m->capacity = 0;
@@ -520,13 +532,13 @@ void tua_map_free(tua_map* map) {
             if (e->kind == KEY_STRING) tua_str_release(e->k.s);
             if (e->v.tag == TUA_VAL_STRING) tua_str_release((const char*)(uintptr_t)e->v.payload);
         }
-        free(map->entries);
+        tua_free(map->entries);
         map->entries = NULL;
     }
     map->capacity = 0;
     map->count = 0;
     map->tombstones = 0;
-    free(map);
+    tua_free(map);
 }
 
 void tua_print_value(tua_value value, int32_t newline) {

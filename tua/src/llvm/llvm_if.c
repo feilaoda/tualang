@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static int tokenEquals(const Token* token, const char* s) {
     if (!token || !s) return 0;
     size_t len = strlen(s);

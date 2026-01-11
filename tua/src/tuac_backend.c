@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,9 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+
+#include "tuac_alloc.h"
+
 int executeModule(LLVMModuleRef module, int argc, char** argv) {
     char *error = NULL;
     
@@ -42,12 +46,56 @@ int executeModule(LLVMModuleRef module, int argc, char** argv) {
     LLVMValueRef mainFunc = LLVMGetNamedFunction(module, "main");
     if (!mainFunc) {
         fprintf(stderr, "No main function found\n");
+        LLVMDisposeExecutionEngine(engine);
         return 1;
     }
 
-    // Execute main function.
-    int (*mainFn)(int, char**) = (int (*)(int, char**))LLVMGetFunctionAddress(engine, "main");
-    int result = mainFn(argc, argv);
+    // Execute main function (support both `fn main()` and `fn main(argc, argv)` styles).
+    LLVMTypeRef mainTy = LLVMGlobalGetValueType(mainFunc);
+    unsigned paramCount = LLVMCountParams(mainFunc);
+    int result = 0;
+    LLVMGenericValueRef gv = NULL;
+    if (paramCount == 0) {
+        gv = LLVMRunFunction(engine, mainFunc, 0, NULL);
+    } else if (paramCount == 2) {
+        LLVMGenericValueRef args[2] = {0};
+
+        LLVMTypeRef argcTy = LLVMTypeOf(LLVMGetParam(mainFunc, 0));
+        LLVMTypeRef argvTy = LLVMTypeOf(LLVMGetParam(mainFunc, 1));
+
+        if (LLVMGetTypeKind(argcTy) == LLVMIntegerTypeKind) {
+            args[0] = LLVMCreateGenericValueOfInt(argcTy, (unsigned long long)argc, 1);
+        } else {
+            fprintf(stderr, "Unsupported main(argc) type\n");
+            LLVMDisposeExecutionEngine(engine);
+            return 1;
+        }
+
+        if (LLVMGetTypeKind(argvTy) == LLVMPointerTypeKind) {
+            args[1] = LLVMCreateGenericValueOfPointer((void*)argv);
+        } else if (LLVMGetTypeKind(argvTy) == LLVMIntegerTypeKind) {
+            args[1] = LLVMCreateGenericValueOfInt(argvTy, (unsigned long long)(uintptr_t)argv, 0);
+        } else {
+            fprintf(stderr, "Unsupported main(argv) type\n");
+            if (args[0]) LLVMDisposeGenericValue(args[0]);
+            LLVMDisposeExecutionEngine(engine);
+            return 1;
+        }
+
+        gv = LLVMRunFunction(engine, mainFunc, 2, args);
+        if (args[0]) LLVMDisposeGenericValue(args[0]);
+        if (args[1]) LLVMDisposeGenericValue(args[1]);
+    } else {
+        fprintf(stderr, "Unsupported main signature (paramCount=%u)\n", paramCount);
+        LLVMDisposeExecutionEngine(engine);
+        return 1;
+    }
+
+    LLVMTypeRef retTy = LLVMGetReturnType(mainTy);
+    if (LLVMGetTypeKind(retTy) != LLVMVoidTypeKind && gv) {
+        result = (int)LLVMGenericValueToInt(gv, 1);
+    }
+    if (gv) LLVMDisposeGenericValue(gv);
 #ifdef DEBUG
     printf("result: %d\n", result);
 #endif

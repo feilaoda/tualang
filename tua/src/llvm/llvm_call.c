@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static Expr* unwrapGroupingExpr(Expr* e);
 
 static int isOptionLLVMType(LLVMTypeRef t);
@@ -1063,23 +1065,24 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
                                 inferredFromArg[tpIndex] = i;
                             } else if (innerInferred->kind == TYPE_ANY && inferred[tpIndex]->kind != TYPE_ANY) {
                                 freeTypeTreeDeep(innerInferred);
-                            } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
-                                for (int j = 0; j < expected; j++) {
-                                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
-                                }
-                                freeTypeTreeDeep(innerInferred);
-                                free(inferredFromArg);
-                                free(inferred);
-                                free(nestedSeen);
-                                free(nestedFromArg);
-                                if (diag) {
-                                    diag->status = GEN_INFER_CONFLICT;
-                                    diag->tpIndex = tpIndex;
-                                    diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
-                                    diag->secondArgIndex = i + 1;
-                                }
-                                return NULL;
-                            } else {
+	                            } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
+	                                int firstArg = inferredFromArg[tpIndex];
+	                                for (int j = 0; j < expected; j++) {
+	                                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+	                                }
+	                                freeTypeTreeDeep(innerInferred);
+	                                free(inferredFromArg);
+	                                free(inferred);
+	                                free(nestedSeen);
+	                                free(nestedFromArg);
+	                                if (diag) {
+	                                    diag->status = GEN_INFER_CONFLICT;
+	                                    diag->tpIndex = tpIndex;
+	                                    diag->firstArgIndex = firstArg + 1;
+	                                    diag->secondArgIndex = i + 1;
+	                                }
+	                                return NULL;
+	                            } else {
                                 freeTypeTreeDeep(innerInferred);
                             }
                         }
@@ -1121,23 +1124,24 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
 	                        inferredFromArg[tpIndex] = i;
 	                    } else if (innerInferred->kind == TYPE_ANY && inferred[tpIndex]->kind != TYPE_ANY) {
 	                        freeTypeTreeDeep(innerInferred);
-	                    } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
-	                        for (int j = 0; j < expected; j++) {
-	                            if (inferred[j]) freeTypeTreeDeep(inferred[j]);
-	                        }
-	                        freeTypeTreeDeep(innerInferred);
+		                    } else if (!astTypeEqualsDeep(inferred[tpIndex], innerInferred)) {
+		                        int firstArg = inferredFromArg[tpIndex];
+		                        for (int j = 0; j < expected; j++) {
+		                            if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+		                        }
+		                        freeTypeTreeDeep(innerInferred);
 	                        free(inferredFromArg);
 	                        free(inferred);
-	                        free(nestedSeen);
-	                        free(nestedFromArg);
-	                        if (diag) {
-	                            diag->status = GEN_INFER_CONFLICT;
-	                            diag->tpIndex = tpIndex;
-	                            diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
-	                            diag->secondArgIndex = i + 1;
-	                        }
-	                        return NULL;
-	                    } else {
+		                        free(nestedSeen);
+		                        free(nestedFromArg);
+		                        if (diag) {
+		                            diag->status = GEN_INFER_CONFLICT;
+		                            diag->tpIndex = tpIndex;
+		                            diag->firstArgIndex = firstArg + 1;
+		                            diag->secondArgIndex = i + 1;
+		                        }
+		                        return NULL;
+		                    } else {
 	                        freeTypeTreeDeep(innerInferred);
 	                    }
 	                }
@@ -1219,23 +1223,24 @@ static List* inferTypeArgsForGenericCall(Compiler* compiler, GenericFuncTemplate
             freeTypeTreeDeep(it);
         } else {
             // Consistency check across arguments.
-            if (!astTypeEqualsDeep(inferred[tpIndex], it)) {
-                for (int j = 0; j < expected; j++) {
-                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
-                }
-                freeTypeTreeDeep(it);
+	            if (!astTypeEqualsDeep(inferred[tpIndex], it)) {
+	                int firstArg = inferredFromArg[tpIndex];
+	                for (int j = 0; j < expected; j++) {
+	                    if (inferred[j]) freeTypeTreeDeep(inferred[j]);
+	                }
+	                freeTypeTreeDeep(it);
                 free(inferredFromArg);
                 free(inferred);
                 free(nestedSeen);
-                free(nestedFromArg);
-                if (diag) {
-                    diag->status = GEN_INFER_CONFLICT;
-                    diag->tpIndex = tpIndex;
-                    diag->firstArgIndex = inferredFromArg[tpIndex] + 1;
-                    diag->secondArgIndex = i + 1;
-                }
-                return NULL;
-            }
+	                free(nestedFromArg);
+	                if (diag) {
+	                    diag->status = GEN_INFER_CONFLICT;
+	                    diag->tpIndex = tpIndex;
+	                    diag->firstArgIndex = firstArg + 1;
+	                    diag->secondArgIndex = i + 1;
+	                }
+	                return NULL;
+	            }
             freeTypeTreeDeep(it);
         }
     }

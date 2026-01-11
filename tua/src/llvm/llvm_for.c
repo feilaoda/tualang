@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static LLVMValueRef getOrCreateMalloc(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "malloc");
     if (existing) return existing;

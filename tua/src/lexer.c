@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include "lexer.h"
 
+#include "tuac_alloc.h"
+
 static const char* TokenNames[] = {
     "VAR",
     "CONST",

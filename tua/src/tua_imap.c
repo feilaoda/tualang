@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rt/rt_alloc.h"
+
 enum {
     IMAP_CTRL_EMPTY = 0x80,
     IMAP_CTRL_DELETED = 0xFE
@@ -83,12 +85,12 @@ static void imap_alloc_arrays(tua_imap* m, size_t cap) {
     m->capacity = cap;
     m->count = 0;
     m->tombstones = 0;
-    m->ctrl = (uint8_t*)malloc(cap);
-    m->vals = (uint64_t*)malloc(sizeof(uint64_t) * cap);
+    m->ctrl = (uint8_t*)tua_malloc(cap);
+    m->vals = (uint64_t*)tua_malloc(sizeof(uint64_t) * cap);
     if (m->key_kind == IMAP_KEY_I32) {
-        m->keys.keys32 = (int32_t*)malloc(sizeof(int32_t) * cap);
+        m->keys.keys32 = (int32_t*)tua_malloc(sizeof(int32_t) * cap);
     } else {
-        m->keys.keys64 = (int64_t*)malloc(sizeof(int64_t) * cap);
+        m->keys.keys64 = (int64_t*)tua_malloc(sizeof(int64_t) * cap);
     }
     if (!m->ctrl || !m->keys.any || !m->vals) tua_panic("out of memory");
     memset(m->ctrl, IMAP_CTRL_EMPTY, cap);
@@ -137,9 +139,9 @@ static void imap_rehash(tua_imap* m, size_t newCap) {
         m->count++;
     }
 
-    free(oldCtrl);
-    free(oldKeys);
-    free(oldVals);
+    tua_free(oldCtrl);
+    tua_free(oldKeys);
+    tua_free(oldVals);
 }
 
 static void imap_maybe_grow(tua_imap* m, size_t addCount) {
@@ -238,7 +240,7 @@ static size_t imap_find_slot_for_insert_i32(const tua_imap* m, int32_t key, uint
 
 static tua_map* imap_new_internal(uint32_t key_kind, int32_t value_tag, int32_t hint) {
     if (value_tag == TUA_VAL_NIL) tua_panic("invalid typed map value tag");
-    tua_imap* m = (tua_imap*)calloc(1, sizeof(tua_imap));
+    tua_imap* m = (tua_imap*)tua_calloc(1, sizeof(tua_imap));
     if (!m) tua_panic("out of memory");
     m->kind = (uint32_t)TUA_MAP_KIND_IMAP;
     m->value_tag = value_tag;
@@ -408,8 +410,8 @@ void tua_imap_free(tua_map* map) {
     if (!map) return;
     tua_imap* m = (tua_imap*)map;
     if (m->kind != (uint32_t)TUA_MAP_KIND_IMAP) tua_panic("invalid typed map");
-    free(m->ctrl);
-    free(m->keys.any);
-    free(m->vals);
-    free(m);
+    tua_free(m->ctrl);
+    tua_free(m->keys.any);
+    tua_free(m->vals);
+    tua_free(m);
 }

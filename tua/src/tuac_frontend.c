@@ -33,6 +33,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 
+#include "tuac_alloc.h"
+
 static char* stripQuotesToken(Token tok) {
     // TOKEN_STRING_LITERAL includes quotes
     int len = tok.length >= 2 ? tok.length - 2 : 0;

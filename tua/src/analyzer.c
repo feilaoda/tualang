@@ -6,6 +6,8 @@
 #include <string.h>
 #include <limits.h>
 
+#include "tuac_alloc.h"
+
 typedef enum {
     AT_ANY = 0,
     AT_VOID,

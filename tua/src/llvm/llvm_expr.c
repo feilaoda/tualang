@@ -4,6 +4,8 @@
 
 #include <limits.h>
 
+#include "tuac_alloc.h"
+
 static LLVMValueRef castToType(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
 static LLVMValueRef astTypeToLLVMType(Compiler* compiler, Type* type);
 static int typeKindIsFp8(TypeKind k);
@@ -5249,6 +5251,26 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
 
     // Compute direct free variable names (excluding nested lambdas).
     List* freeNames = compilerComputeLambdaFreeNames(compiler, expr);
+    Token** captureTokens = NULL;
+    int captureCount = 0;
+    if (freeNames && freeNames->length > 0) {
+        captureTokens = malloc(sizeof(Token*) * (size_t)freeNames->length);
+        for (int i = 0; i < freeNames->length; i++) {
+            Token* t = (Token*)listGet(freeNames, i);
+            if (!t) continue;
+            VariableExpr ve;
+            memset(&ve, 0, sizeof(ve));
+            ve.base.type = EXPR_VARIABLE;
+            ve.name = *t;
+            VariableRef ref = findVariableExpr(compiler, (Expr*)&ve);
+            if (!ref.value || !ref.type) continue;
+            captureTokens[captureCount++] = t;
+        }
+        if (captureCount == 0) {
+            free(captureTokens);
+            captureTokens = NULL;
+        }
+    }
 
     LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
@@ -5272,7 +5294,6 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     LLVMTypeRef* envFieldTypes = NULL;
     LLVMTypeRef* envValueTypes = NULL;
     int* envFieldIsBoxed = NULL;
-    int captureCount = freeNames ? freeNames->length : 0;
 
     if (captureCount > 0) {
         envType = LLVMStructCreateNamed(context, envNameBuf);
@@ -5281,7 +5302,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
         envFieldIsBoxed = malloc(sizeof(int) * (size_t)captureCount);
 
         for (int i = 0; i < captureCount; i++) {
-            Token* t = (Token*)listGet(freeNames, i);
+            Token* t = captureTokens[i];
             VariableExpr ve;
             memset(&ve, 0, sizeof(ve));
             ve.base.type = EXPR_VARIABLE;
@@ -5363,7 +5384,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     if (captureCount > 0 && envType) {
         LLVMValueRef envArg = LLVMGetParam(fn, 0);
         for (int i = 0; i < captureCount; i++) {
-            Token* t = (Token*)listGet(freeNames, i);
+            Token* t = captureTokens[i];
             if (!t) continue;
             LLVMTypeRef cellPtrType = envFieldTypes ? envFieldTypes[i] : i8ptr;
             LLVMValueRef fieldPtr = LLVMBuildStructGEP2(builder, envType, envArg, (unsigned)i, "cap_gep");
@@ -5372,13 +5393,17 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             char* localName = malloc((size_t)t->length + 1);
             memcpy(localName, t->start, (size_t)t->length);
             localName[t->length] = '\0';
-            LLVMValueRef slot = LLVMBuildAlloca(builder, cellPtrType, localName);
-            LLVMBuildStore(builder, cellPtr, slot);
+            int isBoxedCap = (envFieldIsBoxed && envFieldIsBoxed[i]) ? 1 : 0;
+            LLVMValueRef slot = NULL;
+            if (isBoxedCap) {
+                slot = LLVMBuildAlloca(builder, cellPtrType, localName);
+                LLVMBuildStore(builder, cellPtr, slot);
+            }
 
             VariableRef* vr = (VariableRef*)calloc(1, sizeof(VariableRef));
             vr->name = localName;
             vr->length = t->length;
-            vr->value = slot;
+            vr->value = isBoxedCap ? slot : cellPtr;
             vr->type = envValueTypes ? envValueTypes[i] : LLVMPointerType(LLVMInt8TypeInContext(context), 0);
             vr->pointeeType = NULL;
             vr->typeKind = TYPE_ANY;
@@ -5387,9 +5412,9 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
             vr->isConst = 0;
             vr->isBorrowed = 1;
             vr->isGlobal = 0;
-            vr->isBoxed = 1;
+            vr->isBoxed = isBoxedCap;
             vr->boxOwns = 0;
-            vr->boxPtrType = cellPtrType;
+            vr->boxPtrType = isBoxedCap ? cellPtrType : NULL;
             vr->isMap = 0;
             vr->isTypedMap = 0;
             vr->mapKeyType = NULL;
@@ -5568,7 +5593,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
         LLVMValueRef envPtr = LLVMBuildBitCast(builder, raw, envPtrType, "env");
 
         for (int i = 0; i < captureCount; i++) {
-            Token* t = (Token*)listGet(freeNames, i);
+            Token* t = captureTokens[i];
             if (!t) continue;
             VariableExpr ve;
             memset(&ve, 0, sizeof(ve));
@@ -5608,6 +5633,7 @@ LLVMValueRef emitLambdaExpr(Compiler* compiler, LambdaExpr* expr) {
     if (envFieldTypes) free(envFieldTypes);
     if (envValueTypes) free(envValueTypes);
     if (envFieldIsBoxed) free(envFieldIsBoxed);
+    if (captureTokens) free(captureTokens);
     if (freeNames) freeTokenSet(freeNames);
     return closure;
 }

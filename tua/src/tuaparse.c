@@ -6,6 +6,8 @@
 #include "parser.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
     if (file == NULL) {

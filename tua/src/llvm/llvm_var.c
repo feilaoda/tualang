@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static LLVMValueRef castIfNeeded(Compiler* compiler, LLVMValueRef value, LLVMTypeRef targetType);
 
 static int tokenEquals(const Token* token, const char* s) {

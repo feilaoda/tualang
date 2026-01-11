@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static LabelInfo* findLabel(Block* block, const char* name, int length) {
     if (!block || !block->labels) return NULL;
     for (int i = 0; i < block->labels->length; i++) {
@@ -67,4 +69,3 @@ void emitGotoStmt(Compiler* compiler, GotoStmt* stmt) {
     LLVMBasicBlockRef cont = LLVMAppendBasicBlock(compiler->current->func, "after.goto");
     LLVMPositionBuilderAtEnd(builder, cont);
 }
-
