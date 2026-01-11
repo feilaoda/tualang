@@ -1,8 +1,0 @@
-let y = 3
-if true {
-
-  let y = 2
-  println(y)
-}
-
-println(y)

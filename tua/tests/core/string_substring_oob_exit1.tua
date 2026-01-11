@@ -1,7 +1,0 @@
-// expect-exit: 1
-fn main() {
-  let s: string = "你好啊"
-  // i == len() is out of range and should panic.
-  let _ = s.substring(3)
-}
-

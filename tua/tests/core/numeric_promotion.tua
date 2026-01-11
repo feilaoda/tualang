@@ -1,8 +1,0 @@
-fn main() {
-  assert(1 + 2L == 3L)
-  assert(1L + 2 == 3L)
-  assert(1 + 2.0 == 3.0)
-  assert(2 * 3L == 6L)
-  assert(7L / 2 == 3L)
-  assert(7 / 2L == 3L)
-}

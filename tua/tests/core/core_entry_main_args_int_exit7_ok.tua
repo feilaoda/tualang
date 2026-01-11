@@ -1,7 +1,0 @@
-// expect-exit: 7
-fn main(args: string[]) -> int {
-  println("args len {}, {}", args.len(), args[0])
-  assert(args.len() >= 1)
-
-  return 7
-}

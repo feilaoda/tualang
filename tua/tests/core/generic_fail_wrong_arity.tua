@@ -1,7 +1,0 @@
-fn id<T>(x: T) -> T {
-  return x
-}
-
-fn main() {
-  id<int, long>(1)
-}

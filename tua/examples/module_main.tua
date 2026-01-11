@@ -1,6 +1,0 @@
-import "module_side_effect.tua"
-
-from "module_math.tua" import add,MathUtils
-
-println(add(1, 2))
-println(MathUtils.mul(3, 4))

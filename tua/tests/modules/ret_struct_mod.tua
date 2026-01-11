@@ -1,9 +1,0 @@
-struct S { a: int }
-
-fn make() -> S {
-  return S{ a: 1 }
-}
-
-fn getA(s: S) -> int {
-  return s.a
-}

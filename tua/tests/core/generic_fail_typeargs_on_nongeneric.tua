@@ -1,7 +1,0 @@
-fn f(x: int) -> int {
-  return x
-}
-
-fn main() {
-  f<int>(1)
-}

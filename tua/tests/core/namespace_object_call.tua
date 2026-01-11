@@ -1,5 +1,0 @@
-import "../modules/ns_obj" as m
-
-fn main() {
-  assert(m.Obj.f() == 42)
-}

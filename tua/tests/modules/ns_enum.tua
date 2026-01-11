@@ -1,3 +1,0 @@
-enum E { A = 0, B = 10 }
-
-enum S { X = "X", Y = "rawy" }

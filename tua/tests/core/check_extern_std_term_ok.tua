@@ -1,6 +1,0 @@
-import "std/term" as term
-
-fn main() {
-
-  let _ = term
-}

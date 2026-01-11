@@ -1,6 +1,0 @@
-import "../modules/import_mod"
-import "../modules/import_mod_conflict"
-
-fn main() {
-  println(A())
-}

@@ -1,2 +1,0 @@
-fn A() -> int { return 1 }
-fn B() -> string { return "ok" }

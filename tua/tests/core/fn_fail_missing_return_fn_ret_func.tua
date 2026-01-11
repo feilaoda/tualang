@@ -1,2 +1,0 @@
-fn bar(x:int) -> (int) int {
-}

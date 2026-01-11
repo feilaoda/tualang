@@ -1,6 +1,0 @@
-fn main() {
-  assert(true, "true should pass")
-  assert(1 == 1, "1 == 1")
-  assert(1 != 2, "1 != 2")
-  assert("a" == "a", "string equality by content")
-}

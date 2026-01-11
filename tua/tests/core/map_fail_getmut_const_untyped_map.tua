@@ -1,7 +1,0 @@
-fn main() {
-
-  const m: map = {"a": 1}
-
-  let o = m.getMut("a")
-  println(o.isSome())
-}

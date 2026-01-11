@@ -1,9 +1,0 @@
-fn main() {
-
-  let a:int[] = []
-  println(a.len())
-  a.push(1)
-  println(a.len())
-  println(a[0])
-}
-main()

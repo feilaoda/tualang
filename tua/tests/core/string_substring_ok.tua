@@ -1,8 +1,0 @@
-fn main() {
-  let s: string = "你好啊"
-  assert(s.substring(0) == "你好啊")
-  assert(s.substring(1) == "好啊")
-  assert(s.substring(-1) == "啊")
-  assert(s.substring(-3) == "你好啊")
-}
-

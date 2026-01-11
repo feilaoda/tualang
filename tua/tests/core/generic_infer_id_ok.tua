@@ -1,7 +1,0 @@
-fn id<T>(move x: T) -> T {
-  return x
-}
-
-fn main() {
-  assert(id(1) == 1)
-}

@@ -1,3 +1,0 @@
-fn id<T>(move x: T) -> T {
-  return x
-}

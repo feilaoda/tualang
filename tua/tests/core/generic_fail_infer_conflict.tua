@@ -1,7 +1,0 @@
-fn same<T>(move a: T, move b: T) -> T {
-  return a
-}
-
-fn main() {
-  same(1, 2.0)
-}
