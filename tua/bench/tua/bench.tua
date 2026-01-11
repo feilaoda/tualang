@@ -3,8 +3,12 @@ import "std/bytes" as bstd
 import "std/fs" as fs
 import "std/rt" as rt
 import "std/strconv" as conv
-import "json" as json
-import IntIntMap, IntIntMaps from "map/int_int_map"
+//import "json" as json
+
+extern fn tua_iimap_new(cap_pow2: int) -> ptr
+extern fn tua_iimap_free(h: ptr)
+extern fn tua_iimap_set(h: ptr, key: int, value: int)
+extern fn tua_iimap_get_present(h: ptr, key: int) -> int
 
 struct Foo {
   a: int
@@ -206,21 +210,20 @@ private fn benchMapLookupFoo(iters: long, m: map<int, Foo>, mod: int) -> long {
   return acc
 }
 
-private fn makeIntIntMap(size: int, capPow2: int) -> IntIntMap {
+private fn makeIntIntMap(size: int, capPow2: int) -> ptr {
 
-  let m, e = IntIntMaps.new(capPow2)
-
-  if e != 0 { return m }
+  let h = tua_iimap_new(capPow2)
+  if h == null { return null }
 
   for i = 0; i < size; i++ {
-    m.set(i, (i * 2) + 1)
+    tua_iimap_set(h, i, (i * 2) + 1)
 
   }
 
-  return m
+  return h
 }
 
-private fn benchIntIntMapLookup(iters: long, m: IntIntMap, mod: int) -> long {
+private fn benchIntIntMapLookup(iters: long, h: ptr, mod: int) -> long {
 
   let acc: long = 0L
 
@@ -232,13 +235,14 @@ private fn benchIntIntMapLookup(iters: long, m: IntIntMap, mod: int) -> long {
     x = (x * 1103515245L + 12345L) & 2147483647L
 
     let k: int = (int)(x & mask)
-    acc = acc + (long)m.getPresent(k)
+    acc = acc + (long)tua_iimap_get_present(h, k)
 
   }
 
   return acc
 }
 
+/*
 private fn loadJsonBytes(path: string) -> bytes {
 
   let data, n, e = fs.Fs.readFile(path)
@@ -272,6 +276,7 @@ private fn benchJsonScanTopLevelLong(iters: int, b: bytes, key: string) -> long 
 
   return acc
 }
+*/
 
 private fn runAll() -> int {
   // Keep defaults quick-ish; override via CLI.
@@ -351,9 +356,9 @@ private fn runAll() -> int {
   let tf1 = nowNs()
   report("tua/map_lookup_foo_8k", itersLookup, tf1 - tf0, sf)
 
-  let m2: IntIntMap = makeIntIntMap(8192, 16384)
+  let m2: ptr = makeIntIntMap(8192, 16384)
 
-  if !m2.isNull() {
+  if m2 != null {
 
     let tm2 = nowNs()
 
@@ -362,7 +367,7 @@ private fn runAll() -> int {
     let tm3 = nowNs()
     report("tua/intintmap_lookup_8k", itersLookup, tm3 - tm2, sm2)
 
-    m2.free()
+    tua_iimap_free(m2)
 
   } else {
     println("tua/intintmap_lookup_8k skipped (alloc failed)")
@@ -370,7 +375,7 @@ private fn runAll() -> int {
   }
 
   // 5) JSON scan (top-level long)
-
+/*
   let jb = loadJsonBytes("bench/data/scan_top_level.json")
 
   if jb != null {
@@ -386,6 +391,7 @@ private fn runAll() -> int {
     println("tua/json_scan_top_long skipped (missing input)")
 
   }
+  */
 
   return 0
 }
@@ -474,9 +480,9 @@ fn main(args: string[]) -> int {
 
   if name == "intintmap_lookup" {
 
-    let m: IntIntMap = makeIntIntMap(8192, 16384)
+    let m: ptr = makeIntIntMap(8192, 16384)
 
-    if m.isNull() { return 2 }
+    if m == null { return 2 }
 
     let t0 = nowNs()
 
@@ -485,7 +491,7 @@ fn main(args: string[]) -> int {
     let t1 = nowNs()
     report("tua/intintmap_lookup_8k", iters, t1 - t0, s)
 
-    m.free()
+    tua_iimap_free(m)
 
     return 0
 
@@ -540,6 +546,8 @@ fn main(args: string[]) -> int {
 
   }
 
+  /*
+
   if name == "json_scan_top_long" {
 
     let jb = loadJsonBytes("bench/data/scan_top_level.json")
@@ -556,6 +564,8 @@ fn main(args: string[]) -> int {
     return 0
 
   }
+
+  */
 
   println("unknown bench: {}", name)
 

@@ -206,21 +206,11 @@
 - [ ] `rt_net` Windows：Winsock + IOCP
 - [ ] `rt_fs_async` Windows：Overlapped I/O + IOCP（或线程池过渡）
 
-### 11. LLM 推理（CPU-first，先跑通再优化）
+### 11. Packages 基础能力（core）
 
-目标：先在 macOS/Linux 上跑通 **本地推理**（CPU），不依赖大型外部运行时；Windows 后续对齐。
+本节只记录 **支持 packages 的通用基础能力**（语言/编译器/运行时/标准库层面的通用能力）。
 
-原则：**不把应用（LLM）逻辑耦合进编译器**。
-- 编译器只提供通用语言能力与通用 FFI/构建能力；不新增任何 “llm 专用 builtin”。
-- `tua_rt` 只提供跨平台底座（内存/线程/文件/时间/句柄/loop）；不内置模型/推理算法。
-- `std` 提供可复用的通用库（bytes/io/json/tokenizer 等）；LLM 逻辑优先放到独立的 `llm` 包/库中（Tua + 可选 C 内核）。
-
-#### 11.0 LLM 跑通所需基础能力（分层归属）
-说明：本节不重复列项；以下各层的 TODO 为唯一事实来源：
-- `language/spec`：见 7（内存模型）与 11.1（通用语言/编译器能力）
-- `tua_rt`：见 11.2
-- `std`：见 11.3
-- `llm`：见 11.4
+包本身（应用层/扩展能力）的规划与 TODO 已移到 `docs/PACKAGE_ROADMAP.md`。
 
 #### 11.1 语言/编译器（通用能力，不专属于 LLM）
 - [x] 基础数值类型 + 溢出/转换规则（第一版）
@@ -233,7 +223,7 @@
   - [ ] 后续：FP8（E4M3/E5M2 等）具体格式与算术/向量化支持（为 AI 量化做准备）
 - [ ] 高效 `bytes`/`slice<T>` 视图（避免把 `string` 当字节容器；`bytes` v0 已落地，`slice<T>` 待实现）
 - [x] 通用 FFI：Tua 侧声明外部符号与签名（例如 `extern fn ...`），避免在编译器里维护函数名白名单
-- [ ] 构建/链接：通用方式引入外部库（静态/动态），不为 LLM 单独加 `tuac llm ...` 子命令
+- [ ] 构建/链接：通用方式引入外部库（静态/动态），不为特定应用单独加 `tuac xxx ...` 子命令
   - [x] CLI：`tuac` 支持 `--link-search/-L`、`--link-lib/-l`、`--link-arg`（透传到系统链接器）
   - [x] AOT：`tuac --output a.out` 时把外部库链接进最终可执行文件（macOS/Linux）
   - [x] JIT：把外部库加载进宿主 `tuac`（或 `dlopen`）以便 JIT 解析符号
@@ -246,58 +236,11 @@
 #### 11.2 `tua_rt`（跨平台底座）
 - [ ] 大文件能力：流式读取 + `mmap`（POSIX 第一版），Windows 先 stub
 - [ ] 线程/并行：workqueue + 原子/CPU feature 探测（为 SIMD/量化做准备）
-- [ ] RNG：可复现的基础随机数（用于 sampling；也可由 std/llm 自带实现）
+- [ ] RNG：可复现的基础随机数（用于采样/测试/基准；也可由上层自行实现）
 
 #### 11.3 `std`（通用库，LLM 可复用）
 - [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
 - [x] `std.bytes` / `std.io`（v0）：`bytes` v0 + LE 读取工具 + `Reader/Cursor/BufReader`（std 版拷贝实现）
 - [x] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化（`Bytes.copy`）+ mmap-backed file reader（避免逐字节 set/get）
-- [x] `std.utf8`（v0）：UTF-8 校验 + codepoint 解码 + 边界切分（用于 tokenizer、文本切片）
-- [x] `std.json`（v0）：最小 JSON 解析（用于模型配置/metadata/推理参数）
-- [x] `std.json`（v1）：性能与可控性
-  - [x] string 解析快路径：无转义时零额外 buffer（直接 copy 子串）
-  - [x] scan API：按需读取顶层字段（不构建整个 DOM），适配 `tokenizer.json` 等大文件场景
-  - [x] scan API（v1.1）：更多顶层标量类型（string/bool/long + 按需解析 value 子树）
-  - [x] scan API（v1.2）：支持按 key-path 扫描（例如 `"a.b.c"`）
-  - [x] scan/streaming API（v1.3）：支持按 key-path 解析出常见容器（`map<string,long>` / `string[]`），适配 tokenizer 的 `vocab/merges`
-  - [x] 限制版 DOM：`parseBytesWithLimits(maxDepth/maxNodes/maxStringBytes)`（防止峰值内存失控）
-  - [x] C runtime 加速（可选）：`tua_json_scan_top_level_{string,long,bool}` 在 C 侧扫描/跳过，`std.json` 优先走 C 快路径
-  - [x] 数值解析优化：指数缩放改为 O(log|exp|)（pow10/exp-by-squaring）
-- [ ] Tokenizer：先做正确性，再做性能
-  - [x] BPE（v0）：加载 `tokenizer.json`（`vocab/merges/added_tokens`）+ 小型 fixture 的 encode/decode 冒烟测试
-  - [ ] BPE（v1）：加载真实模型（Qwen3）的 `tokenizer.json` + 与参考实现对齐（分词/解码一致性）
-    - [x] added_tokens：Qwen3 special token 的 encode/decode 对齐（基础用例）
-    - [ ] pre_tokenizer regex：Unicode 类别（`\p{L}`/`\p{N}`/`\s`）完整对齐（可能需要 C 侧表或 ICU；先留接口）
-    - [ ] decoder/byte-fallback：对齐 HF ByteLevel 行为（unknown byte 的 `<0xXX>`/替代策略、以及 decode 的 byte->utf8 还原边界）
-    - [ ] normalizer（可选）：若 tokenizer.json 指定 NFC/NFKC/Lowercase 等，先做最小兼容（未指定则保持原样）
-    - [ ] 边界一致性：`encode(decode(ids))` 与 `decode(encode(text))` 在常见输入上稳定（含中文/emoji/混合标点/换行）
-  - [ ] BPE（perf）：减少分配/复制、预处理正则/分词、merge 循环优化、热点下沉到 C/Accelerate（预留后端）
-    - [x] merge 核心下沉到 C runtime（reference O(n^2)），避免 Tua 侧 O(n^2) 热循环
-    - [x] examples：`llm_tokenizer_qwen3_perf.tua`（tok/s 基准 + repeat 参数）
-    - [x] 进一步优化：减少 bytes->id per-byte 调用（bytes->ids 下沉到 C）
-    - [ ] 进一步优化：decode 热路径下沉到 C（ids->bytes），避免 Tua 侧 utf8 decode + map lookup + per-byte set
-    - [ ] 进一步优化：减少临时数组（spans/ids/word/out）、提供可复用 scratch（避免在每段/每 token 分配）
-    - [ ] 进一步优化：added_tokens 匹配加速（按首字节分桶/Trie；减少 `memcmp` 次数）
-    - [ ] 进一步优化：预处理 pre_tokenizer（把 Unicode 分类/扫描搬到 C；Tua 侧只拿 spans）
-    - [ ] 进一步优化：merge 数据结构优化（pairRank/pairMergeId 的 cache-friendly 表示；hash->sorted array / open-addressing）
-    - [ ] 观测与上限：统计 spans/merge 次数与峰值内存；提供参数限制（maxInputBytes/maxSpans/maxMerges）避免极端输入拖垮
-
-#### 11.4 `llm` 外部包（应用代码：模型/推理/采样）
-说明：可以是仓库内 `packages/llm`（或 `examples/llm`），也可以是外部独立 repo；核心要求是 **不依赖编译器特判**。
-- [ ] 模型格式：先支持一种主流格式（建议 GGUF）；也允许直接加载 HF 原生格式（如 safetensors）
-  - [x] GGUF（v0）：解析 header + KV metadata（先不做 tensor）
-  - [ ] GGUF（v1）：解析 tensor infos + tensor data layout
-- [x] SafeTensors（v0）：mmap + header 解析 + tensor 视图（零拷贝元数据；数据区按需转换/缓存）
-- [ ] 数学内核：优先“可用速度”，先接入系统 BLAS（macOS Accelerate），并保留可替换后端接口
-- [ ] KV cache：抽象接口 + 至少一种实现（layout/精度/内存上限可配置；为未来更多 KV 实现预留）
-- [ ] Sampling：softmax + temperature + top-k/top-p + RNG（可复现）
-- [x] Runner：提供 `packages/llm/examples/llm_run_qwen3.tua`（最小 CLI：加载 tokenizer+模型、prefill+decode1 冒烟）
-
-#### 11.5 R-llm-1：性能与量化
-- [ ] 量化：q4/q8（至少一种）+ 对应 dot kernel
-- [ ] SIMD：SSE/AVX/NEON（按平台探测），逐步替换 baseline
-- [ ] Prefill/Decode 调度：线程划分、batch、缓存友好
-
-#### 11.6 R-llm-2：工程化与生态
-- [ ] `std.http`（可选）：模型/配置加载
-- [ ] 流式输出：token-by-token callback/iterator 语义（对接 UI/Agent）
+- [x] `std.utf8`（v0）：UTF-8 校验 + codepoint 解码 + 边界切分（用于文本切片等）
+- 说明：JSON/Tokenizer/LLM 的“包实现”不在本文件维护；见 `docs/PACKAGE_ROADMAP.md`

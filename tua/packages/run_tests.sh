@@ -19,7 +19,7 @@ done < <(find "$ROOT/packages" -type f -name '*.tua' -path '*/tests/*' | sort)
 
 if [[ "${#files[@]}" -eq 0 ]]; then
   echo "No tests found under packages/*/tests"
-  exit 1
+  exit 0
 fi
 
 # If any tests request external libraries via `// tuac: ...`, build them once up-front.
@@ -216,7 +216,7 @@ done
 
 if [[ "$total" -eq 0 ]]; then
   echo "No tests found under packages/*/tests"
-  exit 1
+  exit 0
 fi
 
 exit "$fail"

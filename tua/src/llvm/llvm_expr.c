@@ -702,6 +702,168 @@ static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_new", fnType);
 }
 
+static int imapValueTagFromValueKind(TypeKind k, int* outTag) {
+    if (outTag) *outTag = 0;
+    switch (k) {
+        case TYPE_BOOL:
+            if (outTag) *outTag = TUA_VAL_BOOL;
+            return 1;
+        case TYPE_INT:
+        case TYPE_U32:
+            if (outTag) *outTag = TUA_VAL_INT;
+            return 1;
+        case TYPE_LONG:
+        case TYPE_U64:
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+        case TYPE_BYTE:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_U8:
+        case TYPE_U16:
+            if (outTag) *outTag = TUA_VAL_LONG;
+            return 1;
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF16:
+            if (outTag) *outTag = TUA_VAL_DOUBLE;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static LLVMValueRef getOrCreateTuaIMapNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_imap_new");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i32, i32 }; // value_tag, hint
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_imap_new", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaIMapNewI32(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_imap_new_i32");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i32, i32 }; // value_tag, hint
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_imap_new_i32", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaIMapGetPayloadWithOk(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_imap_get_payload_with_ok");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[3] = { mapType, i64, LLVMPointerType(i32, 0) };
+    LLVMTypeRef fnType = LLVMFunctionType(i64, params, 3, 0);
+    return LLVMAddFunction(compiler->module, "tua_imap_get_payload_with_ok", fnType);
+}
+
+static LLVMTypeRef compilerGetIMapStructType(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef existing = LLVMGetTypeByName2(context, "tua_imap");
+    if (existing) return existing;
+
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(context);
+    LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+    LLVMTypeRef i64ptr = LLVMPointerType(i64, 0);
+
+    // Must match `src/tua_imap.c` layout (LP64):
+    // { u32 kind, i32 value_tag, u32 key_kind, u32 pad, size_t cap, size_t count, size_t tombstones, u8* ctrl, void* keys, u64* vals }
+    LLVMTypeRef fields[10] = { i32, i32, i32, i32, i64, i64, i64, i8ptr, i8ptr, i64ptr };
+    LLVMTypeRef ty = LLVMStructCreateNamed(context, "tua_imap");
+    LLVMStructSetBody(ty, fields, 10, 0);
+    return ty;
+}
+
+static LLVMValueRef emitHashU32(Compiler* compiler, LLVMValueRef x32) {
+    if (!compiler || !x32) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    if (LLVMTypeOf(x32) != i32) x32 = castToType(compiler, x32, i32);
+
+    LLVMValueRef x = x32;
+    LLVMValueRef s16 = LLVMConstInt(i32, 16, 0);
+    LLVMValueRef s15 = LLVMConstInt(i32, 15, 0);
+    LLVMValueRef c1 = LLVMConstInt(i32, 0x7feb352dULL, 0);
+    LLVMValueRef c2 = LLVMConstInt(i32, 0x846ca68bULL, 0);
+    LLVMValueRef one = LLVMConstInt(i32, 1, 0);
+    LLVMValueRef zero = LLVMConstInt(i32, 0, 0);
+
+    x = LLVMBuildXor(builder, x, LLVMBuildLShr(builder, x, s16, ""), "");
+    x = LLVMBuildMul(builder, x, c1, "");
+    x = LLVMBuildXor(builder, x, LLVMBuildLShr(builder, x, s15, ""), "");
+    x = LLVMBuildMul(builder, x, c2, "");
+    x = LLVMBuildXor(builder, x, LLVMBuildLShr(builder, x, s16, ""), "");
+
+    LLVMValueRef isZero = LLVMBuildICmp(builder, LLVMIntEQ, x, zero, "hz");
+    return LLVMBuildSelect(builder, isZero, one, x, "h");
+}
+
+static LLVMValueRef buildI64KeyFromNumericKeyExpr(Compiler* compiler, LLVMValueRef keyExpr, TypeKind keyKind) {
+    if (!compiler || !keyExpr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef t = LLVMTypeOf(keyExpr);
+    if (LLVMGetTypeKind(t) != LLVMIntegerTypeKind) return NULL;
+    unsigned bits = LLVMGetIntTypeWidth(t);
+    if (bits == 1) return NULL;
+    if (bits == 64) return keyExpr;
+    if (bits > 64) return LLVMBuildTrunc(builder, keyExpr, i64, "k_trunc");
+    if (typeKindIsUnsignedInt(keyKind)) return LLVMBuildZExt(builder, keyExpr, i64, "k_zext");
+    return LLVMBuildSExt(builder, keyExpr, i64, "k_sext");
+}
+
+static LLVMValueRef decodeScalarFromPayloadBits(Compiler* compiler, LLVMValueRef payloadI64, TypeKind kind, LLVMTypeRef targetType) {
+    if (!compiler || !payloadI64 || !targetType) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(context);
+    if (LLVMTypeOf(payloadI64) != i64) payloadI64 = castToType(compiler, payloadI64, i64);
+
+    if (typeKindIsInt(kind) || kind == TYPE_BYTE) {
+        return castToType(compiler, payloadI64, targetType);
+    }
+    if (kind == TYPE_BOOL) {
+        LLVMValueRef b1 = LLVMBuildTrunc(builder, payloadI64, i1, "b1");
+        return castToType(compiler, b1, targetType);
+    }
+    if (kind == TYPE_DOUBLE) {
+        LLVMValueRef d = LLVMBuildBitCast(builder, payloadI64, LLVMDoubleTypeInContext(context), "d");
+        return castToType(compiler, d, targetType);
+    }
+    if (kind == TYPE_FLOAT) {
+        LLVMValueRef d = LLVMBuildBitCast(builder, payloadI64, LLVMDoubleTypeInContext(context), "df64");
+        LLVMValueRef f = LLVMBuildFPTrunc(builder, d, LLVMFloatTypeInContext(context), "f32");
+        return castToType(compiler, f, targetType);
+    }
+    if (kind == TYPE_F16) {
+        LLVMValueRef d = LLVMBuildBitCast(builder, payloadI64, LLVMDoubleTypeInContext(context), "df64");
+        LLVMValueRef f = LLVMBuildFPTrunc(builder, d, LLVMFloatTypeInContext(context), "f32");
+        LLVMValueRef h = LLVMBuildFPTrunc(builder, f, LLVMHalfTypeInContext(context), "f16");
+        return castToType(compiler, h, targetType);
+    }
+    if (kind == TYPE_BF16) {
+        LLVMValueRef d = LLVMBuildBitCast(builder, payloadI64, LLVMDoubleTypeInContext(context), "df64");
+        LLVMValueRef f = LLVMBuildFPTrunc(builder, d, LLVMFloatTypeInContext(context), "f32");
+        LLVMValueRef bf = LLVMBuildFPTrunc(builder, f, LLVMBFloatTypeInContext(context), "bf16");
+        return castToType(compiler, bf, targetType);
+    }
+    return NULL;
+}
+
 static LLVMValueRef getOrCreateTuaMapGet(Compiler* compiler) {
     LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_map_get");
     if (existing) return existing;
@@ -2269,13 +2431,37 @@ LLVMValueRef emitMapLiteralExpr(Compiler* compiler, MapLiteralExpr* expr) {
     if (!compiler || !expr) return NULL;
     LLVMBuilderRef builder = compiler->builder;
     LLVMTypeRef mapType = compilerGetMapType(compiler);
-    LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
-    LLVMValueRef mapVal = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "map");
-    mapVal = castToType(compiler, mapVal, mapType);
 
     LLVMTypeRef expectedKeyTy = compiler->expectedMapKeyType;
     LLVMTypeRef expectedValTy = compiler->expectedMapValueType;
     LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+
+    int useIMap = 0;
+    int imapTag = 0;
+    if (expectedKeyTy && expectedValTy && expectedValTy != vt && expectedKeyTy != i8ptr) {
+        if (imapValueTagFromValueKind(compiler->expectedMapValueKind, &imapTag)) {
+            useIMap = 1;
+        }
+    }
+
+    LLVMValueRef mapVal = NULL;
+    if (useIMap) {
+        LLVMValueRef newFn =
+            (compiler->expectedMapKeyKind == TYPE_INT) ? getOrCreateTuaIMapNewI32(compiler) : getOrCreateTuaIMapNew(compiler);
+        LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        int32_t hint = expr->entries ? (int32_t)expr->entries->length : 0;
+        LLVMValueRef args2[2] = {
+            LLVMConstInt(i32, (uint64_t)(int64_t)imapTag, 1),
+            LLVMConstInt(i32, (uint64_t)(int64_t)hint, 1),
+        };
+        mapVal = LLVMBuildCall2(builder, newTy, newFn, args2, 2, "imap");
+    } else {
+        LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+        mapVal = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "map");
+    }
+    mapVal = castToType(compiler, mapVal, mapType);
 
     LLVMValueRef setFn = getOrCreateTuaMapSet(compiler);
     LLVMTypeRef setType = LLVMGlobalGetValueType(setFn);
@@ -2699,8 +2885,7 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
     }
 
     TypeKind keyK = expr->index ? expr->index->inferredType : TYPE_ANY;
-    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr, keyK);
-    if (!key) return NULL;
+    LLVMValueRef key = NULL;
 
     // Determine V for typed maps when receiver is a simple variable.
     LLVMTypeRef innerType = compilerGetTuaValueType(compiler);
@@ -2735,6 +2920,9 @@ LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr) {
             }
         }
     }
+
+    key = tuaValueFromKey(compiler, keyExpr, keyK);
+    if (!key) return NULL;
 
     LLVMValueRef okPtr = buildEntryAlloca(compiler, LLVMInt32TypeInContext(compiler->context), "mokptr");
     LLVMValueRef getFn = getOrCreateTuaMapGetWithOk(compiler);
@@ -2823,8 +3011,6 @@ LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr) {
     }
 
     TypeKind keyK = expr->index ? expr->index->inferredType : TYPE_ANY;
-    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr, keyK);
-    if (!key) return NULL;
 
     // Determine the value type for typed maps (scalar-only for `m[k]` reads).
     LLVMTypeRef vt = compilerGetTuaValueType(compiler);
@@ -2859,10 +3045,256 @@ LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr) {
         }
     }
 
-    // Typed maps with non-`any` values cannot store `nil`, so we can use `tua_map_get` and
-    // treat `nil` as "missing" (faster than `get_with_ok`).
+    int useIMapFast = 0;
+    if (recvVar.isTypedMap && innerType != vt) {
+        // Only optimize integer-key typed maps with non-string scalar values in this phase.
+        int intKey = (recvVar.mapKeyKind == TYPE_INT || recvVar.mapKeyKind == TYPE_LONG);
+        int tag = 0;
+        if (intKey && imapValueTagFromValueKind(innerKind, &tag) && innerKind != TYPE_STRING) {
+            useIMapFast = 1;
+        }
+    }
+
+    LLVMValueRef fn = compiler->current->func;
+    if (useIMapFast) {
+        // Null check (match tua_map_get* panic behavior).
+        LLVMTypeRef mapType = compilerGetMapType(compiler);
+        LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, obj, LLVMConstNull(mapType), "mnull");
+        LLVMBasicBlockRef okObjBB = LLVMAppendBasicBlock(fn, "idx.map.ok");
+        LLVMBasicBlockRef badObjBB = LLVMAppendBasicBlock(fn, "idx.map.null");
+        LLVMBuildCondBr(builder, isNull, badObjBB, okObjBB);
+
+        LLVMPositionBuilderAtEnd(builder, badObjBB);
+        LLVMValueRef panicFn0 = getOrCreateTuaPanic(compiler);
+        LLVMTypeRef panicType0 = LLVMGlobalGetValueType(panicFn0);
+        LLVMValueRef msg0 = LLVMBuildGlobalStringPtr(builder, "index null map", "mpanicmsg");
+        LLVMBuildCall2(builder, panicType0, panicFn0, &msg0, 1, "");
+        LLVMBuildUnreachable(builder);
+
+        LLVMPositionBuilderAtEnd(builder, okObjBB);
+
+        // Runtime kind check (avoid assuming the map was allocated as an IMAP).
+        // kind is stored in the first u32 of the runtime map object.
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
+        LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+        LLVMValueRef kindPtr = LLVMBuildBitCast(builder, obj, i32ptr, "mkptr");
+        LLVMValueRef kind = LLVMBuildLoad2(builder, i32, kindPtr, "mk");
+        LLVMValueRef isIMap = LLVMBuildICmp(builder, LLVMIntEQ, kind, LLVMConstInt(i32, 2, 0), "is_imap");
+
+        LLVMBasicBlockRef imapBB = LLVMAppendBasicBlock(fn, "idx.imap");
+        LLVMBasicBlockRef genBB = LLVMAppendBasicBlock(fn, "idx.map");
+        LLVMBasicBlockRef joinBB = LLVMAppendBasicBlock(fn, "idx.join");
+        LLVMBuildCondBr(builder, isIMap, imapBB, genBB);
+
+        // IMAP path: call `tua_imap_get_payload_with_ok(map, key_i64, &ok)`.
+        LLVMPositionBuilderAtEnd(builder, imapBB);
+        LLVMValueRef keyI64 = buildI64KeyFromNumericKeyExpr(compiler, keyExpr, keyK);
+        if (!keyI64) {
+            compilerErrorAt(compiler, expr->base.token.line, "typed map key must be an integer");
+            return NULL;
+        }
+
+        int keyIsInt = (recvVar.mapKeyKind == TYPE_INT);
+        LLVMBasicBlockRef imapInlineBB = LLVMAppendBasicBlock(fn, "idx.imap.inline");
+        LLVMBasicBlockRef imapCallBB = LLVMAppendBasicBlock(fn, "idx.imap.call");
+        LLVMBasicBlockRef imapEndBB = LLVMAppendBasicBlock(fn, "idx.imap.end");
+
+        if (keyIsInt) {
+            LLVMTypeRef imapTy = compilerGetIMapStructType(compiler);
+            LLVMValueRef imapPtr = LLVMBuildBitCast(builder, obj, LLVMPointerType(imapTy, 0), "imap");
+            LLVMValueRef kkPtr = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 2, "kkp");
+            LLVMValueRef kk = LLVMBuildLoad2(builder, i32, kkPtr, "kk");
+            LLVMValueRef isI32 = LLVMBuildICmp(builder, LLVMIntEQ, kk, LLVMConstInt(i32, 1, 0), "is_i32");
+            LLVMBuildCondBr(builder, isI32, imapInlineBB, imapCallBB);
+        } else {
+            LLVMBuildBr(builder, imapCallBB);
+        }
+
+        // Inline fast path: int-key (i32) IMAP lookup.
+        LLVMValueRef inlinePayload = NULL;
+        LLVMValueRef inlineOk = NULL;
+        LLVMBasicBlockRef inlineDoneBB = NULL;
+        LLVMPositionBuilderAtEnd(builder, imapInlineBB);
+        {
+            LLVMTypeRef imapTy = compilerGetIMapStructType(compiler);
+            LLVMValueRef imapPtr = LLVMBuildBitCast(builder, obj, LLVMPointerType(imapTy, 0), "imap");
+            LLVMTypeRef i8 = LLVMInt8TypeInContext(compiler->context);
+            LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+            LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+            LLVMTypeRef i64ptr = LLVMPointerType(i64, 0);
+
+            LLVMValueRef capPtr = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 4, "capp");
+            LLVMValueRef cap = LLVMBuildLoad2(builder, i64, capPtr, "cap");
+            LLVMValueRef hasCap = LLVMBuildICmp(builder, LLVMIntNE, cap, LLVMConstInt(i64, 0, 0), "hascap");
+
+            LLVMBasicBlockRef loopPreBB = LLVMAppendBasicBlock(fn, "idx.imap.pre");
+            inlineDoneBB = LLVMAppendBasicBlock(fn, "idx.imap.done");
+            LLVMBasicBlockRef missBB = LLVMAppendBasicBlock(fn, "idx.imap.miss");
+            LLVMBuildCondBr(builder, hasCap, loopPreBB, missBB);
+
+            // miss (empty table)
+            LLVMPositionBuilderAtEnd(builder, missBB);
+            inlinePayload = LLVMConstInt(i64, 0, 0);
+            inlineOk = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 0, 0);
+            LLVMBuildBr(builder, inlineDoneBB);
+            LLVMBasicBlockRef missEnd = LLVMGetInsertBlock(builder);
+
+            // pre: load pointers, compute hash and enter loop
+            LLVMPositionBuilderAtEnd(builder, loopPreBB);
+            LLVMValueRef ctrlPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 7, "ctrlpp");
+            LLVMValueRef ctrlRaw = LLVMBuildLoad2(builder, i8ptr, ctrlPtrP, "ctrl");
+
+            LLVMValueRef keysPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 8, "keyspp");
+            LLVMValueRef keysRaw = LLVMBuildLoad2(builder, i8ptr, keysPtrP, "keysraw");
+            LLVMValueRef keys32 = LLVMBuildBitCast(builder, keysRaw, i32ptr, "keys32");
+
+            LLVMValueRef valsPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 9, "valspp");
+            LLVMValueRef vals = LLVMBuildLoad2(builder, i64ptr, valsPtrP, "vals");
+
+            LLVMValueRef mask = LLVMBuildSub(builder, cap, LLVMConstInt(i64, 1, 0), "mask");
+            LLVMValueRef key32 = LLVMBuildTrunc(builder, keyI64, i32, "k32");
+            LLVMValueRef h32 = emitHashU32(compiler, key32);
+            LLVMValueRef h2_8 = LLVMBuildTrunc(builder, LLVMBuildAnd(builder, h32, LLVMConstInt(i32, 0x7f, 0), ""), i8, "h2");
+            LLVMValueRef idx0 = LLVMBuildAnd(builder, LLVMBuildZExt(builder, h32, i64, "hz"), mask, "idx0");
+
+            LLVMBasicBlockRef loopBB = LLVMAppendBasicBlock(fn, "idx.imap.loop");
+            LLVMBasicBlockRef foundBB = LLVMAppendBasicBlock(fn, "idx.imap.found");
+            LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "idx.imap.cont");
+
+            LLVMBuildBr(builder, loopBB);
+
+            LLVMPositionBuilderAtEnd(builder, loopBB);
+            LLVMValueRef idxPhi = LLVMBuildPhi(builder, i64, "idx");
+            LLVMAddIncoming(idxPhi, &idx0, &loopPreBB, 1);
+
+            LLVMValueRef cptr = LLVMBuildInBoundsGEP2(builder, i8, ctrlRaw, &idxPhi, 1, "cp");
+            LLVMValueRef c = LLVMBuildLoad2(builder, i8, cptr, "c");
+            LLVMValueRef isEmpty = LLVMBuildICmp(builder, LLVMIntEQ, c, LLVMConstInt(i8, 0x80, 0), "empty");
+            LLVMBasicBlockRef checkBB = LLVMAppendBasicBlock(fn, "idx.imap.check");
+            LLVMBuildCondBr(builder, isEmpty, missBB, checkBB);
+
+            LLVMPositionBuilderAtEnd(builder, checkBB);
+            LLVMValueRef isH2 = LLVMBuildICmp(builder, LLVMIntEQ, c, h2_8, "h2eq");
+            LLVMBasicBlockRef h2BB = LLVMAppendBasicBlock(fn, "idx.imap.h2");
+            LLVMBuildCondBr(builder, isH2, h2BB, contBB);
+
+            LLVMPositionBuilderAtEnd(builder, h2BB);
+            LLVMValueRef kptr = LLVMBuildInBoundsGEP2(builder, i32, keys32, &idxPhi, 1, "kp");
+            LLVMValueRef k = LLVMBuildLoad2(builder, i32, kptr, "k");
+            LLVMValueRef keq = LLVMBuildICmp(builder, LLVMIntEQ, k, key32, "keq");
+            LLVMBuildCondBr(builder, keq, foundBB, contBB);
+
+            LLVMPositionBuilderAtEnd(builder, foundBB);
+            LLVMValueRef vptr = LLVMBuildInBoundsGEP2(builder, i64, vals, &idxPhi, 1, "vp");
+            LLVMValueRef v = LLVMBuildLoad2(builder, i64, vptr, "pay");
+            LLVMBuildBr(builder, inlineDoneBB);
+            LLVMBasicBlockRef foundEnd = LLVMGetInsertBlock(builder);
+
+            LLVMPositionBuilderAtEnd(builder, contBB);
+            LLVMValueRef idx1 = LLVMBuildAnd(builder, LLVMBuildAdd(builder, idxPhi, LLVMConstInt(i64, 1, 0), "idx1"), mask, "idxn");
+            LLVMBuildBr(builder, loopBB);
+            LLVMBasicBlockRef contEnd = LLVMGetInsertBlock(builder);
+            LLVMAddIncoming(idxPhi, &idx1, &contEnd, 1);
+
+            LLVMPositionBuilderAtEnd(builder, inlineDoneBB);
+            LLVMValueRef payPhi = LLVMBuildPhi(builder, i64, "payphi");
+            LLVMAddIncoming(payPhi, &v, &foundEnd, 1);
+            LLVMAddIncoming(payPhi, &inlinePayload, &missEnd, 1);
+            LLVMValueRef okPhi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(compiler->context), "okphi");
+            LLVMValueRef okFound = LLVMConstInt(LLVMInt1TypeInContext(compiler->context), 1, 0);
+            LLVMAddIncoming(okPhi, &okFound, &foundEnd, 1);
+            LLVMAddIncoming(okPhi, &inlineOk, &missEnd, 1);
+
+            inlinePayload = payPhi;
+            inlineOk = okPhi;
+            LLVMBuildBr(builder, imapEndBB);
+            (void)contBB;
+        }
+        LLVMBasicBlockRef inlineEnd = LLVMGetInsertBlock(builder);
+
+        // Call fallback: use runtime helper (supports i64 keys and legacy maps).
+        LLVMPositionBuilderAtEnd(builder, imapCallBB);
+        LLVMValueRef callOkPtr = buildEntryAlloca(compiler, i32, "iokptr");
+        LLVMValueRef getPayFn = getOrCreateTuaIMapGetPayloadWithOk(compiler);
+        LLVMTypeRef getPayTy = LLVMGlobalGetValueType(getPayFn);
+        LLVMValueRef args3[3] = { obj, keyI64, callOkPtr };
+        LLVMValueRef callPay = LLVMBuildCall2(builder, getPayTy, getPayFn, args3, 3, "pay");
+        LLVMValueRef callOk32 = LLVMBuildLoad2(builder, i32, callOkPtr, "iok32");
+        LLVMValueRef callOk1 = LLVMBuildTrunc(builder, callOk32, LLVMInt1TypeInContext(compiler->context), "iok");
+        LLVMBuildBr(builder, imapEndBB);
+        LLVMBasicBlockRef callEnd = LLVMGetInsertBlock(builder);
+
+        // Merge inline/call and decode.
+        LLVMPositionBuilderAtEnd(builder, imapEndBB);
+        LLVMValueRef payM = LLVMBuildPhi(builder, i64, "paym");
+        LLVMValueRef okM = LLVMBuildPhi(builder, LLVMInt1TypeInContext(compiler->context), "okm");
+        LLVMAddIncoming(payM, &callPay, &callEnd, 1);
+        LLVMAddIncoming(okM, &callOk1, &callEnd, 1);
+        if (keyIsInt) {
+            LLVMAddIncoming(payM, &inlinePayload, &inlineEnd, 1);
+            LLVMAddIncoming(okM, &inlineOk, &inlineEnd, 1);
+        }
+
+        LLVMValueRef vImap = decodeScalarFromPayloadBits(compiler, payM, innerKind, innerType);
+        if (!vImap) {
+            compilerErrorAt(compiler, expr->base.token.line, "typed map scalar decode failed");
+            return NULL;
+        }
+        LLVMValueRef ok1 = okM;
+        LLVMBuildBr(builder, joinBB);
+        LLVMBasicBlockRef imapEnd = LLVMGetInsertBlock(builder);
+
+        // Generic path: fall back to current `tua_map_get` logic.
+        LLVMPositionBuilderAtEnd(builder, genBB);
+        LLVMValueRef keyGen = tuaValueFromKey(compiler, keyExpr, keyK);
+        if (!keyGen) return NULL;
+        LLVMValueRef getFn = getOrCreateTuaMapGet(compiler);
+        LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
+        LLVMValueRef args2[2] = { obj, keyGen };
+        LLVMValueRef tv = LLVMBuildCall2(builder, getType, getFn, args2, 2, "mget");
+        LLVMValueRef tag = LLVMBuildExtractValue(builder, tv, 0, "mget_tag");
+        LLVMValueRef isNil = LLVMBuildICmp(builder, LLVMIntEQ, tag, LLVMConstInt(i32, 0, 0), "mget_nil");
+        LLVMValueRef okG = LLVMBuildNot(builder, LLVMBuildTrunc(builder, isNil, LLVMInt1TypeInContext(compiler->context), "mget_nil1"), "mget_ok");
+        LLVMValueRef vGen = decodeScalarFromTuaValueUnchecked(compiler, tv, innerKind, innerType);
+        if (!vGen) return NULL;
+        LLVMBuildBr(builder, joinBB);
+        LLVMBasicBlockRef genEnd = LLVMGetInsertBlock(builder);
+
+        // Join and unwrap.
+        LLVMPositionBuilderAtEnd(builder, joinBB);
+        LLVMValueRef okPhi = LLVMBuildPhi(builder, LLVMInt1TypeInContext(compiler->context), "ok");
+        LLVMValueRef okIn[2] = { ok1, okG };
+        LLVMBasicBlockRef okBBs[2] = { imapEnd, genEnd };
+        LLVMAddIncoming(okPhi, okIn, okBBs, 2);
+
+        LLVMValueRef vPhi = LLVMBuildPhi(builder, innerType, "v");
+        LLVMValueRef vIn[2] = { vImap, vGen };
+        LLVMBasicBlockRef vBBs[2] = { imapEnd, genEnd };
+        LLVMAddIncoming(vPhi, vIn, vBBs, 2);
+
+        LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "idx.unwrap.ok");
+        LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "idx.unwrap.none");
+        LLVMBuildCondBr(builder, okPhi, okBB, badBB);
+
+        LLVMPositionBuilderAtEnd(builder, badBB);
+        LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+        LLVMTypeRef panicType = LLVMGlobalGetValueType(panicFn);
+        LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "unwrap on None", "panicmsg");
+        LLVMBuildCall2(builder, panicType, panicFn, &msg, 1, "");
+        LLVMBuildUnreachable(builder);
+
+        LLVMPositionBuilderAtEnd(builder, okBB);
+        return vPhi;
+    }
+
+    // Default: use current `tua_map_get` / `tua_map_get_with_ok` logic.
     LLVMValueRef tv = NULL;
     LLVMValueRef ok = NULL;
+    // Build key only on paths that use the generic map API.
+    LLVMValueRef key = tuaValueFromKey(compiler, keyExpr, keyK);
+    if (!key) return NULL;
+
     if (innerType != vt) {
         LLVMValueRef getFn = getOrCreateTuaMapGet(compiler);
         LLVMTypeRef getType = LLVMGlobalGetValueType(getFn);
@@ -2890,7 +3322,6 @@ LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr) {
     }
     if (!outV) return NULL;
 
-    LLVMValueRef fn = compiler->current->func;
     LLVMBasicBlockRef okBB = LLVMAppendBasicBlock(fn, "idx.unwrap.ok");
     LLVMBasicBlockRef badBB = LLVMAppendBasicBlock(fn, "idx.unwrap.none");
     LLVMBuildCondBr(builder, ok, okBB, badBB);
@@ -2903,6 +3334,12 @@ LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr) {
     LLVMBuildUnreachable(builder);
 
     LLVMPositionBuilderAtEnd(builder, okBB);
+    if (innerType != vt && innerKind == TYPE_STRING) {
+        LLVMValueRef retainFn = getOrCreateTuaStrRetain(compiler);
+        LLVMTypeRef retainTy = LLVMGlobalGetValueType(retainFn);
+        LLVMValueRef args1[1] = { outV };
+        LLVMBuildCall2(builder, retainTy, retainFn, args1, 1, "");
+    }
     return outV;
 }
 
@@ -2912,6 +3349,8 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
     LLVMContextRef context = compiler->context;
     LLVMTypeRef mapType = compilerGetMapType(compiler);
     LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+    LLVMTypeRef vt = compilerGetTuaValueType(compiler);
 
     LLVMValueRef keyExpr = compileExpr(compiler, expr->index);
     if (!keyExpr) return NULL;
@@ -2991,10 +3430,30 @@ LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr) {
                 LLVMBasicBlockRef contBB = LLVMAppendBasicBlock(fn, "map.cont");
                 LLVMBuildCondBr(builder, isNull, initBB, contBB);
 
-                // initBB: m = tua_map_new()
+                // initBB: m = tua_map_new() / tua_imap_new()
                 LLVMPositionBuilderAtEnd(builder, initBB);
-                LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
-                LLVMValueRef newMap = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "newmap");
+                LLVMValueRef newMap = NULL;
+                int useIMap = 0;
+                int imapTag = 0;
+                if (var.isTypedMap && expectedKeyTy && expectedValTy && expectedValTy != vt && expectedKeyTy != i8ptr) {
+                    if (imapValueTagFromValueKind(var.mapValueKind, &imapTag)) {
+                        useIMap = 1;
+                    }
+                }
+                if (useIMap) {
+                    LLVMValueRef newFn =
+                        (var.mapKeyKind == TYPE_INT) ? getOrCreateTuaIMapNewI32(compiler) : getOrCreateTuaIMapNew(compiler);
+                    LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+                    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+                    LLVMValueRef args2[2] = {
+                        LLVMConstInt(i32, (uint64_t)(int64_t)imapTag, 1),
+                        LLVMConstInt(i32, 0, 0),
+                    };
+                    newMap = LLVMBuildCall2(builder, newTy, newFn, args2, 2, "newimap");
+                } else {
+                    LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+                    newMap = LLVMBuildCall2(builder, LLVMGlobalGetValueType(newFn), newFn, NULL, 0, "newmap");
+                }
                 newMap = castToType(compiler, newMap, mapType);
                 if (var.isBoxed) {
                     LLVMValueRef cell = LLVMBuildLoad2(builder, var.boxPtrType, var.value, "cell2");

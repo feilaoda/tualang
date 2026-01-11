@@ -17,10 +17,19 @@
 - `this` 规则（可用范围 + 隐式字段访问/赋值，见 7.1）
 
 ### 0.1 分层与归属（Frozen）
-本仓库约定三层：`tua_rt`（C 运行时/平台抽象）/ `std`（Tua 通用库）/ `llm`（应用包）。本节冻结“能力归属”，避免把 LLM 逻辑耦合进编译器或运行时。
+本仓库约定三层：`tua_rt`（C 运行时/平台抽象）/ `std`（Tua 通用库）/ `packages`（可选包模块/可选 C 内核）。本节冻结“能力归属”，避免把应用逻辑耦合进编译器或运行时。
 - [`tua_rt`] 只放通用跨平台原语与稳定 ABI：内存/句柄/文件/时间/线程/原子/workqueue/CPU feature/`mmap`
-- [`std`] 只放通用可复用能力：`bytes/io/json/tokenizer/utf8` 等，不绑定具体模型结构
-- [`llm`] 放模型格式、推理图、KV cache、采样、runner；可选引入通用 C 数学内核（但不新增“llm 专用 builtin”）
+- [`std`] 只放通用可复用能力：`bytes/io/utf8` 等（与语言核心解耦）
+- [`packages`] 放 **非核心** 能力与应用层代码（语言核心不依赖）；包能力的规格见 `docs/PACKAGE_SPEC.md`
+
+### 0.2 C 嵌入/多实例（Planned）
+说明：将来可能实现 `tua_dostring`/REPL/嵌入式运行；当前阶段以性能与核心语义为主，本节只冻结命名风格，其余作为规划方向，不作为当前实现硬约束。
+- 命名（Frozen）：
+  - C API 与 ABI 类型名统一使用 `snake_case`（例如 `tua_state`、`tuac_ctx`、`tua_error`），不使用 `tua_State`/`TuaState` 这类大小写混合命名
+  - C 导出符号同样使用 `snake_case`
+- 可重入/多实例（Planned）：
+  - 未来会逐步把缓存与可变状态归属到实例上下文（`tuac_ctx`/`tua_state`），以支持同一进程多实例
+  - 未来会把 import 搜索路径、模块缓存、字符串哈希 seed 等上下文化；CLI 环境变量仅作为默认值来源
 
 ### 1. 词法与分隔（Status: Implemented）
 - 语句以换行分隔；不要求每句以 `;` 结尾（实现层面：换行会被当作 separator token）。
@@ -40,7 +49,11 @@
   - `string`（Frozen 语义；运行时表示 Status: Planned）：
     - 值语义（无身份比较）：`==/!=` 按内容比较；语言不提供/不定义 `string` 的“指针身份相等”
     - 不可变：任何“修改”都是生成新字符串（例如 `b += "x"` 等价于 `b = b + "x"`）
-    - 自动管理：由运行时自动释放；实现建议为不可变 + 引用计数（RC）+ `byteLen/codepointLen`（可选缓存 hash），以支持高性能 map key 与内存友好共享
+    - 自动管理：由运行时自动释放；实现为不可变 + 引用计数（RC）+ `byteLen/codepointLen` + 缓存 `hash32`（见下），以支持高性能 map key 与内存友好共享
+    - hash（Frozen）：
+      - `string` 可缓存 `hash32`（0 表示未知）
+      - `hash32` 的计算算法默认使用 **SipHash（带随机 seed，安全优先）**
+      - 当前默认宽度为 32-bit（后续如需升级为 64-bit/可配置宽度，会以编译参数形式提供，并在 SPEC 冻结后再做兼容策略）
     - 逻辑语义：`string` 表示 Unicode 文本（codepoint 序列）
     - 默认编码/存储：运行时内部以 UTF-8 作为规范存储（canonical UTF-8）
     - `len()`：返回 Unicode codepoint 个数（例如 `"你好啊".len() == 3`）
@@ -200,6 +213,20 @@
   - 跳转：`goto name`
  - `Option<T>` 作为条件（Status: Implemented）：
    - `if opt { ... }` 等价于 `if opt.isSome() { ... }`
+
+#### 5.1 `unsafe { ... }`（Status: Partial）
+- 语法：`unsafe { <statements...> }`
+  - `unsafe` 不是保留关键字；仅在“语句位置”且紧跟 `{` 时被识别为 unsafe block（contextual keyword）
+- 语义（Frozen）：
+  - `unsafe` block 用于显式允许“不安全/未定义行为（UB）”操作：编译器可在该块内选择性跳过安全检查，以换取性能或实现底层互操作
+  - 在 `unsafe` block 内允许（但不保证）跳过的检查包括：
+    - bounds-check（array/slice/bytes/string 的索引/切片边界）
+    - `null`/未初始化句柄检查（例如对 `null map` 的读写）
+    - 动态类型检查（例如 `any` 解码为具体类型）
+    - 引用计数/所有权插桩的一致性检查（错误使用可能造成泄漏/UAF/double-free）
+  - `unsafe` 不改变作用域/生命周期的语法规则；它只是“允许实现把某些错误从 `panic/编译错误` 降级为 UB”
+- 当前实现（v1）：
+  - `unsafe {}` 等价于启用 `--unchecked-index`：数组索引可跳过 `null/oob` 检查（无效访问为 UB）
 
 ### 6. 函数（Status: Partial）
 - 定义：
@@ -442,6 +469,13 @@
   - 相对路径以当前文件所在目录为基准
   - 若省略后缀，会自动补 `.tua`
   - 标准库路径：以 `std/` 开头的导入路径会从标准库目录解析（见 `std/README.md`）
+  - 包搜索路径（Frozen）：
+    - 对非 `std/`、非 `./`/`../` 的导入路径，视为“包导入”，会优先在 `TUA_PACKAGE_DIR` 指定的根目录列表中查找
+    - `TUA_PACKAGE_DIR` 为多路径列表：POSIX 用 `:` 分隔；Windows 用 `;` 分隔
+    - 对每个根目录，按序尝试：
+      - `<root>/<raw>.tua`（若 raw 省略 `.tua` 会自动补）
+      - 兜底：`<root>/<name>/<name>.tua`（`name` 为 import path 最后一段去掉 `.tua`）
+    - 若包导入在 `TUA_PACKAGE_DIR` 中找不到，会为了兼容历史行为回退按相对路径解析（以当前文件目录为基准）
   - **std 预导入（Implemented）**：编译时会自动加载 `std/` 下的模块，并把其导出符号注入到每个模块作用域（用户代码通常不需要写 `import "std/..."`；外部包仍需显式 `import`）
   - 模块缓存：同一模块只会被加载/编译一次（仅声明；无顶层可执行代码）
   - 循环依赖：允许；由于模块顶层无可执行语句，不存在“初始化顺序”问题
@@ -548,6 +582,12 @@
     - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `get/getMut`（避免隐式产生第二个 owner 导致 double-free/UAF）
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
+  - `string` value 的所有权（Frozen）：
+    - `map`/`map<K,V>` 内部存储 `string` 时，容器对其持有独立引用：插入/覆盖/删除/rehash/free 必须做 `retain/release`
+    - 读取 `string`（`m[k]`/`get(k)`）返回的是按值的 `string`：实现必须确保读出的值在 map 后续被修改/释放后仍然有效（通常通过 `retain` 实现）
+  - typed-map（Frozen）：
+    - typed-map 只是 `map<K,V>` 的后端优化（对用户透明、语义完全一致），不得作为独立类型暴露
+    - 仅当 `K` 为 `int/long/string` 且 `V` 为标量（数值/`bool`/`string`）时允许走 typed-map 后端；例如 `map<int, Foo>`（含 `string` 字段或任意 struct）一律走通用 map
 - 写入（Status: Implemented）：
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
@@ -611,7 +651,7 @@
   - 否则默认 `{}` 表示空 map
 
 #### 9.2.3 `bytes` 与 `Slice<T>`（Status: Partial；`bytes` 已实现，`Slice<T>` v1 已实现）
-- 目标：为二进制解析（GGUF/量化/bit-pack）与大文件 mmap 提供“零拷贝读取”的基础类型。
+- 目标：为二进制解析与大文件 mmap 提供“零拷贝读取”的基础类型。
 - `bytes`（拥有所有权，move-only，Implemented）：
   - 运行时表示：`tua_bytes*`（见 `src/tua_bytes.h`）
   - 内容为原始字节序列，可包含 `0`，不要求 UTF-8/NUL 结尾
@@ -619,8 +659,8 @@
   - API（v0，先在 `std` 侧落地；后续可加 `b.len()/b.get()` 语法糖）：
     - `std/bytes.tua`：`Bytes.mmapFile/len/isReadonly/getU8/setU8/copy/fromString/new` + `readU16LE/readU32LE/readU64LE/readI16LE/readI32LE/readI64LE`
     - `tua_bytes_mmap_file/tua_bytes_len/tua_bytes_get_u8/tua_bytes_set_u8/tua_bytes_copy/tua_bytes_free`
-    - 便捷（FFI，Implemented）：`tua_str_from_bytes_copy(b, off, len) string`（拷贝字节区间生成 NUL 结尾 string；用于 JSON/GGUF 等解析）
-    - bit-cast（FFI，Implemented）：`tua_f32_from_u32_bits(bits) double` / `tua_f64_from_u64_bits(bits) double`（用于 GGUF 等二进制格式）
+    - 便捷（FFI，Implemented）：`tua_str_from_bytes_copy(b, off, len) string`（拷贝字节区间生成 NUL 结尾 string；用于通用字节区间拷贝/解析）
+    - bit-cast（FFI，Implemented）：`tua_f32_from_u32_bits(bits) double` / `tua_f64_from_u64_bits(bits) double`（用于通用二进制格式）
 - `std/io.tua`（基于 `bytes` 的最小 Reader 抽象，Status: Implemented v0）：
   - `trait Reader { fn read(dst: bytes, off: long, n: long) -> int, long }`（`n==0 && err==0` 表示 EOF）
   - `Cursor`：内存 buffer reader（拥有 `bytes` 所有权，读取会前进 position）
@@ -643,23 +683,14 @@
     - `Slice<T>.len/get/set`（`set` 仅标量元素；`Slice<byte>` 写回通过 `tua_bytes_set_u8` 返回 err）
     - `Slice<T>` 当前按 **move-only** 处理（避免隐式 copy 导致 borrow 生命周期变长且难以静态追踪）
 
-#### 9.2.4 `std/utf8` 与 `json`（Status: Implemented v0）
+#### 9.2.4 `std/utf8`（Status: Implemented v0）
 - `std/utf8`：
   - `Utf8.isValid(b: bytes) -> bool`
-  - `Utf8.decode1(b: bytes, off: long) -> int, int, long`（err, codepoint, sizeBytes）
+  - `Utf8.decode1(b: bytes, off: long) -> int, long, int`（codepoint, sizeBytes, err）
   - `Utf8.isBoundary/clampBoundaryBefore/clampBoundaryAfter`（文本切片安全边界）
-- `json`（包模块，位于 `packages/json/json.tua`，推荐 `import "json"`）：
-  - `Json.parse(s: string) -> int, any`
-  - `Json.parseBytes(b: bytes) -> int, any`
-  - 产出：`map` / `any[]` / `string` / `long` / `double` / `bool` / `null`
 
-#### 9.2.5 `packages/llm/gguf`（Status: Implemented v0）
-- 归属：`llm` 层（应用包），不引入编译器/运行时特判
-- API（v0）：
-  - `GGUF.parseBytes(move b: bytes) -> int, GgufFile`
-  - `GGUF.parseMmap(path: string) -> int, GgufFile`
-- 解析范围（v0）：magic/version/n_tensors/n_kv + KV metadata（值类型：u8/i8/u16/i16/u32/i32/u64/i64/f32/f64/bool/string/array）
-- 暂不做：tensor infos + tensor data layout（见 ROADMAP 的 GGUF v1）
+#### 9.2.5 `packages/*`（非核心，Status: Deferred）
+JSON/Tokenizer/LLM 等包能力不属于语言规范；见 `docs/PACKAGE_SPEC.md`。
 
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景
@@ -675,6 +706,13 @@
 #### 9.3.1 运行时错误码（补充，Status: Implemented）
 - 本仓库约定错误码来自 `src/rt/rt_err.h`：
   - `TUA_E_NOTSUP`：不支持（例如不支持的编码名）；在文档中也可称为 `TUA_E_UNSUPPORTED`（语义别名）
+
+#### 9.3.2 错误返回约定（Frozen）
+- 当函数需要返回错误码时，约定使用 `int` 作为错误码类型：
+  - `0` 表示成功
+  - 非 `0` 表示失败（具体含义由 `TUA_E_*` 或模块/包 API 自定义）
+- 当存在多返回并包含错误码时，错误码 `err:int` 放在 **最后一个返回值**：`(out..., err)`
+  - 注意：多返回中可以出现多个 `int` 输出；仅“语义上的错误码”要求放最后
 
 #### 9.4 运行时错误定位（Status: Partial）
 - 运行时错误会输出 best-effort 行号（用于定位 `unwrap(None)`、对 `null map` 读写等）。

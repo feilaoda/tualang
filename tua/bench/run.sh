@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+echo "root: $ROOT"
 BENCH_DIR="$ROOT/bench"
 BIN_DIR="$BENCH_DIR/bin"
 

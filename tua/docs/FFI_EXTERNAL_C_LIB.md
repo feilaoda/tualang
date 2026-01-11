@@ -71,13 +71,14 @@
 
 ## 5) 示例：为 tokenizer_bpe 提供 decode2（外部库）
 
-仓库示例实现：`packages/clib/llm/tua_extbpe.c`，导出符号：
+示例实现：`packages/clib/llm/tua_extbpe.c`，导出符号：
 
 - `tuaext_bpe_decode_ids_to_string(ids: long[], idToToken: map<long, string>, outErr: &int) string`
 
-在 Tua 侧对应封装为 `BpeTokenizerExt.decode2(...)`（见 `packages/llm/tokenizer_bpe_ext.tua`；单独模块以避免未链接外部库时崩溃）。
+说明：
+- 本仓库可能不包含对应的 Tua 封装模块（`packages/*.tua` 可能被暂时移除）；你可以在自己的包里写一个薄封装（`extern fn` + 小量 glue）。
+- packages 级别的 tokenizer/llm 规划已迁移到 `docs/PACKAGE_SPEC.md` 与 `docs/PACKAGE_ROADMAP.md`。
 
-构建并跑性能对比：
+构建（生成 `build/clib/libtuaextbpe.a`）：
 
 - `./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c`
-- `TUA_STDLIB_DIR="$PWD/std" ./bin/tuac -L build/clib -l tuaextbpe packages/llm/examples/llm_tokenizer_bpe_decode3_perf.tua 20000 200`

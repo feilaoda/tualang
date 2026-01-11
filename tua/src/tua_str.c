@@ -5,7 +5,9 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "rt/rt_alloc.h"
 #include "tua_bytes.h"
@@ -19,6 +21,17 @@
 #endif
 #ifndef TUA_HAS_ICONV
 #  define TUA_HAS_ICONV 0
+#endif
+
+#if defined(__has_include)
+#  if __has_include(<sys/random.h>)
+#    include <sys/random.h>
+#    include <sys/types.h>
+#    define TUA_HAS_GETRANDOM 1
+#  endif
+#endif
+#ifndef TUA_HAS_GETRANDOM
+#  define TUA_HAS_GETRANDOM 0
 #endif
 
 // Managed string layout: [hdr][utf8 bytes][NUL]
@@ -58,6 +71,117 @@ static uint64_t hash_ptr64(uintptr_t p) {
     x *= 0xc4ceb9fe1a85ec53ULL;
     x ^= x >> 33;
     return x ? x : 1ULL;
+}
+
+static uint64_t rotl64(uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
+
+static uint64_t siphash24_64(const uint8_t* data, size_t len, uint64_t k0, uint64_t k1) {
+    uint64_t v0 = 0x736f6d6570736575ULL ^ k0;
+    uint64_t v1 = 0x646f72616e646f6dULL ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ULL ^ k0;
+    uint64_t v3 = 0x7465646279746573ULL ^ k1;
+
+#define SIPROUND()                 \
+    do {                           \
+        v0 += v1;                  \
+        v1 = rotl64(v1, 13);       \
+        v1 ^= v0;                  \
+        v0 = rotl64(v0, 32);       \
+        v2 += v3;                  \
+        v3 = rotl64(v3, 16);       \
+        v3 ^= v2;                  \
+        v0 += v3;                  \
+        v3 = rotl64(v3, 21);       \
+        v3 ^= v0;                  \
+        v2 += v1;                  \
+        v1 = rotl64(v1, 17);       \
+        v1 ^= v2;                  \
+        v2 = rotl64(v2, 32);       \
+    } while (0)
+
+    const uint8_t* end = data + (len & ~(size_t)7);
+    for (const uint8_t* p = data; p < end; p += 8) {
+        uint64_t m = 0;
+        memcpy(&m, p, 8);
+        v3 ^= m;
+        SIPROUND();
+        SIPROUND();
+        v0 ^= m;
+    }
+
+    const uint8_t* tail = end;
+    uint64_t b = ((uint64_t)len) << 56;
+    switch (len & 7) {
+        case 7: b |= ((uint64_t)tail[6]) << 48; /* fallthrough */
+        case 6: b |= ((uint64_t)tail[5]) << 40; /* fallthrough */
+        case 5: b |= ((uint64_t)tail[4]) << 32; /* fallthrough */
+        case 4: b |= ((uint64_t)tail[3]) << 24; /* fallthrough */
+        case 3: b |= ((uint64_t)tail[2]) << 16; /* fallthrough */
+        case 2: b |= ((uint64_t)tail[1]) << 8;  /* fallthrough */
+        case 1: b |= ((uint64_t)tail[0]);       /* fallthrough */
+        default: break;
+    }
+
+    v3 ^= b;
+    SIPROUND();
+    SIPROUND();
+    v0 ^= b;
+
+    v2 ^= 0xff;
+    SIPROUND();
+    SIPROUND();
+    SIPROUND();
+    SIPROUND();
+
+    uint64_t out = v0 ^ v1 ^ v2 ^ v3;
+#undef SIPROUND
+    return out;
+}
+
+static uint64_t tua_mix64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+static uint64_t tua_hash_k0 = 0;
+static uint64_t tua_hash_k1 = 0;
+static int tua_hash_seeded = 0;
+
+static void tua_hash_init_seed(void) {
+    if (tua_hash_seeded) return;
+    uint64_t seed[2] = {0, 0};
+
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    arc4random_buf(seed, sizeof(seed));
+    tua_hash_k0 = seed[0];
+    tua_hash_k1 = seed[1];
+    tua_hash_seeded = 1;
+#elif TUA_HAS_GETRANDOM
+    ssize_t n = getrandom(seed, sizeof(seed), 0);
+    if (n == (ssize_t)sizeof(seed)) {
+        tua_hash_k0 = seed[0];
+        tua_hash_k1 = seed[1];
+        tua_hash_seeded = 1;
+    }
+#endif
+
+    if (!tua_hash_seeded) {
+        uint64_t t = (uint64_t)time(NULL);
+        uint64_t a = (uint64_t)(uintptr_t)&tua_hash_init_seed;
+        uint64_t b = (uint64_t)(uintptr_t)str_reg;
+        tua_hash_k0 = tua_mix64(t ^ a);
+        tua_hash_k1 = tua_mix64((t << 1) ^ b ^ 0x9e3779b97f4a7c15ULL);
+        tua_hash_seeded = 1;
+    }
+
+    if ((tua_hash_k0 | tua_hash_k1) == 0) {
+        tua_hash_k0 = 0x0706050403020100ULL;
+        tua_hash_k1 = 0x0f0e0d0c0b0a0908ULL;
+    }
 }
 
 static void str_reg_grow(size_t want) {
@@ -171,16 +295,6 @@ static inline const uint8_t* bytes_ptr(const char* s) {
     return (const uint8_t*)s;
 }
 
-static uint32_t fnv1a32(const uint8_t* p, int64_t n) {
-    uint32_t h = 2166136261u;
-    if (n <= 0 || !p) return 1u;
-    for (int64_t i = 0; i < n; i++) {
-        h ^= (uint32_t)p[i];
-        h *= 16777619u;
-    }
-    return h ? h : 1u;
-}
-
 static int32_t utf8_advance(const uint8_t* p, int64_t n) {
     if (!p || n <= 0) return 0;
     uint8_t b0 = p[0];
@@ -259,7 +373,11 @@ uint32_t tua_str_hash32(const char* s) {
     tua_str_hdr* h = hdr_from_data(s);
     if (h && h->hash32) return h->hash32;
     int64_t n = tua_str_byte_len(s);
-    uint32_t hv = fnv1a32(bytes_ptr(s), n);
+    if (n < 0) n = 0;
+    tua_hash_init_seed();
+    uint64_t hv64 = siphash24_64(bytes_ptr(s), (size_t)n, tua_hash_k0, tua_hash_k1);
+    uint32_t hv = (uint32_t)(hv64 ^ (hv64 >> 32));
+    if (!hv) hv = 1u;
     if (h) h->hash32 = hv;
     return hv;
 }

@@ -287,6 +287,58 @@ static LLVMValueRef getOrCreateTuaMapNew(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_new", fnType);
 }
 
+static int imapValueTagFromValueKind(TypeKind k, int* outTag) {
+    if (outTag) *outTag = 0;
+    switch (k) {
+        case TYPE_BOOL:
+            if (outTag) *outTag = 4; // TUA_VAL_BOOL
+            return 1;
+        case TYPE_INT:
+        case TYPE_U32:
+            if (outTag) *outTag = 1; // TUA_VAL_INT
+            return 1;
+        case TYPE_LONG:
+        case TYPE_U64:
+        case TYPE_ISIZE:
+        case TYPE_USIZE:
+        case TYPE_BYTE:
+        case TYPE_I8:
+        case TYPE_I16:
+        case TYPE_U8:
+        case TYPE_U16:
+            if (outTag) *outTag = 2; // TUA_VAL_LONG
+            return 1;
+        case TYPE_F16:
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BF16:
+            if (outTag) *outTag = 3; // TUA_VAL_DOUBLE
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static LLVMValueRef getOrCreateTuaIMapNew(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_imap_new");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i32, i32 }; // value_tag, hint
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_imap_new", fnType);
+}
+
+static LLVMValueRef getOrCreateTuaIMapNewI32(Compiler* compiler) {
+    LLVMValueRef existing = LLVMGetNamedFunction(compiler->module, "tua_imap_new_i32");
+    if (existing) return existing;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+    LLVMTypeRef params[2] = { i32, i32 }; // value_tag, hint
+    LLVMTypeRef fnType = LLVMFunctionType(mapType, params, 2, 0);
+    return LLVMAddFunction(compiler->module, "tua_imap_new_i32", fnType);
+}
+
 static char* vtableGlobalNameForTraitAndStruct(const char* traitName, int traitLen, const char* structName, int structLen) {
     const char* prefix = "__VT__";
     const int prefixLen = 5;
@@ -1777,9 +1829,34 @@ void emitVarStmt(Compiler* compiler, VarStmt* stmt) {
                stmt->isConst) {
         // `const` means the binding cannot be re-assigned, but the map object is mutable.
         // To avoid auto-init-on-write rebinding, default-initialize `const map` to an empty map.
-        LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
-        LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
-        LLVMValueRef initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, NULL, 0, "newmap");
+        LLVMValueRef initValue = NULL;
+        int useIMap = 0;
+        int imapTag = 0;
+        int keyIsInt = 0;
+        if (stmt->type->typeArgs && stmt->type->typeArgs->length == 2) {
+            Type* kAst = (Type*)stmt->type->typeArgs->head->data;
+            Type* vAst = (Type*)stmt->type->typeArgs->head->next->data;
+            if (kAst && vAst && (kAst->kind == TYPE_INT || kAst->kind == TYPE_LONG)) {
+                keyIsInt = (kAst->kind == TYPE_INT) ? 1 : 0;
+                if (imapValueTagFromValueKind(vAst->kind, &imapTag)) {
+                    useIMap = 1;
+                }
+            }
+        }
+        if (useIMap) {
+            LLVMValueRef newFn = keyIsInt ? getOrCreateTuaIMapNewI32(compiler) : getOrCreateTuaIMapNew(compiler);
+            LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+            LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+            LLVMValueRef args2[2] = {
+                LLVMConstInt(i32, (uint64_t)(int64_t)imapTag, 1),
+                LLVMConstInt(i32, 0, 0),
+            };
+            initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, args2, 2, "newimap");
+        } else {
+            LLVMValueRef newFn = getOrCreateTuaMapNew(compiler);
+            LLVMTypeRef newTy = LLVMGlobalGetValueType(newFn);
+            initValue = LLVMBuildCall2(compiler->builder, newTy, newFn, NULL, 0, "newmap");
+        }
         initValue = castIfNeeded(compiler, initValue, valueType);
         if (shouldBox) {
             LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);

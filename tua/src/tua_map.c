@@ -9,7 +9,22 @@
 
 #include "tua_str.h"
 
-	// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
+		// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
+
+static uint32_t map_kind_any(const void* p) {
+    if (!p) return 0;
+    uint32_t k = 0;
+    memcpy(&k, p, sizeof(k));
+    return k;
+}
+
+static int32_t imap_value_tag_any(const void* p) {
+    if (!p) return 0;
+    int32_t t = 0;
+    const uint8_t* b = (const uint8_t*)p;
+    memcpy(&t, b + sizeof(uint32_t), sizeof(t));
+    return t;
+}
 
 typedef enum {
     KEY_EMPTY = 0,
@@ -29,6 +44,8 @@ typedef struct {
 } MapEntry;
 
 struct tua_map {
+    uint32_t kind; // TUA_MAP_KIND_*
+    uint32_t _pad;
     size_t capacity;
     size_t count;
     size_t tombstones;
@@ -248,6 +265,7 @@ static void decode_key(tua_value key, KeyKind* kind, uint32_t* hash, int64_t* ik
 tua_map* tua_map_new(void) {
     tua_map* m = (tua_map*)calloc(1, sizeof(tua_map));
     if (!m) tua_panic("out of memory");
+    m->kind = (uint32_t)TUA_MAP_KIND_GENERIC;
     m->capacity = 0;
     m->count = 0;
     m->tombstones = 0;
@@ -258,6 +276,16 @@ tua_map* tua_map_new(void) {
 
 tua_value tua_map_get(tua_map* map, tua_value key) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        int64_t k = 0;
+        if (key.tag == TUA_VAL_LONG) k = (int64_t)key.payload;
+        else if (key.tag == TUA_VAL_INT) k = (int64_t)(int32_t)key.payload;
+        else tua_panic("map key must be int/long");
+        int32_t ok = 0;
+        uint64_t payload = tua_imap_get_payload_with_ok(map, k, &ok);
+        if (!ok) return (tua_value){ .tag = TUA_VAL_NIL, .payload = 0 };
+        return (tua_value){ .tag = imap_value_tag_any(map), .payload = payload };
+    }
     KeyKind kind;
     uint32_t hash;
     int64_t ikey = 0;
@@ -273,6 +301,15 @@ tua_value tua_map_get(tua_map* map, tua_value key) {
 tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
     if (!map) tua_panic("index null map");
     if (!outOk) tua_panic("invalid outOk");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        int64_t k = 0;
+        if (key.tag == TUA_VAL_LONG) k = (int64_t)key.payload;
+        else if (key.tag == TUA_VAL_INT) k = (int64_t)(int32_t)key.payload;
+        else tua_panic("map key must be int/long");
+        uint64_t payload = tua_imap_get_payload_with_ok(map, k, outOk);
+        if (!*outOk) return (tua_value){ .tag = TUA_VAL_NIL, .payload = 0 };
+        return (tua_value){ .tag = imap_value_tag_any(map), .payload = payload };
+    }
     KeyKind kind;
     uint32_t hash;
     int64_t ikey = 0;
@@ -289,6 +326,10 @@ tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
 tua_value* tua_map_get_ref_with_ok(tua_map* map, tua_value key, int32_t* outOk) {
     if (!map) tua_panic("index null map");
     if (!outOk) tua_panic("invalid outOk");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        tua_panic("map.get/getMut is not supported for scalar typed maps");
+        return NULL;
+    }
     KeyKind kind;
     uint32_t hash;
     int64_t ikey = 0;
@@ -304,6 +345,16 @@ tua_value* tua_map_get_ref_with_ok(tua_map* map, tua_value key, int32_t* outOk) 
 
 void tua_map_set(tua_map* map, tua_value key, tua_value value) {
     if (!map) tua_panic("assign into null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        int64_t k = 0;
+        if (key.tag == TUA_VAL_LONG) k = (int64_t)key.payload;
+        else if (key.tag == TUA_VAL_INT) k = (int64_t)(int32_t)key.payload;
+        else tua_panic("map key must be int/long");
+        int32_t wantTag = imap_value_tag_any(map);
+        if (value.tag != wantTag) tua_panic("typed map value tag mismatch");
+        tua_imap_set_payload(map, k, value.payload);
+        return;
+    }
     ensure_capacity(map);
 
     KeyKind kind;
@@ -341,6 +392,13 @@ void tua_map_set(tua_map* map, tua_value key, tua_value value) {
 
 int32_t tua_map_delete(tua_map* map, tua_value key) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        int64_t k = 0;
+        if (key.tag == TUA_VAL_LONG) k = (int64_t)key.payload;
+        else if (key.tag == TUA_VAL_INT) k = (int64_t)(int32_t)key.payload;
+        else tua_panic("map key must be int/long");
+        return tua_imap_delete(map, k);
+    }
     KeyKind kind;
     uint32_t hash;
     int64_t ikey = 0;
@@ -368,6 +426,10 @@ int32_t tua_map_delete(tua_map* map, tua_value key) {
 
 void tua_map_clear(tua_map* map) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        tua_imap_clear(map);
+        return;
+    }
     if (!map->entries || map->capacity == 0) return;
     for (size_t i = 0; i < map->capacity; i++) {
         MapEntry* e = &map->entries[i];
@@ -385,6 +447,13 @@ void tua_map_clear(tua_map* map) {
 
 int32_t tua_map_has(tua_map* map, tua_value key) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        int64_t k = 0;
+        if (key.tag == TUA_VAL_LONG) k = (int64_t)key.payload;
+        else if (key.tag == TUA_VAL_INT) k = (int64_t)(int32_t)key.payload;
+        else tua_panic("map key must be int/long");
+        return tua_imap_has(map, k);
+    }
     KeyKind kind;
     uint32_t hash;
     int64_t ikey = 0;
@@ -398,12 +467,14 @@ int32_t tua_map_has(tua_map* map, tua_value key) {
 
 int32_t tua_map_len(tua_map* map) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) return tua_imap_len(map);
     if (map->count > (size_t)INT32_MAX) return INT32_MAX;
     return (int32_t)map->count;
 }
 
 int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue) {
     if (!map) tua_panic("index null map");
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) return tua_imap_iter_next(map, index, outKey, outValue);
     if (!index || !outKey || !outValue) tua_panic("invalid map iterator args");
 
     size_t i = 0;
@@ -439,6 +510,10 @@ int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_v
 
 void tua_map_free(tua_map* map) {
     if (!map) return;
+    if (map_kind_any(map) == (uint32_t)TUA_MAP_KIND_IMAP) {
+        tua_imap_free(map);
+        return;
+    }
     if (map->entries && map->capacity > 0) {
         for (size_t i = 0; i < map->capacity; i++) {
             MapEntry* e = &map->entries[i];

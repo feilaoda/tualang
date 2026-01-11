@@ -44,6 +44,7 @@ endif
 RT_CFLAGS = -I./src -Wall $(RT_DEFS)
 RT_SRCS = \
 	src/tua_map.c \
+	src/tua_imap.c \
 	src/tua_array.c \
 	src/tua_bytes.c \
 	src/tua_str.c \
