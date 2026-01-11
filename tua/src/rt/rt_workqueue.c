@@ -1,6 +1,7 @@
 #include "rt/rt_workqueue.h"
 
 #include "rt/rt_alloc.h"
+#include "rt/rt_state.h"
 #include "rt/rt_thread.h"
 
 typedef struct tua_work_item {
@@ -10,6 +11,7 @@ typedef struct tua_work_item {
 } tua_work_item_t;
 
 struct tua_workqueue {
+    tua_state* state; // captured at create-time; used to set TLS on worker threads
     tua_mutex_t* mu;
     tua_cond_t* cv;
     tua_thread_t** threads;
@@ -22,6 +24,9 @@ struct tua_workqueue {
 
 static void tua_worker_main(void* p) {
     tua_workqueue_t* wq = (tua_workqueue_t*)p;
+    if (wq && wq->state) {
+        tua_state_set_current(wq->state);
+    }
     for (;;) {
         tua_work_item_t* item = NULL;
 
@@ -61,6 +66,7 @@ tua_err_t tua_workqueue_create(tua_workqueue_t** out, int threads) {
     wq->cv = NULL;
     wq->threads = NULL;
     wq->nthreads = threads;
+    wq->state = tua_state_get_current();
     wq->head = NULL;
     wq->tail = NULL;
     wq->stop = 0;
@@ -164,4 +170,3 @@ tua_err_t tua_workqueue_post(tua_workqueue_t* wq, void (*fn)(void*), void* arg) 
     tua_mutex_unlock(wq->mu);
     return TUA_OK;
 }
-

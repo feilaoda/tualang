@@ -51,6 +51,7 @@ RT_SRCS = \
 	src/tua_str.c \
 	src/rt/rt_alloc.c \
 	src/rt/rt_config.c \
+	src/rt/rt_state.c \
 	src/rt/rt_box.c \
 	src/rt/rt_cancel.c \
 	src/rt/rt_err.c \
@@ -66,7 +67,7 @@ RT_SRCS = \
 	$(RT_LOOP_SRC)
 RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
 
-.PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run
+.PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run rt-state-smoke rt-state-smoke-run
 .PHONY: test
 .PHONY: tuac-asan tuac-ubsan test-asan test-ubsan
 
@@ -141,6 +142,14 @@ rt-net-smoke: bin/rt-net-smoke
 
 rt-net-smoke-run: rt-net-smoke
 	./bin/rt-net-smoke
+
+bin/rt-state-smoke: bin/libtuart.a tests/rt_state_smoke.c
+	$(CC) $(RT_CFLAGS) tests/rt_state_smoke.c bin/libtuart.a -pthread $(RT_EXTRA_LIBS) -o $@
+
+rt-state-smoke: bin/rt-state-smoke
+
+rt-state-smoke-run: rt-state-smoke
+	./bin/rt-state-smoke
 
 test:
 	./tests/run.sh

@@ -30,7 +30,7 @@
 - 可重入/多实例（Planned）：
   - 未来会逐步把缓存与可变状态归属到实例上下文（`tuac_ctx`/`tua_state`），以支持同一进程多实例
   - 未来会把 import 搜索路径、模块缓存、字符串哈希 seed 等上下文化；CLI 环境变量仅作为默认值来源
-  - allocator/panic（Partial 实现）：目前已有 `tua_config/tua_rt_configure`（进程全局）；后续会收敛到 `tua_state`（per-instance）以满足真正的多实例嵌入
+  - allocator/panic（Partial 实现）：目前已有 `tua_config/tua_rt_configure`（进程全局默认）与 `tua_state_set_current`（TLS current，用于同进程多实例）；后续会收敛到“显式传参 per-instance（无 TLS）”以满足更强的可控性与可测试性
 
 ### 1. 词法与分隔（Status: Implemented）
 - 语句以换行分隔；不要求每句以 `;` 结尾（实现层面：换行会被当作 separator token）。

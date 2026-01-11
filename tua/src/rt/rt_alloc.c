@@ -1,5 +1,7 @@
 #include "rt/rt_alloc.h"
 
+#include "rt/rt_config.h"
+
 #include <string.h>
 #include <stdlib.h>
 
@@ -16,33 +18,32 @@ static void* tua_sys_alloc(void* ud, void* ptr, size_t old_sz, size_t new_sz) {
     return realloc(ptr, new_sz);
 }
 
-static tua_allocator tua_global_allocator = { tua_sys_alloc, NULL };
-
 tua_allocator tua_allocator_default(void) {
     tua_allocator a = { tua_sys_alloc, NULL };
     return a;
 }
 
 void tua_allocator_set_global(tua_allocator a) {
-    if (a.alloc == NULL) {
-        tua_global_allocator = tua_allocator_default();
-        return;
-    }
-    tua_global_allocator = a;
+    tua_config g = tua_rt_get_global_config();
+    g.allocator = a.alloc ? a : tua_allocator_default();
+    tua_rt_configure(&g);
 }
 
 tua_allocator tua_allocator_get_global(void) {
-    return tua_global_allocator;
+    tua_config g = tua_rt_get_global_config();
+    return g.allocator.alloc ? g.allocator : tua_allocator_default();
 }
 
 void* tua_alloc(tua_allocator* a, void* ptr, size_t old_sz, size_t new_sz) {
-    tua_allocator* use = a ? a : &tua_global_allocator;
-    if (use->alloc == NULL) {
-        // Defensive: treat as default instead of crashing.
-        tua_allocator def = tua_allocator_default();
-        return def.alloc(def.ud, ptr, old_sz, new_sz);
+    tua_allocator use;
+    if (a && a->alloc) {
+        use = *a;
+    } else {
+        tua_config c = tua_rt_get_config();
+        use = c.allocator.alloc ? c.allocator : tua_allocator_default();
     }
-    return use->alloc(use->ud, ptr, old_sz, new_sz);
+    if (!use.alloc) use = tua_allocator_default();
+    return use.alloc(use.ud, ptr, old_sz, new_sz);
 }
 
 void* tua_malloc(size_t size) {

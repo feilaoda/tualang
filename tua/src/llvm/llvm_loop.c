@@ -2,6 +2,8 @@
 #include "compiler.h"
 #include "debug.h"
 
+#include "tuac_alloc.h"
+
 static LoopTarget* currentLoop(Compiler* compiler) {
     if (!compiler || !compiler->loopStack || compiler->loopStack->length == 0) return NULL;
     return (LoopTarget*)compiler->loopStack->tail->data;

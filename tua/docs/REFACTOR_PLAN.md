@@ -14,6 +14,7 @@
 
 - `DONE` ASan/UBSan 跑通：已新增 `make tuac-asan/tuac-ubsan` 与 `make test-asan/test-ubsan`，并修复 sanitizer 暴露的问题使其可稳定作为门禁（macOS 下 ASan 需 `detect_leaks=0`）。
 - `DONE` tests 可切换编译器：`tests/run.sh` 支持通过 `TUA_TUAC` 指定要运行的 `tuac`（便于 sanitizer/实验编译器/嵌入版验证）。
+- `DONE` 嵌入基础 smoke：新增 `make rt-state-smoke-run`，验证 `tua_state_set_current` 下 allocator/panic/loc 的基本行为。
 - `PLANNED` 性能回归门禁：为 `bench/run.sh` 增加“基线 + 阈值比较 + fail fast”。
 - `PLANNED` 统一 debug/trace 开关：把散落的 `emitDebug/printf` 收敛成可控的宏/flag（并避免影响性能基准）。
 
@@ -30,7 +31,7 @@
 ## P1：内存管理整改（可定位 + 减少碎片）
 
 - `PLANNED` 编译器侧引入 arena/region：AST/Type/符号表等走 arena，减少 `malloc` 风暴与碎片化。
-- `PARTIAL` 统一分配入口：runtime 已落地 `tua_alloc` + `tua_rt_configure`（见 `src/rt/rt_alloc.h`、`src/rt/rt_config.h`），并通过 `src/tuac_alloc.h` 收敛编译器侧分配；但目前注入点仍是进程全局，per-instance allocator（`tua_state`）尚未实现。
+- `PARTIAL` 统一分配入口：runtime 已落地 `tua_alloc` + `tua_rt_configure`（见 `src/rt/rt_alloc.h`、`src/rt/rt_config.h`），并通过 `src/tuac_alloc.h` 收敛编译器侧分配；同时已引入 `tua_state`（TLS current）作为过渡形态，但真正的“显式传参 per-instance（无 TLS）”仍未实现。
 - `PLANNED` 泄漏/释放追踪：至少支持测试进程退出时输出未释放计数（在 debug 模式），并配合 ASan 做回归。
 - `PLANNED` 兼顾嵌入场景的 allocator 注入：允许宿主提供 per-instance 分配器（Lua 风格 realloc 签名），并明确跨边界释放必须回到同一 allocator。
 

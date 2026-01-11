@@ -9,6 +9,7 @@
 
 #include "rt/rt_alloc.h"
 #include "rt/rt_config.h"
+#include "rt/rt_state.h"
 #include "tua_str.h"
 
 		// Value tags are defined in `tua_map.h` (ABI-stable for external FFI helpers).
@@ -59,10 +60,20 @@ static int32_t tua_current_line = 0;
 static int32_t tua_current_col = 0;
 
 void tua_set_line(int32_t line) {
+    tua_state* s = tua_state_get_current();
+    if (s) {
+        tua_state_set_line(s, line);
+        return;
+    }
     tua_current_line = line;
 }
 
 void tua_set_loc(const char* file, int32_t line, int32_t col) {
+    tua_state* s = tua_state_get_current();
+    if (s) {
+        tua_state_set_loc(s, file, line, col);
+        return;
+    }
     if (file) tua_current_file = file;
     tua_current_line = line;
     tua_current_col = col;
@@ -72,6 +83,10 @@ void tua_panic(const char* msg) {
     const char* file = tua_current_file;
     int32_t line = tua_current_line;
     int32_t col = tua_current_col;
+    tua_state* s = tua_state_get_current();
+    if (s) {
+        tua_state_get_loc(s, &file, &line, &col);
+    }
 
     char buf[1024];
     const char* m = msg ? msg : "(null)";

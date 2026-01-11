@@ -19,5 +19,6 @@ tua_config tua_config_default(void);
 // Not thread-safe; call once during startup (before running Tua code).
 void tua_rt_configure(const tua_config* cfg);
 tua_config tua_rt_get_config(void);
+tua_config tua_rt_get_global_config(void);
 
 #endif

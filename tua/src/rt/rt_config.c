@@ -1,5 +1,7 @@
 #include "rt/rt_config.h"
 
+#include "rt/rt_state.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -35,18 +37,11 @@ void tua_rt_configure(const tua_config* cfg) {
     tua_config_init_default_if_needed();
 
     if (cfg == NULL) {
-        tua_allocator_set_global(tua_allocator_default());
         tua_global_config = tua_config_default();
         return;
     }
 
-    if (cfg->allocator.alloc == NULL) {
-        tua_allocator_set_global(tua_allocator_default());
-        tua_global_config.allocator = tua_allocator_default();
-    } else {
-        tua_allocator_set_global(cfg->allocator);
-        tua_global_config.allocator = cfg->allocator;
-    }
+    tua_global_config.allocator = cfg->allocator.alloc ? cfg->allocator : tua_allocator_default();
 
     tua_global_config.panic = cfg->panic ? cfg->panic : tua_default_panic;
     tua_global_config.panic_ud = cfg->panic_ud;
@@ -54,6 +49,15 @@ void tua_rt_configure(const tua_config* cfg) {
 
 tua_config tua_rt_get_config(void) {
     tua_config_init_default_if_needed();
+    tua_state* s = tua_state_get_current();
+    if (s) {
+        const tua_config* c = tua_state_config(s);
+        if (c) return *c;
+    }
     return tua_global_config;
 }
 
+tua_config tua_rt_get_global_config(void) {
+    tua_config_init_default_if_needed();
+    return tua_global_config;
+}

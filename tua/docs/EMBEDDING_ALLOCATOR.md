@@ -17,6 +17,7 @@
 - **线程/重入模型**：明确 `tua_state` 是否线程安全（通常不是），是否允许多 state 并行，宿主如何加锁；明确回调（如 panic/loader）是否允许再次进入 Tua。
 - **能力开关/沙箱面**：嵌入时通常要可禁用文件/网络/dlopen 等；建议把权限开关放到 `tua_config` 里（默认 `tuac` 开放，embed 默认更保守）。
 - **跨边界资源管理**：FFI “不透明句柄”建议配套 `*_new/*_free` 规范或 finalizer 约定，避免泄漏与双重释放。
+- **生命周期（重要）**：当 runtime 对象（如 `tua_workqueue_t`）在后台线程执行回调时，必须保证它捕获/依赖的 `tua_state` 在对象销毁前一直存活；否则后台线程可能访问已释放的 allocator/panic/配置。
 
 ## C API（建议形态）
 
@@ -48,7 +49,9 @@ typedef struct tua_config {
 
 - 目前 runtime 已提供统一入口 `tua_alloc()` 以及可注入 allocator（见 `src/rt/rt_alloc.h`），并提供 `tua_config/tua_rt_configure`（见 `src/rt/rt_config.h`）。
 - 由于 runtime 尚未全量追踪每个块的 `old_sz`，调用方可能传 `old_sz=0`（表示 unknown）；自定义 allocator 需要能接受该情况。
-- 目前注入点是“进程全局”（`tua_rt_configure`/`tua_allocator_set_global`），用于先把基础设施落地；后续会把 allocator 收敛到 `tua_state`（per-instance）以支持多实例与嵌入。
+- 目前注入点支持两层：
+  - 进程全局默认（`tua_rt_configure`）：用于 CLI/默认行为；
+  - 线程局部 current state（`tua_state_set_current`）：同一进程不同线程可并行跑不同配置；同线程可切换 current state（需要宿主自己保证不交错执行）。
 
 ## 需要暴露的释放函数（跨边界安全）
 
