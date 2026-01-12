@@ -32,7 +32,7 @@ Windows 上 `std.fs` 接受以下用户侧路径前缀：
 
 ## 2. 规范化（normalize）与禁止项
 
-`std.fs.normalize(path)` 在 Windows 上必须做纯字符串级规范化：
+`std.fs.Fs.normalize(path)` 在 Windows 上必须做纯字符串级规范化：
 - 折叠重复 `/`；
 - 消除 `.`；
 - 处理 `..`（不得越过盘符根或 UNC share 根；越界为错误码 `std.error.Code.IO_ERROR`）。
@@ -52,4 +52,3 @@ Windows 上 `std.fs` 接受以下用户侧路径前缀：
 - 相对路径 `a/b` 映射为 `a\b`
 
 本规范不引入 `\\?\` 长路径前缀；是否启用属于实现细节（Draft）。
-

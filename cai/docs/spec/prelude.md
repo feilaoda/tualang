@@ -29,6 +29,16 @@ CAI 采用预导入机制：每个模块在解析/类型检查时都会自动获
 ## 3. `Option` 构造符号
 `Option<T>` 的构造符号为：
 - `Some(v)`
-- `None()`
+- `None`
 
 这些由标准库定义并通过 prelude 自动可见。
+
+---
+
+## 4. 核心类型别名（最低集合）
+为降低样板代码，以下核心类型名必须通过 prelude 自动可见：
+- `Ref<T>`（见 `cai/docs/spec/ref.md`）
+- `Ptr<T>`（见 `cai/docs/spec/ptr.md`）
+
+规范性说明：
+- 标准库的“规范归属”模块仍可为 `std.ref`/`std.ptr` 等，但语言层面 `Ref`/`Ptr` 名称必须稳定可用（无需显式 `import`）。

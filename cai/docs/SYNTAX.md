@@ -51,11 +51,16 @@
 - `init` `deinit`
 - `this`
 - `move`
+- `mut`
+
+说明：
+- `mut` 仅用于函数参数模式（例如 `fn f(mut x: T) {}`），不用于变量绑定声明。
 
 #### 1.4.3 并发/异步（语义在 SPEC 冻结）
 - `async`
 - `await`
 - `defer`
+- `yield`
 
 #### 1.4.4 字面量关键字
 - `null`
@@ -91,7 +96,7 @@
 
 从高到低：
 1. 后缀：成员访问 `.`、调用 `()`、泛型调用 `<T>(...)`、索引 `[]`、struct init `{...}`、guard `? { ... }`、后缀自增减 `x++/x--`、`as` cast
-2. 一元：`++x --x -x !x ~x &x move x await x`
+2. 一元：`++x --x -x !x ~x &x await x`
 3. 乘除：`* /`
 4. 加减：`+ -`
 5. 位移：`<< >>`
@@ -116,8 +121,14 @@
 ### 4.1 类型标注声明糖
 - `name: T = expr` 等价于 `let name: T = expr`
 
+说明：
+- `name` 是变量名（标识符），`T` 是类型名。
+
 ### 4.2 Guard block（错误守卫）
 语法：`callExpr ? { ... }`
+
+说明：
+- `? { ... }` 仅用于错误守卫；CAI 不提供 `?.`（可选链）或 `?` 作为可选类型解包语法。
 
 约束（应在语义阶段强制）：
 - `callExpr` 必须是调用表达式；
@@ -143,10 +154,12 @@ CAI 不提供 `requires ...` 这类“能力声明语法”：
 - `async fn f(...) { ... }`
 - `await expr`（一元前缀运算符）
 - `defer statement`
+- `yield`（语句）
 
 约定：
 - `await` 只能用于 `async` 上下文；否则为编译错误。
 - `defer` 执行顺序为 LIFO，并在 `return`/`break`/`continue` 等离开作用域路径上执行。
+- `yield` 只能用于 `async` 上下文；否则为编译错误。
 
 ### 4.6 `Ptr<T>`（限制性指针）
 CAI **不提供** 裸指针类型关键字（例如 `ptr`/`void*` 这类语法层面直接暴露地址的类型）。
@@ -155,7 +168,6 @@ CAI **不提供** 裸指针类型关键字（例如 `ptr`/`void*` 这类语法�
 
 语法层面：
 - `Ptr<T>` 按 `namedType` + `typeArgList` 解析，不需要新增语法。
-- 为避免误用，`ptr` 在词法层被保留为关键字，但不表示任何可用类型（写出来会直接语法错误）。
 
 语义约束（在 SPEC 中实现/强制）：
 - `Ptr<T>` 可为 `null`；允许 `==`/`!=` 与同类型指针或 `null` 比较。
@@ -172,8 +184,8 @@ CAI **不提供** 裸指针类型关键字（例如 `ptr`/`void*` 这类语法�
 
 ### 4.8 `enum`（带 payload 的变体）
 写法：
-- `enum E { A, B }`（无 payload）
-- `enum E { A(int), B(string, int) }`（带 payload）
+- `enum E { A\nB }`（无 payload；变体使用换行分隔）
+- `enum E { A(int)\nB(string, int) }`（带 payload；变体使用换行分隔）
 
 约束：
 - `Variant()` 不允许；空 payload 直接写 `Variant`。
@@ -192,3 +204,13 @@ extern {
 语义：
 - 等价于写多个顶层 `extern fn` 声明；
 - 语义规则见 `cai/docs/spec/ffi.md`。
+
+### 4.10 函数参数默认借用
+写法（示意）：
+- 默认只读借用：`fn f(x: T) { ... }`
+- 可写借用：`fn f(mut x: T) { ... }`
+- 所有权转移：`fn f(move x: T) { ... }`
+
+说明：
+- 参数默认是 `const`（只读借用）；`mut` 表示独占可写借用；`move` 表示接管所有权。
+- 语义冻结见 `cai/docs/spec/fn.md` 与 `cai/docs/spec/ownership.md`。

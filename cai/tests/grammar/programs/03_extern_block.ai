@@ -1,0 +1,7 @@
+extern {
+  fn f() -> int
+  fn f2() -> void
+}
+
+extern fn puts(msg: string) -> int as c_puts
+

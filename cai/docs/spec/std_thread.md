@@ -11,8 +11,11 @@ Status: Draft
 ## 1. `Thread`
 `std.thread.Thread` 是拥有型句柄，默认 move-only。
 
+导出约定：
+- `std.thread.Thread` 的静态方法用于承载 `std.thread` 的“模块级 API”（避免导出顶层 `fn`）。
+
 最低要求 API：
-- `std.thread.spawn(f: fn() -> void) -> std.thread.Thread, int`
+- `std.thread.Thread.spawn(f: fn() -> void) -> std.thread.Thread, int`
   - 语义：创建一个新的 OS 线程并在其中执行 `f`。
   - 失败返回非 0 错误码（例如资源不足）。
 
@@ -29,5 +32,5 @@ Status: Draft
 ---
 
 ## 2. 与运行时（M:N 调度）的关系
-- `std.thread.spawn` 创建的是 OS 线程，不等价于 `async` 任务。
+- `std.thread.Thread.spawn` 创建的是 OS 线程，不等价于 `async` 任务。
 - `async` 任务由运行时调度（见 `cai/docs/spec/runtime.md`）；OS 线程可作为运行时 worker 或用户自管线程。

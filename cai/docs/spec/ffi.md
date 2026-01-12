@@ -57,7 +57,7 @@ FFI 返回文本建议使用：
 
 只读/可写约束：
 - `extern fn f(const s: Slice<T>)`：外部函数不得写入 `s` 指向的内存（语义约束；工具链可在生成头文件时映射为 `const T*`）。
-- `extern fn f(let s: Slice<T>)`：外部函数允许写入 `s` 指向的内存（语义约束；头文件可映射为 `T*`）。
+- `extern fn f(mut s: Slice<T>)`：外部函数允许写入 `s` 指向的内存（语义约束；头文件可映射为 `T*`）。
 
 ### 3.6 `struct` / `enum`
 - `struct`/`enum` 允许出现在 `extern fn` 的参数/返回类型中，当且仅当：

@@ -60,7 +60,7 @@ match expr {
 ### 3.4 `Option<T>` pattern
 当被匹配表达式类型为 `Option<T>` 时：
 - `Some(x)`：匹配 `Some(v)`，并在该 arm 的 block 内绑定 `x: T`；
-- `None()`：匹配 `None`。
+- `None`：匹配 `None`。
 
 ### 3.5 绑定 pattern
 `name`（标识符）在以下情况下表示绑定 pattern：

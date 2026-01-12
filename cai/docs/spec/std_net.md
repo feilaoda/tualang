@@ -8,6 +8,9 @@ Status: Draft
 
 错误码：所有可能失败的操作以 `..., int` 返回，错误码语义见 `cai/docs/spec/std_error.md` 与 `cai/docs/spec/error.md`。
 
+导出约定：
+- `std.net.Net` 是一个 `object`，用于承载 `std.net` 的“模块级 API”（避免导出顶层 `fn`）。
+
 ---
 
 ## 1. `IpAddr`
@@ -19,7 +22,7 @@ Status: Draft
 约束（冻结）：
 - `IpAddr` 不支持 `==/!=`，也不可作为 `map` key（因为它是带 payload 的 enum；见 `cai/docs/spec/enum.md` 与 `cai/docs/spec/operators.md`）。
 - 如需比较，使用标准库 API：
-  - `std.net.ipEqual(a: std.net.IpAddr, b: std.net.IpAddr) -> bool`
+  - `std.net.Net.ipEqual(a: std.net.IpAddr, b: std.net.IpAddr) -> bool`
 
 ---
 
@@ -29,7 +32,7 @@ Status: Draft
 `std.net.TcpStream` 是拥有型句柄，默认 move-only。
 
 最低要求 API：
-- `std.net.connect(addr: std.net.IpAddr, port: u16) -> std.net.TcpStream, int`
+- `std.net.Net.connect(addr: std.net.IpAddr, port: u16) -> std.net.TcpStream, int`
 - `TcpStream.read(this, dst: Slice<byte>) -> usize, int`
 - `TcpStream.write(this, src: Slice<byte>) -> usize, int`
 - `TcpStream.shutdown(this) -> int`
@@ -43,7 +46,7 @@ Status: Draft
 `std.net.TcpListener` 是拥有型句柄，默认 move-only。
 
 最低要求 API：
-- `std.net.listen(addr: std.net.IpAddr, port: u16) -> std.net.TcpListener, int`
+- `std.net.Net.listen(addr: std.net.IpAddr, port: u16) -> std.net.TcpListener, int`
 - `TcpListener.accept(this) -> std.net.TcpStream, std.net.IpAddr, int`
 - `async fn TcpListener.acceptAsync(this) -> std.net.TcpStream, std.net.IpAddr, int`
 
@@ -54,7 +57,7 @@ Status: Draft
 `std.net.UdpSocket` 是拥有型句柄，默认 move-only。
 
 最低要求 API：
-- `std.net.bindUdp(addr: std.net.IpAddr, port: u16) -> std.net.UdpSocket, int`
+- `std.net.Net.bindUdp(addr: std.net.IpAddr, port: u16) -> std.net.UdpSocket, int`
 - `UdpSocket.sendTo(this, dstAddr: std.net.IpAddr, dstPort: u16, src: Slice<byte>) -> usize, int`
 - `UdpSocket.recvFrom(this, dst: Slice<byte>) -> usize, std.net.IpAddr, u16, int`
 
@@ -69,4 +72,4 @@ Status: Draft
 - `std.error.Code.NET_TIMEOUT`（见 `cai/docs/spec/std_error.md`）
 
 并保证：
-- `std.error.kind(err) == NetTimeout`。
+- `std.error.Error.kind(err) == NetTimeout`。

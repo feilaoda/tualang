@@ -35,7 +35,7 @@ CAI 不通过两个类型区分只读/可写切片；只有一个 `Slice<T>` 类
 
 当 slice 被传参时，形参的参数模式表达“最低权限要求”：
 - `fn f(const s: Slice<T>)`：`s` 在函数体内视为共享只读；允许传入共享或独占 slice
-- `fn f(let s: Slice<T>)`：`s` 在函数体内视为独占可写；仅允许传入独占可写 slice（传入共享 slice 为编译错误）
+- `fn f(mut s: Slice<T>)`：`s` 在函数体内视为独占可写；仅允许传入独占可写 slice（传入共享 slice 为编译错误）
 
 ---
 

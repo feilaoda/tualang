@@ -1,0 +1,48 @@
+struct Point {
+  x: int
+  y: int
+
+  fn sum(p: Point) -> int {
+    return p.x + p.y
+  }
+}
+
+enum MaybeInt {
+  No = 0
+  Ok = 1
+}
+
+trait Show {
+  fn show(p: Point) -> string
+}
+
+impl Show for Point {
+  fn show(p: Point) -> string {
+    return "Point"
+  }
+}
+
+object Math {
+  fn inc(x: int) -> int { return x + 1 }
+}
+
+fn sumConst(p: Point) -> int {
+  return p.x + p.y
+}
+
+fn sumMut(mut p: Point) -> int {
+  p.x = p.x + 1
+  return p.x + p.y
+}
+
+fn sumMove(move p: Point) -> int {
+  return p.x + p.y
+}
+
+fn useMatch(x: int) -> int {
+  match x {
+    0 => { return 0 }
+    _ => { return 1 }
+  }
+}
+

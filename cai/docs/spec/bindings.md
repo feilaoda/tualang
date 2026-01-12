@@ -20,6 +20,10 @@ Status: Frozen
 
 `let` 绑定可重新赋值：`x = expr`。
 
+约束（冻结）：
+- `let` 仅允许出现在 block 内（例如函数体、`if/for/while/match` 的 block）。
+- 模块顶层不允许出现 `let` 声明（编译错误）。
+
 ### 2.2 `const`
 - `const x: T = expr`
 - `const x = expr`
@@ -30,10 +34,17 @@ Status: Frozen
 - 若 `x` 是引用/借用（`Ref<T>`）或可变视图，`const x` 表示该引用本身不可被重新绑定，但是否允许通过它写入由 `Ref` 权限决定（见 `cai/docs/spec/ref.md`）。
 - 对容器/struct 的“字段写/元素写”规则冻结为：通过 `const` 绑定不可对其底层值进行写入（字段赋值、数组元素赋值、map 写入均为编译错误），除非该写入发生在独占可写借用 `Ref<T>` 上。
 
+约束（冻结）：
+- `const` 仅允许出现在 block 内。
+- 模块顶层不允许出现 `const` 声明（编译错误）。
+
 ---
 
 ## 3. 类型标注糖
 - `name: T = expr` 等价于 `let name: T = expr`（语法糖；见 `cai/docs/SYNTAX.md`）。
+
+约束（冻结）：
+- 该语法糖仅允许出现在 block 内；模块顶层禁止。
 
 ---
 

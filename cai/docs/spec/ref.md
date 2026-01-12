@@ -30,7 +30,7 @@ CAI 不在类型名上区分 `Ref<const T>` 之类的变体；只读/可写由�
 ### 2.2 参数产生的权限
 当函数参数类型为 `Ref<T>`（或 `&T`）时：
 - `fn f(const p: Ref<T>)`：`p` 为共享只读。
-- `fn f(let p: Ref<T>)`：`p` 为独占可写。
+- `fn f(mut p: Ref<T>)`：`p` 为独占可写。
 
 > 语法上 `paramMode` 适用于所有参数；对于 `Ref<T>`，它进一步决定借用权限。
 

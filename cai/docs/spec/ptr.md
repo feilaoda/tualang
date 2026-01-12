@@ -35,10 +35,10 @@ CAI 不提供裸指针类型（例如 `ptr`/`void*`）作为语言内置类型�
 ## 4. 解引用与内存访问（只能通过受控 API）
 CAI 不提供 `*p`、`p->field`、`p[i]` 这类直接解引用语法。
 
-所有内存读写必须通过标准库 `std.ptr`（或等价模块）的受控 API，例如（示意）：
-- `std.ptr.read<T>(p: Ptr<T>) -> T`
-- `std.ptr.write<T>(p: Ptr<T>, v: T)`
-- `std.ptr.copy<T>(dst: Ptr<T>, src: Ptr<T>, count: usize)`
+所有内存读写必须通过 `Ptr<T>` 的受控方法（示意；具体方法名在标准库冻结）：
+- `p.read() -> T`
+- `p.write(v: T) -> void`
+- `dst.copyFrom(src: Ptr<T>, count: usize) -> void`
 
 受控 API 的最低要求：
 - 明确“是否可能触发 UB”的前置条件（对齐、可读/可写、生命周期、重叠拷贝等）。

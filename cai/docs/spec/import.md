@@ -7,23 +7,26 @@ Status: Frozen
 ---
 
 ## 1. 源文件与模块
-- 一个源文件（`.cai`）是一个模块。
+- 一个源文件（`.ai`）是一个模块。
 - 模块的“模块名”默认由其导入路径决定（见 2）。
+
+约束（冻结）：
+- 模块顶层不允许出现变量绑定声明（`let/const` 及其 `name: T = expr` 语法糖），见 `cai/docs/spec/bindings.md`。
 
 ---
 
 ## 2. 导入语法
 
 ### 2.1 默认导入
-- `import "path/to/mod.cai"`
-- `import "path/to/mod.cai" as Alias`
+- `import "path/to/mod.ai"`
+- `import "path/to/mod.ai" as Alias`
 
 语义：
 - 导入一个模块，并在当前作用域中绑定一个模块名（默认为文件名/最后一段；或用 `as` 指定别名）。
 
 ### 2.2 选择性导入（from-import）
-- `from "path/to/mod.cai" import A, B, C`
-- `from "path/to/mod.cai" import A as X, B`
+- `from "path/to/mod.ai" import A, B, C`
+- `from "path/to/mod.ai" import A as X, B`
 
 语义：
 - 把被导入模块内的公开符号绑定到当前作用域（别名可选）。
@@ -51,10 +54,10 @@ Status: Frozen
  - 包清单：当以包方式构建时，工具链必须从 `cai.toml`/`cai.lock` 计算并注入 package roots（见 `cai/docs/spec/package.md`）。
 
 查找规则：
-- 若 import path 不带扩展名，则尝试补全 `.cai`
+- 若 import path 不带扩展名，则尝试补全 `.ai`
 - 对每个 root，按序尝试：
   1) `<root>/<raw>`
-  2) 兜底：`<root>/<name>/<name>.cai`（`name` 为最后一段）
+  2) 兜底：`<root>/<name>/<name>.ai`（`name` 为最后一段）
 
 ---
 
@@ -86,4 +89,11 @@ Status: Frozen
 
 ## 6. 可见性（public/private）
 - `private` 声明的符号仅在同一模块内部可见。
-- 其余符号默认可导出（public）。
+- 其余符号默认可导出（public），但“可导出”的声明种类被冻结为：
+  - `struct`
+  - `enum`
+  - `trait`
+  - `object`
+
+顶层 `fn` / 顶层 `let/const`：
+- 允许存在（模块内部可用，也可作为入口/初始化代码的一部分），但不属于可导出符号；其他模块不可通过 `import/from` 访问它们。

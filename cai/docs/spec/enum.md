@@ -10,9 +10,20 @@ Status: Frozen
 语法见 `cai/parser.g4`：
 
 ```cai
-enum Role { Admin, User }
-enum Code { Ok = 0, NotFound = 404 }
-enum OptionInt { Some(int), None }
+enum Role {
+  Admin
+  User
+}
+
+enum Code {
+  Ok = 0
+  NotFound = 404
+}
+
+enum OptionInt {
+  Some(int)
+  None
+}
 ```
 
 变体规则：

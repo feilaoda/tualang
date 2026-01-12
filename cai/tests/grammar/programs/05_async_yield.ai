@@ -1,0 +1,10 @@
+async fn heavy() -> int {
+  let i: int = 0
+  yield
+  return i
+}
+
+fn main() -> int {
+  return 0
+}
+

@@ -14,7 +14,7 @@ Status: Frozen
 
 构造与判定 API（标准库/预导入约定）：
 - `Some(v)`
-- `None()`
+- `None`
 - `opt.isSome() -> bool`
 - `opt.isNone() -> bool`
 
@@ -35,7 +35,7 @@ CAI 不提供 `if let` 语法；模式匹配通过 `match` 完成（见 `cai/doc
 
 对 `Option<T>`，`match` 支持以下 pattern：
 - `Some(x)`：匹配 `Some(v)` 并绑定 `x: T`
-- `None()`：匹配 `None`
+- `None`：匹配 `None`
 
 ---
 

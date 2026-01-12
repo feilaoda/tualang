@@ -31,7 +31,7 @@ Status: Frozen
 
 因此：
 - 可以传给 `const s: Slice<byte>` 参数；
-- 不能满足 `let s: Slice<byte>`（独占可写）参数要求。
+- 不能满足 `mut s: Slice<byte>`（独占可写）参数要求。
 
 ---
 

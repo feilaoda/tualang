@@ -32,14 +32,13 @@ unsafe {
 - 调用任意 `extern fn`。
 
 ### 3.2 指针内存访问
-通过 `Ptr<T>` 进行的任何内存读写（由 `std.ptr` 提供），例如：
-- `std.ptr.read<T>(p: Ptr<T>) -> T`
-- `std.ptr.write<T>(p: Ptr<T>, v: T)`
-- `std.ptr.copy<T>(dst: Ptr<T>, src: Ptr<T>, count: usize)`
+通过 `Ptr<T>` 进行的任何内存读写（由 `Ptr<T>` 的受控方法提供），例如：
+- `p.read() -> T`
+- `p.write(v: T) -> void`
+- `dst.copyFrom(src: Ptr<T>, count: usize) -> void`
 
 ---
 
 ## 4. unsafe 允许但不要求的操作
 - 创建/传递/比较 `Ptr<T>`、`Ref<T>` 本身不要求 unsafe；
 - 只要不发生内存访问、FFI 调用，就不需要 unsafe。
-

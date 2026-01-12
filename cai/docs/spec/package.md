@@ -21,8 +21,8 @@ Status: Frozen
 - `cai.toml`：构建清单
 - `cai.lock`：依赖锁文件（自动生成/更新）
 - `src/`：源码根
-  - `src/main.cai`：默认可执行入口模块（当构建 `exe` 时）
-  - `src/lib.cai`：默认库入口模块（当构建 `staticlib/dylib` 时）
+  - `src/main.ai`：默认可执行入口模块（当构建 `exe` 时）
+  - `src/lib.ai`：默认库入口模块（当构建 `staticlib/dylib` 时）
 
 工具链允许通过 `cai.toml` 覆盖入口模块（见 3）。
 
@@ -82,7 +82,7 @@ foo = { path = "../foo" }
 用于覆盖默认入口模块。
 
 冻结字段：
-- `exe: string`（入口模块相对路径，例如 `"src/main.cai"`）
+- `exe: string`（入口模块相对路径，例如 `"src/main.ai"`）
 - `staticlib: string`
 - `dylib: string`
 
@@ -99,7 +99,7 @@ foo = { path = "../foo" }
 2) 每个依赖包的 `src/` 目录（顺序按 `cai.lock` 中的锁定顺序；见 4）。
 
 因此：
-- `import "foo/bar.cai"` 会在上述根目录列表中按顺序查找（见 `cai/docs/spec/import.md` 的包路径解析）。
+- `import "foo/bar.ai"` 会在上述根目录列表中按顺序查找（见 `cai/docs/spec/import.md` 的包路径解析）。
 - 工具链不得依赖系统绝对路径导入（见 `cai/docs/spec/import.md`）。
 
 ---
@@ -135,4 +135,3 @@ foo = { path = "../foo" }
 - 其他形式（例如 `^1.2`、`>=1.2,<2.0`）为构建错误
 
 > 版本范围、特性开关等属于后续版本升级内容；冻结“只支持精确版本”可以确保早期工具链行为确定。
-

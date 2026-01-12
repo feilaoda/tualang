@@ -42,6 +42,34 @@ CAI 不承诺“一次编译多次运行”；ABI/布局以目标平台的 C ABI
 
 ---
 
+## 1.2 语言内部调用约定（非 `extern fn`）
+本节冻结 CAI 语言内部调用（同一程序/同一工具链生成的代码之间）的最低 ABI 规则，用于避免“按值传参导致大量拷贝”，并与 `const/mut/move` 参数模式一致。
+
+适用范围：
+- 仅适用于 CAI 内部函数调用；
+- 不适用于 `extern fn`（其 ABI 必须使用目标平台默认 C ABI；见 `cai/docs/spec/ffi.md`）。
+
+### 1.2.1 标量参数
+下列类型作为参数时按值传递（目标平台寄存器/栈细节由平台 ABI 决定）：
+- 所有数值类型、`bool`
+- `Ptr<T>`
+- `Ref<T>`、`Slice<T>`（它们自身是小型描述符值；借用冲突仍由语义阶段检查）
+
+### 1.2.2 聚合/拥有型参数
+对下列类型 `T`，当形参写作 `p: T`（或 `mut p: T` / `move p: T`）时，语言内部调用必须按“指针传参”实现：
+- 用户定义 `struct` / `enum`
+- 拥有型标准库类型（例如 `string/bytes/map/Box` 等）
+
+指针传参规则（规范性要求）：
+- `fn f(p: T)`：传入 `const T*`（只读借用）
+- `fn f(mut p: T)`：传入 `T*`（独占可写借用）
+- `fn f(move p: T)`：传入 `T*`（所有权转移；callee 接管 drop/释放责任，caller 在调用后视为 moved-out）
+
+实现说明（非规范性）：
+- 编译器可选择在 callee 入口把 `T*` 指向的数据 move/copy 到 callee 的局部存储，以便优化；但不得改变上述可观察语义（借用/独占/所有权转移与 drop 责任）。
+
+---
+
 ## 2. `struct` 布局（默认 `repr(C)`）
 
 CAI 的 `struct` 默认 `repr(C)`，具体规则冻结为（等价于目标平台 C 编译器的 struct 布局）：
@@ -89,7 +117,7 @@ enum 的大小为末尾向上取整到该对齐后的结果。
 
 典型非法例子（无穷大小）：
 - `struct Node { next: Node }`
-- `enum List { Cons(int, List), Nil }`
+- `enum List { Cons(int, List)\nNil }`
 
 ### 4.2 强制使用 `std.memory.Box<T>`
 对递归/循环嵌套的数据结构，必须通过 `std.memory.Box<T>` 断开布局递归：

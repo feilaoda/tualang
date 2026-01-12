@@ -37,7 +37,7 @@ Status: Frozen
 
 ### 4.2 关键字保留
 - 关键字不能作为标识符使用（例如不能定义变量名为 `if`）。
-- `ptr` 被保留为关键字，但 CAI 不提供裸指针类型（见 `cai/docs/spec/ptr.md` 与 `cai/parser.g4`）。
+- CAI 不提供裸指针类型（例如 `ptr`/`void*`）；指针仅以 `Ptr<T>` 这种受限类型出现（见 `cai/docs/spec/ptr.md`）。
 
 ---
 

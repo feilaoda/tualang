@@ -4,6 +4,9 @@ Status: Frozen
 
 本文件定义 CAI 标准库的错误码与跨平台错误分类机制。CAI 语言层的错误模型使用 `int` 错误码（见 `cai/docs/spec/error.md`），本文件冻结该 `int` 的“可移植解释”。
 
+导出约定：
+- `std.error.Error` 是一个 `object`，用于承载 `std.error` 的“模块级 API”（避免导出顶层 `fn`）。
+
 ---
 
 ## 1. 错误码值域
@@ -12,7 +15,7 @@ Status: Frozen
 - `>= 10000` 的错误码为**标准库冻结错误码**（见 2），在所有平台上语义一致。
 - `1..9999` 为**实现/平台保留区**：
   - 允许运行时/系统调用把 OS 错误映射到该区间；
-  - 但工具链必须保证：这些码可通过 `std.error.kind(code)` 归类为稳定的 `Kind`（见 3）。
+  - 但工具链必须保证：这些码可通过 `std.error.Error.kind(code)` 归类为稳定的 `Kind`（见 3）。
 
 ---
 
@@ -49,7 +52,7 @@ Status: Frozen
 ## 4. 分类 API（最低要求）
 
 标准库必须提供：
-- `std.error.kind(code: int) -> std.error.Kind`
+- `std.error.Error.kind(code: int) -> std.error.Kind`
 - `int.kind() -> std.error.Kind`
 
 语义冻结：

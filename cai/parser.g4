@@ -12,15 +12,30 @@ compilationUnit
   ;
 
 topLevelItem
-  : declaration
+  : topLevelDecl
   | statement
+  ;
+
+topLevelDecl
+  : attribute* (
+      importDecl sep?
+    | fromImportDecl sep?
+    | privateTopLevelDecl
+    | functionDecl
+    | externFunctionDecl
+    | externBlockDecl
+    | structDecl
+    | traitDecl
+    | implDecl
+    | objectDecl
+    | enumDecl
+    )
   ;
 
 declaration
   : attribute* (
       importDecl sep?
     | fromImportDecl sep?
-    | privateDecl
     | functionDecl
     | externFunctionDecl
     | externBlockDecl
@@ -48,8 +63,8 @@ attributeArg
   | expression
   ;
 
-privateDecl
-  : KW_PRIVATE declaration
+privateTopLevelDecl
+  : KW_PRIVATE topLevelDecl
   ;
 
 importDecl
@@ -100,7 +115,7 @@ param
 
 paramMode
   : KW_CONST
-  | KW_LET
+  | KW_MUT
   | KW_MOVE
   ;
 
@@ -180,11 +195,11 @@ functionDeclLike
   ;
 
 embeddedField
-  : ELLIPSIS type (KW_AS Identifier)? (COMMA)? sep*
+  : ELLIPSIS type (KW_AS Identifier)? sep*
   ;
 
 fieldDecl
-  : KW_CONST? Identifier COLON type (ASSIGN expression)? (COMMA)? sep*
+  : KW_CONST? Identifier COLON type (ASSIGN expression)? sep*
   ;
 
 traitDecl
@@ -233,7 +248,7 @@ enumDecl
   ;
 
 enumVariantList
-  : enumVariant (sepOrComma+ enumVariant)* sepOrComma*
+  : enumVariant (sep+ enumVariant)*
   ;
 
 enumVariant
@@ -246,6 +261,7 @@ enumVariantPayload
 
 statement
   : sep+ // allow stray separators
+  | yieldStmt
   | labelStmt sep?
   | ifStmt
   | matchStmt
@@ -261,6 +277,10 @@ statement
   | block
   | destructureAssignStmt
   | exprStmt
+  ;
+
+yieldStmt
+  : KW_YIELD sep?
   ;
 
 unsafeStmt
@@ -286,7 +306,12 @@ matchBindList
   ;
 
 block
-  : LBRACE sep* (topLevelItem sep*)* RBRACE
+  : LBRACE sep* (blockItem sep*)* RBRACE
+  ;
+
+blockItem
+  : declaration
+  | statement
   ;
 
 ifStmt
@@ -355,11 +380,6 @@ destructureAssignStmt
 
 exprStmt
   : expression sep?
-  ;
-
-sepOrComma
-  : sep
-  | COMMA
   ;
 
 sep
@@ -436,7 +456,7 @@ multiplicativeExpr
 
 unaryExpr
   : castExpr
-  | (INC | DEC | MINUS | NOT | BNOT | AMP | KW_MOVE | KW_AWAIT) unaryExpr
+  | (INC | DEC | MINUS | NOT | BNOT | AMP | KW_AWAIT) unaryExpr
   | postfixExpr
   ;
 
@@ -695,6 +715,7 @@ KW_INIT    : 'init';
 KW_DEINIT  : 'deinit';
 KW_THIS    : 'this';
 KW_MOVE    : 'move';
+KW_MUT     : 'mut';
 KW_IN      : 'in';
 KW_PRINTLN : 'println';
 KW_PRINT   : 'print';
@@ -706,13 +727,12 @@ KW_FALSE   : 'false';
 KW_ASYNC   : 'async';
 KW_AWAIT   : 'await';
 KW_DEFER   : 'defer';
+KW_YIELD   : 'yield';
 
 // Embed keyword
 KW_EMBED   : 'embed';
 
 // Type keywords / builtins
-// Reserved keyword: `ptr` is intentionally not a type in CAI.
-KW_PTR     : 'ptr';
 KW_REF     : 'Ref';
 KW_ANY     : 'any';
 KW_VOID    : 'void';

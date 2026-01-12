@@ -1,0 +1,8 @@
+fn useTypes(a: Ref<int>, b: &int) -> Option<int> {
+  m: map<string, int> = { "a": 1, "b": 2 }
+  s: string = "hello"
+  const x: Slice<byte> = bytes("hi").slice()
+  let y: Slice<byte> = bytes("hi").slice(true) //mut slice
+  return null
+}
+

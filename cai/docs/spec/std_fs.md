@@ -40,8 +40,9 @@ CAI 标准库的路径字符串统一使用 `/` 作为分隔符。
 
 所有方法若失败返回非 0 错误码：
 
-- `std.fs.open(path: string) -> std.fs.File, int`
-- `std.fs.create(path: string) -> std.fs.File, int`
+- `std.fs.Fs` 是一个 `object`，用于承载 `std.fs` 的“模块级 API”（避免导出顶层 `fn`）。
+- `std.fs.Fs.open(path: string) -> std.fs.File, int`
+- `std.fs.Fs.create(path: string) -> std.fs.File, int`
 
 - `File.read(this, dst: Slice<byte>) -> usize, int`
   - 读入至多 `dst.len` 字节，返回实际读取字节数；
@@ -65,10 +66,10 @@ CAI 标准库的路径字符串统一使用 `/` 作为分隔符。
 
 ## 4. `Dir` 与路径工具（最低要求）
 
-- `std.fs.openDir(path: string) -> std.fs.Dir, int`
+- `std.fs.Fs.openDir(path: string) -> std.fs.Dir, int`
 
 路径工具：
-- `std.fs.normalize(path: string) -> string, int`
+- `std.fs.Fs.normalize(path: string) -> string, int`
   - 语义：做纯字符串级规范化（消除 `.`、处理 `..`、折叠重复 `/`），不得访问文件系统。
 
 ---

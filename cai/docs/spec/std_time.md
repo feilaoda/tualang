@@ -4,6 +4,9 @@ Status: Frozen
 
 本文件定义时间相关的跨平台一致 API：`Duration`、`Instant` 与 `sleep`。
 
+导出约定：
+- `std.time.Time` 是一个 `object`，用于承载 `std.time` 的“模块级 API”（避免导出顶层 `fn`）。
+
 ---
 
 ## 1. `Duration`
@@ -26,8 +29,8 @@ Status: Frozen
 `ticks` 的绝对含义不对用户公开；仅允许通过 API 做差与比较。
 
 最低要求 API：
-- `std.time.now() -> std.time.Instant`
-- `std.time.since(a: std.time.Instant, b: std.time.Instant) -> std.time.Duration`
+- `std.time.Time.now() -> std.time.Instant`
+- `std.time.Time.since(a: std.time.Instant, b: std.time.Instant) -> std.time.Duration`
   - 语义：返回 `a - b` 的差值（纳秒级）。
 
 ---
@@ -35,7 +38,7 @@ Status: Frozen
 ## 3. `sleep`
 
 `std.time.sleep` 必须以异步形式提供，挂起当前任务而不阻塞调度线程（见 `cai/docs/spec/runtime.md`）：
-- `async fn std.time.sleep(d: std.time.Duration) -> int`
+- `async fn std.time.Time.sleep(d: std.time.Duration) -> int`
 
 语义：
 - 当 `d.nanos <= 0`：返回 `0`（不挂起）。

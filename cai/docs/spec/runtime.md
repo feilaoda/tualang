@@ -55,7 +55,7 @@ CAI 运行时必须提供 M:N 协程调度器：
 - 如需让出执行权，必须通过显式挂起点完成。
 
 标准库必须提供显式让出：
-- `std.runtime.yield() -> int`（见 `cai/docs/spec/std_runtime.md`）
+- `std.runtime.Runtime.yield() -> int`（见 `cai/docs/spec/std_runtime.md`）
 
 ---
 

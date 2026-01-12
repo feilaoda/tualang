@@ -8,6 +8,5 @@ CAI 的目标是：**接近 C 的性能与可预测性**（AOT、无 GC、小运
 - CAI 语法定义：`cai/docs/SYNTAX.md`、`cai/parser.g4`
 - CAI 编译器管线：`cai/docs/COMPILER.md`
 - “获得感”白皮书：`cai/docs/WHITEPAPER.md`
-- 实现路线图：`cai/docs/ROADMAP.md`
+- 开发 TODO：`cai/docs/TODO.md`
 - CAI 语言规范（按主题拆分）：`cai/docs/spec/README.md`
-- Tua 语言与实现：`tua/README.md`、`tua/docs/SPEC.md`、`tua/docs/ROADMAP.md`

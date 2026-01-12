@@ -33,9 +33,9 @@ Status: Frozen
 - `let b = a`：
   - 若 `a` 是 copy type：复制
   - 若 `a` 是 move-only：转移所有权，`a` 之后不可再使用（编译错误）
-- `f(a)` 传参遵循同样规则（除非参数是借用/引用类型或显式 `move` 参数；见 `cai/docs/spec/fn.md`）。
-
-显式 `move a` 语义见 `cai/docs/spec/expressions.md`。
+- `f(a)` 传参：
+  - 默认是借用（不转移所有权；参数模式默认为 `const`，见 `cai/docs/spec/fn.md`）
+  - 当被调函数参数声明为 `move` 时，传参发生所有权转移（调用后原绑定不可再用）
 
 ---
 
