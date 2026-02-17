@@ -65,7 +65,7 @@
   - [x] 引用类型语法（`language/spec`）：类型层统一 `Ref<T>`；`&T` 为过渡别名并逐步废弃
   - [x] 重借用（reborrow，`language/spec`）：允许独占 -> 共享降级；共享存活期间冻结原独占引用（诊断要清晰）
   - [x] 借用寿命（NLL v0，语句级）：借用在“最后一次使用”后结束（不必延伸到词法作用域末尾）
-- [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（LLM/IO/ABI 的核心前置）
+- [x] `bytes` 所有权 + drop + `mmap` 生命周期 + FFI 释放（IO/ABI 的核心前置）
 - [x] `Slice<T>` 借用视图（指针+长度）+ NLL 规则 + ABI 冻结
   - [x] v0：`bytes.slice(off,n) -> Slice<byte>` + `Slice.len/get` + borrow 阻止 move（语句级 NLL）
   - [x] v1：可写 slice（`set`）、array->slice（`a.slice`）、以及更完整的 borrow 规则（`const`=共享，`let`=独占）
@@ -212,7 +212,7 @@
 
 包本身（应用层/扩展能力）的规划与 TODO 已移到 `docs/PACKAGE_ROADMAP.md`。
 
-#### 11.1 语言/编译器（通用能力，不专属于 LLM）
+#### 11.1 语言/编译器（通用能力）
 - [x] 基础数值类型 + 溢出/转换规则（第一版）
   - [x] 整数：`i8/i16/int(i32)/long(i64)/isize`、`u8/u16/u32/u64/usize/byte`
   - [x] 浮点：`f16/f32/f64/bf16`（`float`=f32，`double`=f64）
@@ -238,9 +238,9 @@
 - [ ] 线程/并行：workqueue + 原子/CPU feature 探测（为 SIMD/量化做准备）
 - [ ] RNG：可复现的基础随机数（用于采样/测试/基准；也可由上层自行实现）
 
-#### 11.3 `std`（通用库，LLM 可复用）
+#### 11.3 `std`（通用库）
 - [x] `std.strconv`：`Int.parse`（基于 `tua_parse_int`）与 `Int.toString`（基于 `tua_int_to_string_alloc`；返回值可用 `Rt.free` 释放）
 - [x] `std.bytes` / `std.io`（v0）：`bytes` v0 + LE 读取工具 + `Reader/Cursor/BufReader`（std 版拷贝实现）
 - [x] `std.bytes` / `std.io`（v1）：range copy/memcpy 优化（`Bytes.copy`）+ mmap-backed file reader（避免逐字节 set/get）
 - [x] `std.utf8`（v0）：UTF-8 校验 + codepoint 解码 + 边界切分（用于文本切片等）
-- 说明：JSON/Tokenizer/LLM 的“包实现”不在本文件维护；见 `docs/PACKAGE_ROADMAP.md`
+- 说明：JSON 等包实现不在本文件维护；见 `docs/PACKAGE_ROADMAP.md`

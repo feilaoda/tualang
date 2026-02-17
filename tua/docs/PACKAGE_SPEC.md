@@ -17,7 +17,6 @@
   - `<root>/<raw>.tua`（若 raw 省略 `.tua` 会自动补）
   - 兜底：`<root>/<name>/<name>.tua`（`name` 为 import path 最后一段去掉 `.tua`）
     - 例：`import "json"` -> `<root>/json/json.tua`
-    - 例：`import "llm/tokenizer"` -> `<root>/llm/tokenizer.tua` 或 `<root>/tokenizer/tokenizer.tua`（兜底仅按最后一段）
 
 ### 2. JSON（包模块，Status: Deferred）
 说明：JSON 是通用能力，但当前仓库可能只保留 C 侧 helper（`packages/clib/json`），不保证存在 Tua 侧 `packages/json/*.tua`。
@@ -37,15 +36,5 @@
 - `Json.parseBytes(b: bytes) -> any, int`
 - `Json.scanTopLevelLong(b: bytes, key: string) -> long, int`
 
-### 3. LLM（包模块，Status: Deferred）
-LLM 属于应用层逻辑：模型格式、推理图、KV cache、采样、runner 等均应位于独立包（仓库内或外部 repo），不得进入编译器/运行时/语言规范。
-
-#### 3.1 C kernels（Implemented/Optional）
-位置：`packages/clib/llm/*`，导出 `tua_llm_*` / `tuaext_*` 等符号。
-
-原则：
-- 仅提供与模型无关的“通用数学/字节/量化内核”或“性能关键解析/转换”；
-- 不引入任何 `tuac` 的专用子命令，统一走通用 `extern fn` + `-L/-l/--dlopen`。
-
-### 4. 版本与兼容性
+### 3. 版本与兼容性
 本文件记录的包 API 允许迭代；如需破坏性变更，应同时更新 `docs/PACKAGE_ROADMAP.md` 并在 README 中标注。

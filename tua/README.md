@@ -1,6 +1,6 @@
-# Tua 语言（实验性）
+# Tua（嵌入式 Lua，实验性）
 
-类似 Lua 的极简语法 + 类型系统 + LLVM JIT/AOT 编译器，目标是“嵌入式友好、小运行时、可预测性能、无 GC”。
+Tua 是面向嵌入式场景的 Lua 风格语言运行时：极简语法 + 类型系统 + LLVM JIT/AOT 编译器，目标是“小运行时、可预测性能、无 GC”。
 
 - 规范：`docs/SPEC.md`
 - packages 规划：`docs/PACKAGE_SPEC.md`、`docs/PACKAGE_ROADMAP.md`

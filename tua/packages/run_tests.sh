@@ -22,37 +22,9 @@ if [[ "${#files[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-# If any tests request external libraries via `// tuac: ...`, build them once up-front.
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextbpe([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
-  if [[ ! -f "$ROOT/build/clib/libtuaextbpe.a" ]]; then
-    ./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c >/dev/null
-  fi
-fi
-
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuallm([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
-  if [[ ! -f "$ROOT/build/clib/libtuallm.a" ]]; then
-    ./tools/build_clib.sh tuallm packages/clib/llm/tua_llm.c packages/clib/llm/tua_llm_q4.c >/dev/null
-  fi
-fi
-
 if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuajson([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
   if [[ ! -f "$ROOT/build/clib/libtuajson.a" ]]; then
     ./tools/build_clib.sh tuajson packages/clib/json/tua_json.c >/dev/null
-  fi
-fi
-
-llama_ok=0
-if grep -Eq "^// tuac:.*(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)" "${files[@]}" >/dev/null 2>&1; then
-  if [[ -n "${LLAMA_PREFIX:-}" || -f "/usr/local/opt/llama.cpp/include/llama.h" || -f "/opt/homebrew/opt/llama.cpp/include/llama.h" ]]; then
-    if [[ ! -f "$ROOT/build/clib/libtuaextllama.a" ]]; then
-      if ./tools/build_llama_clib.sh >/dev/null 2>&1; then
-        llama_ok=1
-      else
-        llama_ok=0
-      fi
-    else
-      llama_ok=1
-    fi
   fi
 fi
 
@@ -113,12 +85,6 @@ for f in "${files[@]}"; do
   if [[ -n "$tuac_line" ]]; then
     read -r -a dirArgs <<< "$tuac_line"
     args+=("${dirArgs[@]}")
-  fi
-
-  if [[ "$llama_ok" -ne 1 && -n "$tuac_line" ]] && echo " $tuac_line " | grep -Eq "(^|[[:space:]])-l[[:space:]]*tuaextllama([[:space:]]|$)"; then
-    echo "[SKIP] $f (llama.cpp not available)"
-    skip=$((skip+1))
-    continue
   fi
 
   if [[ "$wants_aot" -eq 1 && "$expects_fail" -eq 0 ]]; then

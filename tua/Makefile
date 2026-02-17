@@ -13,14 +13,6 @@ AR ?= ar
 
 UNAME_S := $(shell uname -s)
 
-# Optional ggml (llama.cpp) acceleration for GGUF quant kernels.
-# Enable automatically when llama.cpp is installed via Homebrew (or when GGML_PREFIX is set).
-GGML_PREFIX ?= /usr/local/opt/llama.cpp
-ifneq ("$(wildcard $(GGML_PREFIX)/include/ggml.h)","")
-	CFLAGS += -DTUA_LLM_USE_GGML=1 -I$(GGML_PREFIX)/include
-	LIBS += -L$(GGML_PREFIX)/lib -lggml-base -lggml-cpu
-endif
-
 ifeq ($(UNAME_S),Darwin)
 	RT_LOOP_SRC = src/rt/platform/posix/rt_loop_kqueue.c
 	RT_DEFS = -DTUA_OS_DARWIN=1 -DTUA_OS_POSIX=1 -DTUA_RT_LOOP_BACKEND_KQUEUE=1

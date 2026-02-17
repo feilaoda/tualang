@@ -142,78 +142,6 @@ static LLVMTargetMachineRef createHostTargetMachine(Compiler* compiler, int optL
     return tm;
 }
 
-static int anyFileExists2(const char* a, const char* b) {
-    return (a && fileExists(a)) || (b && fileExists(b));
-}
-
-#if defined(TUA_LLM_USE_GGML)
-static char* findGgmlIncludeDir(void) {
-    const char* env = getenv("GGML_PREFIX");
-    if (env && env[0] != '\0') {
-        char* h = joinPath(env, "include/ggml.h");
-        if (fileExists(h)) {
-            free(h);
-            return joinPath(env, "include");
-        }
-        free(h);
-    }
-
-    const char* cands[] = {
-        "/usr/local/opt/llama.cpp",
-        "/opt/homebrew/opt/llama.cpp",
-        "/usr/local",
-        "/opt/homebrew",
-        NULL
-    };
-    for (int i = 0; cands[i]; i++) {
-        const char* p = cands[i];
-        char* h = joinPath(p, "include/ggml.h");
-        if (fileExists(h)) {
-            free(h);
-            return joinPath(p, "include");
-        }
-        free(h);
-    }
-    return NULL;
-}
-
-static char* findGgmlLibDir(void) {
-    const char* env = getenv("GGML_PREFIX");
-    if (env && env[0] != '\0') {
-        char* a = joinPath(env, "lib/libggml-base.a");
-        char* d = joinPath(env, "lib/libggml-base.dylib");
-        if (anyFileExists2(a, d)) {
-            free(a);
-            free(d);
-            return joinPath(env, "lib");
-        }
-        free(a);
-        free(d);
-    }
-
-    const char* cands[] = {
-        "/usr/local/opt/llama.cpp",
-        "/opt/homebrew/opt/llama.cpp",
-        "/usr/local",
-        "/opt/homebrew",
-        NULL
-    };
-    for (int i = 0; cands[i]; i++) {
-        const char* p = cands[i];
-        char* a = joinPath(p, "lib/libggml-base.a");
-        char* d = joinPath(p, "lib/libggml-base.dylib");
-        if (anyFileExists2(a, d)) {
-            free(a);
-            free(d);
-            return joinPath(p, "lib");
-        }
-        free(a);
-        free(d);
-    }
-    return NULL;
-}
-#endif
-
 static char* resolveExecutablePath(const char* argv0) {
     if (!argv0 || argv0[0] == '\0') return NULL;
     if (strchr(argv0, '/')) {
@@ -541,16 +469,6 @@ char* tryResolveLibFromSearchPaths(Compiler* compiler, const char* libName) {
     return NULL;
 }
 
-static int moduleUsesTuaLlm(LLVMModuleRef module) {
-    if (!module) return 0;
-    for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn != NULL; fn = LLVMGetNextFunction(fn)) {
-        const char* name = LLVMGetValueName(fn);
-        if (!name || name[0] == '\0') continue;
-        if (strncmp(name, "tua_llm_", 8) == 0) return 1;
-    }
-    return 0;
-}
-
 static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module, const char* outPath, const char* argv0) {
     if (!compiler || !module || !outPath || outPath[0] == '\0') return 1;
 
@@ -585,8 +503,6 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
         unlink(objTemplate);
         return 1;
     }
-    int needLlm = moduleUsesTuaLlm(module);
-
     // Link: clang -O* -o <out> <obj> <rtArchive> ...
     const char* clangExe = "clang";
     const char* optFlag = "-O0";
@@ -603,45 +519,14 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
 
     int cap = 36 + linkArgCount + (linkSearchCount * 2) + (linkLibCount * 2);
 #if defined(__APPLE__)
-    // Framework links (e.g. Accelerate) are appended conditionally.
-    if (needLlm) cap += 2;
-    // Runtime string encoding uses iconv on macOS.
+    // Runtime string encoding conversion depends on libiconv on macOS.
     cap += 1;
-#endif
-#if defined(TUA_LLM_USE_GGML)
-    // Propagate ggml-backed quant kernels to AOT builds.
-    if (needLlm) cap += 12;
 #endif
     char** args = (char**)malloc(sizeof(char*) * (size_t)cap);
     int n = 0;
-#if defined(TUA_LLM_USE_GGML)
-    char* ggmlInc = NULL;
-    char* ggmlLib = NULL;
-    char* ggmlRpath = NULL;
-#endif
 
     args[n++] = (char*)clangExe;
     args[n++] = (char*)optFlag;
-#if defined(TUA_LLM_USE_GGML)
-    if (needLlm) {
-        // Propagate ggml search paths to AOT builds when linking LLM kernels.
-        args[n++] = (char*)"-DTUA_LLM_USE_GGML=1";
-        ggmlInc = findGgmlIncludeDir();
-        if (ggmlInc) {
-            args[n++] = (char*)"-I";
-            args[n++] = ggmlInc;
-        }
-        ggmlLib = findGgmlLibDir();
-        if (ggmlLib) {
-            args[n++] = (char*)"-L";
-            args[n++] = ggmlLib;
-            int need = (int)strlen("-Wl,-rpath,") + (int)strlen(ggmlLib);
-            ggmlRpath = (char*)malloc((size_t)need + 1);
-            sprintf(ggmlRpath, "-Wl,-rpath,%s", ggmlLib);
-            args[n++] = ggmlRpath;
-        }
-    }
-#endif
     args[n++] = (char*)"-o";
     args[n++] = (char*)outPath;
     args[n++] = (char*)"-pthread";
@@ -670,29 +555,8 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     }
 
 #if defined(__APPLE__)
-    // LLM kernels may use Accelerate (CBLAS) on macOS.
-    if (needLlm) {
-        args[n++] = (char*)"-framework";
-        args[n++] = (char*)"Accelerate";
-    }
-
     // Runtime string encoding conversion depends on libiconv on macOS.
     args[n++] = (char*)"-liconv";
-#endif
-
-#if defined(TUA_LLM_USE_GGML)
-    if (needLlm) {
-        // LLM kernels may use ggml-cpu for Q4_K/Q6_K vec_dot kernels.
-        args[n++] = (char*)"-l";
-        args[n++] = (char*)"ggml-base";
-        args[n++] = (char*)"-l";
-        args[n++] = (char*)"ggml-cpu";
-    }
-#endif
-
-#if !defined(__APPLE__)
-    // LLM kernels use libm (e.g. sqrtf); only add it when the module references `tua_llm_*`.
-    if (needLlm) args[n++] = (char*)"-lm";
 #endif
 
     args[n++] = NULL;
@@ -702,11 +566,6 @@ static int compileExecutableFromModule(Compiler* compiler, LLVMModuleRef module,
     unlink(objTemplate);
     free(rtArchive);
     free(args);
-#if defined(TUA_LLM_USE_GGML)
-    if (ggmlInc) free(ggmlInc);
-    if (ggmlLib) free(ggmlLib);
-    if (ggmlRpath) free(ggmlRpath);
-#endif
     if (status == 0) {
         if (stderrText) free(stderrText);
         return 0;

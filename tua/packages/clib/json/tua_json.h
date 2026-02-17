@@ -64,28 +64,4 @@ int32_t tua_json_parse_key_path_string_long_map(tua_bytes* b, const char* path, 
 // - out_err=1: parse error/type mismatch, return NULL
 tua_array* tua_json_parse_key_path_string_array(tua_bytes* b, const char* path, int32_t* out_err);
 
-// Parse HF `tokenizer.json` BPE merges at `path` (e.g. "model.merges") into:
-// - *out_rank: map<long,long> where key=(idA<<32)|idB, value=rank (0..)
-// - *out_merge_id: map<long,long> where key=(idA<<32)|idB, value=mergedTokenId
-// Requires `vocab` as a `map<string,long>` (token string -> id).
-// Returns:
-// - 0: ok
-// - 2: not found (out maps set to NULL, out_count set to 0)
-// - 1: parse error/type mismatch (out maps set to NULL, out_count set to 0)
-int32_t tua_json_parse_key_path_bpe_merges_pair_maps(
-    tua_bytes* b,
-    const char* path,
-    tua_map* vocab,
-    tua_map** out_rank,
-    tua_map** out_merge_id,
-    int64_t* out_count
-);
-
-// Parse HF `tokenizer.json` top-level `added_tokens` into a `map<string,long>` (content -> id).
-// Returns:
-// - 0: ok (writes newly allocated map to *out_map)
-// - 2: not found (*out_map set to NULL)
-// - 1: parse error/type mismatch (*out_map set to NULL)
-int32_t tua_json_parse_top_level_added_tokens_content_id_map(tua_bytes* b, tua_map** out_map);
-
 #endif

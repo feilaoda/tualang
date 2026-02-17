@@ -691,7 +691,7 @@
   - `Utf8.isBoundary/clampBoundaryBefore/clampBoundaryAfter`（文本切片安全边界）
 
 #### 9.2.5 `packages/*`（非核心，Status: Deferred）
-JSON/Tokenizer/LLM 等包能力不属于语言规范；见 `docs/PACKAGE_SPEC.md`。
+JSON 等包能力不属于语言规范；见 `docs/PACKAGE_SPEC.md`。
 
 #### 9.3 `null`（Status: Implemented）
 - `null` 是“指针空值字面量”（当前实现中等价于 `i8*` 的空指针），用于表示“无指针/无句柄/未初始化引用”等场景

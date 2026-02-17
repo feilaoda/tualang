@@ -65,6 +65,6 @@
 
 ## P3：文档对齐与状态透明
 
-- `PLANNED` 对齐 `docs/SPEC.md` / `docs/ROADMAP.md` / `docs/PACKAGE_SPEC.md` / `docs/PACKAGE_ROADMAP.md`：把 packages（JSON/LLM）相关从 core roadmap 剥离，保证状态一致、可追踪。
+- `PLANNED` 对齐 `docs/SPEC.md` / `docs/ROADMAP.md` / `docs/PACKAGE_SPEC.md` / `docs/PACKAGE_ROADMAP.md`：把 packages（如 JSON）相关从 core roadmap 剥离，保证状态一致、可追踪。
 - `PLANNED` 增加“模块状态表”：每个模块的实现/测试/性能/计划一页表，避免“代码已存在但文档标延迟”的不透明。
 - `PLANNED` 嵌入能力文档：补齐 `tua_state/tua_config`（allocator/panic/loader/沙箱/线程模型）规范草案，并持续对齐实现（见 `docs/EMBEDDING_ALLOCATOR.md`）。

@@ -4,7 +4,6 @@
 
 仓库内置的“可选 C 内核”也遵循这个约定：
 
-- `packages/clib/llm/*`：LLM kernels（导出 `tua_llm_*`），构建：`./tools/build_tuallm_clib.sh`，使用：`-L build/clib -l tuallm`
 - `packages/clib/json/*`：JSON scan/parse helpers（导出 `tua_json_*`），构建：`./tools/build_tuajson_clib.sh`，使用：`-L build/clib -l tuajson`
 
 ## 1) 编译 C 静态库（推荐）
@@ -68,17 +67,3 @@
 - 推荐：FFI 新接口优先用“带长度”的类型（例如 `Slice<byte>`），形如 `{uint8_t* data, int64_t len}`，避免 `strlen` 开销/内嵌 NUL/编码歧义
 - `bytes` 是 `tua_bytes*`，`map` 是 `tua_map*`，`ptr` 是 `void*`
 - `extern fn` 默认按“借用”语义使用传入的 `map/array/bytes/string`（callee 不应释放传入对象），除非你明确设计为“接管所有权”
-
-## 5) 示例：为 tokenizer_bpe 提供 decode2（外部库）
-
-示例实现：`packages/clib/llm/tua_extbpe.c`，导出符号：
-
-- `tuaext_bpe_decode_ids_to_string(ids: long[], idToToken: map<long, string>, outErr: &int) string`
-
-说明：
-- 本仓库可能不包含对应的 Tua 封装模块（`packages/*.tua` 可能被暂时移除）；你可以在自己的包里写一个薄封装（`extern fn` + 小量 glue）。
-- packages 级别的 tokenizer/llm 规划已迁移到 `docs/PACKAGE_SPEC.md` 与 `docs/PACKAGE_ROADMAP.md`。
-
-构建（生成 `build/clib/libtuaextbpe.a`）：
-
-- `./tools/build_clib.sh tuaextbpe packages/clib/llm/tua_extbpe.c`
