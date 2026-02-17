@@ -10,6 +10,12 @@ LDFLAGS = $(LLVM_LDFLAGS)
 LIBS = $(LLVM_LIBS)
 CC = clang
 AR ?= ar
+LUAJIT_BIN ?=
+BENCH_ROUNDS ?= 5
+BENCH_PROFILE ?= native
+BENCH_NO_REBUILD ?= 0
+BENCH_LUAJIT_EXTRA ?=
+BENCH_COMPARE_EXTRA ?=
 
 UNAME_S := $(shell uname -s)
 
@@ -59,7 +65,7 @@ RT_SRCS = \
 	$(RT_LOOP_SRC)
 RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
 
-.PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run rt-state-smoke rt-state-smoke-run
+.PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run rt-state-smoke rt-state-smoke-run bench bench-luajit bench-compare
 .PHONY: test
 .PHONY: tuac-asan tuac-ubsan test-asan test-ubsan
 
@@ -152,3 +158,15 @@ test-asan: tuac-asan
 test-ubsan: tuac-ubsan
 	TUA_TUAC=./bin/tuac-ubsan TUA_TEST_QUIET=1 LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/ubsan_tuac ./tests/run.sh
 	./packages/run_tests.sh
+
+bench:
+	bash ./bench/run.sh --all
+
+bench-luajit:
+	LUAJIT_BIN="$(LUAJIT_BIN)" bash ./bench/run_luajit.sh --rounds "$(BENCH_ROUNDS)" $(BENCH_LUAJIT_EXTRA)
+
+bench-compare:
+	@set -e; \
+	ARGS="--rounds $(BENCH_ROUNDS) --profile $(BENCH_PROFILE) $(BENCH_COMPARE_EXTRA)"; \
+	if [ "$(BENCH_NO_REBUILD)" = "1" ]; then ARGS="$$ARGS --no-rebuild"; fi; \
+	LUAJIT_BIN="$(LUAJIT_BIN)" bash ./bench/compare_luajit.sh $$ARGS
