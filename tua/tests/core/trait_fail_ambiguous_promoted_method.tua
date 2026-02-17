@@ -1,0 +1,24 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct A {
+  id: int
+}
+impl A {
+  fn id() -> int { return id }
+}
+
+struct B {
+  id: int
+}
+impl B {
+  fn id() -> int { return id }
+}
+
+struct C {
+  ...A
+  ...B
+}
+
+impl HasId for C {}

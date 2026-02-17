@@ -1,0 +1,7 @@
+fn main() {
+
+  let x: f8 = (f8)(byte)1
+
+  let y = x + x
+  println(y)
+}

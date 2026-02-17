@@ -1,0 +1,24 @@
+fn main() {
+
+  let a: u32 = (u32)6
+
+  let b: u32 = (u32)3
+  assert((a & b) == (u32)2)
+  assert((a | b) == (u32)7)
+  assert((a ^ b) == (u32)5)
+  assert((a << 1) == (u32)12)
+  assert((a >> 1) == (u32)3)
+
+  let one: u32 = (u32)1
+  assert((one << 32) == (u32)1) // 32 & 31 == 0
+
+  let z: u32 = (u32)0
+
+  let n: u32 = ~z
+
+  let hi: u32 = (n >> 24) & (u32)255
+  assert(hi == (u32)255)
+
+  let x: int = -8
+  assert((x >> 1) == -4)
+}

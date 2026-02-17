@@ -1,0 +1,30 @@
+import "std/scalar"
+import "std/bytes" as bstd
+
+extern fn tua_str_from_bytes_encoding(b: bytes, encoding: string, out: &string) int
+
+fn main() {
+  // null -> empty bytes
+  let s0: string = null
+  let b0: bytes = s0.asBytes()
+  assert(bstd.Bytes.len(b0) == 0L)
+
+  // Embedded NUL roundtrip via UTF-8 decode (best-effort, NUL is valid).
+  let b: bytes = bstd.Bytes.new(3)
+  assert(b.setU8(0L, 65) == 0)
+  assert(b.setU8(1L, 0) == 0)
+  assert(b.setU8(2L, 66) == 0)
+
+  let s: string = null
+  let e = tua_str_from_bytes_encoding(b, "UTF-8", &s)
+  assert(e == 0)
+  assert(s.byteLen() == 3L)
+
+  let bv: bytes = s.asBytes()
+  assert(bstd.Bytes.len(bv) == 3L)
+  let v0, e0 = bstd.Bytes.getU8(bv, 0L)
+  let v1, e1 = bstd.Bytes.getU8(bv, 1L)
+  let v2, e2 = bstd.Bytes.getU8(bv, 2L)
+  assert(e0 == 0 && e1 == 0 && e2 == 0)
+  assert(v0 == 65 && v1 == 0 && v2 == 66)
+}

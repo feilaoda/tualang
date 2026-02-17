@@ -1,0 +1,8 @@
+import "../modules/ns_enum" as m
+
+fn main() {
+  assert(m.E.A == 0)
+  assert(m.E.B == 10)
+  assert(m.S.X == "X")
+  assert(m.S.Y == "rawy")
+}

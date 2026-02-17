@@ -1,0 +1,11 @@
+fn foo() -> int {
+
+  return 1;
+}
+
+fn main() -> int {
+
+  let a = foo() ? { return 0; }
+
+  return a;
+}

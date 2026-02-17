@@ -24,9 +24,19 @@ typedef struct AiTestCase {
     }                                                                            \
   } while (0)
 
+static inline void ai_test_quiet_sink(void* user, AiDiagKind kind, const char* filename, AiSpan span,
+                                      const char* message) {
+  (void)user;
+  (void)kind;
+  (void)filename;
+  (void)span;
+  (void)message;
+}
+
 static inline int ai_test_parse_errors(const char* src) {
   AiDiag diag;
   ai_diag_init(&diag, "<test>");
+  ai_diag_set_sink(&diag, ai_test_quiet_sink, NULL);
 
   AiLexer lex = {0};
   lex.filename = "<test>";
@@ -56,4 +66,3 @@ static inline int ai_test_parse_errors(const char* src) {
   ai_tokens_free(&tokens);
   return errors;
 }
-

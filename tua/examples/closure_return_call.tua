@@ -1,0 +1,10 @@
+fn makeAdder(n:int) -> (int)->int {
+
+  return fn(x:int) -> int {
+
+    return x + n
+
+  }
+}
+
+println(makeAdder(5)(10))

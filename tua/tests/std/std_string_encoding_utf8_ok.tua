@@ -1,0 +1,15 @@
+import "std/scalar"
+import "std/bytes" as bstd
+
+fn main() {
+  let s: string = "你好啊"
+
+  let b, e = s.toBytesEnc("utf-8")
+  assert(e == 0)
+  assert(bstd.Bytes.len(b) == 9L)
+
+  let s2, e2 = String.fromBytes(b, "UTF8")
+  assert(e2 == 0)
+  assert(s2 == s)
+}
+

@@ -1,0 +1,20 @@
+extern fn strlen(s: string) long
+
+struct Foo {
+  x: string = "default"
+  y: long = 0
+
+  fn len() long {
+
+    return strlen(x)
+
+  }
+}
+
+let a = Foo{ x: "abc" }
+let b = Foo{ y: 42, x: "hello" }
+let c = Foo{ }
+
+println(a.len())
+println(b.y)
+println(c.x)

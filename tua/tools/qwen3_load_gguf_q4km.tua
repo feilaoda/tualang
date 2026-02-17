@@ -1,0 +1,47 @@
+import Gguf from "../packages/llm/gguf"
+import Qwen3, Qwen3Config from "../packages/llm/qwen3"
+
+fn main(args: string[]) -> int {
+  let modelDir = "examples/models/qwen3-4b-q4km"
+  if args != null && args.len() >= 2 { modelDir = args[1] }
+
+  // Build config from GGUF metadata (same fallback as Qwen3.loadState()).
+  let fe, ggufPath = Gguf.findMainFile(modelDir)
+  if fe != 0 { println("findMainFile failed: {}", fe); return 1 }
+  let ge, gg = Gguf.parseMmap(ggufPath, 0)
+  if ge != 0 { println("parseMmap failed: {}", ge); return 1 }
+  let eTok, tiTok = Gguf.tensorInfo(gg, "token_embd.weight")
+  if eTok != 0 { println("tensorInfo token_embd.weight failed: {}", eTok); return 1 }
+  let vocab: int = (int)tiTok.d1
+  let rope: float = gg.ropeTheta
+  if rope == 0.0 { rope = 1000000.0 }
+  let eps: float = gg.rmsEps
+  if eps == 0.0 { eps = 0.000001 }
+  let cfg = Qwen3Config{
+    hidden: gg.embd,
+    intermediate: gg.ffn,
+    layers: gg.blockCount,
+    heads: gg.heads,
+    kvHeads: gg.kvHeads,
+    headDim: gg.headDim,
+    vocab: vocab,
+    maxPos: gg.ctxLen,
+    ropeTheta: rope,
+    rmsEps: eps,
+    bos: gg.bos,
+    eos: gg.eos,
+  }
+
+  let e0, ti0 = Gguf.tensorInfo(gg, "output_norm.weight")
+  println("precheck output_norm.weight: e={} t={} nd={} d0={} off={}", e0, ti0.t, ti0.nd, ti0.d0, ti0.off)
+
+  let we, w = Qwen3.loadWeightsGgufQ4KM(modelDir, cfg)
+  let arenaOk: int = 1
+  if w.arena == null { arenaOk = 0 }
+  let layerLen: int = -1
+  if w.layerOffs != null { layerLen = w.layerOffs.len() }
+  let extraLen: int = -1
+  if w.extraOffs != null { extraLen = w.extraOffs.len() }
+  println("loadWeightsGgufQ4KM: e={} dtype={} arena={} offEmbed={} offLmHead={} offNorm={} layerOffsLen={} extraOffsLen={}", we, w.dtype, arenaOk, w.offEmbed, w.offLmHead, w.offNorm, layerLen, extraLen)
+  return we
+}

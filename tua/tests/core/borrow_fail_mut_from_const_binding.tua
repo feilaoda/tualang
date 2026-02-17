@@ -1,0 +1,11 @@
+struct Foo {
+  x: int
+}
+
+fn main() {
+
+  const foo: Foo = Foo()
+
+  let m: &Foo = &foo
+  m.x = 1
+}

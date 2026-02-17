@@ -1,0 +1,6 @@
+let x = 1
+
+fn main() {
+  // Should not be reachable; module top-level vars are forbidden.
+  print(x)
+}

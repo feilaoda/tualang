@@ -1,0 +1,24 @@
+import "std/bytes" as bstd
+
+fn main() {
+
+  let b: bytes = bstd.Bytes.fromString("abc")
+
+  let v0, e0 = bstd.Bytes.getU8(b, 1L)
+  assert(e0 == 0)
+  assert(v0 == 98) // 'b'
+
+  unsafe {
+    // In unsafe blocks, `Bytes.getU8` is lowered without null/oob checks (UB on invalid access).
+
+    let v1, e1 = bstd.Bytes.getU8(b, 1L)
+    assert(e1 == 0)
+    assert(v1 == 98)
+
+    // Instance byte access is also unchecked under unsafe (UB on invalid access).
+
+    let c: byte = b.getU8(1L)
+    assert((int)c == 98)
+
+  }
+}

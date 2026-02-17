@@ -1,0 +1,18 @@
+struct A {
+  x: int
+}
+
+struct B {
+  x: int
+}
+
+struct C {
+  ...A
+  ...B
+}
+
+fn main() {
+
+  let c: C = C{ a: A{ x: 1 }, b: B{ x: 2 } }
+  println(c.x) // ambiguous: must write c.a.x or c.b.x
+}

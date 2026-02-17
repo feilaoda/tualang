@@ -1,0 +1,8 @@
+struct Foo {
+  x: int
+}
+
+fn bad() -> Ref<Foo> {
+  let f: Foo = Foo()
+  return &f
+}

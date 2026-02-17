@@ -1,0 +1,30 @@
+import "std/scalar"
+import "std/bytes" as bstd
+
+fn main() {
+
+  let s = "A"
+
+  let b: bytes = s.toBytes()
+  assert(bstd.Bytes.len(b) == 1L)
+
+  let v0, e0 = bstd.Bytes.getU8(b, 0L)
+  assert(e0 == 0)
+  assert(v0 == 65)
+
+  let a: int[] = s.toIntArray()
+  assert(a.len() == 1)
+  assert(a[0] == 65)
+
+  let l: long[] = s.toLongArray()
+  assert(l.len() == 1)
+  assert(l[0] == 65L)
+
+  // U+20AC EURO SIGN (3-byte UTF-8) => one codepoint.
+
+  let s2 = "€"
+
+  let a2: int[] = s2.toIntArray()
+  assert(a2.len() == 1)
+  assert(a2[0] == 8364)
+}

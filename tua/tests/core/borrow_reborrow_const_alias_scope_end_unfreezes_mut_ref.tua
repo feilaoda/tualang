@@ -1,0 +1,18 @@
+struct Foo {
+  x: int
+}
+
+fn main() {
+
+  let a: Foo = Foo()
+
+  let r: Ref<Foo> = &a
+  {
+
+    const s: Ref<Foo> = r
+    assert(s.x == 0)
+
+  }
+  r.x = 1
+  assert(a.x == 1)
+}

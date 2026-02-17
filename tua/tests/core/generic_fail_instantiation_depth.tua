@@ -1,0 +1,7 @@
+fn grow<T>() -> int {
+  return grow<Ref<T>>()
+}
+
+fn main() {
+  grow<int>()
+}

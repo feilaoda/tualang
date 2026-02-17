@@ -1,0 +1,36 @@
+fn pair() -> int, int {
+
+  return 1, 2
+}
+
+fn mix() -> string, int {
+
+  return "hi", 42
+}
+
+fn forward() -> int, int {
+
+  return pair()
+}
+
+let a, b = pair()
+println(a)
+println(b)
+
+let s, n = mix()
+println(s)
+println(n)
+
+let c, d = forward()
+println(c)
+println(d)
+
+// In expression context, multi-return call yields the first value.
+let first = pair()
+println(first)
+
+// Destructuring assignment
+let x, y = pair()
+x, y = forward()
+println(x)
+println(y)

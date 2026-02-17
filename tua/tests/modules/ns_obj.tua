@@ -1,0 +1,3 @@
+object Obj {
+  fn f() int { return 42 }
+}

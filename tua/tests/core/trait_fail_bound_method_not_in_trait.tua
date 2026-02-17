@@ -1,0 +1,14 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S { id: int }
+impl HasId for S {}
+
+fn bad<T: HasId>(x: T) -> int {
+  return x.nope()
+}
+
+fn main() {
+  bad<S>(S{id: 1})
+}

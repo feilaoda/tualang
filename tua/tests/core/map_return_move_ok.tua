@@ -1,0 +1,13 @@
+fn make() -> map {
+  let m: map = { "a": 1 }
+  let n = m
+  return n
+}
+
+fn main() {
+
+  let x: map = make()
+
+  let v:int = x["a"].unwrap()
+  assert(v == 1)
+}

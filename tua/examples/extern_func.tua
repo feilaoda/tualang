@@ -1,0 +1,47 @@
+extern fn atoi (s: string) int as c_atoi;
+
+object Foo {
+
+  fn atoi(s: string) int {
+    println("Foo.object.atoi");
+
+    return atoi(s);
+
+  }
+
+  fn fib(n: int) int {
+
+    if n < 2 {
+
+      return n;
+
+    }
+
+    return fib(n - 1) + fib(n - 2);
+
+  }
+}
+struct Foo1 {
+  a: int
+
+  fn atoi(s: string) int {
+    println("Foo.atoi");
+
+    return atoi(s);
+
+  }
+
+  fn bar() {
+    println("Foo.bar");
+    this.atoi("123");
+
+  }
+}
+
+let foo = Foo1();
+//foo.bar();
+
+println(Foo.atoi("1234"));
+//Foo2.bar();
+
+println(Foo.fib(10));

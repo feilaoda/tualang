@@ -1,0 +1,6 @@
+fn main() {
+
+  const a:int[] = {1, 2}
+  a[0] = 3
+  assert(a[0] == 3)
+}

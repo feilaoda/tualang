@@ -1,0 +1,5 @@
+fn main() {
+
+  let x: int = (int)2147483648L
+  assert(x == -2147483648)
+}

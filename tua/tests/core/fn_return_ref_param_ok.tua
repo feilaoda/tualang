@@ -1,0 +1,17 @@
+struct Foo {
+  x: int
+}
+
+fn id(let p: &Foo) -> &Foo {
+  return p
+}
+
+fn main() {
+
+  let foo: Foo = Foo()
+  foo.x = 1
+
+  let r: &Foo = id(&foo)
+  r.x = 2
+  assert(foo.x == 2)
+}

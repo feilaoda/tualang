@@ -1,0 +1,9 @@
+fn main() {
+
+  let o1: Option<int> = 123L as int
+  assert(o1.isSome())
+  assert(o1.unwrap() == 123)
+
+  let o2: Option<int> = 2147483648L as int
+  assert(o2.isNone())
+}

@@ -1,0 +1,24 @@
+# std 标准库（草案）
+
+当前标准库以源码形式随 `tuac` 一起发布，模块通过 `import` 引用。
+
+## 导入规则
+
+- `import "std/xxx"` / `from "std/xxx" import ...`：从标准库目录解析。
+- 标准库目录查找顺序：
+  - 环境变量 `TUA_STDLIB_DIR`
+  - `tuac` 可执行文件所在目录的 `../std`
+
+## 模块列表
+
+- `std/bytes`：二进制 bytes（mmap + 读写 + LE 读取工具）
+- `std/io`：Reader/Cursor/BufReader/MmapFileReader（基于 `bytes`）
+- `std/strconv`：字符串与数字转换（`Int.parse`）
+- `std/utf8`：UTF-8 校验/解码/边界工具（tokenizer/文本切片）
+- `json`（package，Deferred）：JSON 相关能力已从 core SPEC/ROADMAP 移出，见 `docs/PACKAGE_SPEC.md`
+- `std/rt`：运行时绑定（loop/workqueue/deadline/free）
+- `std/time`：时间与 sleep
+- `std/time/async`：基于 loop 的定时回调（第一版）
+- `std/fs`：文件系统同步 API
+- `std/net`：TCP 异步网络（基于 loop + callback）
+- `std/fs/async`：文件系统异步 API（基于 workqueue offload）

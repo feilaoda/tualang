@@ -1,0 +1,14 @@
+struct S { a: int, b: int }
+
+fn id<T>(move x: T) -> T {
+  return x
+}
+
+fn main() {
+
+  let s: S = S{ a: 1, b: 2 }
+
+  let s2: S = id<S>(move s)
+  assert(s2.a == 1)
+  assert(s2.b == 2)
+}

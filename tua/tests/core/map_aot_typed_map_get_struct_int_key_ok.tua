@@ -1,0 +1,34 @@
+struct Foo {
+  a: int
+}
+
+fn main() {
+
+  let m: map<int, Foo> = {}
+
+  for i = 0; i < 8192; i++ {
+    m[i] = Foo{ a: (i * 2) + 1 }
+  }
+
+  // Regression test: `map.get()` lowering must not emit per-iteration allocas,
+  // otherwise this loop will overflow the stack and crash.
+  let acc: long = 0L
+  let x: long = 1L
+  let mask: long = 8191L
+
+  for i = 0L; i < 1000000L; i++ {
+    x = (x * 1103515245L + 12345L) & 2147483647L
+    let k: int = (int)(x & mask)
+    let r = m.get(k).unwrap()
+    acc = acc + (long)r.a
+  }
+
+  assert(acc > 0L)
+
+  let mr = m.getMut(1).unwrap()
+  mr.a = 123
+
+  let r1 = m.get(1).unwrap()
+  assert(r1.a == 123)
+}
+

@@ -1,0 +1,28 @@
+import "std/rt" as rt
+import "std/fs" as fs
+
+fn main() {
+
+  let data, n, err = fs.Fs.readFile("README.md")
+  assert(err == 0)
+  assert(data != null)
+  assert(n > 0)
+  rt.Rt.free(data)
+
+  let kind, size, mtimeNs, mode, serr = fs.Fs.stat("README.md")
+  assert(serr == 0)
+  assert(kind == 1) // file
+  assert(size > 0L)
+  assert(mtimeNs > 0L)
+  assert(mode != 0)
+
+  let names, rerr = fs.Fs.readdir(".")
+  assert(rerr == 0)
+  assert(names != null)
+  fs.Fs.freeStringArray(names)
+
+  let p, perr = fs.Fs.realpath("README.md")
+  assert(perr == 0)
+  assert(p != null)
+  rt.Rt.free(p)
+}

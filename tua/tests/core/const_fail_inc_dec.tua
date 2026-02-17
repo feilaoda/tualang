@@ -1,0 +1,6 @@
+fn main() {
+
+  const i: int = 0
+  i++
+  --i
+}

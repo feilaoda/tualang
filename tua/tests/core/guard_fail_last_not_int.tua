@@ -1,0 +1,11 @@
+fn foo() -> long, int{
+
+  return 0, 1;
+}
+
+fn main() -> int {
+
+  let a = foo() ? { return 0; }
+
+  return a;
+}

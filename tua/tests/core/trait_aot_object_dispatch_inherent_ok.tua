@@ -1,0 +1,19 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S {
+  id: int
+}
+
+impl S {
+  fn id() -> int { return id }
+}
+
+impl HasId for S {}
+
+fn main() {
+
+  let v: HasId = S{ id: 11 }
+  assert(v.id() == 11)
+}

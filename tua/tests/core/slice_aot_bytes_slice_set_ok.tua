@@ -1,0 +1,13 @@
+import "std/bytes" as bstd
+
+fn main() {
+
+  let b: bytes = bstd.Bytes.fromString("abc")
+
+  let s: Slice<byte> = b.slice(1L, 2L)
+
+  let e = s.set(0L, (byte)120) // 'x'
+  assert(e == 0)
+  assert((int)s.get(0L) == 120)
+  assert((int)b.get(1L) == 120)
+}

@@ -1,0 +1,498 @@
+import "std/bytes" as bstd
+
+// Reader is a minimal byte-stream abstraction.
+// Convention:
+// - Returns `(n, err)`; `err==0` means OK.
+// - `n==0` with `err==0` means EOF.
+trait Reader {
+
+  fn read(dst: bytes, off: long, n: long) -> long, int
+}
+
+private fn _readerRead(r: Reader, dst: bytes, off: long, n: long) -> long, int{
+
+  let got, e = r.read(dst, off, n)
+
+  return got, e
+}
+
+// Cursor reads from an in-memory `bytes` buffer.
+// Note: the buffer is move-only; Cursor takes ownership.
+struct Cursor {
+  data: bytes
+  pos: long
+}
+
+impl Cursor {
+
+  fn len() long {
+
+    return bstd.Bytes.len(data)
+
+  }
+
+  fn position() long {
+
+    return pos
+
+  }
+
+  fn remaining() long {
+
+    let n = this.len()
+
+    if pos >= n { return 0L }
+
+    return n - pos
+
+  }
+
+  fn seek(pos2: long) int {
+
+    if pos2 < 0L { return 1 }
+
+    let n = this.len()
+
+    if pos2 > n { return 1 }
+    pos = pos2
+
+    return 0
+
+  }
+
+  fn read(dst: bytes, off: long, n: long) -> long, int{
+
+    if n <= 0L { return 0L, 0}
+
+    let avail = this.remaining()
+
+    if avail <= 0L { return 0L, 0}
+
+    let toRead = avail
+
+    if n <= avail { toRead = n }
+
+    let e = bstd.Bytes.copy(dst, off, data, pos, toRead)
+
+    if e != 0 { return 0L, e}
+
+    pos = pos + toRead
+
+    return toRead, 0
+
+  }
+
+  fn readExact(dst: bytes, off: long, n: long) int {
+
+    let left = n
+
+    let at = off
+
+    while left > 0L {
+
+      let got, e = this.read(dst, at, left)
+
+      if e != 0 { return e }
+
+      if got == 0L { return 1 } // EOF
+      at = at + got
+      left = left - got
+
+    }
+
+    return 0
+
+  }
+
+  fn readU8() -> int, int {
+
+    if this.remaining() <= 0L { return 0, 1}
+
+    let v, e = bstd.Bytes.getU8(data, pos)
+
+    if e != 0 { return 0, e}
+    pos = pos + 1L
+
+    return v, 0
+
+  }
+
+  fn readU16LE() -> u16, int{
+
+    if this.remaining() < 2L { return (u16)0, 1}
+
+    let v, e = bstd.Bytes.readU16LE(data, pos)
+
+    if e != 0 { return (u16)0, e}
+    pos = pos + 2L
+
+    return (u16)v, 0
+
+  }
+
+  fn readU32LE() -> u32, int{
+
+    if this.remaining() < 4L { return (u32)0, 1}
+
+    let v, e = bstd.Bytes.readU32LE(data, pos)
+
+    if e != 0 { return (u32)0, e}
+    pos = pos + 4L
+
+    return (u32)v, 0
+
+  }
+
+  fn readU64LE() -> u64, int{
+
+    if this.remaining() < 8L { return (u64)0, 1}
+
+    let v, e = bstd.Bytes.readU64LE(data, pos)
+
+    if e != 0 { return (u64)0, e}
+    pos = pos + 8L
+
+    return (u64)v, 0
+
+  }
+
+  fn readI16LE() -> i16, int{
+
+    let v, e = this.readU16LE()
+
+    if e != 0 { return (i16)0, e}
+
+    return (i16)v, 0
+
+  }
+
+  fn readI32LE() -> int, int {
+
+    let v, e = this.readU32LE()
+
+    if e != 0 { return 0, e}
+
+    return (int)v, 0
+
+  }
+
+  fn readI64LE() -> long, int{
+
+    let v, e = this.readU64LE()
+
+    if e != 0 { return 0L, e}
+
+    return (long)v, 0
+
+  }
+
+  fn readBytes(n: long) -> bytes, int{
+
+    if n < 0L { return null, 1}
+
+    if this.remaining() < n { return null, 1}
+
+    let out = bstd.Bytes.new((int)n)
+
+    let e = this.readExact(out, 0L, n)
+
+    if e != 0 { return null, e}
+
+    return out, 0
+
+  }
+}
+
+impl Reader for Cursor {}
+
+// BufReader buffers reads from an underlying Reader (stored as a trait object).
+// v0: implemented in std (byte-by-byte copies); optimize later with memcpy in tua_rt.
+struct BufReader {
+  inner: Reader
+  buf: bytes
+  start: long
+  end: long
+}
+
+impl BufReader {
+
+  fn available() long {
+
+    if end <= start { return 0L }
+
+    return end - start
+
+  }
+
+  fn fill() int {
+    start = 0L
+    end = 0L
+
+    let cap: long = bstd.Bytes.len(buf)
+
+    let n, e = _readerRead(inner, buf, 0L, cap)
+
+    if e != 0 { return e }
+    end = n
+
+    return 0
+
+  }
+
+  fn read(dst: bytes, off: long, n: long) -> long, int{
+
+    if n <= 0L { return 0L, 0}
+
+    let total: long = 0L
+
+    let at: long = off
+
+    let left: long = n
+
+    while left > 0L {
+
+      if this.available() <= 0L {
+
+        let fe = this.fill()
+
+        if fe != 0 { return total, fe}
+
+        if this.available() <= 0L { return total, 0} // EOF
+
+      }
+
+      let avail = this.available()
+
+      let take = avail
+
+      if left <= avail { take = left }
+
+      let ce = bstd.Bytes.copy(dst, at, buf, start, take)
+
+      if ce != 0 { return total, ce}
+
+      start = start + take
+      at = at + take
+      left = left - take
+      total = total + take
+
+    }
+
+    return total, 0
+
+  }
+
+  fn readExact(dst: bytes, off: long, n: long) int {
+
+    let left = n
+
+    let at = off
+
+    while left > 0L {
+
+      let got, e = this.read(dst, at, left)
+
+      if e != 0 { return e }
+
+      if got == 0L { return 1 } // EOF
+      at = at + got
+      left = left - got
+
+    }
+
+    return 0
+
+  }
+
+  fn readU8() -> int, int {
+
+    if this.available() <= 0L {
+
+      let fe = this.fill()
+
+      if fe != 0 { return 0, fe}
+
+      if this.available() <= 0L { return 0, 1}
+
+    }
+
+    let v, e = bstd.Bytes.getU8(buf, start)
+
+    if e != 0 { return 0, e}
+    start = start + 1L
+
+    return v, 0
+
+  }
+
+  fn readU16LE() -> u16, int{
+
+    let b0, b0e = this.readU8()
+
+    if b0e != 0 { return (u16)0, b0e}
+
+    let b1, b1e = this.readU8()
+
+    if b1e != 0 { return (u16)0, b1e}
+
+    let r: int = ((int)b0) + (((int)b1) * 256)
+
+    return (u16)r, 0
+
+  }
+
+  fn readU32LE() -> u32, int{
+
+    let b0, e0 = this.readU8()
+
+    if e0 != 0 { return (u32)0, e0}
+
+    let b1, e1 = this.readU8()
+
+    if e1 != 0 { return (u32)0, e1}
+
+    let b2, e2 = this.readU8()
+
+    if e2 != 0 { return (u32)0, e2}
+
+    let b3, e3 = this.readU8()
+
+    if e3 != 0 { return (u32)0, e3}
+
+    let r: long = ((long)b0)
+    r = r + (((long)b1) * 256L)
+    r = r + (((long)b2) * 65536L)
+    r = r + (((long)b3) * 16777216L)
+
+    return (u32)r, 0
+
+  }
+
+  fn readU64LE() -> u64, int{
+
+    let b0, e0 = this.readU8()
+
+    if e0 != 0 { return (u64)0, e0}
+
+    let b1, e1 = this.readU8()
+
+    if e1 != 0 { return (u64)0, e1}
+
+    let b2, e2 = this.readU8()
+
+    if e2 != 0 { return (u64)0, e2}
+
+    let b3, e3 = this.readU8()
+
+    if e3 != 0 { return (u64)0, e3}
+
+    let b4, e4 = this.readU8()
+
+    if e4 != 0 { return (u64)0, e4}
+
+    let b5, e5 = this.readU8()
+
+    if e5 != 0 { return (u64)0, e5}
+
+    let b6, e6 = this.readU8()
+
+    if e6 != 0 { return (u64)0, e6}
+
+    let b7, e7 = this.readU8()
+
+    if e7 != 0 { return (u64)0, e7}
+
+    let r: long = ((long)b0)
+    r = r + (((long)b1) * 256L)
+    r = r + (((long)b2) * 65536L)
+    r = r + (((long)b3) * 16777216L)
+    r = r + (((long)b4) * 4294967296L)
+    r = r + (((long)b5) * 1099511627776L)
+    r = r + (((long)b6) * 281474976710656L)
+    r = r + (((long)b7) * 72057594037927936L)
+
+    return (u64)r, 0
+
+  }
+}
+
+impl Reader for BufReader {}
+
+// Mmap-backed file reader (read-only, position-based).
+// Owns the `bytes` mapping so it auto-unmaps on drop.
+struct MmapFileReader {
+  data: bytes
+  pos: long
+}
+
+impl MmapFileReader {
+
+  fn remaining() long {
+
+    let n = bstd.Bytes.len(data)
+
+    if pos >= n { return 0L }
+
+    return n - pos
+
+  }
+
+  fn read(dst: bytes, off: long, n: long) -> long, int{
+
+    if n <= 0L { return 0L, 0}
+
+    let avail = this.remaining()
+
+    if avail <= 0L { return 0L, 0}
+
+    let toRead = avail
+
+    if n <= avail { toRead = n }
+
+    let e = bstd.Bytes.copy(dst, off, data, pos, toRead)
+
+    if e != 0 { return 0L, e}
+    pos = pos + toRead
+
+    return toRead, 0
+
+  }
+}
+
+impl Reader for MmapFileReader {}
+
+object Io {
+
+  fn cursorFromBytes(move data: bytes) -> Cursor {
+
+    return Cursor{ data: data, pos: 0L }
+
+  }
+
+  fn bufReader(move inner: Reader, cap: int) -> BufReader {
+
+    let c = 4096
+
+    if cap > 0 { c = cap }
+
+    return BufReader{
+      inner: inner,
+      buf: bstd.Bytes.new(c),
+      start: 0L,
+      end: 0L,
+
+    }
+
+  }
+
+  fn mmapFileReader(path: string) -> MmapFileReader, int{
+
+    let out = MmapFileReader{ data: null, pos: 0L }
+    let b, err = bstd.Bytes.mmapFile(path)
+
+    if err != 0 { return out, err }
+
+    return MmapFileReader{ data: b, pos: 0L }, 0
+
+  }
+}

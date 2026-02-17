@@ -1,0 +1,19 @@
+let m: map
+m["a"] = 1
+println(m["a"])
+println(m["missing"])
+
+let k = 1
+m[k] = 10
+m[1L] = 20
+println(m[1])
+
+let n: map = null
+n["x"] = 2
+println(n["x"])
+
+//typeof(m)
+
+let a = 10
+print(a)
+println(a)

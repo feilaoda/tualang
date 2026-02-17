@@ -23,11 +23,20 @@ typedef struct AiSpan {
   int column;    // 1-based (UTF-8 byte column)
 } AiSpan;
 
+typedef enum AiDiagKind {
+  AI_DIAG_ERROR = 0,
+} AiDiagKind;
+
+typedef void (*AiDiagSinkFn)(void* user, AiDiagKind kind, const char* filename, AiSpan span,
+                             const char* message);
+
 typedef struct AiDiag {
   const char* filename;
   int error_count;
+  AiDiagSinkFn sink;
+  void* sink_user;
 } AiDiag;
 
 void ai_diag_init(AiDiag* diag, const char* filename);
+void ai_diag_set_sink(AiDiag* diag, AiDiagSinkFn sink, void* user);
 void ai_diag_error(AiDiag* diag, AiSpan span, const char* fmt, ...);
-

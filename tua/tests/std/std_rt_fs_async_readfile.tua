@@ -1,0 +1,27 @@
+import "std/rt" as rt
+import "std/fs/async" as fs
+
+fn main() {
+
+  let loop = rt.Rt.loopCreate()
+  assert(loop != null)
+
+  let wq = rt.Rt.workqueueCreate(1)
+  assert(wq != null)
+
+  let ok = 0
+  fs.FsAsync.readFile(loop, wq, "README.md", fn(err: int, data: string, n: int) {
+    assert(err == 0)
+    assert(data != null)
+    assert(n > 0)
+    ok = 1
+    rt.Rt.free(data)
+    rt.Rt.loopStop(loop)
+
+  })
+  rt.Rt.loopRun(loop)
+  assert(ok == 1)
+  rt.Rt.workqueueFree(wq)
+  rt.Rt.loopFree(loop)
+  println("ok")
+}

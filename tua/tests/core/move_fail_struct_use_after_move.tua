@@ -1,0 +1,12 @@
+struct Foo {
+  x: int
+}
+
+fn main() {
+
+  let a: Foo = Foo()
+  a.x = 1
+
+  let b: Foo = a
+  println(a.x)
+}

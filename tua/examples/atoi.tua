@@ -1,0 +1,8 @@
+//import "std/strconv"
+
+//extern fn atoi(s: string) int
+//assert(atoi("123") == 123)
+//println(atoi("123"))
+
+extern fn str(i: int) string
+println(str(123)))

@@ -1,0 +1,24 @@
+fn main() {
+
+  let m: map = { "a": 1, 2: 3 }
+  assert(m.len() == 2)
+  assert(len(m) == 2)
+  assert(m.hasKey("a"))
+  assert(!m.hasKey("missing"))
+
+  let oa = m["a"]
+  assert(oa.isSome())
+
+  let v:int = oa.unwrap()
+  assert(v == 1)
+
+  let om = m["missing"]
+  assert(om.isNone())
+  m["z"] = null
+
+  let oz = m["z"]
+  assert(oz.isSome())
+
+  let v3:string = oz.unwrap()
+  assert(v3 == null)
+}

@@ -1,0 +1,54 @@
+enum RoleTypeInt {
+  Admin = 10,
+  User,
+  Guest = 20
+}
+
+enum RoleType {
+  Admin,
+  User,
+  Guest
+}
+
+enum RoleType2 {
+  Admin = "admin",
+  User,
+  Guest = "guest"
+}
+
+println(RoleTypeInt.Admin)
+println(RoleTypeInt.User)
+println(RoleTypeInt.Guest)
+
+println(RoleType.Admin)
+println(RoleType.User)
+println(RoleType.Guest)
+
+println(RoleTypeInt.toString(RoleTypeInt.Admin))
+println(RoleTypeInt.toString(RoleTypeInt.User))
+println(RoleTypeInt.toString(RoleTypeInt.Guest))
+
+println(RoleType.toString(RoleType.Admin))
+println(RoleType.toString(RoleType.User))
+println(RoleType.toString(RoleType.Guest))
+
+println(RoleType2.Admin)
+println(RoleType2.User)
+println(RoleType2.Guest)
+
+println(RoleType2.toString(RoleType2.Admin))
+println(RoleType2.toString(RoleType2.User))
+println(RoleType2.toString(RoleType2.Guest))
+
+enum RoleType3 {
+  Admin = "admin",
+  User = "user",
+  Guest = "guest"
+}
+
+println(RoleType3.Admin)
+println(RoleType3.User)
+println(RoleType3.Guest)
+println(RoleType3.toString(RoleType3.Admin))
+println(RoleType3.toString(RoleType3.User))
+println(RoleType3.toString(RoleType3.Guest))

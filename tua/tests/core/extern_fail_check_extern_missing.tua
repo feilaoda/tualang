@@ -1,0 +1,9 @@
+// `--check-extern` should fail before execution.
+
+extern fn definitely_missing_symbol() int
+
+fn main() {
+
+  let x = 1
+  assert(x == 1)
+}

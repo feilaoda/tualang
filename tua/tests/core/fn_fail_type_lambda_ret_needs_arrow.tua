@@ -1,0 +1,9 @@
+fn make() -> (int) int {
+  // Should fail: lambda return type is a function type, so it must use `->`.
+
+  return fn(y:int) (int) int {
+
+    return fn(z:int) int { return y + z }
+
+  }
+}

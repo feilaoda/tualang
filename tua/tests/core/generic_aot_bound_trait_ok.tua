@@ -1,0 +1,34 @@
+trait HasId {
+  fn id() -> int
+}
+
+struct S { id: int }
+
+impl S {
+  fn id() -> int { return id }
+}
+
+impl HasId for S {}
+
+fn getId<T: HasId>(x: T) -> int {
+  return x.id()
+}
+
+trait HasId2 {
+  fn id2() -> int
+}
+
+impl HasId2 for S {
+  fn id2() -> int { return id + id }
+}
+
+fn getId2<T: HasId2>(x: T) -> int {
+  return x.id2()
+}
+
+fn main() {
+
+  let s: S = S{ id: 9 }
+  assert(getId<S>(s) == 9)
+  assert(getId2<S>(s) == 18)
+}

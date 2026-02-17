@@ -1,0 +1,19 @@
+// expect-exit: 0
+
+fn main(args: string[]) int {
+  let s = "hi"
+  if s.len() != 2 { return 1 }
+
+  let b = s.asBytes()
+  if Bytes.len(b) != 2L { return 2 }
+
+  let b2, err = s.toBytesEnc("GBK")
+  if err != 0 { return 3 }
+
+  let s2, err2 = String.fromBytes(b2, "GBK")
+  if err2 != 0 { return 4 }
+  if s2 != "hi" { return 5 }
+
+  return 0
+}
+

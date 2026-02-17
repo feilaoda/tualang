@@ -1,0 +1,10 @@
+fn main() {
+
+  let b1: bool = true
+
+  let b0: bool = false
+  assert(((int)b1) == 1)
+  assert(((int)b0) == 0)
+  assert(((long)b1) == 1L)
+  assert(((long)b0) == 0L)
+}

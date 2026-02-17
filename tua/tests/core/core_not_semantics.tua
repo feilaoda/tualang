@@ -1,0 +1,8 @@
+fn main() {
+  assert(!0)
+  assert(!(1 == 0))
+  assert(!null)
+
+  let s:string = "a"
+  assert(! (s == null))
+}

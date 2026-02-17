@@ -1,0 +1,11 @@
+struct Foo {
+  x: int
+}
+
+fn bad(f: Foo) {
+  f.x = 1
+}
+
+fn main() {
+  bad(Foo())
+}

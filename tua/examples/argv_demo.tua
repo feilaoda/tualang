@@ -1,0 +1,7 @@
+// Print process arguments.
+// ARGV[0] is the program name, ARGV[1] is the first user arg.
+
+println(ARGV.len())
+for let i=0; i<ARGV.len(); i++ {
+  println(ARGV[i])
+}

@@ -1,0 +1,10 @@
+struct Foo {
+  x: int
+}
+
+fn main() {
+
+  const foo: Foo = Foo()
+  foo.x = 1
+  assert(foo.x == 1)
+}

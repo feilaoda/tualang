@@ -1,0 +1,7 @@
+fn first<T, U>(move a: T, move b: U) -> T {
+  return a
+}
+
+fn main() {
+  assert(first(1, 2.0) == 1)
+}
