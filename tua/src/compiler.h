@@ -17,11 +17,31 @@ typedef struct Block {
 
 typedef struct ForBlock {
     Block block;
+    LLVMBasicBlockRef loopPre;
     LLVMBasicBlockRef loopCond;
+    LLVMBasicBlockRef loopCondIter;
     LLVMBasicBlockRef loopBody;
     LLVMBasicBlockRef loopInc;
     LLVMBasicBlockRef loopEnd;
+    // Loop-local map slots proven non-null by a preheader check.
+    List* loopCheckedMapNonNullSlots; // List<LLVMValueRef>
+    // Loop-local cached IMAP(int-key) view for loop-invariant map variables.
+    List* loopIMapIntHints; // List<LoopIMapIntHint*>
 } ForBlock;
+
+typedef struct LoopIMapIntHint {
+    LLVMValueRef slot;   // map variable slot (`VariableRef.value`)
+    LLVMValueRef hasCap; // i1
+    LLVMValueRef mask;   // i64
+    LLVMValueRef ctrl;   // i8*
+    LLVMValueRef keys32; // i32*
+    LLVMValueRef vals64; // i64*
+} LoopIMapIntHint;
+
+typedef enum OwnershipProfile {
+    OWNERSHIP_PROFILE_SYSTEM = 0,
+    OWNERSHIP_PROFILE_SCRIPT = 1,
+} OwnershipProfile;
 
 typedef struct Compiler{
     // Debug information  
@@ -104,6 +124,20 @@ typedef struct Compiler{
 	    TypeKind expectedArrayElemKind;
 	    int64_t expectedArrayFixedLen; // -1 => dynamic / unknown
 
+    // Loop-side hint for safe bounds-check elimination on canonical array loops.
+    // When set, `array[index]` inside the active loop body may skip per-access OOB checks.
+    LLVMValueRef loopArrayBoundsSlot;      // array variable slot (`VariableRef.value`)
+    LLVMValueRef loopArrayBoundsIndexSlot; // index variable slot (`VariableRef.value`)
+    // Active loop-local map slots proven non-null by a preheader check.
+    // Only valid while compiling the corresponding loop body.
+    List* loopCheckedMapNonNullSlots; // List<LLVMValueRef>
+    // Active loop-local cached IMAP(int-key) views.
+    // Only valid while compiling the corresponding loop body.
+    List* loopIMapIntHints; // List<LoopIMapIntHint*>
+    // Function-local cache: const map variable slots already null-checked in this function.
+    // Allows repeated map reads in hot loops to skip redundant null checks in safe mode.
+    List* checkedConstMapNonNullSlots; // List<LLVMValueRef>
+
     // Tail recursion elimination (self tail calls) state for the currently compiled function.
     // Kept opaque here; implemented in `src/compiler.c`.
     struct TailrecState* tailrec;
@@ -144,10 +178,21 @@ typedef struct Compiler{
 
     // Generic diagnostics: instantiation backtrace for monomorphization errors.
     List* genericInstStack; // List<GenericInstFrame*>
+
+    // Ownership semantics profile.
+    OwnershipProfile ownershipProfile;
 } Compiler;
 
 static inline int compilerUncheckedIndex(Compiler* compiler) {
     return compiler && (compiler->uncheckedIndex || compiler->unsafeDepth > 0);
+}
+
+static inline int compilerUseSystemOwnership(const Compiler* compiler) {
+    return !compiler || compiler->ownershipProfile == OWNERSHIP_PROFILE_SYSTEM;
+}
+
+static inline int compilerUseScriptOwnership(const Compiler* compiler) {
+    return compiler && compiler->ownershipProfile == OWNERSHIP_PROFILE_SCRIPT;
 }
 
 // Returns true if the current function should box the local binding `name` (escape analysis).

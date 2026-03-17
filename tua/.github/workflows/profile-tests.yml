@@ -1,0 +1,44 @@
+name: Ownership Profile Tests
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  profile-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm-dev
+
+      - name: Resolve llvm-config
+        id: llvm
+        shell: bash
+        run: |
+          set -euo pipefail
+          LLVM_CONFIG_BIN="$(command -v llvm-config || true)"
+          if [[ -z "${LLVM_CONFIG_BIN}" ]]; then
+            LLVM_CONFIG_BIN="$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          if [[ -z "${LLVM_CONFIG_BIN}" ]]; then
+            echo "llvm-config not found" >&2
+            exit 1
+          fi
+          echo "LLVM_CONFIG=${LLVM_CONFIG_BIN}" >> "${GITHUB_ENV}"
+
+      - name: Build compiler
+        run: make tuac
+
+      - name: Run ownership profile tests
+        run: make test-profile

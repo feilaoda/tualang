@@ -1,0 +1,14 @@
+fn main() {
+  let i: int = 0
+  let sum: int = 0
+  let guard: int = 0
+
+  for i = 0; i < 3; i = i + 1 {
+    sum = sum + i
+    guard = guard + 1
+    if guard > 10 { break }
+  }
+
+  assert(guard == 3, "for update assignment should execute each loop")
+  assert(sum == 3, "sum should be 0 + 1 + 2")
+}

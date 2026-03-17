@@ -1,0 +1,14 @@
+// draft-profile: script
+// expect-target: pass
+// expect-output: 42
+
+fn touch(m: map) {
+  m["k"] = 42
+}
+
+fn main() int {
+  let m: map = {}
+  touch(m)
+  println(m["k"] ?? 0)
+  return 0
+}

@@ -1,0 +1,17 @@
+// tuac: --profile system
+struct Foo {
+  x: int
+}
+
+struct Holder {
+  f: Foo
+}
+
+fn main() {
+  let h = Holder{ f: Foo{ x: 0 } }
+  let b = Foo{ x: 7 }
+  h.f = b
+
+  assert(h.f.x == 7)
+  assert(b.x == 7)
+}

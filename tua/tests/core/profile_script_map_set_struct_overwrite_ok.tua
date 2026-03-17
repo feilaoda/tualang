@@ -1,0 +1,16 @@
+// tuac: --profile script
+struct Foo {
+  x: int
+}
+
+fn main() {
+  let m: map = {}
+  let a = Foo{ x: 1 }
+  let b = Foo{ x: 2 }
+
+  m["k"] = a
+  m["k"] = b
+
+  assert(a.x == 1)
+  assert(b.x == 2)
+}

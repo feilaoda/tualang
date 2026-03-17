@@ -120,6 +120,10 @@ LLVMValueRef emitPostfixExpr(Compiler* compiler, PostfixExpr* expr);
 	LLVMValueRef emitArrayLiteralExpr(Compiler* compiler, ArrayLiteralExpr* expr);
 	// Fast-path: `m[k].unwrap()` for map variables (avoids building Option).
 	LLVMValueRef emitIndexExprUnwrapFast(Compiler* compiler, IndexExpr* expr);
+	// Fast-path: `m.getUnchecked(k)` for typed scalar maps (skips Option/unwrap checks).
+	LLVMValueRef emitIndexExprUncheckedFast(Compiler* compiler, IndexExpr* expr);
+	// Fast-path: `m.get(k).unwrap()` for typed map<K, Struct> (avoids building Option).
+	LLVMValueRef emitMapGetUnwrapFast(Compiler* compiler, CallExpr* mapGetCall);
 	LLVMValueRef emitBraceLiteralExpr(Compiler* compiler, BraceLiteralExpr* expr);
 	LLVMValueRef emitIndexExpr(Compiler* compiler, IndexExpr* expr);
 	LLVMValueRef emitIndexSetExpr(Compiler* compiler, IndexSetExpr* expr);

@@ -1,0 +1,12 @@
+// tuac: --profile system
+struct Holder {
+  m: map
+}
+
+fn main() {
+  let a: map = {}
+  let h = Holder{ m: {} }
+  h.m = a
+
+  a["k"] = 1
+}

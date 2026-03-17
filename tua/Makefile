@@ -68,6 +68,7 @@ RT_OBJS = $(RT_SRCS:%.c=bin/obj/%.o)
 .PHONY: tuac tuac-debug tuaparse librt rt-smoke rt-smoke-run rt-fs-smoke rt-fs-smoke-run rt-fs2-smoke rt-fs2-smoke-run rt-net-smoke rt-net-smoke-run rt-state-smoke rt-state-smoke-run bench bench-luajit bench-compare
 .PHONY: test
 .PHONY: tuac-asan tuac-ubsan test-asan test-ubsan
+.PHONY: test-profile test-profile-asan test-profile-ubsan
 
 tuac: bin/libtuart.a
 		$(CC) $(CFLAGS) -O2 \
@@ -152,12 +153,21 @@ rt-state-smoke-run: rt-state-smoke
 test:
 	./tests/run.sh
 
+test-profile:
+	./tests/run_profile.sh
+
 test-asan: tuac-asan
 	TUA_TUAC=./bin/tuac-asan TUA_TEST_QUIET=1 ASAN_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/asan_tuac ./tests/run.sh
 
 test-ubsan: tuac-ubsan
 	TUA_TUAC=./bin/tuac-ubsan TUA_TEST_QUIET=1 LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/ubsan_tuac ./tests/run.sh
 	./packages/run_tests.sh
+
+test-profile-asan: tuac-asan
+	TUA_TUAC=./bin/tuac-asan TUA_TEST_QUIET=1 ASAN_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer ASAN_OPTIONS=abort_on_error=1:detect_leaks=0:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/asan_tuac ./tests/run_profile.sh
+
+test-profile-ubsan: tuac-ubsan
+	TUA_TUAC=./bin/tuac-ubsan TUA_TEST_QUIET=1 LLVM_SYMBOLIZER_PATH=$(LLVM_BINDIR)/llvm-symbolizer UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:symbolize=1:external_symbolizer_path=$(LLVM_BINDIR)/llvm-symbolizer:log_path=./build/tmp/ubsan_tuac ./tests/run_profile.sh
 
 bench:
 	bash ./bench/run.sh --all

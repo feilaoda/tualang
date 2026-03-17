@@ -21,6 +21,7 @@ typedef struct tua_imap {
     uint32_t kind;      // TUA_MAP_KIND_IMAP
     int32_t value_tag;  // TUA_VAL_*
     uint32_t key_kind;  // IMAP_KEY_*
+    int32_t refcnt;
 
     size_t capacity; // power of two
     size_t count;
@@ -35,6 +36,22 @@ typedef struct tua_imap {
     uint64_t* vals; // capacity entries (raw tua_value.payload bits)
 } tua_imap;
 
+static int imap_tag_is_managed(int32_t tag) {
+    return tag == TUA_VAL_STRING || tag == TUA_VAL_BOX;
+}
+
+static void imap_payload_retain(int32_t tag, uint64_t payload) {
+    if (!imap_tag_is_managed(tag)) return;
+    tua_value v = { .tag = tag, .payload = payload };
+    tua_value_retain_runtime(v);
+}
+
+static void imap_payload_release(int32_t tag, uint64_t payload) {
+    if (!imap_tag_is_managed(tag)) return;
+    tua_value v = { .tag = tag, .payload = payload };
+    tua_value_release_runtime(v);
+}
+
 static uint32_t hash_u64(uint64_t x) {
     x ^= x >> 33;
     x *= 0xff51afd7ed558ccdULL;
@@ -45,10 +62,9 @@ static uint32_t hash_u64(uint64_t x) {
 }
 
 static uint32_t hash_u32(uint32_t x) {
+    // Fast multiplicative mix tuned for hot int-key lookup paths.
     x ^= x >> 16;
-    x *= 0x7feb352dU;
-    x ^= x >> 15;
-    x *= 0x846ca68bU;
+    x *= 0x9e3779b1U;
     x ^= x >> 16;
     return x ? x : 1u;
 }
@@ -245,6 +261,7 @@ static tua_map* imap_new_internal(uint32_t key_kind, int32_t value_tag, int32_t 
     m->kind = (uint32_t)TUA_MAP_KIND_IMAP;
     m->value_tag = value_tag;
     m->key_kind = key_kind;
+    m->refcnt = 1;
     size_t want = 0;
     if (hint > 0) want = (size_t)hint;
     imap_alloc_arrays(m, desired_capacity(want));
@@ -325,7 +342,14 @@ void tua_imap_set_payload(tua_map* map, int64_t key, uint64_t payload) {
             m->keys.keys64[slot] = key;
         }
         m->count++;
+        // Map takes ownership of runtime-managed payloads.
+        imap_payload_retain(m->value_tag, payload);
+        m->vals[slot] = payload;
+        return;
     }
+    if (m->vals[slot] == payload) return;
+    imap_payload_release(m->value_tag, m->vals[slot]);
+    imap_payload_retain(m->value_tag, payload);
     m->vals[slot] = payload;
 }
 
@@ -344,7 +368,9 @@ int32_t tua_imap_delete(tua_map* map, int64_t key) {
         uint32_t h = hash_i64(key);
         if (!imap_find_slot_i64(m, key, h, &slot)) return 0;
     }
+    imap_payload_release(m->value_tag, m->vals[slot]);
     m->ctrl[slot] = IMAP_CTRL_DELETED;
+    m->vals[slot] = 0;
     m->tombstones++;
     m->count--;
     return 1;
@@ -355,6 +381,11 @@ void tua_imap_clear(tua_map* map) {
     tua_imap* m = (tua_imap*)map;
     if (m->kind != (uint32_t)TUA_MAP_KIND_IMAP) tua_panic("invalid typed map");
     if (!m->ctrl || m->capacity == 0) return;
+    for (size_t i = 0; i < m->capacity; i++) {
+        if (m->ctrl[i] >= IMAP_CTRL_EMPTY) continue;
+        imap_payload_release(m->value_tag, m->vals[i]);
+        m->vals[i] = 0;
+    }
     memset(m->ctrl, IMAP_CTRL_EMPTY, m->capacity);
     m->count = 0;
     m->tombstones = 0;
@@ -406,12 +437,33 @@ int32_t tua_imap_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_
     return 0;
 }
 
-void tua_imap_free(tua_map* map) {
+void tua_imap_retain(tua_map* map) {
     if (!map) return;
     tua_imap* m = (tua_imap*)map;
     if (m->kind != (uint32_t)TUA_MAP_KIND_IMAP) tua_panic("invalid typed map");
+    if (m->refcnt <= 0) tua_panic("invalid typed map refcount");
+    m->refcnt += 1;
+}
+
+void tua_imap_release(tua_map* map) {
+    if (!map) return;
+    tua_imap* m = (tua_imap*)map;
+    if (m->kind != (uint32_t)TUA_MAP_KIND_IMAP) tua_panic("invalid typed map");
+    if (m->refcnt <= 0) tua_panic("invalid typed map refcount");
+    m->refcnt -= 1;
+    if (m->refcnt > 0) return;
+    if (m->ctrl && m->vals && m->capacity > 0) {
+        for (size_t i = 0; i < m->capacity; i++) {
+            if (m->ctrl[i] >= IMAP_CTRL_EMPTY) continue;
+            imap_payload_release(m->value_tag, m->vals[i]);
+        }
+    }
     tua_free(m->ctrl);
     tua_free(m->keys.any);
     tua_free(m->vals);
     tua_free(m);
+}
+
+void tua_imap_free(tua_map* map) {
+    tua_imap_release(map);
 }

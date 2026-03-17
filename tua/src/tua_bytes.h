@@ -60,6 +60,8 @@ tua_err_t tua_bytes_f16_to_f32(tua_bytes* src, int64_t src_off, tua_bytes* dst, 
 tua_err_t tua_bytes_f32_to_bf16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
 tua_err_t tua_bytes_f32_to_f16(tua_bytes* src, int64_t src_off, tua_bytes* dst, int64_t dst_off, int64_t n);
 
+void tua_bytes_retain(tua_bytes* b);
+void tua_bytes_release(tua_bytes* b);
 void tua_bytes_free(tua_bytes* b);
 
 #endif

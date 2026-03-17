@@ -1,0 +1,12 @@
+// tuac: --profile system
+fn bad() -> int[] {
+  let a: int[] = {1}
+  let b: int[] = {}
+  b = a
+  return a
+}
+
+fn main() {
+  let x: int[] = bad()
+  println(x.len())
+}

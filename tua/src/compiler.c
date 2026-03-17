@@ -125,6 +125,11 @@ void initCompiler(Compiler* compiler) {
     compiler->expectedArrayElemType = NULL;
     compiler->expectedArrayElemKind = TYPE_ANY;
     compiler->expectedArrayFixedLen = -1;
+    compiler->loopArrayBoundsSlot = NULL;
+    compiler->loopArrayBoundsIndexSlot = NULL;
+    compiler->loopCheckedMapNonNullSlots = NULL;
+    compiler->loopIMapIntHints = NULL;
+    compiler->checkedConstMapNonNullSlots = NULL;
     compiler->tailrec = NULL;
     compiler->llvmOptLevel = 0;
     compiler->llvmCpu = NULL;
@@ -142,6 +147,7 @@ void initCompiler(Compiler* compiler) {
     compiler->emitLoc = 1;
     compiler->unsafeDepth = 0;
     compiler->genericInstStack = listNew();
+    compiler->ownershipProfile = OWNERSHIP_PROFILE_SYSTEM;
     
     // Debug information
     compiler->hadError = false;
@@ -479,8 +485,10 @@ LLVMTypeRef compilerGetArrayType(Compiler* compiler) {
     if (LLVMIsOpaqueStruct(t)) {
         LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-        LLVMTypeRef fields[5] = { i64, i64, i8ptr, i64, i64 };
-        LLVMStructSetBody(t, fields, 5, 0);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+        // { i64 len, i64 cap, i8* data, i64 elem_size, i64 fixed_len, i32 refcnt, i8* elem_retain, i8* elem_release }
+        LLVMTypeRef fields[8] = { i64, i64, i8ptr, i64, i64, i32, i8ptr, i8ptr };
+        LLVMStructSetBody(t, fields, 8, 0);
     }
     compiler->arrayType = LLVMPointerType(t, 0);
     return compiler->arrayType;
@@ -496,7 +504,7 @@ LLVMTypeRef compilerGetBytesType(Compiler* compiler) {
         LLVMTypeRef i64 = LLVMInt64TypeInContext(compiler->context);
         LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
         LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
-        // { i64 len, i64 cap, i8* data, i32 readonly, i32 pad, i8* drop_ctx, i8* drop_fn }
+        // { i64 len, i64 cap, i8* data, i32 readonly, i32 refcnt, i8* drop_ctx, i8* drop_fn }
         LLVMTypeRef fields[7] = { i64, i64, i8ptr, i32, i32, i8ptr, i8ptr };
         LLVMStructSetBody(t, fields, 7, 0);
     }
@@ -540,6 +548,16 @@ static LLVMValueRef getOrCreateTuaMapFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_map_free", fty);
 }
 
+static LLVMValueRef getOrCreateTuaMapRetain(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_map_retain");
+    if (fn) return fn;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef params[1] = { mapType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_map_retain", fty);
+}
+
 static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
     if (!compiler) return NULL;
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_array_free");
@@ -550,6 +568,16 @@ static LLVMValueRef getOrCreateTuaArrayFree(Compiler* compiler) {
     return LLVMAddFunction(compiler->module, "tua_array_free", fty);
 }
 
+static LLVMValueRef getOrCreateTuaArrayRetain(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_array_retain");
+    if (fn) return fn;
+    LLVMTypeRef arrType = compilerGetArrayType(compiler);
+    LLVMTypeRef params[1] = { arrType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_array_retain", fty);
+}
+
 static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
     if (!compiler) return NULL;
     LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_bytes_free");
@@ -558,6 +586,16 @@ static LLVMValueRef getOrCreateTuaBytesFree(Compiler* compiler) {
     LLVMTypeRef params[1] = { bytesType };
     LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
     return LLVMAddFunction(compiler->module, "tua_bytes_free", fty);
+}
+
+static LLVMValueRef getOrCreateTuaBytesRetain(Compiler* compiler) {
+    if (!compiler) return NULL;
+    LLVMValueRef fn = LLVMGetNamedFunction(compiler->module, "tua_bytes_retain");
+    if (fn) return fn;
+    LLVMTypeRef bytesType = compilerGetBytesType(compiler);
+    LLVMTypeRef params[1] = { bytesType };
+    LLVMTypeRef fty = LLVMFunctionType(LLVMVoidTypeInContext(compiler->context), params, 1, 0);
+    return LLVMAddFunction(compiler->module, "tua_bytes_retain", fty);
 }
 
 static LLVMValueRef getOrCreateTuaStrRetain(Compiler* compiler) {
@@ -769,16 +807,68 @@ void compilerEmitDropForCurrentFunctionScopes(Compiler* compiler) {
     }
 }
 
-static void moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
-    if (!compiler || !e) return;
-    if (e->type != EXPR_VARIABLE) return;
-    VariableRef v = findVariableExpr(compiler, e);
-    if (!v.value || !v.type) return;
-    if (v.isArray && v.isStackArray) return;
+static int moveOutOnReturnIfNeeded(Compiler* compiler, Expr* e) {
+    if (!compiler || !e) return 0;
+    // Returning a local owner can transfer ownership directly in both profiles.
+    // This avoids retain+drop pairs and keeps script profile zero-cost for common `return local_handle`.
+    if (!compilerUseSystemOwnership(compiler) && !compilerUseScriptOwnership(compiler)) return 0;
+
+    Expr* base = e;
+    while (base && base->type == EXPR_GROUPING) {
+        base = ((GroupingExpr*)base)->expression;
+    }
+    if (!base || base->type != EXPR_VARIABLE) return 0;
+
+    VariableRef v = findVariableExpr(compiler, base);
+    if (!v.value || !v.type) return 0;
+    if (v.isGlobal || v.isBorrowed) return 0;
+    if (v.isArray && v.isStackArray) return 0;
+
     LLVMTypeRef cloTy = compilerGetClosureType(compiler);
-    if (!v.isMap && !v.isArray && !v.isBytes && !v.isTraitObj && v.type != cloTy) return;
+    if (!v.isMap && !v.isArray && !v.isBytes && !v.isTraitObj && v.type != cloTy) return 0;
+
     LLVMValueRef nullv = LLVMConstNull(v.type);
     storeLocalVarValueForDrop(compiler, v, nullv);
+    return 1;
+}
+
+static void retainReturnHandleIfNeeded(Compiler* compiler, Expr* srcExpr, LLVMTypeRef returnType, LLVMValueRef retValue) {
+    if (!compilerUseScriptOwnership(compiler) || !srcExpr || !returnType || !retValue) return;
+
+    Expr* base = srcExpr;
+    while (base && base->type == EXPR_GROUPING) base = ((GroupingExpr*)base)->expression;
+    if (!base) return;
+
+    // Keep retain insertion conservative: only lvalue-like return sources are treated as borrowed escapes.
+    int borrowedLike = (base->type == EXPR_VARIABLE || base->type == EXPR_GET || base->type == EXPR_INDEX);
+    if (!borrowedLike) return;
+
+    int isMap = 0;
+    int isArray = 0;
+    int isBytes = 0;
+    if (base->type == EXPR_VARIABLE) {
+        VariableRef rv = findVariableExpr(compiler, base);
+        if (rv.value) {
+            isMap = rv.isMap ? 1 : 0;
+            isArray = rv.isArray ? 1 : 0;
+            isBytes = rv.isBytes ? 1 : 0;
+        }
+    }
+    if (!isMap && !isArray && !isBytes && base->inferredType == TYPE_ARRAY) {
+        isArray = 1;
+    }
+
+    LLVMValueRef fn = NULL;
+    if (isMap) {
+        fn = getOrCreateTuaMapRetain(compiler);
+    } else if (isArray) {
+        fn = getOrCreateTuaArrayRetain(compiler);
+    } else if (isBytes) {
+        fn = getOrCreateTuaBytesRetain(compiler);
+    }
+    if (!fn) return;
+    LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+    LLVMBuildCall2(compiler->builder, fty, fn, &retValue, 1, "");
 }
 
 LLVMValueRef compilerGetOrCreateStructDrop(Compiler* compiler, StructInfo* info) {
@@ -2036,7 +2126,8 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
             TUA_VAL_DOUBLE = 3,
             TUA_VAL_BOOL = 4,
             TUA_VAL_STRING = 5,
-            TUA_VAL_PTR = 6
+            TUA_VAL_PTR = 6,
+            TUA_VAL_BOX = 7
         };
 
         LLVMTypeKind sk = LLVMGetTypeKind(srcType);
@@ -2074,6 +2165,21 @@ static LLVMValueRef castValueToType(Compiler* compiler, LLVMValueRef value, LLVM
                 p = LLVMBuildBitCast(builder, value, i8ptr, "p_i8p");
             }
             payload = LLVMBuildPtrToInt(builder, p, i64, "p64");
+        } else if (sk == LLVMStructTypeKind) {
+            LLVMValueRef boxAlloc = getOrCreateTuaBoxAlloc(compiler);
+            LLVMValueRef dropFn = compilerGetOrCreateBoxDropFn(compiler, srcType, NULL, 0, NULL, 0);
+            LLVMTypeRef dropFnPtrTy = LLVMPointerType(tuaBoxDropFnType(compiler), 0);
+            LLVMValueRef sizeV = LLVMSizeOf(srcType);
+            LLVMValueRef size64 = LLVMTypeOf(sizeV) == i64 ? sizeV : LLVMBuildZExt(builder, sizeV, i64, "boxsz");
+            LLVMValueRef dropArg =
+                dropFn ? LLVMBuildBitCast(builder, dropFn, dropFnPtrTy, "dropfn") : LLVMConstNull(dropFnPtrTy);
+            LLVMValueRef args2[2] = { size64, dropArg };
+            LLVMValueRef raw = LLVMBuildCall2(builder, LLVMGlobalGetValueType(boxAlloc), boxAlloc, args2, 2, "box");
+            LLVMValueRef cell = LLVMBuildBitCast(builder, raw, LLVMPointerType(srcType, 0), "cell");
+            LLVMBuildStore(builder, value, cell);
+            LLVMValueRef p = LLVMBuildBitCast(builder, cell, i8ptr, "cell_i8");
+            payload = LLVMBuildPtrToInt(builder, p, i64, "cell64");
+            tag = TUA_VAL_BOX;
         }
 
         LLVMValueRef out = LLVMGetUndef(vt);
@@ -2916,7 +3022,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
             if (node && i < provided) {
                 Expr* srcExpr = (Expr*)node->data;
                 v = compileExpr(compiler, srcExpr);
-                moveOutOnReturnIfNeeded(compiler, srcExpr);
+                int movedOut = moveOutOnReturnIfNeeded(compiler, srcExpr);
                 node = node->next;
                 LLVMTypeRef want = LLVMStructGetTypeAtIndex(returnType, i);
                 v = castValueToType(compiler, v, want);
@@ -2946,6 +3052,9 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
                         }
                     }
                 }
+                if (!movedOut) {
+                    retainReturnHandleIfNeeded(compiler, srcExpr, want, v);
+                }
             }
             if (!v) {
                 LLVMTypeRef t = LLVMStructGetTypeAtIndex(returnType, i);
@@ -2965,7 +3074,7 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
         }
         Expr* srcExpr = (Expr*)stmt->values->head->data;
         returnValue = compileExpr(compiler, srcExpr);
-        moveOutOnReturnIfNeeded(compiler, srcExpr);
+        int movedOut = moveOutOnReturnIfNeeded(compiler, srcExpr);
         if (returnValue && returnType) {
             LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             if (returnType == i8ptr && srcExpr) {
@@ -2989,10 +3098,13 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
                     }
                 }
             }
+            if (!movedOut) {
+                retainReturnHandleIfNeeded(compiler, srcExpr, returnType, returnValue);
+            }
         }
     } else if (stmt->value != NULL) {
         returnValue = compileExpr(compiler, stmt->value);
-        moveOutOnReturnIfNeeded(compiler, stmt->value);
+        int movedOut = moveOutOnReturnIfNeeded(compiler, stmt->value);
         if (returnValue && returnType) {
             LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
             if (returnType == i8ptr && stmt->value) {
@@ -3015,6 +3127,9 @@ void compileReturnStmt(Compiler* compiler, ReturnStmt* stmt){
                         LLVMBuildCall2(compiler->builder, fty, retFn, &returnValue, 1, "");
                     }
                 }
+            }
+            if (!movedOut) {
+                retainReturnHandleIfNeeded(compiler, stmt->value, returnType, returnValue);
             }
         }
     }
@@ -4453,6 +4568,12 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     int savedLastSetLine = compiler->lastSetLine;
     int savedLastSetCol = compiler->lastSetCol;
     TailrecState* savedTailrec = (TailrecState*)compiler->tailrec;
+    List* savedLoopCheckedMapNonNullSlots = compiler->loopCheckedMapNonNullSlots;
+    compiler->loopCheckedMapNonNullSlots = NULL;
+    List* savedLoopIMapIntHints = compiler->loopIMapIntHints;
+    compiler->loopIMapIntHints = NULL;
+    List* savedCheckedConstMapNonNullSlots = compiler->checkedConstMapNonNullSlots;
+    compiler->checkedConstMapNonNullSlots = listNew();
 
     // Create function entry
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(func, "entry");
@@ -4761,6 +4882,13 @@ void compileFuncStmt(Compiler* compiler, FuncStmt* stmt) {
     compiler->lastSetLine = savedLastSetLine;
     compiler->lastSetCol = savedLastSetCol;
     compiler->tailrec = savedTailrec;
+    compiler->loopCheckedMapNonNullSlots = savedLoopCheckedMapNonNullSlots;
+    compiler->loopIMapIntHints = savedLoopIMapIntHints;
+    if (compiler->checkedConstMapNonNullSlots &&
+        compiler->checkedConstMapNonNullSlots != savedCheckedConstMapNonNullSlots) {
+        listFree(compiler->checkedConstMapNonNullSlots);
+    }
+    compiler->checkedConstMapNonNullSlots = savedCheckedConstMapNonNullSlots;
 
     if (tr.paramSlots) free(tr.paramSlots);
     if (tr.paramTypes) free(tr.paramTypes);

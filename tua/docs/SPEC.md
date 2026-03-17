@@ -560,6 +560,9 @@
 
 #### 9.2 `map` / `map<K,V>`（Status: Partial）
 - 目标：先提供“可用的键值容器”，再逐步补齐语义层与内存模型。
+- 所有权 profile（Frozen，分阶段落地）：
+  - `system`：严格 move-only/borrow 语义（当前默认、已实现路径）。
+  - `script`：脚本友好语义（目标）：默认不要求用户理解 move-only；普通读写继续使用 `m[k]` / `m[k]=v`，不强制改写为 `get/getMut` 或新增 `m.set/m.get` 风格 API。
 - 类型形态：
   - `map`：不带类型参数的 map（value 在 runtime 中以 `tua_value` 存储）
   - `map<K,V>`：带类型参数的 map（第一版）
@@ -580,7 +583,9 @@
   - 对 `map`（无类型参数）：`m[k] -> Option<any>`（即 `Option<tua_value>`）
   - 对 `map<K,V>`：
     - 当 `V` 为标量（Copy：`int/long/double/bool/string`）：`m[k] -> Option<V>`
-    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `get/getMut`（避免隐式产生第二个 owner 导致 double-free/UAF）
+    - 当 `V` 为 move-only（包含但不限于 `struct`、`map`、数组 `T[]/T[N]`、`bytes`、trait object 等）：
+      - `system`（Status: Implemented）：`m[k]` **不提供按值读取**；编译期报错并提示使用 `get/getMut`（避免隐式产生第二个 owner 导致 double-free/UAF）
+      - `script`（Status: Planned）：`m[k]` 允许读取，返回 `Option<V>`；非 Copy 值按“共享 owner 句柄”语义处理（实现可为 box + RC）
   - key 不存在返回 `None()`；不再提供 `v,ok = m[k]` 多返回形式
   - 若 `m` 为 `null/未初始化`，读取会触发运行时错误（带行号）
   - `string` value 的所有权（Frozen）：
@@ -593,16 +598,27 @@
   - `m[k] = v`
   - 若 `m` 是变量且当前为 `null/未初始化`，会自动初始化为新 map 再写入
   - 对 `map<K,V>`：写入时会做静态检查（key/value 类型不匹配会编译错误；禁止写入 `null`）
+  - profile 差异（Frozen，脚本语义目标）：
+    - `system`（Status: Implemented）：当 `v` 是 move-only 变量时，`m[k] = v` 会转移所有权（`v` moved-from）
+    - `script`（Status: Planned）：`m[k] = v` 视为“逃逸持有”，不使 `v` 失效；容器必须获得一份 owner：
+      - 若 `v` 已是可共享 owner（例如已有 box/句柄）：容器 retain（`RC+1`）
+      - 若 `v` 是栈上值（例如 `struct` 字面量/局部值）：装箱为堆对象后存入（初始 `RC=1`）
+      - 覆盖/删除/`clear`/`free` 时对旧值对称 release（`RC-1` 到 0 时 drop）
   - 当 `V` 为 trait object（`TraitName`）时：允许写入具体 `struct` 值并自动 box（同上）
 - 内建方法（Status: Implemented）：
   - `m.len() -> int`
   - `m.hasKey(k) -> bool`
   - `m.delete(k) -> bool`
   - `m.clear() -> void`
+  - `m.getUnchecked(k) -> V`（Status: Experimental）：
+    - 仅支持 `map<K,V>` 且 `V` 为标量（Copy）类型
+    - 跳过 `Option`/`unwrap` 分支，面向热循环
+    - 若 key 不存在，返回 `V` 的零值/默认 payload（调用方需保证 key 存在）
 - 借用读取（Status: Partial，配合 `Ref<T>`）：
   - 目标：支持“零拷贝读取/原地修改”，并为 `bytes/slice`、模型权重 mmap 等场景铺路
   - `m.get(k) -> Option<Ref<V>>`：返回 value 的共享只读引用（shared borrow）
   - `m.getMut(k) -> Option<Ref<V>>`：返回 value 的独占可写引用（exclusive borrow）
+  - 说明（Frozen）：`get/getMut` 属于进阶借用 API；script 模式下普通业务读写不应强制依赖它们（可继续用 `m[k]` / `m[k]=v`）
   - 兼容性：旧方法名 `getRef/getRefWrite` 已移除（编译期报错并提示改为 `get/getMut`）
   - 约束（Frozen）：当 `Ref<V>` 存活时，禁止对 `m` 执行可能使 element 地址失效的操作（如 `delete/clear/rehash/insert`）；由借用检查器保证
   - 当前实现（Status: Implemented）：
@@ -627,7 +643,9 @@
   - `T[]`：动态数组
   - `array<T>`：动态数组的具名别名（等价于 `T[]`，方便在泛型/impl 语法中使用）
   - `T[N]`：定长数组（`N` 为编译期常量整数）
-  - 数组为“引用型容器”（运行时为句柄/指针）：`let b = a` 移动句柄（所有权转移），`a` 之后不可再用；`clone()` 会深拷贝
+  - 数组为“引用型容器”（运行时为句柄/指针）：
+    - `system`（Status: Implemented）：`let b = a` 移动句柄（所有权转移），`a` 之后不可再用；`clone()` 会深拷贝
+    - `script`（Status: Planned）：局部别名默认可共存；当值逃逸到容器/返回值时再由 RC 持有规则接管
 - 字面量：
   - `[]` / `[e1, e2, ...]`：数组字面量（动态数组）
   - `{...}` 也可用于数组字面量（见 9.2.2）
@@ -637,6 +655,9 @@
     - `let a:T[N]`：默认初始化为全零值数组
 - 操作：
   - 下标读写：`a[i]` / `a[i] = v`（默认带 null/bounds 检查；越界或对 `null` 访问会触发运行时错误）
+  - profile 差异（Frozen，脚本语义目标）：
+    - `system`（Status: Implemented）：对 move-only 元素写入保持所有权转移语义
+    - `script`（Status: Planned）：`a[i] = v` 采用与 `m[k]=v` 同样的“逃逸持有”策略（非 Copy 值 retain/装箱；源值不失效）
   - `a.len() -> int` / `len(a) -> int`
   - `a.clone() -> T[]`
   - `a.push(v)`：仅对动态数组 `T[]` 有效；对定长数组为编译错误
@@ -730,6 +751,9 @@ JSON 等包能力不属于语言规范；见 `docs/PACKAGE_SPEC.md`。
   - 引用/借用值逃逸检查（第一版）：禁止 `return &local`；禁止把 `&local` 或借用值（如 `Ref/Slice`）赋给外层变量（包括经由中间变量转手）
 - 已实现（运行时/编译器插桩，第一版）：
   - `map/array/bytes/trait object/closure` 自动释放：作用域结束、覆盖赋值、`return` 路径会 drop；move 会把源 slot 置 `null`（避免 UAF/double-free）
+- profile 现状（Status: Partial）：
+  - 当前默认实现路径偏 `system`（严格 move-only）
+  - `script` 的“默认别名 + 逃逸点 RC”已部分落地，容器元素级生命周期仍在补齐中（见 9.2/9.2.1 的 `script` 条目）
 - 未实现（Planned）：
   - `struct deinit`/closure env 的自动 drop；deep drop（容器元素级析构）；跨线程数据竞争规则
 
@@ -745,8 +769,12 @@ JSON 等包能力不属于语言规范；见 `docs/PACKAGE_SPEC.md`。
 - 零成本抽象：大部分检查在编译期完成；运行时只保留必要的边界检查（如数组越界）
 
 #### 10.2 所有权与移动（Status: Partial）
-- 默认：**所有权唯一且不可复制（move-only）**；赋值会转移所有权：
+- `system`（Status: Implemented）：
+  - 默认：**所有权唯一且不可复制（move-only）**；赋值会转移所有权
   - `let b = a` 会移动 `a -> b`，`a` 之后不可再用（编译期报错）
+- `script`（Status: Planned，目标语义）：
+  - 默认借用/别名友好：局部赋值与参数传递不强制触发 move
+  - 仅在“逃逸点”建立独立 owner（return、写入容器字段/元素、保存到未来回调等），由 RC 对称管理
 - 例外（Copy types，Status: Implemented）：标量数值、`bool`、`string` 按值复制（`string` 为 RC 共享，不涉及 move），其余类型默认 move-only
 - 函数返回：返回值总是“拥有所有权”的值（不能返回对局部变量的引用）
   - 允许返回：新创建的值、从参数显式 move 进来的值

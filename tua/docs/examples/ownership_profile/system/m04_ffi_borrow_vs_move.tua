@@ -1,0 +1,14 @@
+// draft-profile: system
+// expect-target: pass
+
+extern fn hash(data: bytes, outHex: &string) int
+extern fn send(move data: bytes) int
+
+fn main() int {
+  let p = bytes(64)
+  let out: string = ""
+  let rc1 = hash(p, &out)
+  let rc2 = send(move p)
+  println(rc1, rc2)
+  return 0
+}

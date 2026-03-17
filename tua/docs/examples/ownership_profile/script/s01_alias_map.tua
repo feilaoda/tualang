@@ -1,0 +1,16 @@
+// draft-profile: script
+// expect-target: pass
+// expect-output: 2
+
+fn foo() map {
+  return {"x": 1}
+}
+
+
+fn main() int {
+  let a: map = {"x": 1}
+  let b = a
+  b["x"] = 2
+  println(a["x"] ?? 0)
+  return 0
+}

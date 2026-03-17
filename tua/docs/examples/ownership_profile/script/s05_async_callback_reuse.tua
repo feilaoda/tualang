@@ -1,0 +1,16 @@
+// draft-profile: script
+// expect-target: pass
+// note: runtime should retain callback while pending.
+
+import "std/time/async" as A
+
+fn main() int {
+  let count: int = 0
+  let cb = || {
+    count = count + 1
+    println(count)
+  }
+  A.afterMs(10, cb)
+  A.afterMs(20, cb)
+  return 0
+}

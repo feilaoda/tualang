@@ -18,6 +18,7 @@ struct tua_bytes {
     int64_t cap;
     uint8_t* data;
     int32_t readonly;
+    int32_t refcnt;
     void* drop_ctx;
     tua_bytes_drop_fn drop_fn;
 };
@@ -49,6 +50,7 @@ tua_bytes* tua_bytes_new(int64_t len) {
     b->len = len;
     b->cap = len;
     b->readonly = 0;
+    b->refcnt = 1;
     b->drop_ctx = NULL;
     b->drop_fn = tua_bytes_drop_free;
     if (len == 0) {
@@ -76,6 +78,7 @@ tua_bytes* tua_bytes_new_uninit(int64_t len) {
     b->len = len;
     b->cap = len;
     b->readonly = 0;
+    b->refcnt = 1;
     b->drop_ctx = NULL;
     b->drop_fn = tua_bytes_drop_free;
     if (len == 0) {
@@ -124,6 +127,7 @@ tua_bytes* tua_bytes_from_string_view(const char* s) {
     b->cap = n;
     b->data = (uint8_t*)tua_str_ptr(s);
     b->readonly = 1;
+    b->refcnt = 1;
     b->drop_ctx = (void*)s;
     b->drop_fn = tua_bytes_drop_str_view;
     tua_str_retain(s);
@@ -156,6 +160,7 @@ tua_err_t tua_bytes_mmap_file(const char* path_utf8, tua_bytes** out_bytes) {
     b->cap = len;
     b->data = (uint8_t*)data; // read-only mapping; mutation via bytes.set is UB (guarded at language level later)
     b->readonly = 1;
+    b->refcnt = 1;
     b->drop_ctx = map;
     b->drop_fn = tua_bytes_drop_mmap;
     *out_bytes = b;
@@ -418,8 +423,17 @@ tua_err_t tua_bytes_f32_to_f16(tua_bytes* src, int64_t src_off, tua_bytes* dst, 
     return TUA_OK;
 }
 
-void tua_bytes_free(tua_bytes* b) {
+void tua_bytes_retain(tua_bytes* b) {
     if (!b) return;
+    if (b->refcnt <= 0) tua_panic("invalid bytes refcount");
+    b->refcnt += 1;
+}
+
+void tua_bytes_release(tua_bytes* b) {
+    if (!b) return;
+    if (b->refcnt <= 0) tua_panic("invalid bytes refcount");
+    b->refcnt -= 1;
+    if (b->refcnt > 0) return;
     if (b->drop_fn) {
         b->drop_fn(b->drop_ctx, b->data, b->len);
     }
@@ -430,4 +444,8 @@ void tua_bytes_free(tua_bytes* b) {
     b->drop_ctx = NULL;
     b->drop_fn = NULL;
     tua_free(b);
+}
+
+void tua_bytes_free(tua_bytes* b) {
+    tua_bytes_release(b);
 }

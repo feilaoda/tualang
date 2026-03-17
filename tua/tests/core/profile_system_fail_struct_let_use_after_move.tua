@@ -1,0 +1,11 @@
+// tuac: --profile system
+struct Foo {
+  x: int
+}
+
+fn main() {
+  let a = Foo{ x: 1 }
+  let b = a
+  assert(a.x == 1)
+  assert(b.x == 1)
+}

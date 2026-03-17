@@ -1,0 +1,11 @@
+// tuac: --profile script
+fn main() {
+  let a: map = {}
+  a["k"] = 1
+
+  let b: map = {}
+  b = a
+  a = {}
+
+  assert(b["k"].unwrap() == 1)
+}

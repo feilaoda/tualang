@@ -30,6 +30,20 @@ static int strHasSharedLibSuffix(const char* p) {
     return endsWith(p, ".so");
 #endif
 }
+
+static int parseOwnershipProfileFlag(const char* v, OwnershipProfile* out) {
+    if (!v || !out) return 0;
+    if (strcmp(v, "system") == 0) {
+        *out = OWNERSHIP_PROFILE_SYSTEM;
+        return 1;
+    }
+    if (strcmp(v, "script") == 0) {
+        *out = OWNERSHIP_PROFILE_SCRIPT;
+        return 1;
+    }
+    return 0;
+}
+
 int tuac_main(int argc, char* argv[]) {
     Compiler compiler;
     initCompiler(&compiler);
@@ -49,6 +63,7 @@ int tuac_main(int argc, char* argv[]) {
     int printFfiLdflags = 0;
     int runArgc = 0;
     char** runArgv = NULL;
+    OwnershipProfile ownershipProfile = OWNERSHIP_PROFILE_SYSTEM;
 
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
@@ -61,7 +76,7 @@ int tuac_main(int argc, char* argv[]) {
             continue;
         }
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--profile <script|system>] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
             return 1;
         }
         if (strcmp(a, "--print-ffi-include-dir") == 0) {
@@ -157,6 +172,26 @@ int tuac_main(int argc, char* argv[]) {
             stackFixedArrays = 1;
             emitLoc = 0;
             if (optLevel < 3) optLevel = 3;
+            continue;
+        }
+        if (strncmp(a, "--profile=", 10) == 0) {
+            const char* v = a + 10;
+            if (!parseOwnershipProfileFlag(v, &ownershipProfile)) {
+                fprintf(stderr, "Invalid value for %s (expected script|system)\n", a);
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(a, "--profile") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Missing value for %s\n", a);
+                return 1;
+            }
+            const char* v = argv[++i];
+            if (!parseOwnershipProfileFlag(v, &ownershipProfile)) {
+                fprintf(stderr, "Invalid value for %s (expected script|system)\n", a);
+                return 1;
+            }
             continue;
         }
         if (strncmp(a, "--link-arg=", 11) == 0) {
@@ -365,7 +400,7 @@ int tuac_main(int argc, char* argv[]) {
     }
 
     if (!srcPath) {
-        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--llvm-O0|--llvm-O1|--llvm-O2|--llvm-O3] [--llvm-cpu <cpu>|--llvm-features <features>|--llvm-native] [--profile <script|system>] [--output <path>|--output=<path>|-o <path>] [--entry <module>|--entry=<module>] [-L <dir> ...] [-l <lib> ...] [--link-arg <arg> ...] [--dlopen <path> ...] [--check-extern] [--unchecked-index] [--stack-fixed-arrays] [--no-loc] [--perf] [--print-ffi-include-dir|--print-ffi-cflags|--print-ffi-ldflags] <source file> [args...]\n", argv[0]);
         return 1;
     }
     compiler.llvmOptLevel = optLevel;
@@ -375,6 +410,7 @@ int tuac_main(int argc, char* argv[]) {
     compiler.uncheckedIndex = uncheckedIndex;
     compiler.stackFixedArrays = stackFixedArrays;
     compiler.emitLoc = emitLoc;
+    compiler.ownershipProfile = ownershipProfile;
     // Pass argv0 + script args into JIT execution so `ARGV` works consistently.
     compiler.runArgc = runArgc + 1;
     compiler.runArgv = malloc(sizeof(char*) * (size_t)compiler.runArgc);

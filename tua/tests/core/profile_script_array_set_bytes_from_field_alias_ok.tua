@@ -1,0 +1,18 @@
+// tuac: --profile script
+import "std/bytes" as bstd
+
+struct Holder {
+  b: bytes
+}
+
+fn main() {
+  let h = Holder{ b: bstd.Bytes.fromString("abc") }
+  let a: bytes[] = { bstd.Bytes.new(0L) }
+
+  // Assign from a borrowed field source.
+  a[0] = h.b
+  h.b = bstd.Bytes.new(0L)
+
+  assert((int)a[0].get(0L) == 97)
+  assert((int)a[0].get(1L) == 98)
+}

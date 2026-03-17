@@ -1,0 +1,8 @@
+// tuac: --profile system
+fn main() {
+  let a: map = {}
+  let b: map = {}
+  b = a
+
+  a["k"] = 1
+}

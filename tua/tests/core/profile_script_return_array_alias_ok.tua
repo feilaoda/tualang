@@ -1,0 +1,20 @@
+// tuac: --profile script
+fn emptyArr() -> int[] {
+  let z: int[] = {}
+  return z
+}
+
+fn makeArr() -> int[] {
+  let a: int[] = {1, 2}
+  let b: int[] = {}
+  b = a
+  a = emptyArr()
+  return b
+}
+
+fn main() {
+  let x: int[] = makeArr()
+  assert(x.len() == 2)
+  assert(x[0] == 1)
+  assert(x[1] == 2)
+}

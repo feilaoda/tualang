@@ -1,0 +1,14 @@
+// tuac: --profile system
+import "std/bytes" as bstd
+
+fn bad() -> bytes {
+  let a: bytes = bstd.Bytes.fromString("abc")
+  let b: bytes = bstd.Bytes.new(0L)
+  b = a
+  return a
+}
+
+fn main() {
+  let x: bytes = bad()
+  println((int)x.get(0L))
+}

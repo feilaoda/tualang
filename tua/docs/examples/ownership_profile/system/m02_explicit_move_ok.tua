@@ -1,0 +1,12 @@
+// draft-profile: system
+// expect-target: pass
+
+fn consume(move b: bytes) int {
+  return b.len()
+}
+
+fn main() int {
+  let x = bytes(12)
+  let n = consume(move x)
+  return n
+}

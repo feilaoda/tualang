@@ -320,6 +320,1085 @@ static int storeLoopVarValue(Compiler* compiler, Block* scope, Token nameTok, LL
     return 1;
 }
 
+static int sameTokenText(Token a, Token b) {
+    if (a.length != b.length) return 0;
+    if (a.length <= 0) return 0;
+    return memcmp(a.start, b.start, (size_t)a.length) == 0;
+}
+
+static int tokenIsSmallIntegerLiteral(Token tok, long long want) {
+    if (tok.type != TOKEN_INT && tok.type != TOKEN_LONG && tok.type != TOKEN_NUMBER) return 0;
+    if (!tok.start || tok.length <= 0 || tok.length >= 63) return 0;
+    char buf[64];
+    memcpy(buf, tok.start, (size_t)tok.length);
+    buf[tok.length] = '\0';
+    char* end = NULL;
+    long long v = strtoll(buf, &end, 0);
+    if (end == buf) return 0;
+    while (*end == 'u' || *end == 'U' || *end == 'l' || *end == 'L') end++;
+    return (*end == '\0' && v == want) ? 1 : 0;
+}
+
+static Expr* unwrapGroupingExprForHint(Expr* e) {
+    while (e && e->type == EXPR_GROUPING) e = ((GroupingExpr*)e)->expression;
+    return e;
+}
+
+static int exprIsVarNamed(Expr* e, Token name) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e || e->type != EXPR_VARIABLE) return 0;
+    return sameTokenText(((VariableExpr*)e)->name, name);
+}
+
+static int exprIsZeroLiteral(Expr* e) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e || e->type != EXPR_LITERAL) return 0;
+    return tokenIsSmallIntegerLiteral(((LiteralExpr*)e)->value, 0);
+}
+
+static int exprIsOneLiteral(Expr* e) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e || e->type != EXPR_LITERAL) return 0;
+    return tokenIsSmallIntegerLiteral(((LiteralExpr*)e)->value, 1);
+}
+
+static int isSimpleIndexIncrement(Expr* increment, Token indexName) {
+    Expr* e = unwrapGroupingExprForHint(increment);
+    if (!e) return 0;
+    if (e->type == EXPR_POSTFIX) {
+        PostfixExpr* p = (PostfixExpr*)e;
+        return p->operator.type == TOKEN_INC && exprIsVarNamed(p->operand, indexName);
+    }
+    if (e->type == EXPR_PREFIX) {
+        PrefixExpr* p = (PrefixExpr*)e;
+        return p->operator.type == TOKEN_INC && exprIsVarNamed(p->operand, indexName);
+    }
+    if (e->type == EXPR_ASSIGN) {
+        AssignExpr* a = (AssignExpr*)e;
+        if (!sameTokenText(a->name, indexName)) return 0;
+        Expr* rhs = unwrapGroupingExprForHint(a->value);
+        if (!rhs || rhs->type != EXPR_BINARY) return 0;
+        BinaryExpr* b = (BinaryExpr*)rhs;
+        if (b->operator.type != TOKEN_PLUS) return 0;
+        return exprIsVarNamed(b->left, indexName) && exprIsOneLiteral(b->right);
+    }
+    return 0;
+}
+
+static int isArrayLenCallExpr(Expr* e, Token* outArrayName) {
+    Expr* base = unwrapGroupingExprForHint(e);
+    if (!base || base->type != EXPR_CALL) return 0;
+    CallExpr* call = (CallExpr*)base;
+    if (call->arguments && call->arguments->length != 0) return 0;
+    Expr* callee = unwrapGroupingExprForHint(call->callee);
+    if (!callee || callee->type != EXPR_GET) return 0;
+    GetExpr* g = (GetExpr*)callee;
+    if (!(g->name.length == 3 && memcmp(g->name.start, "len", 3) == 0)) return 0;
+    Expr* obj = unwrapGroupingExprForHint(g->object);
+    if (!obj || obj->type != EXPR_VARIABLE) return 0;
+    if (outArrayName) *outArrayName = ((VariableExpr*)obj)->name;
+    return 1;
+}
+
+static VariableRef findVariableByToken(Compiler* compiler, Token tok) {
+    VariableExpr ve = {0};
+    ve.base.type = EXPR_VARIABLE;
+    ve.base.token = tok;
+    ve.name = tok;
+    return findVariableExpr(compiler, (Expr*)&ve);
+}
+
+static int stmtWritesName(Stmt* stmt, Token name);
+
+static int exprWritesName(Expr* e, Token name) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e) return 0;
+    switch (e->type) {
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)e;
+            if (sameTokenText(a->name, name)) return 1;
+            return exprWritesName(a->value, name);
+        }
+        case EXPR_PREFIX: {
+            PrefixExpr* p = (PrefixExpr*)e;
+            if ((p->operator.type == TOKEN_INC || p->operator.type == TOKEN_DEC) && exprIsVarNamed(p->operand, name)) return 1;
+            return exprWritesName(p->operand, name);
+        }
+        case EXPR_POSTFIX: {
+            PostfixExpr* p = (PostfixExpr*)e;
+            if ((p->operator.type == TOKEN_INC || p->operator.type == TOKEN_DEC) && exprIsVarNamed(p->operand, name)) return 1;
+            return exprWritesName(p->operand, name);
+        }
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            return exprWritesName(b->left, name) || exprWritesName(b->right, name);
+        }
+        case EXPR_UNARY: {
+            UnaryExpr* u = (UnaryExpr*)e;
+            return exprWritesName(u->right, name);
+        }
+        case EXPR_CAST: {
+            CastExpr* c = (CastExpr*)e;
+            return exprWritesName(c->value, name);
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            if (exprWritesName(c->callee, name) || exprWritesName(c->caller, name)) return 1;
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                if (exprWritesName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)e;
+            if (exprWritesName(g->call, name)) return 1;
+            return stmtWritesName((Stmt*)g->onErr, name);
+        }
+        case EXPR_GET: {
+            GetExpr* g = (GetExpr*)e;
+            return exprWritesName(g->object, name);
+        }
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            return exprWritesName(s->object, name) || exprWritesName(s->value, name);
+        }
+        case EXPR_INDEX: {
+            IndexExpr* ix = (IndexExpr*)e;
+            return exprWritesName(ix->object, name) || exprWritesName(ix->index, name);
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* ix = (IndexSetExpr*)e;
+            return exprWritesName(ix->object, name) || exprWritesName(ix->index, name) || exprWritesName(ix->value, name);
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me && exprWritesName(me->value, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                if (exprWritesName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            if (exprWritesName(si->callee, name)) return 1;
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f && exprWritesName(f->value, name)) return 1;
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int stmtWritesName(Stmt* stmt, Token name) {
+    if (!stmt) return 0;
+    switch (stmt->type) {
+        case STMT_EXPR: {
+            ExprStmt* s = (ExprStmt*)stmt;
+            return exprWritesName(s->expression, name);
+        }
+        case STMT_VAR: {
+            VarStmt* s = (VarStmt*)stmt;
+            if (sameTokenText(s->name, name)) return 1;
+            return exprWritesName(s->initializer, name);
+        }
+        case STMT_IF: {
+            IfStmt* s = (IfStmt*)stmt;
+            return exprWritesName(s->condition, name) || stmtWritesName(s->thenBranch, name) || stmtWritesName(s->elseBranch, name);
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* s = (IfLetStmt*)stmt;
+            if (sameTokenText(s->name, name)) return 1;
+            return exprWritesName(s->value, name) || stmtWritesName(s->thenBranch, name) || stmtWritesName(s->elseBranch, name);
+        }
+        case STMT_FOR: {
+            ForStmt* s = (ForStmt*)stmt;
+            return stmtWritesName(s->initializer, name) ||
+                   exprWritesName(s->condition, name) ||
+                   exprWritesName(s->increment, name) ||
+                   stmtWritesName(s->body, name);
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* s = (ForInStmt*)stmt;
+            if (sameTokenText(s->loopVar, name)) return 1;
+            if (s->hasValueVar && sameTokenText(s->valueVar, name)) return 1;
+            return exprWritesName(s->range, name) || stmtWritesName(s->body, name);
+        }
+        case STMT_WHILE: {
+            WhileStmt* s = (WhileStmt*)stmt;
+            return exprWritesName(s->condition, name) || stmtWritesName(s->body, name);
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* s = (DoWhileStmt*)stmt;
+            return stmtWritesName(s->body, name) || exprWritesName(s->condition, name);
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                if (stmtWritesName((Stmt*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* s = (ReturnStmt*)stmt;
+            if (exprWritesName(s->value, name)) return 1;
+            for (ListNode* n = s->values ? s->values->head : NULL; n != NULL; n = n->next) {
+                if (exprWritesName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_DESTRUCTURE: {
+            DestructureStmt* s = (DestructureStmt*)stmt;
+            for (ListNode* n = s->names ? s->names->head : NULL; n != NULL; n = n->next) {
+                Token* tok = (Token*)n->data;
+                if (tok && sameTokenText(*tok, name)) return 1;
+            }
+            return exprWritesName(s->value, name);
+        }
+        case STMT_UNSAFE: {
+            UnsafeStmt* s = (UnsafeStmt*)stmt;
+            return stmtWritesName(s->body, name);
+        }
+        case STMT_PRIVATE: {
+            PrivateStmt* s = (PrivateStmt*)stmt;
+            return stmtWritesName(s->inner, name);
+        }
+        default:
+            return 0;
+    }
+}
+
+static int tokenTextEq(Token tok, const char* s) {
+    if (!s) return 0;
+    int len = (int)strlen(s);
+    if (tok.length != len) return 0;
+    return memcmp(tok.start, s, (size_t)len) == 0;
+}
+
+static int tokenListContains(List* names, Token tok) {
+    if (!names || tok.length <= 0 || !tok.start) return 0;
+    for (ListNode* n = names->head; n != NULL; n = n->next) {
+        Token* cur = (Token*)n->data;
+        if (!cur) continue;
+        if (sameTokenText(*cur, tok)) return 1;
+    }
+    return 0;
+}
+
+static void tokenListAddUnique(List* names, Token tok) {
+    if (!names || tok.length <= 0 || !tok.start) return;
+    if (tokenListContains(names, tok)) return;
+    Token* copy = malloc(sizeof(Token));
+    *copy = tok;
+    listAppend(names, copy);
+}
+
+static void tokenListFreeDeep(List* names) {
+    if (!names) return;
+    for (ListNode* n = names->head; n != NULL; n = n->next) {
+        free(n->data);
+    }
+    listFree(names);
+}
+
+static int slotListContains(List* slots, LLVMValueRef slot) {
+    if (!slots || !slot) return 0;
+    for (ListNode* n = slots->head; n != NULL; n = n->next) {
+        if ((LLVMValueRef)n->data == slot) return 1;
+    }
+    return 0;
+}
+
+static void slotListAddUnique(List* slots, LLVMValueRef slot) {
+    if (!slots || !slot) return;
+    if (slotListContains(slots, slot)) return;
+    listAppend(slots, slot);
+}
+
+static void collectMapReadNamesInStmt(Stmt* stmt, List* names);
+
+static void collectMapReadNamesInExpr(Expr* e, List* names) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e || !names) return;
+
+    switch (e->type) {
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)e;
+            collectMapReadNamesInExpr(a->value, names);
+            return;
+        }
+        case EXPR_PREFIX: {
+            PrefixExpr* p = (PrefixExpr*)e;
+            collectMapReadNamesInExpr(p->operand, names);
+            return;
+        }
+        case EXPR_POSTFIX: {
+            PostfixExpr* p = (PostfixExpr*)e;
+            collectMapReadNamesInExpr(p->operand, names);
+            return;
+        }
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            collectMapReadNamesInExpr(b->left, names);
+            collectMapReadNamesInExpr(b->right, names);
+            return;
+        }
+        case EXPR_UNARY: {
+            UnaryExpr* u = (UnaryExpr*)e;
+            collectMapReadNamesInExpr(u->right, names);
+            return;
+        }
+        case EXPR_CAST: {
+            CastExpr* c = (CastExpr*)e;
+            collectMapReadNamesInExpr(c->value, names);
+            return;
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            Expr* callee = unwrapGroupingExprForHint(c->callee);
+            if (callee && callee->type == EXPR_GET) {
+                GetExpr* g = (GetExpr*)callee;
+                Expr* obj = unwrapGroupingExprForHint(g->object);
+                if (obj && obj->type == EXPR_VARIABLE &&
+                    (tokenTextEq(g->name, "get") || tokenTextEq(g->name, "getUnchecked"))) {
+                    tokenListAddUnique(names, ((VariableExpr*)obj)->name);
+                }
+            }
+            collectMapReadNamesInExpr(c->callee, names);
+            collectMapReadNamesInExpr(c->caller, names);
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                collectMapReadNamesInExpr((Expr*)n->data, names);
+            }
+            return;
+        }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)e;
+            collectMapReadNamesInExpr(g->call, names);
+            collectMapReadNamesInStmt((Stmt*)g->onErr, names);
+            return;
+        }
+        case EXPR_GET: {
+            GetExpr* g = (GetExpr*)e;
+            collectMapReadNamesInExpr(g->object, names);
+            return;
+        }
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            collectMapReadNamesInExpr(s->object, names);
+            collectMapReadNamesInExpr(s->value, names);
+            return;
+        }
+        case EXPR_INDEX: {
+            IndexExpr* ix = (IndexExpr*)e;
+            Expr* obj = unwrapGroupingExprForHint(ix->object);
+            if (obj && obj->type == EXPR_VARIABLE) {
+                tokenListAddUnique(names, ((VariableExpr*)obj)->name);
+            }
+            collectMapReadNamesInExpr(ix->object, names);
+            collectMapReadNamesInExpr(ix->index, names);
+            return;
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* ix = (IndexSetExpr*)e;
+            collectMapReadNamesInExpr(ix->object, names);
+            collectMapReadNamesInExpr(ix->index, names);
+            collectMapReadNamesInExpr(ix->value, names);
+            return;
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me) collectMapReadNamesInExpr(me->value, names);
+            }
+            return;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                collectMapReadNamesInExpr((Expr*)n->data, names);
+            }
+            return;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            collectMapReadNamesInExpr(si->callee, names);
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f) collectMapReadNamesInExpr(f->value, names);
+            }
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static void collectMapReadNamesInStmt(Stmt* stmt, List* names) {
+    if (!stmt || !names) return;
+    switch (stmt->type) {
+        case STMT_EXPR: {
+            ExprStmt* s = (ExprStmt*)stmt;
+            collectMapReadNamesInExpr(s->expression, names);
+            return;
+        }
+        case STMT_VAR: {
+            VarStmt* s = (VarStmt*)stmt;
+            collectMapReadNamesInExpr(s->initializer, names);
+            return;
+        }
+        case STMT_IF: {
+            IfStmt* s = (IfStmt*)stmt;
+            collectMapReadNamesInExpr(s->condition, names);
+            collectMapReadNamesInStmt(s->thenBranch, names);
+            collectMapReadNamesInStmt(s->elseBranch, names);
+            return;
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* s = (IfLetStmt*)stmt;
+            collectMapReadNamesInExpr(s->value, names);
+            collectMapReadNamesInStmt(s->thenBranch, names);
+            collectMapReadNamesInStmt(s->elseBranch, names);
+            return;
+        }
+        case STMT_FOR: {
+            ForStmt* s = (ForStmt*)stmt;
+            collectMapReadNamesInStmt(s->initializer, names);
+            collectMapReadNamesInExpr(s->condition, names);
+            collectMapReadNamesInExpr(s->increment, names);
+            collectMapReadNamesInStmt(s->body, names);
+            return;
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* s = (ForInStmt*)stmt;
+            collectMapReadNamesInExpr(s->range, names);
+            collectMapReadNamesInStmt(s->body, names);
+            return;
+        }
+        case STMT_WHILE: {
+            WhileStmt* s = (WhileStmt*)stmt;
+            collectMapReadNamesInExpr(s->condition, names);
+            collectMapReadNamesInStmt(s->body, names);
+            return;
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* s = (DoWhileStmt*)stmt;
+            collectMapReadNamesInStmt(s->body, names);
+            collectMapReadNamesInExpr(s->condition, names);
+            return;
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                collectMapReadNamesInStmt((Stmt*)n->data, names);
+            }
+            return;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* s = (ReturnStmt*)stmt;
+            collectMapReadNamesInExpr(s->value, names);
+            for (ListNode* n = s->values ? s->values->head : NULL; n != NULL; n = n->next) {
+                collectMapReadNamesInExpr((Expr*)n->data, names);
+            }
+            return;
+        }
+        case STMT_DESTRUCTURE: {
+            DestructureStmt* s = (DestructureStmt*)stmt;
+            collectMapReadNamesInExpr(s->value, names);
+            return;
+        }
+        case STMT_UNSAFE: {
+            UnsafeStmt* s = (UnsafeStmt*)stmt;
+            collectMapReadNamesInStmt(s->body, names);
+            return;
+        }
+        case STMT_PRIVATE: {
+            PrivateStmt* s = (PrivateStmt*)stmt;
+            collectMapReadNamesInStmt(s->inner, names);
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static int exprUsesName(Expr* e, Token name) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e) return 0;
+    switch (e->type) {
+        case EXPR_VARIABLE:
+            return sameTokenText(((VariableExpr*)e)->name, name);
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)e;
+            if (sameTokenText(a->name, name)) return 1;
+            return exprUsesName(a->value, name);
+        }
+        case EXPR_PREFIX: {
+            PrefixExpr* p = (PrefixExpr*)e;
+            return exprUsesName(p->operand, name);
+        }
+        case EXPR_POSTFIX: {
+            PostfixExpr* p = (PostfixExpr*)e;
+            return exprUsesName(p->operand, name);
+        }
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            return exprUsesName(b->left, name) || exprUsesName(b->right, name);
+        }
+        case EXPR_UNARY: {
+            UnaryExpr* u = (UnaryExpr*)e;
+            return exprUsesName(u->right, name);
+        }
+        case EXPR_CAST: {
+            CastExpr* c = (CastExpr*)e;
+            return exprUsesName(c->value, name);
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            if (exprUsesName(c->callee, name) || exprUsesName(c->caller, name)) return 1;
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                if (exprUsesName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_GUARD: {
+            GuardExpr* g = (GuardExpr*)e;
+            return exprUsesName(g->call, name);
+        }
+        case EXPR_GET: {
+            GetExpr* g = (GetExpr*)e;
+            return exprUsesName(g->object, name);
+        }
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            return exprUsesName(s->object, name) || exprUsesName(s->value, name);
+        }
+        case EXPR_INDEX: {
+            IndexExpr* ix = (IndexExpr*)e;
+            return exprUsesName(ix->object, name) || exprUsesName(ix->index, name);
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* ix = (IndexSetExpr*)e;
+            return exprUsesName(ix->object, name) || exprUsesName(ix->index, name) || exprUsesName(ix->value, name);
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me && exprUsesName(me->value, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                if (exprUsesName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            if (exprUsesName(si->callee, name)) return 1;
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f && exprUsesName(f->value, name)) return 1;
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int exprMutatesMapStructName(Expr* e, Token name) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e) return 0;
+    switch (e->type) {
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* ix = (IndexSetExpr*)e;
+            Expr* obj = unwrapGroupingExprForHint(ix->object);
+            if (obj && obj->type == EXPR_VARIABLE && sameTokenText(((VariableExpr*)obj)->name, name)) {
+                return 1;
+            }
+            return exprMutatesMapStructName(ix->object, name) ||
+                   exprMutatesMapStructName(ix->index, name) ||
+                   exprMutatesMapStructName(ix->value, name);
+        }
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            Expr* callee = unwrapGroupingExprForHint(c->callee);
+            if (callee && callee->type == EXPR_GET) {
+                GetExpr* g = (GetExpr*)callee;
+                Expr* obj = unwrapGroupingExprForHint(g->object);
+                if (obj && obj->type == EXPR_VARIABLE && sameTokenText(((VariableExpr*)obj)->name, name)) {
+                    if (tokenTextEq(g->name, "clear") || tokenTextEq(g->name, "delete")) {
+                        return 1;
+                    }
+                }
+            }
+            if (exprMutatesMapStructName(c->callee, name) || exprMutatesMapStructName(c->caller, name)) return 1;
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                if (exprMutatesMapStructName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ASSIGN: {
+            AssignExpr* a = (AssignExpr*)e;
+            return exprMutatesMapStructName(a->value, name);
+        }
+        case EXPR_PREFIX:
+            return exprMutatesMapStructName(((PrefixExpr*)e)->operand, name);
+        case EXPR_POSTFIX:
+            return exprMutatesMapStructName(((PostfixExpr*)e)->operand, name);
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            return exprMutatesMapStructName(b->left, name) || exprMutatesMapStructName(b->right, name);
+        }
+        case EXPR_UNARY:
+            return exprMutatesMapStructName(((UnaryExpr*)e)->right, name);
+        case EXPR_CAST:
+            return exprMutatesMapStructName(((CastExpr*)e)->value, name);
+        case EXPR_GUARD:
+            return exprMutatesMapStructName(((GuardExpr*)e)->call, name);
+        case EXPR_GET:
+            return exprMutatesMapStructName(((GetExpr*)e)->object, name);
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            return exprMutatesMapStructName(s->object, name) || exprMutatesMapStructName(s->value, name);
+        }
+        case EXPR_INDEX: {
+            IndexExpr* ix = (IndexExpr*)e;
+            return exprMutatesMapStructName(ix->object, name) || exprMutatesMapStructName(ix->index, name);
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me && exprMutatesMapStructName(me->value, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                if (exprMutatesMapStructName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            if (exprMutatesMapStructName(si->callee, name)) return 1;
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f && exprMutatesMapStructName(f->value, name)) return 1;
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int stmtMutatesMapStructName(Stmt* stmt, Token name) {
+    if (!stmt) return 0;
+    switch (stmt->type) {
+        case STMT_EXPR:
+            return exprMutatesMapStructName(((ExprStmt*)stmt)->expression, name);
+        case STMT_VAR:
+            return exprMutatesMapStructName(((VarStmt*)stmt)->initializer, name);
+        case STMT_IF: {
+            IfStmt* s = (IfStmt*)stmt;
+            return exprMutatesMapStructName(s->condition, name) ||
+                   stmtMutatesMapStructName(s->thenBranch, name) ||
+                   stmtMutatesMapStructName(s->elseBranch, name);
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* s = (IfLetStmt*)stmt;
+            return exprMutatesMapStructName(s->value, name) ||
+                   stmtMutatesMapStructName(s->thenBranch, name) ||
+                   stmtMutatesMapStructName(s->elseBranch, name);
+        }
+        case STMT_FOR: {
+            ForStmt* s = (ForStmt*)stmt;
+            return stmtMutatesMapStructName(s->initializer, name) ||
+                   exprMutatesMapStructName(s->condition, name) ||
+                   exprMutatesMapStructName(s->increment, name) ||
+                   stmtMutatesMapStructName(s->body, name);
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* s = (ForInStmt*)stmt;
+            return exprMutatesMapStructName(s->range, name) ||
+                   stmtMutatesMapStructName(s->body, name);
+        }
+        case STMT_WHILE: {
+            WhileStmt* s = (WhileStmt*)stmt;
+            return exprMutatesMapStructName(s->condition, name) ||
+                   stmtMutatesMapStructName(s->body, name);
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* s = (DoWhileStmt*)stmt;
+            return stmtMutatesMapStructName(s->body, name) ||
+                   exprMutatesMapStructName(s->condition, name);
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                if (stmtMutatesMapStructName((Stmt*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* s = (ReturnStmt*)stmt;
+            if (exprMutatesMapStructName(s->value, name)) return 1;
+            for (ListNode* n = s->values ? s->values->head : NULL; n != NULL; n = n->next) {
+                if (exprMutatesMapStructName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_DESTRUCTURE:
+            return exprMutatesMapStructName(((DestructureStmt*)stmt)->value, name);
+        case STMT_UNSAFE:
+            return stmtMutatesMapStructName(((UnsafeStmt*)stmt)->body, name);
+        case STMT_PRIVATE:
+            return stmtMutatesMapStructName(((PrivateStmt*)stmt)->inner, name);
+        default:
+            return 0;
+    }
+}
+
+static int exprHasCallArgUsingName(Expr* e, Token name) {
+    e = unwrapGroupingExprForHint(e);
+    if (!e) return 0;
+    switch (e->type) {
+        case EXPR_CALL: {
+            CallExpr* c = (CallExpr*)e;
+            for (ListNode* n = c->arguments ? c->arguments->head : NULL; n != NULL; n = n->next) {
+                if (exprUsesName((Expr*)n->data, name)) return 1;
+                if (exprHasCallArgUsingName((Expr*)n->data, name)) return 1;
+            }
+            return exprHasCallArgUsingName(c->callee, name) || exprHasCallArgUsingName(c->caller, name);
+        }
+        case EXPR_ASSIGN:
+            return exprHasCallArgUsingName(((AssignExpr*)e)->value, name);
+        case EXPR_PREFIX:
+            return exprHasCallArgUsingName(((PrefixExpr*)e)->operand, name);
+        case EXPR_POSTFIX:
+            return exprHasCallArgUsingName(((PostfixExpr*)e)->operand, name);
+        case EXPR_BINARY: {
+            BinaryExpr* b = (BinaryExpr*)e;
+            return exprHasCallArgUsingName(b->left, name) || exprHasCallArgUsingName(b->right, name);
+        }
+        case EXPR_UNARY:
+            return exprHasCallArgUsingName(((UnaryExpr*)e)->right, name);
+        case EXPR_CAST:
+            return exprHasCallArgUsingName(((CastExpr*)e)->value, name);
+        case EXPR_GUARD:
+            return exprHasCallArgUsingName(((GuardExpr*)e)->call, name);
+        case EXPR_GET:
+            return exprHasCallArgUsingName(((GetExpr*)e)->object, name);
+        case EXPR_SET: {
+            SetExpr* s = (SetExpr*)e;
+            return exprHasCallArgUsingName(s->object, name) || exprHasCallArgUsingName(s->value, name);
+        }
+        case EXPR_INDEX: {
+            IndexExpr* ix = (IndexExpr*)e;
+            return exprHasCallArgUsingName(ix->object, name) || exprHasCallArgUsingName(ix->index, name);
+        }
+        case EXPR_INDEX_SET: {
+            IndexSetExpr* ix = (IndexSetExpr*)e;
+            return exprHasCallArgUsingName(ix->object, name) ||
+                   exprHasCallArgUsingName(ix->index, name) ||
+                   exprHasCallArgUsingName(ix->value, name);
+        }
+        case EXPR_MAP_LITERAL: {
+            MapLiteralExpr* m = (MapLiteralExpr*)e;
+            for (ListNode* n = m->entries ? m->entries->head : NULL; n != NULL; n = n->next) {
+                MapEntry* me = (MapEntry*)n->data;
+                if (me && exprHasCallArgUsingName(me->value, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_ARRAY_LITERAL: {
+            ArrayLiteralExpr* a = (ArrayLiteralExpr*)e;
+            for (ListNode* n = a->elements ? a->elements->head : NULL; n != NULL; n = n->next) {
+                if (exprHasCallArgUsingName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case EXPR_STRUCT_INIT: {
+            StructInitExpr* si = (StructInitExpr*)e;
+            if (exprHasCallArgUsingName(si->callee, name)) return 1;
+            for (ListNode* n = si->fields ? si->fields->head : NULL; n != NULL; n = n->next) {
+                StructFieldInit* f = (StructFieldInit*)n->data;
+                if (f && exprHasCallArgUsingName(f->value, name)) return 1;
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int stmtHasCallArgUsingName(Stmt* stmt, Token name) {
+    if (!stmt) return 0;
+    switch (stmt->type) {
+        case STMT_EXPR:
+            return exprHasCallArgUsingName(((ExprStmt*)stmt)->expression, name);
+        case STMT_VAR:
+            return exprHasCallArgUsingName(((VarStmt*)stmt)->initializer, name);
+        case STMT_IF: {
+            IfStmt* s = (IfStmt*)stmt;
+            return exprHasCallArgUsingName(s->condition, name) ||
+                   stmtHasCallArgUsingName(s->thenBranch, name) ||
+                   stmtHasCallArgUsingName(s->elseBranch, name);
+        }
+        case STMT_IF_LET: {
+            IfLetStmt* s = (IfLetStmt*)stmt;
+            return exprHasCallArgUsingName(s->value, name) ||
+                   stmtHasCallArgUsingName(s->thenBranch, name) ||
+                   stmtHasCallArgUsingName(s->elseBranch, name);
+        }
+        case STMT_FOR: {
+            ForStmt* s = (ForStmt*)stmt;
+            return stmtHasCallArgUsingName(s->initializer, name) ||
+                   exprHasCallArgUsingName(s->condition, name) ||
+                   exprHasCallArgUsingName(s->increment, name) ||
+                   stmtHasCallArgUsingName(s->body, name);
+        }
+        case STMT_FOR_IN: {
+            ForInStmt* s = (ForInStmt*)stmt;
+            return exprHasCallArgUsingName(s->range, name) ||
+                   stmtHasCallArgUsingName(s->body, name);
+        }
+        case STMT_WHILE: {
+            WhileStmt* s = (WhileStmt*)stmt;
+            return exprHasCallArgUsingName(s->condition, name) ||
+                   stmtHasCallArgUsingName(s->body, name);
+        }
+        case STMT_DO_WHILE: {
+            DoWhileStmt* s = (DoWhileStmt*)stmt;
+            return stmtHasCallArgUsingName(s->body, name) ||
+                   exprHasCallArgUsingName(s->condition, name);
+        }
+        case STMT_BLOCK: {
+            BlockStmt* b = (BlockStmt*)stmt;
+            for (ListNode* n = b->statements ? b->statements->head : NULL; n != NULL; n = n->next) {
+                if (stmtHasCallArgUsingName((Stmt*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_RETURN: {
+            ReturnStmt* s = (ReturnStmt*)stmt;
+            if (exprHasCallArgUsingName(s->value, name)) return 1;
+            for (ListNode* n = s->values ? s->values->head : NULL; n != NULL; n = n->next) {
+                if (exprHasCallArgUsingName((Expr*)n->data, name)) return 1;
+            }
+            return 0;
+        }
+        case STMT_DESTRUCTURE:
+            return exprHasCallArgUsingName(((DestructureStmt*)stmt)->value, name);
+        case STMT_UNSAFE:
+            return stmtHasCallArgUsingName(((UnsafeStmt*)stmt)->body, name);
+        case STMT_PRIVATE:
+            return stmtHasCallArgUsingName(((PrivateStmt*)stmt)->inner, name);
+        default:
+            return 0;
+    }
+}
+
+static List* detectLoopInvariantMapCandidateNames(Compiler* compiler, ForStmt* stmt) {
+    if (!compiler || !stmt || !stmt->body) return NULL;
+
+    List* names = listNew();
+    collectMapReadNamesInStmt(stmt->body, names);
+    if (!names || names->length <= 0) {
+        tokenListFreeDeep(names);
+        return NULL;
+    }
+
+    List* candidates = listNew();
+    for (ListNode* n = names->head; n != NULL; n = n->next) {
+        Token* tok = (Token*)n->data;
+        if (!tok || tok->length <= 0 || !tok->start) continue;
+
+        if (stmtWritesName(stmt->body, *tok) ||
+            exprWritesName(stmt->condition, *tok) ||
+            exprWritesName(stmt->increment, *tok)) {
+            continue;
+        }
+
+        VariableRef var = findVariableByToken(compiler, *tok);
+        if (!var.value || !var.isMap) continue;
+        tokenListAddUnique(candidates, *tok);
+    }
+
+    tokenListFreeDeep(names);
+    if (!candidates || candidates->length <= 0) {
+        tokenListFreeDeep(candidates);
+        return NULL;
+    }
+    return candidates;
+}
+
+static LLVMValueRef loadMapValueFromSlot(Compiler* compiler, LLVMValueRef slot) {
+    if (!compiler || !slot) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+    LLVMTypeRef slotTy = LLVMTypeOf(slot);
+    if (LLVMGetTypeKind(slotTy) != LLVMPointerTypeKind) return NULL;
+
+    LLVMTypeRef elemTy = LLVMGetElementType(slotTy);
+    if (elemTy == mapType) {
+        return LLVMBuildLoad2(builder, mapType, slot, "mval");
+    }
+    if (LLVMGetTypeKind(elemTy) == LLVMPointerTypeKind && LLVMGetElementType(elemTy) == mapType) {
+        LLVMValueRef cell = LLVMBuildLoad2(builder, elemTy, slot, "mcell");
+        return LLVMBuildLoad2(builder, mapType, cell, "mval");
+    }
+    return NULL;
+}
+
+static LoopIMapIntHint* buildLoopIMapIntHint(Compiler* compiler, LLVMValueRef slot, LLVMValueRef mapPtr) {
+    if (!compiler || !slot || !mapPtr) return NULL;
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMContextRef context = compiler->context;
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(context);
+    LLVMTypeRef i8ptr = LLVMPointerType(i8, 0);
+    LLVMTypeRef i32ptr = LLVMPointerType(i32, 0);
+    LLVMTypeRef i64ptr = LLVMPointerType(i64, 0);
+
+    // Must match `src/tua_imap.c` layout (LP64):
+    // { u32 kind, i32 value_tag, u32 key_kind, u32 pad, size_t cap, size_t count, size_t tombstones, u8* ctrl, void* keys, u64* vals }
+    LLVMTypeRef fields[10] = { i32, i32, i32, i32, i64, i64, i64, i8ptr, i8ptr, i64ptr };
+    LLVMTypeRef imapTy = LLVMStructTypeInContext(context, fields, 10, 0);
+    LLVMValueRef imapPtr = LLVMBuildBitCast(builder, mapPtr, LLVMPointerType(imapTy, 0), "imap");
+
+    LLVMValueRef capPtr = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 4, "capp");
+    LLVMValueRef cap = LLVMBuildLoad2(builder, i64, capPtr, "cap");
+    LLVMValueRef hasCap = LLVMBuildICmp(builder, LLVMIntNE, cap, LLVMConstInt(i64, 0, 0), "hascap");
+    LLVMValueRef mask = LLVMBuildSub(builder, cap, LLVMConstInt(i64, 1, 0), "mask");
+
+    LLVMValueRef ctrlPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 7, "ctrlpp");
+    LLVMValueRef ctrlRaw = LLVMBuildLoad2(builder, i8ptr, ctrlPtrP, "ctrl");
+
+    LLVMValueRef keysPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 8, "keyspp");
+    LLVMValueRef keysRaw = LLVMBuildLoad2(builder, i8ptr, keysPtrP, "keysraw");
+    LLVMValueRef keys32 = LLVMBuildBitCast(builder, keysRaw, i32ptr, "keys32");
+
+    LLVMValueRef valsPtrP = LLVMBuildStructGEP2(builder, imapTy, imapPtr, 9, "valspp");
+    LLVMValueRef vals = LLVMBuildLoad2(builder, i64ptr, valsPtrP, "vals");
+
+    LoopIMapIntHint* hint = malloc(sizeof(LoopIMapIntHint));
+    if (!hint) return NULL;
+    hint->slot = slot;
+    hint->hasCap = hasCap;
+    hint->mask = mask;
+    hint->ctrl = ctrlRaw;
+    hint->keys32 = keys32;
+    hint->vals64 = vals;
+    return hint;
+}
+
+static List* mergeSlotHintLists(List* outer, List* inner) {
+    if (!outer || !inner) return NULL;
+    List* merged = listNew();
+    for (ListNode* n = outer->head; n != NULL; n = n->next) {
+        slotListAddUnique(merged, (LLVMValueRef)n->data);
+    }
+    for (ListNode* n = inner->head; n != NULL; n = n->next) {
+        slotListAddUnique(merged, (LLVMValueRef)n->data);
+    }
+    return merged;
+}
+
+static LoopIMapIntHint* findLoopIMapIntHintBySlot(List* hints, LLVMValueRef slot) {
+    if (!hints || !slot) return NULL;
+    for (ListNode* n = hints->head; n != NULL; n = n->next) {
+        LoopIMapIntHint* h = (LoopIMapIntHint*)n->data;
+        if (!h) continue;
+        if (h->slot == slot) return h;
+    }
+    return NULL;
+}
+
+static void loopIMapIntHintListAddOrReplace(List* hints, LoopIMapIntHint* hint) {
+    if (!hints || !hint || !hint->slot) return;
+    LoopIMapIntHint* existing = findLoopIMapIntHintBySlot(hints, hint->slot);
+    if (existing) {
+        existing->hasCap = hint->hasCap;
+        existing->mask = hint->mask;
+        existing->ctrl = hint->ctrl;
+        existing->keys32 = hint->keys32;
+        existing->vals64 = hint->vals64;
+        free(hint);
+        return;
+    }
+    listAppend(hints, hint);
+}
+
+static void freeLoopIMapIntHintListDeep(List* hints) {
+    if (!hints) return;
+    for (ListNode* n = hints->head; n != NULL; n = n->next) {
+        free(n->data);
+    }
+    listFree(hints);
+}
+
+static List* mergeLoopIMapIntHintLists(List* outer, List* inner) {
+    if (!outer || !inner) return NULL;
+    List* merged = listNew();
+    for (ListNode* n = outer->head; n != NULL; n = n->next) {
+        LoopIMapIntHint* h = (LoopIMapIntHint*)n->data;
+        if (!h) continue;
+        listAppend(merged, h);
+    }
+    for (ListNode* n = inner->head; n != NULL; n = n->next) {
+        LoopIMapIntHint* h = (LoopIMapIntHint*)n->data;
+        if (!h || !h->slot) continue;
+        if (!findLoopIMapIntHintBySlot(merged, h->slot)) listAppend(merged, h);
+    }
+    return merged;
+}
+
+static int detectCanonicalArrayBoundsHint(Compiler* compiler, ForStmt* stmt, LLVMValueRef* outArraySlot, LLVMValueRef* outIndexSlot) {
+    if (!compiler || !stmt || !stmt->initializer || !stmt->condition || !stmt->increment) return 0;
+    if (stmt->initializer->type != STMT_VAR) return 0;
+    VarStmt* init = (VarStmt*)stmt->initializer;
+    if (!init->initializer || !exprIsZeroLiteral(init->initializer)) return 0;
+    Token indexName = init->name;
+
+    Expr* condExpr = unwrapGroupingExprForHint(stmt->condition);
+    if (!condExpr || condExpr->type != EXPR_BINARY) return 0;
+    BinaryExpr* cond = (BinaryExpr*)condExpr;
+    if (cond->operator.type != TOKEN_LT) return 0;
+    if (!exprIsVarNamed(cond->left, indexName)) return 0;
+
+    Token arrayName = (Token){0};
+    if (!isArrayLenCallExpr(cond->right, &arrayName)) return 0;
+    if (!isSimpleIndexIncrement(stmt->increment, indexName)) return 0;
+    if (stmtWritesName(stmt->body, arrayName) || stmtWritesName(stmt->body, indexName)) return 0;
+
+    VariableRef arrVar = findVariableByToken(compiler, arrayName);
+    if (!arrVar.value || !arrVar.isArray) return 0;
+    VariableRef idxVar = findVariableByToken(compiler, indexName);
+    if (!idxVar.value) return 0;
+
+    if (outArraySlot) *outArraySlot = arrVar.value;
+    if (outIndexSlot) *outIndexSlot = idxVar.value;
+    return 1;
+}
+
 
 
 Block* newFuncBlock(Compiler *compiler, LLVMValueRef func) {
@@ -335,28 +1414,34 @@ Block* newFuncBlock(Compiler *compiler, LLVMValueRef func) {
 
 ForBlock* newForStmtBlock(Compiler *compiler, LLVMValueRef func) {
     ForBlock *block = malloc(sizeof(ForBlock));
-    LLVMContextRef context = compiler->context;
-    LLVMBuilderRef builder = compiler->builder;
+    if (!block) return NULL;
+    memset(block, 0, sizeof(*block));
 
+    LLVMBasicBlockRef loopPre = LLVMAppendBasicBlock(func, "loop.pre");
     LLVMBasicBlockRef loopCond = LLVMAppendBasicBlock(func, "loop.cond");
+    LLVMBasicBlockRef loopCondIter = LLVMAppendBasicBlock(func, "loop.cond.iter");
     LLVMBasicBlockRef loopBody = LLVMAppendBasicBlock(func, "loop.body");
     LLVMBasicBlockRef loopInc = LLVMAppendBasicBlock(func, "loop.inc");
     LLVMBasicBlockRef loopEnd = LLVMAppendBasicBlock(func, "loop.end");
     block->block.parent = compiler->current;
     block->block.func = func;
+    block->loopPre = loopPre;
     block->loopCond = loopCond;
+    block->loopCondIter = loopCondIter;
     block->loopBody = loopBody;
     block->loopInc = loopInc;
     block->loopEnd = loopEnd;
+    block->loopCheckedMapNonNullSlots = NULL;
+    block->loopIMapIntHints = NULL;
    
     return block;
 }
 
 
 
-void emitForStmtInit(Compiler *compiler, ForBlock block, ForStmt * stmt) {
+void emitForStmtInit(Compiler *compiler, ForBlock* block, ForStmt * stmt) {
+    if (!compiler || !block) return;
     emitDebug("emitForStmtInit\n");
-    LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
     if(stmt->initializer != NULL) {
         emitDebug("emitForStmtInit init type:%d\n",stmt->initializer->type);
@@ -371,84 +1456,176 @@ void emitForStmtInit(Compiler *compiler, ForBlock block, ForStmt * stmt) {
         // LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(context), i, 0);
         // LLVMBuildStore(builder, zero, i);
     }
-    LLVMBuildBr(builder, block.loopCond);
+    LLVMBuildBr(builder, block->loopCond);
 }
 
-void emitForStmtCond(Compiler *compiler, ForBlock block, ForStmt * stmt) {
-    emitDebug("emitForStmtCond\n");
-    LLVMContextRef context = compiler->context;
+void emitForStmtPre(Compiler* compiler, ForBlock* block, ForStmt* stmt) {
+    if (!compiler || !block) return;
     LLVMBuilderRef builder = compiler->builder;
+    LLVMValueRef fn = compiler->current ? compiler->current->func : NULL;
+    LLVMTypeRef mapType = compilerGetMapType(compiler);
+
+    LLVMPositionBuilderAtEnd(builder, block->loopPre);
+
+    if (block->loopCheckedMapNonNullSlots) {
+        listFree(block->loopCheckedMapNonNullSlots);
+        block->loopCheckedMapNonNullSlots = NULL;
+    }
+    if (block->loopIMapIntHints) {
+        freeLoopIMapIntHintListDeep(block->loopIMapIntHints);
+        block->loopIMapIntHints = NULL;
+    }
+
+    if (!fn) {
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+            LLVMBuildBr(builder, block->loopBody);
+        }
+        return;
+    }
+
+    List* candidates = detectLoopInvariantMapCandidateNames(compiler, stmt);
+    List* checked = NULL;
+    List* imapHints = NULL;
+    if (candidates) {
+        for (ListNode* n = candidates->head; n != NULL; n = n->next) {
+            Token* tok = (Token*)n->data;
+            if (!tok || tok->length <= 0 || !tok->start) continue;
+
+            VariableRef var = findVariableByToken(compiler, *tok);
+            if (!var.value || !var.isMap) continue;
+
+            LLVMValueRef mapPtr = loadMapValueFromSlot(compiler, var.value);
+            if (!mapPtr) continue;
+
+            LLVMValueRef isNull = LLVMBuildICmp(builder, LLVMIntEQ, mapPtr, LLVMConstNull(mapType), "mnull");
+            LLVMBasicBlockRef okObjBB = LLVMAppendBasicBlock(fn, "loop.map.ok");
+            LLVMBasicBlockRef badObjBB = LLVMAppendBasicBlock(fn, "loop.map.null");
+            LLVMBuildCondBr(builder, isNull, badObjBB, okObjBB);
+
+            LLVMPositionBuilderAtEnd(builder, badObjBB);
+            LLVMValueRef panicFn = getOrCreateTuaPanic(compiler);
+            LLVMTypeRef panicType = LLVMGlobalGetValueType(panicFn);
+            LLVMValueRef msg = LLVMBuildGlobalStringPtr(builder, "index null map", "mpanicmsg");
+            LLVMBuildCall2(builder, panicType, panicFn, &msg, 1, "");
+            LLVMBuildUnreachable(builder);
+
+            LLVMPositionBuilderAtEnd(builder, okObjBB);
+            if (!checked) checked = listNew();
+            slotListAddUnique(checked, var.value);
+
+            // Cache IMAP(int-key) metadata only when the map is loop-invariant and non-mutating.
+            int safeForIMapHint = !stmtMutatesMapStructName(stmt->body, *tok) &&
+                                  !exprMutatesMapStructName(stmt->condition, *tok) &&
+                                  !exprMutatesMapStructName(stmt->increment, *tok) &&
+                                  !stmtHasCallArgUsingName(stmt->body, *tok) &&
+                                  !exprHasCallArgUsingName(stmt->condition, *tok) &&
+                                  !exprHasCallArgUsingName(stmt->increment, *tok);
+            if (safeForIMapHint && var.isTypedMap && var.mapKeyKind == TYPE_INT) {
+                LoopIMapIntHint* hint = buildLoopIMapIntHint(compiler, var.value, mapPtr);
+                if (hint) {
+                    if (!imapHints) imapHints = listNew();
+                    loopIMapIntHintListAddOrReplace(imapHints, hint);
+                }
+            }
+        }
+        tokenListFreeDeep(candidates);
+    }
+
+    block->loopCheckedMapNonNullSlots = checked;
+    block->loopIMapIntHints = imapHints;
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        LLVMBuildBr(builder, block->loopBody);
+    }
+}
+
+void emitForStmtCond(Compiler *compiler, ForBlock* block, ForStmt * stmt) {
+    if (!compiler || !block) return;
+    emitDebug("emitForStmtCond\n");
+    LLVMBuilderRef builder = compiler->builder;
+    LLVMBasicBlockRef firstTrueTarget =
+        (block->loopCheckedMapNonNullSlots && block->loopCheckedMapNonNullSlots->length > 0)
+            ? block->loopPre
+            : block->loopBody;
 
     // Loop condition: i < v
-     // Position at condition block
-    LLVMPositionBuilderAtEnd(builder, block.loopCond);
+    // First-entry condition block.
+    LLVMPositionBuilderAtEnd(builder, block->loopCond);
     if(stmt->condition != NULL) {
 
         //直接使用 compileExpr 来编译条件表达式
         LLVMValueRef condValue = compileExpr(compiler, stmt->condition);
         if (condValue != NULL) {
-            // 根据条件值创建条件分支
-            LLVMBuildCondBr(builder, condValue, block.loopBody, block.loopEnd);
+            LLVMBuildCondBr(builder, condValue, firstTrueTarget, block->loopEnd);
         } else {
             error("Failed to compile for loop condition\n");
-            // 错误处理：直接跳转到循环结束
-            LLVMBuildBr(builder, block.loopEnd);
+            LLVMBuildBr(builder, block->loopEnd);
         }
-
-
-        // emitDebug("emitForStmtCond stmt type:%d\n",stmt->condition->type);
-        // if (stmt->condition->type == EXPR_BINARY)
-        // {
-        //     BinaryExpr * binaryExpr = (BinaryExpr *)stmt->condition;
-        //     Expr * left = binaryExpr->left;
-        //     Expr * right = binaryExpr->right;
-        //     emitDebug("emitForStmtCond left type:%d right type:%d\n",left->type, right->type);
-        //     if(left->type == EXPR_VARIABLE && right->type == EXPR_LITERAL) {
-        //         VariableExpr * variableExpr = (VariableExpr *)left;
-        //         LiteralExpr * literalExpr = (LiteralExpr *)right;
-        //         emitDebug("emitForStmtCond variableExpr name:%.*s\n",variableExpr->name.length,variableExpr->name.start);
-        //         emitDebug("emitForStmtCond literalExpr value:%d\n",tokenToValue(literalExpr->value).as.i);
-        //         VariableRef i = findVariableWithLength(compiler->current->variables, variableExpr->name.start, variableExpr->name.length);
-        //         if(i.value != NULL) {
-        //             LLVMValueRef loadI = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i.value, "left.val");
-        //             LLVMValueRef limit = LLVMConstInt(LLVMInt32TypeInContext(context), tokenToValue(literalExpr->value).as.i, 0);
-        //             LLVMValueRef cond = LLVMBuildICmp(builder, LLVMIntSLT, loadI, limit, "cmp");
-        //             LLVMBuildCondBr(builder, cond, block.loopBody, block.loopEnd);
-        //         }
-        //     }
-        // }
-        
-        //var name
-        // char var[250] = {0};
-        // memcpy(var, stmt->condition->token.start, stmt->condition->token.length);
-        // var[stmt->condition->token.length] = '\0';
-        // VariableRef i = findVariable(compiler->current->variables, "i");
-        // LLVMValueRef cond ;
-        // if(i.value != NULL) {
-        //     LLVMValueRef loadI = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i.value, "left.val");
-        //     LLVMValueRef limit = LLVMConstInt(LLVMInt32TypeInContext(context), tokenToValue(literalExpr->value).as.i, 0);
-        //     cond = LLVMBuildICmp(builder, LLVMIntSLT, loadI, limit, "cmp");
-        // }
-        
-        // LLVMBuildCondBr(builder, cond, block.loopBody, block.loopEnd);
     }else {
-          // 如果没有条件，创建无条件循环
-        LLVMBuildBr(builder, block.loopBody);
+        LLVMBuildBr(builder, firstTrueTarget);
+    }
+
+    // Steady-state condition block for subsequent iterations.
+    LLVMPositionBuilderAtEnd(builder, block->loopCondIter);
+    if (stmt->condition != NULL) {
+        LLVMValueRef condValue = compileExpr(compiler, stmt->condition);
+        if (condValue != NULL) {
+            LLVMBuildCondBr(builder, condValue, block->loopBody, block->loopEnd);
+        } else {
+            error("Failed to compile for loop condition\n");
+            LLVMBuildBr(builder, block->loopEnd);
+        }
+    } else {
+        LLVMBuildBr(builder, block->loopBody);
     }
 
 }
 
-void emitForStmtBody(Compiler *compiler, ForBlock block, ForStmt * stmt) {
+void emitForStmtBody(Compiler *compiler, ForBlock* block, ForStmt * stmt) {
+    if (!compiler || !block) return;
     emitDebug("emitForStmtBody\n");
-    LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
 
     // Loop body: a = a + i
-    LLVMPositionBuilderAtEnd(builder, block.loopBody);
+    LLVMPositionBuilderAtEnd(builder, block->loopBody);
 
-    llvmPushLoop(compiler, block.loopEnd, block.loopInc);
+    LLVMValueRef prevArrayHint = compiler->loopArrayBoundsSlot;
+    LLVMValueRef prevIndexHint = compiler->loopArrayBoundsIndexSlot;
+    List* prevMapHints = compiler->loopCheckedMapNonNullSlots;
+    List* prevIMapIntHints = compiler->loopIMapIntHints;
+    List* mergedMapHints = NULL;
+    List* mergedIMapIntHints = NULL;
+    compiler->loopArrayBoundsSlot = NULL;
+    compiler->loopArrayBoundsIndexSlot = NULL;
+    if (prevMapHints && block->loopCheckedMapNonNullSlots) {
+        mergedMapHints = mergeSlotHintLists(prevMapHints, block->loopCheckedMapNonNullSlots);
+        compiler->loopCheckedMapNonNullSlots = mergedMapHints ? mergedMapHints : block->loopCheckedMapNonNullSlots;
+    } else if (block->loopCheckedMapNonNullSlots) {
+        compiler->loopCheckedMapNonNullSlots = block->loopCheckedMapNonNullSlots;
+    }
+    if (prevIMapIntHints && block->loopIMapIntHints) {
+        mergedIMapIntHints = mergeLoopIMapIntHintLists(prevIMapIntHints, block->loopIMapIntHints);
+        compiler->loopIMapIntHints = mergedIMapIntHints ? mergedIMapIntHints : block->loopIMapIntHints;
+    } else if (block->loopIMapIntHints) {
+        compiler->loopIMapIntHints = block->loopIMapIntHints;
+    }
+    if (!compilerUncheckedIndex(compiler)) {
+        LLVMValueRef arraySlot = NULL;
+        LLVMValueRef indexSlot = NULL;
+        if (detectCanonicalArrayBoundsHint(compiler, stmt, &arraySlot, &indexSlot)) {
+            compiler->loopArrayBoundsSlot = arraySlot;
+            compiler->loopArrayBoundsIndexSlot = indexSlot;
+        }
+    }
+
+    llvmPushLoop(compiler, block->loopEnd, block->loopInc);
     compileStmt(compiler, stmt->body);
     llvmPopLoop(compiler);
+    compiler->loopArrayBoundsSlot = prevArrayHint;
+    compiler->loopArrayBoundsIndexSlot = prevIndexHint;
+    compiler->loopCheckedMapNonNullSlots = prevMapHints;
+    compiler->loopIMapIntHints = prevIMapIntHints;
+    if (mergedMapHints) listFree(mergedMapHints);
+    if (mergedIMapIntHints) listFree(mergedIMapIntHints);
 
     // VariableRef a = findVariable(compiler->current->variables, "a");
     // VariableRef i = findVariable(compiler->current->variables, "i");
@@ -462,62 +1639,35 @@ void emitForStmtBody(Compiler *compiler, ForBlock block, ForStmt * stmt) {
     // }
     // LLVMValueRef loadIBody = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i, "i.body");
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
-        LLVMBuildBr(builder, block.loopInc);
+        LLVMBuildBr(builder, block->loopInc);
     }
 
 }
 
-void emitForStmtInc(Compiler *compiler, ForBlock block, ForStmt * stmt) {
+void emitForStmtInc(Compiler *compiler, ForBlock* block, ForStmt * stmt) {
+    if (!compiler || !block) return;
     emitDebug("emitForStmtInc\n");
-    LLVMContextRef context = compiler->context;
     LLVMBuilderRef builder = compiler->builder;
 
-    // Loop increment: i++
-    LLVMPositionBuilderAtEnd(builder, block.loopInc);
+    // Loop increment/update.
+    // Let `compileExpr` handle all expression forms (`i++`, `i = i + 2`, calls, etc.).
+    LLVMPositionBuilderAtEnd(builder, block->loopInc);
     if(stmt->increment != NULL) {
-        emitDebug("emitForStmtInc expr type:%d\n",stmt->increment->type);
-        if(stmt->increment->type == EXPR_POSTFIX) {
-            PostfixExpr * expr = (PostfixExpr *)stmt->increment;
-            emitDebug("emitForStmtInc expr operand type:%d\n",expr->operand->type);
-            if(expr->operand->type == EXPR_VARIABLE) {
-                VariableExpr * variableExpr = (VariableExpr *)expr->operand;
-                emitDebug("emitForStmtInc variableExpr name:%.*s\n",variableExpr->name.length,variableExpr->name.start);
-                VariableRef i = findVariableWithLength(compiler->current->variables, variableExpr->name.start, variableExpr->name.length);
-                emitDebug("emitForStmtInc i:%s, v:%p\n",i.name, i.value);
-                if(i.value != NULL) {
-                    LLVMValueRef loadI = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i.value, "i.val");
-                    LLVMValueRef inc = LLVMBuildAdd(builder, loadI, LLVMConstInt(LLVMInt32TypeInContext(context), 1, 0), "inc");
-                    LLVMBuildStore(builder, inc, i.value);
-                }
-            }
-
-            // emitDebug("emitForStmtInc stmt type:%d , expr type:%d\n",stmt->increment->type,exprStmt->expression->type);
-            // if(exprStmt->expression->type == EXPR_UNARY) {
-            //     UnaryExpr * unaryExpr = (UnaryExpr *)exprStmt->expression;
-            //     LLVMValueRef i = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(context), "i");
-            //     LLVMValueRef loadI = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i, "i.val");
-            //     LLVMValueRef inc = LLVMBuildAdd(builder, loadI, LLVMConstInt(LLVMInt32TypeInContext(context), 1, 0), "inc");
-            //     LLVMBuildStore(builder, inc, i);
-            // }else if(exprStmt->expression->type == EXPR_BINARY) {
-            //     BinaryExpr * binaryExpr = (BinaryExpr *)exprStmt->expression;
-            //     LLVMValueRef i = LLVMBuildAlloca(builder, LLVMInt32TypeInContext(context), "i");
-            //     LLVMValueRef loadI = LLVMBuildLoad2(builder, LLVMInt32TypeInContext(context), i, "i.val");
-            //     LLVMValueRef inc = LLVMBuildAdd(builder, loadI, LLVMConstInt(LLVMInt32TypeInContext(context), 1, 0), "inc");
-            //     LLVMBuildStore(builder, inc, i);
-            // }
-       
-        }
+        compileExpr(compiler, stmt->increment);
     }
-    
-    LLVMBuildBr(builder, block.loopCond);
+
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder))) {
+        LLVMBuildBr(builder, block->loopCondIter);
+    }
 
 }
 
 
-void emitForStmtEnd(Compiler *compiler, ForBlock block, ForStmt * stmt) {
+void emitForStmtEnd(Compiler *compiler, ForBlock* block, ForStmt * stmt) {
+    if (!compiler || !block) return;
     emitDebug("emitForStmtEnd\n");
     // Loop end
-    LLVMPositionBuilderAtEnd(compiler->builder, block.loopEnd);
+    LLVMPositionBuilderAtEnd(compiler->builder, block->loopEnd);
 }
 
 void emitForStmt(Compiler*compiler, ForStmt*stmt) {
@@ -527,11 +1677,22 @@ void emitForStmt(Compiler*compiler, ForStmt*stmt) {
 #endif
 
     ForBlock* block = newForStmtBlock(compiler, compiler->current->func);
-    emitForStmtInit(compiler, *block, stmt);
-    emitForStmtCond(compiler, *block, stmt);
-    emitForStmtBody(compiler, *block, stmt);
-    emitForStmtInc(compiler, *block, stmt);
-    emitForStmtEnd(compiler, *block, stmt);
+    if (!block) return;
+    emitForStmtInit(compiler, block, stmt);
+    emitForStmtPre(compiler, block, stmt);
+    emitForStmtCond(compiler, block, stmt);
+    emitForStmtBody(compiler, block, stmt);
+    emitForStmtInc(compiler, block, stmt);
+    emitForStmtEnd(compiler, block, stmt);
+    if (block->loopCheckedMapNonNullSlots) {
+        listFree(block->loopCheckedMapNonNullSlots);
+        block->loopCheckedMapNonNullSlots = NULL;
+    }
+    if (block->loopIMapIntHints) {
+        freeLoopIMapIntHintListDeep(block->loopIMapIntHints);
+        block->loopIMapIntHints = NULL;
+    }
+    free(block);
 }
 
 void emitForInStmt(Compiler* compiler, ForInStmt* stmt) {

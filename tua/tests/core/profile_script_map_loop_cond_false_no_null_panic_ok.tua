@@ -1,0 +1,11 @@
+fn main() {
+
+  let m: map<int, int> = null
+  let sum: int = 0
+
+  for i = 0; i < 0; i++ {
+    sum = sum + m.getUnchecked(i)
+  }
+
+  assert(sum == 0)
+}

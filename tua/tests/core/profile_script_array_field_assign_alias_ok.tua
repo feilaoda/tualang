@@ -1,0 +1,21 @@
+// tuac: --profile script
+struct Holder {
+  a: int[]
+}
+
+fn emptyArr() -> int[] {
+  let z: int[] = {}
+  return z
+}
+
+fn main() {
+  let src: int[] = {1, 2, 3}
+  let h = Holder{ a: {} }
+
+  h.a = src
+  src = emptyArr()
+
+  let out: int[] = h.a
+  assert(out.len() == 3)
+  assert(out[2] == 3)
+}

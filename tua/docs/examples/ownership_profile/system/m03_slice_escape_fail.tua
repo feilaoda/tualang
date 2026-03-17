@@ -1,0 +1,7 @@
+// draft-profile: system
+// expect-target: compile-fail (borrow escape)
+
+fn bad() Slice<byte> {
+  let b = bytes(16)
+  return b.slice(0, 4)
+}

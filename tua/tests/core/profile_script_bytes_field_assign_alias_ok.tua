@@ -1,0 +1,23 @@
+// tuac: --profile script
+import "std/bytes" as bstd
+
+struct Holder {
+  b: bytes
+}
+
+fn emptyBytes() -> bytes {
+  let z: bytes = bstd.Bytes.new(0L)
+  return z
+}
+
+fn main() {
+  let src: bytes = bstd.Bytes.fromString("abc")
+  let h = Holder{ b: bstd.Bytes.new(0L) }
+
+  h.b = src
+  src = emptyBytes()
+
+  let out: bytes = h.b
+  assert((int)out.get(0L) == 97)
+  assert((int)out.get(2L) == 99)
+}

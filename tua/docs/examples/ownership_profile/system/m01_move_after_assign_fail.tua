@@ -1,0 +1,9 @@
+// draft-profile: system
+// expect-target: compile-fail (use-after-move)
+
+fn main() int {
+  let a: map = {}
+  let b = a
+  println(a.len())
+  return b.len()
+}

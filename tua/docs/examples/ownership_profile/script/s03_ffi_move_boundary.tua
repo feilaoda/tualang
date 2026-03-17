@@ -1,0 +1,12 @@
+// draft-profile: script
+// expect-target: pass
+// note: ownership transfer at FFI boundary should be explicit.
+
+extern fn send_packet(move data: bytes) int
+
+fn main() int {
+  let p = bytes(128)
+  let rc = send_packet(move p)
+  // p should be considered moved after this line.
+  return rc
+}

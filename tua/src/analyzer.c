@@ -796,6 +796,7 @@ static void varInfoSetBorrowedFrom(VarInfo* v, const Token* owner, int ownerMut)
 }
 
 static void maybeMoveVar(Compiler* compiler, Scope* scope, const Token* name, const char* modulePath) {
+    if (!compilerUseSystemOwnership(compiler)) return;
     if (!scope || !name) return;
     VarInfo* src = scopeFind(scope, name);
     if (!varIsMoveOnly(compiler, src)) return;
@@ -1958,6 +1959,42 @@ static AType* inferCall(Compiler* compiler, Scope* scope, CallExpr* call, const 
             }
         }
         if (atIsMap(recvTy)) {
+            if (tokenTextEquals(&get->name, "getUnchecked")) {
+                unsigned got = call->arguments ? (unsigned)call->arguments->length : 0;
+                if (got != 1) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "map.getUnchecked expects 1 argument");
+                }
+
+                Expr* key0 = call->arguments && call->arguments->head ? (Expr*)call->arguments->head->data : NULL;
+                AType* keyTy = key0 ? inferExpr(compiler, scope, key0, modulePath) : atNew(AT_ANY);
+                if (!typedMapKeyAllows(recvTy->key, keyTy)) {
+                    analyzeErrorAt(compiler, modulePath, get->name.line, "typed map key type mismatch");
+                }
+                for (ListNode* n = (call->arguments && call->arguments->head) ? call->arguments->head->next : NULL;
+                     n != NULL;
+                     n = n->next) {
+                    inferExpr(compiler, scope, (Expr*)n->data, modulePath);
+                }
+
+                int scalarValue =
+                    recvTy->value &&
+                    (
+                        atIsNumeric(recvTy->value) ||
+                        recvTy->value->kind == AT_BOOL ||
+                        recvTy->value->kind == AT_STRING ||
+                        recvTy->value->kind == AT_BYTE
+                    );
+                if (recvTy->value && !scalarValue && !atIsAny(recvTy->value)) {
+                    analyzeErrorAt(
+                        compiler,
+                        modulePath,
+                        get->name.line,
+                        "map.getUnchecked is only supported for typed scalar maps"
+                    );
+                }
+                return recvTy->value ? recvTy->value : atNew(AT_ANY);
+            }
+
             // Borrowing reads: m.get(k) / m.getMut(k)
             if (
                 tokenTextEquals(&get->name, "get") ||
@@ -2515,11 +2552,14 @@ static AType* inferExpr(Compiler* compiler, Scope* scope, Expr* expr, const char
                 }
             }
 
-            // First-pass move semantics: assigning from a move-only variable moves it.
+            // System profile: assigning from a move-only variable moves it.
+            // Script profile keeps local assignment as borrow-by-default.
             if (a->value && a->value->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)a->value;
                 VarInfo* src = scopeFind(scope, &rv->name);
-                maybeMoveVar(compiler, scope, &rv->name, modulePath);
+                if (compilerUseSystemOwnership(compiler)) {
+                    maybeMoveVar(compiler, scope, &rv->name, modulePath);
+                }
 
                 // Escape check: forbid assigning a borrowed value to an outer-scope binding.
                 if (vi && src) {
@@ -3366,9 +3406,13 @@ static void analyzeStmt(Compiler* compiler, Scope* scope, Stmt* stmt, const char
                 }
             }
 
-            // First-pass move semantics: `let b = a` moves `a` when `a` is move-only.
+            // System profile: `let b = a` moves `a` when `a` is move-only.
             // (Except for `const view = a`, which is a shared borrow view.)
-            if (!isConstView && v->initializer && v->initializer->type == EXPR_VARIABLE) {
+            // Script profile keeps local bindings as borrow-by-default.
+            if (compilerUseSystemOwnership(compiler) &&
+                !isConstView &&
+                v->initializer &&
+                v->initializer->type == EXPR_VARIABLE) {
                 VariableExpr* rv = (VariableExpr*)v->initializer;
                 VarInfo* src = scopeFind(scope, &rv->name);
                 if (varIsMoveOnly(compiler, src)) {

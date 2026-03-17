@@ -1,0 +1,21 @@
+// tuac: --profile script
+import "std/bytes" as bstd
+
+fn emptyBytes() -> bytes {
+  let z: bytes = bstd.Bytes.new(0L)
+  return z
+}
+
+fn makeBytes() -> bytes {
+  let a: bytes = bstd.Bytes.fromString("abc")
+  let b: bytes = bstd.Bytes.new(0L)
+  b = a
+  a = emptyBytes()
+  return b
+}
+
+fn main() {
+  let x: bytes = makeBytes()
+  assert((int)x.get(0L) == 97)
+  assert((int)x.get(2L) == 99)
+}

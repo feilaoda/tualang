@@ -171,7 +171,7 @@ private fn benchMapLookup(iters: long, m: map<int, int>, mod: int) -> long {
     x = (x * 1103515245L + 12345L) & 2147483647L
 
     let k: int = (int)(x & mask)
-    acc = acc + (long)m[k].unwrap()
+    acc = acc + (long)m.getUnchecked(k)
 
   }
 

@@ -1,0 +1,22 @@
+// tuac: --profile script
+struct Foo {
+  a: int
+}
+
+fn main() {
+  let m: map<int, Foo> = {}
+
+  m[1] = Foo{ a: 1 }
+  m[1] = Foo{ a: 2 }
+  assert(m.get(1).unwrap().a == 2)
+
+  assert(m.delete(1))
+  assert(m.get(1).isNone())
+
+  m[2] = Foo{ a: 3 }
+  m[3] = Foo{ a: 4 }
+  assert(m.len() == 2)
+  m.clear()
+  assert(m.len() == 0)
+  assert(m.get(2).isNone())
+}

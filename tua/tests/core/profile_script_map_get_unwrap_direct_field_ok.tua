@@ -1,0 +1,18 @@
+// tuac: --profile script
+struct Foo {
+  a: int
+  b: int
+}
+
+fn main() {
+  let m: map<int, Foo> = {}
+  m[1] = Foo{ a: 7, b: 9 }
+
+  assert((m.get(1).unwrap()).a == 7)
+
+  m.get(1).unwrap().b = 42
+  assert(m.get(1).unwrap().b == 42)
+
+  m.getMut(1).unwrap().a = 11
+  assert(m.get(1).unwrap().a == 11)
+}

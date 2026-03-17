@@ -1,0 +1,13 @@
+// tuac: --profile script
+private fn sum(a: int[]) -> long {
+  let out: long = 0L
+  for i = 0; i < a.len(); i++ {
+    out = out + (long)a[i]
+  }
+  return out
+}
+
+fn main() {
+  let a: int[] = {1, 2, 3, 4, 5}
+  assert(sum(a) == 15L)
+}

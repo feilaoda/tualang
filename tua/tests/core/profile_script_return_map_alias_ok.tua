@@ -1,0 +1,15 @@
+// tuac: --profile script
+fn makeMap() -> map {
+  let a: map = {}
+  a["k"] = 7
+
+  let b: map = {}
+  b = a
+  a = {}
+  return b
+}
+
+fn main() {
+  let m: map = makeMap()
+  assert(m["k"].unwrap() == 7)
+}

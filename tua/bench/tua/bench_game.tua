@@ -1,0 +1,506 @@
+import "std/time" as t
+import "std/strconv" as conv
+
+extern fn sqrt(x: double) double
+
+private fn nowNs() -> long { return t.Time.monoNs() }
+
+private fn report(name: string, iters: long, dtNs: long, sink: long) {
+  let nsPerIter: double = (double)dtNs / (double)iters
+  println("{} iters={} dt_ns={} ns/iter={} sink={}", name, iters, dtNs, nsPerIter, sink)
+}
+
+private fn parseIntArg(s: string, def: int) -> int {
+  let o = conv.Int.parse(s)
+  if o.isNone() { return def }
+  return o.unwrap()
+}
+
+// ---------------- binary-trees ----------------
+
+private fn makeTree(item: int, depth: int) -> map {
+  let n: map = {}
+  n[0] = item
+  if depth > 0 {
+    n[1] = makeTree((item * 2) - 1, depth - 1)
+    n[2] = makeTree(item * 2, depth - 1)
+  } else {
+    n[1] = null
+    n[2] = null
+  }
+  return n
+}
+
+private fn itemCheck(n: map) -> int {
+  let left: map = n[1].unwrap()
+  if left == null {
+    return n[0].unwrap()
+  }
+  let right: map = n[2].unwrap()
+  return (int)n[0].unwrap() + itemCheck(left) - itemCheck(right)
+}
+
+private fn benchBinaryTrees(maxDepthIn: int) -> long {
+  let minDepth: int = 4
+  let maxDepth: int = maxDepthIn
+  if maxDepth < minDepth + 2 {
+    maxDepth = minDepth + 2
+  }
+
+  let stretchDepth: int = maxDepth + 1
+  let stretchTree: map = makeTree(0, stretchDepth)
+  let stretchCheck: int = itemCheck(stretchTree)
+
+  let longLivedTree: map = makeTree(0, maxDepth)
+
+  let acc: long = (long)stretchCheck
+  let depth: int = minDepth
+  while depth <= maxDepth {
+    let iterations: int = 1 << (maxDepth - depth + minDepth)
+    let chk: long = 0L
+    let i: int = 1
+    while i <= iterations {
+      chk = chk + (long)itemCheck(makeTree(i, depth))
+      chk = chk + (long)itemCheck(makeTree(0 - i, depth))
+      i = i + 1
+    }
+    acc = acc + chk
+    depth = depth + 2
+  }
+
+  return acc + (long)itemCheck(longLivedTree)
+}
+
+// ---------------- spectral-norm ----------------
+
+private fn evalA(i: int, j: int) -> double {
+  let ij: double = (double)(i + j)
+  return 1.0 / ((ij * (ij + 1.0) * 0.5) + (double)i + 1.0)
+}
+
+private fn evalATimesU(u: double[], let out: double[]) {
+  let n: int = u.len()
+  let i: int = 0
+  while i < n {
+    let s: double = 0.0
+    let j: int = 0
+    while j < n {
+      s = s + evalA(i, j) * u[j]
+      j = j + 1
+    }
+    out[i] = s
+    i = i + 1
+  }
+}
+
+private fn evalAtTimesU(u: double[], let out: double[]) {
+  let n: int = u.len()
+  let i: int = 0
+  while i < n {
+    let s: double = 0.0
+    let j: int = 0
+    while j < n {
+      s = s + evalA(j, i) * u[j]
+      j = j + 1
+    }
+    out[i] = s
+    i = i + 1
+  }
+}
+
+private fn spectralNorm(n: int, iters: int) -> double {
+  let u: double[] = {}
+  let v: double[] = {}
+  let tmp: double[] = {}
+
+  let i: int = 0
+  while i < n {
+    u.push(1.0)
+    v.push(0.0)
+    tmp.push(0.0)
+    i = i + 1
+  }
+
+  let k: int = 0
+  while k < iters {
+    evalATimesU(u, tmp)
+    evalAtTimesU(tmp, v)
+    evalATimesU(v, tmp)
+    evalAtTimesU(tmp, u)
+    k = k + 1
+  }
+
+  let vbv: double = 0.0
+  let vv: double = 0.0
+  let t: int = 0
+  while t < n {
+    vbv = vbv + u[t] * v[t]
+    vv = vv + v[t] * v[t]
+    t = t + 1
+  }
+
+  return sqrt(vbv / vv)
+}
+
+// ---------------- fannkuch-redux ----------------
+
+private fn fannkuchRedux(n: int) -> long {
+  let perm1: int[] = {}
+  let count: int[] = {}
+
+  let i: int = 0
+  while i < n {
+    perm1.push(i)
+    count.push(0)
+    i = i + 1
+  }
+
+  let maxFlips: int = 0
+  let checksum: int = 0
+  let permCount: int = 0
+  let r: int = n
+
+  while true {
+    while r != 1 {
+      count[r - 1] = r
+      r = r - 1
+    }
+
+    let perm: int[] = {}
+    let p: int = 0
+    while p < n {
+      perm.push(perm1[p])
+      p = p + 1
+    }
+
+    let flips: int = 0
+    let k: int = perm[0]
+    while k != 0 {
+      let lo: int = 0
+      let hi: int = k
+      while lo < hi {
+        let t0: int = perm[lo]
+        perm[lo] = perm[hi]
+        perm[hi] = t0
+        lo = lo + 1
+        hi = hi - 1
+      }
+      flips = flips + 1
+      k = perm[0]
+    }
+
+    if flips > maxFlips { maxFlips = flips }
+    if permCount / 2 * 2 == permCount {
+      checksum = checksum + flips
+    } else {
+      checksum = checksum - flips
+    }
+
+    while true {
+      if r == n {
+        return ((long)checksum * 1000000L) + (long)maxFlips
+      }
+
+      let first: int = perm1[0]
+      let q: int = 0
+      while q < r {
+        perm1[q] = perm1[q + 1]
+        q = q + 1
+      }
+      perm1[r] = first
+
+      count[r] = count[r] - 1
+      if count[r] > 0 {
+        permCount = permCount + 1
+        break
+      }
+      r = r + 1
+    }
+  }
+
+  return 0L
+}
+
+// ---------------- n-body ----------------
+
+struct Body {
+  x: double
+  y: double
+  z: double
+  vx: double
+  vy: double
+  vz: double
+  mass: double
+}
+
+private fn makeBodies() -> Body[] {
+  let pi: double = 3.141592653589793
+  let solarMass: double = 4.0 * pi * pi
+  let daysPerYear: double = 365.24
+
+  return {
+    Body{ x: 0.0, y: 0.0, z: 0.0, vx: 0.0, vy: 0.0, vz: 0.0, mass: solarMass },
+
+    Body{
+      x: 4.84143144246472090e+00,
+      y: -1.16032004402742839e+00,
+      z: -1.03622044471123109e-01,
+      vx: 1.66007664274403694e-03 * daysPerYear,
+      vy: 7.69901118419740425e-03 * daysPerYear,
+      vz: -6.90460016972063023e-05 * daysPerYear,
+      mass: 9.54791938424326609e-04 * solarMass,
+    },
+
+    Body{
+      x: 8.34336671824457987e+00,
+      y: 4.12479856412430479e+00,
+      z: -4.03523417114321381e-01,
+      vx: -2.76742510726862411e-03 * daysPerYear,
+      vy: 4.99852801234917238e-03 * daysPerYear,
+      vz: 2.30417297573763929e-05 * daysPerYear,
+      mass: 2.85885980666130812e-04 * solarMass,
+    },
+
+    Body{
+      x: 1.28943695621391310e+01,
+      y: -1.51111514016986312e+01,
+      z: -2.23307578892655734e-01,
+      vx: 2.96460137564761618e-03 * daysPerYear,
+      vy: 2.37847173959480950e-03 * daysPerYear,
+      vz: -2.96589568540237556e-05 * daysPerYear,
+      mass: 4.36624404335156298e-05 * solarMass,
+    },
+
+    Body{
+      x: 1.53796971148509165e+01,
+      y: -2.59193146099879641e+01,
+      z: 1.79258772950371181e-01,
+      vx: 2.68067772490389322e-03 * daysPerYear,
+      vy: 1.62824170038242295e-03 * daysPerYear,
+      vz: -9.51592254519715870e-05 * daysPerYear,
+      mass: 5.15138902046611451e-05 * solarMass,
+    },
+  }
+}
+
+private fn offsetMomentum(let bodies: Body[]) {
+  let px: double = 0.0
+  let py: double = 0.0
+  let pz: double = 0.0
+
+  let i: int = 0
+  while i < bodies.len() {
+    let b: Body = bodies[i]
+    px = px + b.vx * b.mass
+    py = py + b.vy * b.mass
+    pz = pz + b.vz * b.mass
+    i = i + 1
+  }
+
+  let pi: double = 3.141592653589793
+  let solarMass: double = 4.0 * pi * pi
+
+  let sun: Body = bodies[0]
+  sun.vx = 0.0 - px / solarMass
+  sun.vy = 0.0 - py / solarMass
+  sun.vz = 0.0 - pz / solarMass
+  bodies[0] = sun
+}
+
+private fn advance(let bodies: Body[], dt: double, steps: int) {
+  let n: int = bodies.len()
+
+  let s: int = 0
+  while s < steps {
+    let i: int = 0
+    while i < n {
+      let bi: Body = bodies[i]
+
+      let j: int = i + 1
+      while j < n {
+        let bj: Body = bodies[j]
+
+        let dx: double = bi.x - bj.x
+        let dy: double = bi.y - bj.y
+        let dz: double = bi.z - bj.z
+
+        let dist2: double = dx * dx + dy * dy + dz * dz
+        let invDist: double = 1.0 / sqrt(dist2)
+        let mag: double = dt * invDist * invDist * invDist
+
+        let bim: double = bj.mass * mag
+        let bjm: double = bi.mass * mag
+
+        bi.vx = bi.vx - dx * bim
+        bi.vy = bi.vy - dy * bim
+        bi.vz = bi.vz - dz * bim
+
+        bj.vx = bj.vx + dx * bjm
+        bj.vy = bj.vy + dy * bjm
+        bj.vz = bj.vz + dz * bjm
+
+        bodies[j] = bj
+        j = j + 1
+      }
+
+      bodies[i] = bi
+      i = i + 1
+    }
+
+    let p: int = 0
+    while p < n {
+      let b: Body = bodies[p]
+      b.x = b.x + dt * b.vx
+      b.y = b.y + dt * b.vy
+      b.z = b.z + dt * b.vz
+      bodies[p] = b
+      p = p + 1
+    }
+    s = s + 1
+  }
+}
+
+private fn energy(bodies: Body[]) -> double {
+  let e: double = 0.0
+  let n: int = bodies.len()
+
+  let i: int = 0
+  while i < n {
+    let bi: Body = bodies[i]
+
+    e = e + 0.5 * bi.mass * (bi.vx * bi.vx + bi.vy * bi.vy + bi.vz * bi.vz)
+
+    let j: int = i + 1
+    while j < n {
+      let bj: Body = bodies[j]
+      let dx: double = bi.x - bj.x
+      let dy: double = bi.y - bj.y
+      let dz: double = bi.z - bj.z
+      let dist: double = sqrt(dx * dx + dy * dy + dz * dz)
+      e = e - (bi.mass * bj.mass) / dist
+      j = j + 1
+    }
+    i = i + 1
+  }
+
+  return e
+}
+
+private fn benchNBody(steps: int) -> long {
+  let bodies: Body[] = makeBodies()
+  offsetMomentum(bodies)
+
+  let e0: double = energy(bodies)
+  advance(bodies, 0.01, steps)
+  let e1: double = energy(bodies)
+
+  let sink: long = 0L
+  if e1 > e0 { sink = sink + 4L } else { sink = sink - 4L }
+
+  let b0: Body = bodies[0]
+  if b0.x > 0.0 { sink = sink + 1L } else { sink = sink - 1L }
+
+  let b1: Body = bodies[1]
+  if b1.y > 0.0 { sink = sink + 2L } else { sink = sink - 2L }
+
+  return sink
+}
+
+private fn runAll() -> int {
+  let depth: int = 10
+  let spectralN: int = 260
+  let spectralIters: int = 10
+  let fannkuchN: int = 8
+  let nbodySteps: int = 20000
+
+  let t0 = nowNs()
+  let s0 = benchBinaryTrees(depth)
+  let t1 = nowNs()
+  report("tua/binary_trees", 1L, t1 - t0, s0)
+
+  let t2 = nowNs()
+  let s1: double = spectralNorm(spectralN, spectralIters)
+  let t3 = nowNs()
+  report("tua/spectral_norm", 1L, t3 - t2, (long)(s1 * 1000000000.0))
+
+  let t4 = nowNs()
+  let s2 = fannkuchRedux(fannkuchN)
+  let t5 = nowNs()
+  report("tua/fannkuch_redux", 1L, t5 - t4, s2)
+
+  let t6 = nowNs()
+  let s3 = benchNBody(nbodySteps)
+  let t7 = nowNs()
+  report("tua/nbody", 1L, t7 - t6, s3)
+
+  return 0
+}
+
+fn main(args: string[]) -> int {
+  if args.len() <= 1 || args[1] == "--all" {
+    return runAll()
+  }
+
+  if args[1] == "--bench" {
+    if args.len() < 3 {
+      println("missing bench name")
+      return 2
+    }
+
+    let name: string = args[2]
+
+    let depth: int = 10
+    let spectralN: int = 260
+    let spectralIters: int = 10
+    let fannkuchN: int = 8
+    let nbodySteps: int = 20000
+
+    let i: int = 3
+    while i + 1 < args.len() {
+      if args[i] == "--iters" {
+        let v = parseIntArg(args[i + 1], 0)
+        if name == "binary_trees" { depth = v }
+        if name == "spectral_norm" { spectralN = v }
+        if name == "fannkuch_redux" { fannkuchN = v }
+        if name == "nbody" { nbodySteps = v }
+      }
+      i = i + 1
+    }
+
+    let t0 = nowNs()
+
+    if name == "binary_trees" {
+      let s = benchBinaryTrees(depth)
+      let t1 = nowNs()
+      report("tua/binary_trees", 1L, t1 - t0, s)
+      return 0
+    }
+
+    if name == "spectral_norm" {
+      let s: double = spectralNorm(spectralN, spectralIters)
+      let t1 = nowNs()
+      report("tua/spectral_norm", 1L, t1 - t0, (long)(s * 1000000000.0))
+      return 0
+    }
+
+    if name == "fannkuch_redux" {
+      let s = fannkuchRedux(fannkuchN)
+      let t1 = nowNs()
+      report("tua/fannkuch_redux", 1L, t1 - t0, s)
+      return 0
+    }
+
+    if name == "nbody" {
+      let s = benchNBody(nbodySteps)
+      let t1 = nowNs()
+      report("tua/nbody", 1L, t1 - t0, s)
+      return 0
+    }
+
+    println("unknown bench: {}", name)
+    return 2
+  }
+
+  println("usage: bench_game.tua --all | --bench <name> [--iters N]")
+  return 2
+}

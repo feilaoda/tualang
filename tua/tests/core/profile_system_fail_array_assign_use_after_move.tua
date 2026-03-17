@@ -1,0 +1,8 @@
+// tuac: --profile system
+fn main() {
+  let a: int[] = {1, 2}
+  let b: int[] = {}
+  b = a
+
+  a.push(3)
+}

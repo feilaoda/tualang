@@ -1,0 +1,16 @@
+// tuac: --profile script
+struct Holder {
+  m: map
+}
+
+fn main() {
+  let a: map = {}
+  a["k"] = 1
+
+  let h = Holder{ m: {} }
+  h.m = a
+  a = {}
+
+  let hm: map = h.m
+  assert(hm["k"].unwrap() == 1)
+}

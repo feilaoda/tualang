@@ -1,0 +1,10 @@
+// tuac: --profile system
+struct Foo {
+  a: int
+}
+
+fn main() {
+  let m: map<int, Foo> = {}
+  m[1] = Foo{ a: 1 }
+  let _ = m.getUnchecked(1)
+}

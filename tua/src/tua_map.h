@@ -17,7 +17,8 @@ enum {
     TUA_VAL_DOUBLE = 3,
     TUA_VAL_BOOL = 4,
     TUA_VAL_STRING = 5,
-    TUA_VAL_PTR = 6
+    TUA_VAL_PTR = 6,
+    TUA_VAL_BOX = 7
 };
 
 // Map implementation kind (internal; used for typed-map backends).
@@ -73,6 +74,7 @@ static inline tua_value tua_value_ptr(const void* p) {
 typedef struct tua_map tua_map;
 
 tua_map* tua_map_new(void);
+tua_map* tua_map_new_hint(int32_t hint);
 tua_value tua_map_get(tua_map* map, tua_value key);
 // Returns value and writes ok=1 if key exists (even if value is null), else ok=0 and returns null.
 tua_value tua_map_get_with_ok(tua_map* map, tua_value key, int32_t* outOk);
@@ -86,6 +88,8 @@ void tua_map_clear(tua_map* map);
 int32_t tua_map_has(tua_map* map, tua_value key);
 int32_t tua_map_len(tua_map* map);
 int32_t tua_map_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue);
+void tua_map_retain(tua_map* map);
+void tua_map_release(tua_map* map);
 void tua_map_free(tua_map* map);
 
 // Integer-key typed-map backend (internal; used by compiler codegen).
@@ -100,6 +104,8 @@ void tua_imap_clear(tua_map* map);
 int32_t tua_imap_has(tua_map* map, int64_t key);
 int32_t tua_imap_len(tua_map* map);
 int32_t tua_imap_iter_next(tua_map* map, int32_t* index, tua_value* outKey, tua_value* outValue);
+void tua_imap_retain(tua_map* map);
+void tua_imap_release(tua_map* map);
 void tua_imap_free(tua_map* map);
 
 void tua_panic(const char* msg);
@@ -119,6 +125,11 @@ char* tua_value_to_string(tua_value v);
 // Parse base-10 `int` from string.
 // Returns 1 on success and writes to `out`, otherwise returns 0 and leaves `out` unchanged.
 int32_t tua_parse_int(const char* s, int32_t* out);
+
+// Retain/release runtime-managed payloads embedded in `tua_value`.
+// No-op for scalar/pure pointer tags.
+void tua_value_retain_runtime(tua_value v);
+void tua_value_release_runtime(tua_value v);
 
 // String runtime helpers (see `src/tua_str.c`).
 int64_t tua_str_byte_len(const char* s);

@@ -1,0 +1,15 @@
+// draft-profile: script
+// expect-target: pass
+
+struct Packet {
+  body: bytes
+}
+
+fn main() int {
+  let p = Packet{ body: bytes(32) }
+  let b = bytes(16)
+  p.body = b
+  // in script profile, b can still be valid (shared handle semantics).
+  println(p.body.len())
+  return 0
+}

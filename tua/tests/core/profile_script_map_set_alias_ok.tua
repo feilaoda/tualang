@@ -1,0 +1,12 @@
+// tuac: --profile script
+struct Foo {
+  x: int
+}
+
+fn main() {
+  let m: map = {}
+  let b = Foo{ x: 9 }
+  m["k"] = b
+
+  assert(b.x == 9)
+}

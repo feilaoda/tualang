@@ -1,0 +1,12 @@
+// tuac: --profile script
+fn main() {
+  let m: map<int, int> = {}
+  m[1] = 7
+
+  let a: int = m.getUnchecked(1)
+  assert(a == 7)
+
+  // Missing key returns the zero/default payload in unchecked read mode.
+  let b: int = m.getUnchecked(2)
+  assert(b == 0)
+}

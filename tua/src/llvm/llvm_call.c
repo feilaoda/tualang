@@ -256,6 +256,7 @@ typedef enum {
     MAP_M_HASKEY,
     MAP_M_DELETE,
     MAP_M_GET,
+    MAP_M_GETUNCHECKED,
     MAP_M_GETMUT,
     MAP_M_GETREF,
     MAP_M_GETREFWRITE,
@@ -324,6 +325,9 @@ static MapMethodId mapMethodId(const Token* name) {
             break;
         case 11:
             if (memcmp(name->start, "getRefWrite", 11) == 0) return MAP_M_GETREFWRITE;
+            break;
+        case 12:
+            if (memcmp(name->start, "getUnchecked", 12) == 0) return MAP_M_GETUNCHECKED;
             break;
         default:
             break;
@@ -2872,7 +2876,8 @@ enum {
     TUA_VAL_DOUBLE = 3,
     TUA_VAL_BOOL = 4,
     TUA_VAL_STRING = 5,
-    TUA_VAL_PTR = 6
+    TUA_VAL_PTR = 6,
+    TUA_VAL_BOX = 7
 };
 
 static LLVMValueRef tuaValueMake(Compiler* compiler, int tag, LLVMValueRef payloadI64) {
@@ -3373,6 +3378,16 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
             if (got == 0) {
                 LLVMValueRef out = emitIndexExprUnwrapFast(compiler, (IndexExpr*)get->object);
+                if (out) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return out;
+                }
+            }
+        }
+        if (!hasTypeArgs && tokenEquals(&get->name, "unwrap") && get->object->type == EXPR_CALL) {
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            if (got == 0) {
+                LLVMValueRef out = emitMapGetUnwrapFast(compiler, (CallExpr*)get->object);
                 if (out) {
                     if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
                     return out;
@@ -4804,6 +4819,43 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
             LLVMValueRef implOut = tryEmitBuiltinHandleImplMethodCall(compiler, recvVar, get, expr, wantMultiForThisCall);
             if (implOut) return implOut;
 
+            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
+            MapMethodId mid = mapMethodId(&get->name);
+
+            // Fast-path dispatch: avoid redundant receiver loads in `getUnchecked`.
+            if (mid == MAP_M_GETUNCHECKED) {
+                if (got != 1) {
+                    emitDebug("map.getUnchecked expects 1 argument\n");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (!recvVar.isTypedMap || !recvVar.mapValueType || !typedMapValueIsScalarMeta(&recvVar)) {
+                    compilerErrorAt(
+                        compiler,
+                        get->name.line,
+                        "map.getUnchecked is only supported for typed scalar maps"
+                    );
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+
+                IndexExpr idx;
+                memset(&idx, 0, sizeof(idx));
+                idx.base.type = EXPR_INDEX;
+                idx.base.token = get->base.token;
+                idx.base.inferredType = recvVar.mapValueKind;
+                idx.object = get->object;
+                idx.index = (Expr*)expr->arguments->head->data;
+
+                LLVMValueRef out = emitIndexExprUncheckedFast(compiler, &idx);
+                if (!out) {
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return NULL;
+                }
+                if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                return out;
+            }
+
             LLVMTypeRef mapType = compilerGetMapType(compiler);
             LLVMValueRef mapPtr = NULL;
             if (recvVar.isBoxed) {
@@ -4818,9 +4870,6 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 mapPtr = LLVMBuildLoad2(compiler->builder, mapType, recvVar.value, "mval");
             }
 
-            unsigned got = expr->arguments ? (unsigned)expr->arguments->length : 0;
-
-            MapMethodId mid = mapMethodId(&get->name);
             if (mid == MAP_M_LEN) {
                 if (got != 0) {
                     emitDebug("map.len expects 0 arguments\n");
@@ -4920,6 +4969,35 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                     return NULL;
                 }
 
+                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
+                if (recvVar.isTypedMap && recvVar.mapValueType && !typedMapValueIsScalarMeta(&recvVar) &&
+                    LLVMGetTypeKind(recvVar.mapValueType) == LLVMStructTypeKind) {
+                    // For typed map<K, Struct>, use value-level get path so both generic map and IMAP backends work.
+                    LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
+                    LLVMTypeRef i8ptr = LLVMPointerType(LLVMInt8TypeInContext(compiler->context), 0);
+                    LLVMValueRef okPtr = buildEntryAlloca(compiler, i32, "mokptr");
+                    LLVMValueRef gfn = getOrCreateTuaMapGetWithOk(compiler);
+                    LLVMTypeRef gtype = LLVMGlobalGetValueType(gfn);
+                    LLVMValueRef args3[3] = { mapPtr, key, okPtr };
+                    LLVMValueRef tv = LLVMBuildCall2(compiler->builder, gtype, gfn, args3, 3, "mget");
+                    LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, i32, okPtr, "mok32");
+                    LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
+
+                    LLVMValueRef bits = LLVMBuildExtractValue(compiler->builder, tv, 1, "pay");
+                    LLVMTypeRef outPtrTy = LLVMPointerType(recvVar.mapValueType, 0);
+                    LLVMValueRef p8 = LLVMBuildIntToPtr(compiler->builder, bits, i8ptr, "p8");
+                    LLVMValueRef ptrV = LLVMBuildBitCast(compiler->builder, p8, outPtrTy, "sp");
+                    LLVMValueRef nullV = LLVMConstNull(outPtrTy);
+                    LLVMValueRef outV = LLVMBuildSelect(compiler->builder, ok, ptrV, nullV, "mrefv");
+
+                    LLVMTypeRef optType = compilerGetOptionType(compiler, outPtrTy);
+                    LLVMValueRef opt = LLVMGetUndef(optType);
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, ok, 0, "o0");
+                    opt = LLVMBuildInsertValue(compiler->builder, opt, outV, 1, "o1");
+                    if (compiler) compiler->wantMultiValue = wantMultiForThisCall;
+                    return opt;
+                }
+
                 LLVMTypeRef i32 = LLVMInt32TypeInContext(compiler->context);
                 LLVMValueRef okPtr = buildEntryAlloca(compiler, i32, "mokptr");
                 LLVMValueRef gfn = getOrCreateTuaMapGetRefWithOk(compiler);
@@ -4929,7 +5007,6 @@ LLVMValueRef emitCallExpr(Compiler* compiler, CallExpr* expr) {
                 LLVMValueRef ok32 = LLVMBuildLoad2(compiler->builder, i32, okPtr, "mok32");
                 LLVMValueRef ok = LLVMBuildTrunc(compiler->builder, ok32, LLVMInt1TypeInContext(compiler->context), "mok");
 
-                LLVMTypeRef vt = compilerGetTuaValueType(compiler);
                 LLVMTypeRef vtPtr = LLVMPointerType(vt, 0);
                 LLVMValueRef tvPtr = castValueToType(compiler, p, vtPtr);
 

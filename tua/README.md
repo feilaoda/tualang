@@ -1,5 +1,7 @@
 # Tua（嵌入式 Lua，实验性）
 
+[![Ownership Profile Tests](https://github.com/feilaoda/tualang/actions/workflows/profile-tests.yml/badge.svg)](https://github.com/feilaoda/tualang/actions/workflows/profile-tests.yml)
+
 Tua 是面向嵌入式场景的 Lua 风格语言运行时：极简语法 + 类型系统 + LLVM JIT/AOT 编译器，目标是“小运行时、可预测性能、无 GC”。
 
 - 规范：`docs/SPEC.md`
@@ -37,6 +39,12 @@ AOT 链接外部库（示例）：
 
 ```bash
 ./tests/run.sh
+```
+
+仅运行 ownership profile 测试（script/system 对照）：
+
+```bash
+./tests/run_profile.sh
 ```
 
 ANTLR 语法回归（只做 parse，不做编译/运行）：

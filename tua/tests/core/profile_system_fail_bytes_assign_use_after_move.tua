@@ -1,0 +1,10 @@
+// tuac: --profile system
+import "std/bytes" as bstd
+
+fn main() {
+  let a: bytes = bstd.Bytes.fromString("abc")
+  let b: bytes = bstd.Bytes.new(0L)
+  b = a
+
+  println((int)a.get(0L))
+}
